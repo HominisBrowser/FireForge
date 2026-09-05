@@ -27,7 +27,7 @@ export const ExitCode = {
   /** Patch conflict resolution error */
   RESOLUTION_ERROR: 10,
   /**
-   * An internal invariant did not hold — a bug in FireForge itself, not a
+   * An internal invariant did not hold: a bug in FireForge itself, not a
    * user or environment failure. Distinct from GENERAL_ERROR because the
    * two call for opposite responses: a GENERAL_ERROR usually means the
    * operator must change something (fix a config, free a lock, retry), and
@@ -44,30 +44,30 @@ export const ExitCode = {
   SMOKE_EXIT_FAILURE: 12,
   /**
    * `fireforge run --smoke-exit` saw the browser exit with a non-clean
-   * status before the smoke window elapsed — a launch-side failure that
-   * did NOT surface as a console error line (crash before console wiring,
-   * missing profile, etc.).
+   * status before the smoke window elapsed. This is a launch-side failure
+   * that did not surface as a console error line (crash before console
+   * wiring, missing profile, etc.).
    */
   SMOKE_LAUNCH_FAILURE: 13,
   /**
-   * A `fireforge test` run produced a harness result that cannot be trusted
-   * — `engine/` moved (or became unprobeable) while the tests ran. Distinct
-   * from BUILD_ERROR because the two are opposites: a 5 is a suite that
-   * FAILED, a 14 is a suite whose result was THROWN AWAY. A consumer should
+   * A `fireforge test` run produced a harness result that cannot be
+   * trusted: `engine/` moved (or became unprobeable) while the tests ran.
+   * Distinct from BUILD_ERROR because the two are opposites: a 5 is a suite
+   * that failed, a 14 is a suite whose result was thrown away. A consumer should
    * re-run a 14 (after settling the writers) and must not report it as red.
    */
   INCONCLUSIVE: 14,
   /**
    * A lock wait expired: the run never started, because another FireForge
    * process held the lock for the whole budget. Distinct from GENERAL_ERROR
-   * because nothing about the request was wrong — a consumer should re-queue
+   * because nothing about the request was wrong. A consumer should re-queue
    * it, with a larger `--wait-lock` budget, rather than treat it as a
    * failure of the work it asked for.
    */
   LOCK_TIMEOUT: 15,
   /**
    * The user cancelled an interactive prompt. 130 = 128 + SIGINT, the
-   * conventional "interrupted by the user" code — scripts and CI can tell
+   * conventional "interrupted by the user" code, so scripts and CI can tell
    * a deliberate cancellation apart from a real failure (GENERAL_ERROR).
    */
   USER_CANCELLED: 130,

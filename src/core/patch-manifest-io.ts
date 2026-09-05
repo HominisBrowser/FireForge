@@ -80,10 +80,10 @@ export async function loadPatchesManifestState(patchesDir: string): Promise<Load
 /**
  * Loads the patches manifest if it exists.
  *
- * READ-ONLY callers only: this collapses "absent" and "corrupt" into null.
- * Any code path that will WRITE the manifest (or delete patch files based
- * on its content) must use {@link loadPatchesManifestForWrite} instead —
- * treating a corrupt manifest as empty and then saving destroys every
+ * Read-only callers only: this collapses "absent" and "corrupt" into null.
+ * Any code path that writes the manifest (or deletes patch files based
+ * on its content) must use {@link loadPatchesManifestForWrite} instead.
+ * Treating a corrupt manifest as empty and then saving destroys every
  * existing patch's metadata.
  *
  * @param patchesDir - Path to the patches directory
@@ -97,7 +97,7 @@ export async function loadPatchesManifest(patchesDir: string): Promise<PatchesMa
 /**
  * Loads the patches manifest for a mutating operation.
  *
- * Returns null only when the manifest genuinely does not exist; a manifest
+ * Returns null only when the manifest genuinely does not exist. A manifest
  * that exists but fails to parse/validate throws
  * {@link PatchManifestCorruptError} so the caller aborts instead of
  * rebuilding an empty queue over the top of the corrupt file.
@@ -143,18 +143,22 @@ export async function mutatePatchRowsInManifest(
   if (!(await pathExistsStrict(manifestPath))) return null;
 
   const rawManifest = await readJson<unknown>(manifestPath);
+  // `validatePatchesManifest` has already rejected a manifest that is not an
+  // object with an array of object rows (it throws the corruption error the
+  // caller expects), so the shape re-checks below are FireForge's own
+  // invariants, not input validation: failing them means the validator and
+  // this walker disagree about the manifest schema, which is a bug here.
   const beforeManifest = validatePatchesManifest(rawManifest);
-  if (!isObject(rawManifest) || !isArray(rawManifest['patches'])) {
-    throw new Error('patches.json must be a JSON object with a patches array');
-  }
+  assert(
+    isObject(rawManifest) && isArray(rawManifest['patches']),
+    'validated patches.json is a JSON object with a patches array'
+  );
 
   const filenameSet = new Set(filenames);
   if (filenameSet.size === 0) return [];
 
-  const rawPatches = rawManifest['patches'].map((entry) => {
-    if (!isObject(entry)) {
-      throw new Error('patches.json patches entries must be objects');
-    }
+  const rawPatches = rawManifest['patches'].map((entry, index) => {
+    assert(isObject(entry), () => `validated patches.json row ${index} is an object`);
     return { ...entry };
   });
 
@@ -233,11 +237,11 @@ export async function addPatchToManifest(
 
 /**
  * Removes a single patch entry from the manifest by filename. Leaves the
- * ordinal gap in place — callers wanting to close the gap must use
+ * ordinal gap in place. Callers wanting to close the gap must use
  * {@link renumberPatchesInManifest} explicitly. This matches the spec: delete
  * is a row removal, not a resequencing.
  *
- * Not atomic with any on-disk patch file deletion; callers are expected to
+ * Not atomic with any on-disk patch file deletion. Callers are expected to
  * remove the .patch file separately under the same lock.
  *
  * @param patchesDir - Path to the patches directory
@@ -269,7 +273,7 @@ export async function removePatchFromManifest(
 export interface PatchRenameEntry {
   /** New filename (e.g. `005-ui-sidebar.patch`). */
   newFilename: string;
-  /** New numeric order — must match the prefix of `newFilename`. */
+  /** New numeric order. Must match the prefix of `newFilename`. */
   newOrder: number;
 }
 
@@ -284,7 +288,7 @@ export interface PatchRenameEntry {
  * sorted ascending (readers take manifest order as apply order without
  * re-sorting).
  *
- * Contiguity itself is deliberately NOT checked: `patchPolicy.ranges`
+ * Contiguity itself is not checked, on purpose: `patchPolicy.ranges`
  * reserves gaps on purpose, so a hole is a legitimate queue shape.
  *
  * @param patches - The manifest rows about to be written
@@ -382,7 +386,7 @@ export function rewriteStagedDependencyOwners(
  * orders. Failure semantics:
  *
  *   - **Phase 1 (stage)**: rolls back by renaming staged files back to
- *     their originals. Manifest is untouched. Best-effort — a rollback
+ *     their originals. Manifest is untouched. Best-effort: a rollback
  *     rename failure is warned but not re-thrown.
  *   - **Phase 2 (stage → final)**: rolls back to the pre-operation state
  *     by reversing every partial step: files already at their final
@@ -391,13 +395,13 @@ export function rewriteStagedDependencyOwners(
  *     the rollback itself fails midway, the thrown error is augmented
  *     with a description of the residue so the operator can inspect.
  *   - **Phase 3 (manifest write)**: by this point all files are on disk
- *     at their new names; a manifest write failure will roll the files
+ *     at their new names. A manifest write failure will roll the files
  *     back to their original names before re-throwing so the directory
  *     and manifest stay in agreement. A rollback failure at this stage
  *     is warned (manifest was never mutated) and the original error is
  *     re-thrown.
  *
- * Does not sort the rename map for the caller — the map is the authoritative
+ * Does not sort the rename map for the caller. The map is the authoritative
  * plan. Entries not present in the map keep their existing filename and
  * order.
  *
@@ -468,7 +472,7 @@ export async function renumberPatchesInManifest(
       await rename(join(patchesDir, staged), targetPath);
       // Postcondition assert: confirm the target actually exists on disk
       // before marking the rename complete. A silent rename failure leaves
-      // the manifest and the filesystem disagreeing — manifest rewritten to
+      // the manifest and the filesystem disagreeing: manifest rewritten to
       // new filenames while the old files stay on disk. If the assert fires,
       // the Phase 2 rollback undoes prior moves before re-throwing.
       if (!(await pathExistsStrict(targetPath))) {
@@ -480,7 +484,7 @@ export async function renumberPatchesInManifest(
       completedFinalRenames.push(stagedEntry);
     }
   } catch (error: unknown) {
-    // Phase 2 rollback — reverse both the partial final-name moves and
+    // Phase 2 rollback: reverse both the partial final-name moves and
     // the phase-1 staging. This collapses the directory back to its
     // pre-operation filenames so the manifest (which was never
     // touched) remains consistent with what is on disk. If any
@@ -522,7 +526,7 @@ export async function renumberPatchesInManifest(
   }
 
   // Phase 3: rewrite the manifest rows. Any entry without a rename keeps its
-  // existing metadata; entries in the map get their filename + order
+  // existing metadata. Entries in the map get their filename + order
   // updated. Sort by the new order so the manifest remains ordered.
   const filenameUpdates = new Map<string, PatchRenameEntry>();
   for (const [oldFilename, entry] of renameMap) {
@@ -548,13 +552,13 @@ export async function renumberPatchesInManifest(
   try {
     // Phase 3 is the one write that makes the renumber visible. Every file
     // has already moved on disk, so a manifest that disagrees with the new
-    // filenames is the worst outcome available here — the queue would apply
-    // in an order nothing on disk reflects. The callers compute the rename
-    // map (compact, reorder, export placement) and each maintains contiguity
-    // on its own; this checks the property they are all supposed to produce,
-    // at the single point where it becomes durable. Inside the try, so a
-    // violation unwinds through the Phase 3 rollback that puts the filenames
-    // back.
+    // filenames is the worst outcome available here, because the queue
+    // would apply in an order nothing on disk reflects. The callers compute
+    // the rename map (compact, reorder, export placement) and each maintains
+    // contiguity on its own. This checks the property they are all supposed
+    // to produce, at the single point where it becomes durable. Inside the
+    // try, so a violation unwinds through the Phase 3 rollback that puts the
+    // filenames back.
     assertRenumberedOrderIsWellFormed(updatedPatches);
 
     await savePatchesManifest(patchesDir, {
@@ -565,7 +569,7 @@ export async function renumberPatchesInManifest(
     // Phase 3 rollback: reverse every completed rename. The manifest
     // save failed before it could be persisted, so the on-disk state
     // must match what the manifest still records. Best-effort: any
-    // individual step that fails gets warned; the original save
+    // individual step that fails gets warned. The original save
     // error is always re-thrown so the caller sees the real cause.
     for (const completed of completedFinalRenames) {
       try {
@@ -585,7 +589,7 @@ export async function renumberPatchesInManifest(
 
 /**
  * Thrown when {@link removePatchFileAndManifest} cannot complete the file
- * delete AND cannot restore the manifest row afterward, so the on-disk
+ * delete and cannot restore the manifest row afterward, so the on-disk
  * state and manifest state are known to disagree. Carries both the
  * primary delete error and the rollback error so the caller (and the
  * operator) can see the full failure chain instead of only the original
@@ -593,7 +597,7 @@ export async function renumberPatchesInManifest(
  *
  * Extends {@link FireForgeError} so the CLI top-level handler routes it
  * through the rich-error formatter rather than the generic unexpected-error
- * path; the dedicated `.name` is kept so programmatic callers and tests
+ * path. The dedicated `.name` is kept so programmatic callers and tests
  * can still distinguish it with `instanceof PatchDeleteRollbackError`.
  */
 export class PatchDeleteRollbackError extends FireForgeError {
@@ -617,7 +621,7 @@ export class PatchDeleteRollbackError extends FireForgeError {
 
 /**
  * Deletes both a patch file on disk and its manifest row under the caller's
- * lock. This is a convenience for the `patch delete` command; callers that
+ * lock. This is a convenience for the `patch delete` command. Callers that
  * need different ordering (e.g. deleting the file first without touching the
  * manifest) should call the primitives separately.
  *
@@ -639,8 +643,8 @@ export async function removePatchFileAndManifest(
   await assertPatchDirectoryLockHeld(patchesDir, 'deleting a patch and its manifest row');
 
   const patchPath = join(patchesDir, filename);
-  // ForWrite: deleting the patch FILE while a corrupt manifest still
-  // references it would strand the queue; abort on corruption instead.
+  // ForWrite: deleting the patch file while a corrupt manifest still
+  // references it would strand the queue. Abort on corruption instead.
   const originalManifest = await loadPatchesManifestForWrite(patchesDir);
   const removedFromManifest = await removePatchFromManifest(patchesDir, filename);
 

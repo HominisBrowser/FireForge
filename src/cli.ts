@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { Command, Help } from 'commander';
 
+import { handleParseError, machineErrorCode, wantsMachineOutput } from './cli-usage-error.js';
 import { COMMAND_MANIFEST, type CommandManifestEntry } from './commands/manifest.js';
 import { runTreeGuardHook } from './core/tree-guard.js';
 import {
@@ -61,27 +62,10 @@ function getBrokenPipeHandler(state: FireForgeProcess): (error: NodeJS.ErrnoExce
 }
 
 /**
- * Stable machine-readable tag for an error class, for the `--json` envelope.
- *
- * Derived from the class name rather than hand-mapped: a new error class gets
- * a sensible tag automatically, and the mapping cannot drift out of sync with
- * the taxonomy. `ConfigNotFoundError` becomes `config-not-found`.
- *
- * @param error - The error being rendered
- * @returns A kebab-case tag with the `Error` suffix stripped
- */
-function machineErrorCode(error: FireForgeError): string {
-  return error.name
-    .replace(/Error$/, '')
-    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-    .toLowerCase();
-}
-
-/**
  * Prints an error's `cause` chain under `--verbose`.
  *
- * Nine error classes declare a `cause` and twenty-two throw sites pass one;
- * without this the underlying git stderr, errno or parse failure never
+ * Nine error classes declare a `cause` and twenty-two throw sites pass one.
+ * Without this the underlying git stderr, errno or parse failure never
  * reaches the operator, because a `FireForgeError` renders as its
  * `userMessage` and stops.
  *
@@ -124,7 +108,12 @@ export function installBrokenPipeHandler(): void {
   state[brokenPipeInstalledKey] = true;
 }
 
-/** Removes the broken-pipe handler installed for CLI tests. */
+/**
+ * Removes the broken-pipe handler installed for CLI tests.
+ *
+ * @internal Exported only so tests can reach it. It is not part of the
+ * public surface.
+ */
 export function resetBrokenPipeHandlerForTests(): void {
   const state = getProcessState();
   const handleStreamError = state[brokenPipeListenerKey];
@@ -142,7 +131,7 @@ export function resetBrokenPipeHandlerForTests(): void {
  * Maximum number of directory levels to walk when searching for
  * `fireforge.json`. `dirname()` walking is pure string manipulation and
  * cannot cycle (the `parent === current` check already terminates at the
- * root); this cap only bounds the cost on pathologically deep paths.
+ * root). This cap only bounds the cost on pathologically deep paths.
  */
 const MAX_PROJECT_ROOT_WALK_DEPTH = 50;
 
@@ -150,7 +139,7 @@ const MAX_PROJECT_ROOT_WALK_DEPTH = 50;
  * Gets the project root directory.
  * Walks up from the current working directory until a fireforge.json is found.
  * Throws a {@link ConfigNotFoundError} (code: CONFIG_ERROR) when no
- * fireforge.json is found within the walk depth limit — the error is
+ * fireforge.json is found within the walk depth limit. The error is
  * user-facing so `withErrorHandling` can print the guidance without
  * the stack dump that a plain `Error` would trigger.
  */
@@ -184,15 +173,15 @@ export function withErrorHandling<T extends unknown[]>(
   handler: (...args: T) => Promise<void>
 ): (...args: T) => Promise<void> {
   return async (...args: T) => {
-    // Rule 3 of docs/machine-output.md: machine mode engages BEFORE any
-    // output. Anything that throws on the way in — most visibly
-    // `getProjectRoot`'s ConfigNotFoundError — would otherwise render a
+    // Rule 3 of docs/machine-output.md: machine mode engages before any
+    // output. Anything that throws on the way in (most visibly
+    // `getProjectRoot`'s ConfigNotFoundError) would otherwise render a
     // clack-styled block to stdout and leave a `--json` consumer with
     // un-parseable output. Reading the flag from argv is blunt but exact: if
     // the invocation asked for machine output, stdout belongs to the payload
     // from the first byte.
-    const wantsMachineOutput = process.argv.includes('--json') || process.argv.includes('--raw');
-    if (wantsMachineOutput) {
+    const machineOutput = wantsMachineOutput();
+    if (machineOutput) {
       setMachineOutputMode(true);
     }
     try {
@@ -207,9 +196,9 @@ export function withErrorHandling<T extends unknown[]>(
 
       if (error instanceof CancellationError) {
         cancel('Operation cancelled');
-        // 130 (128+SIGINT) is the conventional "user interrupted" code —
-        // scripts/CI can distinguish a deliberate prompt cancellation from
-        // a real failure (which exits 1).
+        // 130 (128+SIGINT) is the conventional "user interrupted" code, so
+        // scripts/CI can distinguish a prompt cancellation from a real
+        // failure (which exits 1).
         throw new CommandError(ExitCode.USER_CANCELLED);
       }
 
@@ -232,9 +221,9 @@ export function withErrorHandling<T extends unknown[]>(
         logError(error.userMessage);
         printCauseChain(error);
         // Not when a payload already owns stdout: `status --json --fail-on`
-        // writes its full document and THEN refuses, and appending an
+        // writes its full document and then refuses, and appending an
         // envelope would make that two JSON documents.
-        if (wantsMachineOutput && !isStdoutSealed()) {
+        if (machineOutput && !isStdoutSealed()) {
           emitMachineError(machineErrorCode(error), error.message, error.code);
         }
         throw new CommandError(error.code);
@@ -248,9 +237,9 @@ export function withErrorHandling<T extends unknown[]>(
       throw new CommandError(ExitCode.GENERAL_ERROR);
     } finally {
       // Central machine-mode and stdout-seal reset. Commands leave both
-      // ENGAGED while an error propagates (a mid-throw restore would route
+      // engaged while an error propagates (a mid-throw restore would route
       // the styled error to stdout, corrupting the `--json`/`--raw` payload
-      // stream or displacing the FIREFORGE-VERDICT line); the reset happens
+      // stream or displacing the FIREFORGE-VERDICT line). The reset happens
       // here, after logError has picked its stream, so no state leaks into a
       // subsequent in-process invocation.
       setMachineOutputMode(false);
@@ -308,9 +297,9 @@ function buildGroupedHelpFormatter(
       return formatHelpLine(term, desc, termWidth, helpWidth);
     });
     // -V/--version is handled in main() before commander parses (a real
-    // root-level `.version()` option would claim `--version` ANYWHERE in
+    // root-level `.version()` option would claim `--version` anywhere in
     // argv under commander's default parsing, breaking subcommand flags
-    // like `source set --version <v>`); advertise it here so root help
+    // like `source set --version <v>`). Advertise it here so root help
     // stays truthful.
     optionLines.unshift(
       formatHelpLine('-V, --version', 'output the version number', termWidth, helpWidth)
@@ -413,6 +402,11 @@ export function createProgram(): Command {
 
   program
     .name('fireforge')
+    // Usage errors must not let commander call process.exit(1) itself: the
+    // documented code is INVALID_ARGUMENT (8) and `--json` owes a refusal
+    // envelope. Installed before any subcommand registers, because
+    // `.command()` copies the override into the child at creation time.
+    .exitOverride()
     .description('A build tool for customizing Firefox')
     .option('-v, --verbose', 'Enable debug output')
     .option(
@@ -425,9 +419,9 @@ export function createProgram(): Command {
         setVerbose(true);
       }
     })
-    // Verification-tree guard: when the cwd resolves into a
-    // tree snapshot, refuse mutating commands before their action runs —
-    // one hook covers every command regardless of how the cwd got there.
+    // Verification-tree guard: when the cwd resolves into a tree snapshot,
+    // refuse mutating commands before their action runs. One hook covers
+    // every command regardless of how the cwd got there.
     .hook('preAction', async (thisCommand, actionCommand) => {
       await runTreeGuardHook(thisCommand.name(), actionCommand);
     });
@@ -446,7 +440,7 @@ export function createProgram(): Command {
   // Uniform `--wait-lock`: scripted sequences blanket-append the flag, and a
   // subcommand that rejects it with "unknown option" kills the sequence with
   // a usage error instead of a lock message. Applied after registration so it
-  // covers every subcommand at every depth; commands that already declare the
+  // covers every subcommand at every depth. Commands that already declare the
   // honoring flag keep it untouched.
   ensureWaitLockOptionEverywhere(program);
 
@@ -457,13 +451,13 @@ export function createProgram(): Command {
  * Main CLI entry point.
  */
 export async function main(): Promise<void> {
-  // Root-level --version/-V handling. Deliberately NOT a commander
-  // `.version()` option: under commander's default (non-positional)
-  // parsing, a root version option claims `--version` anywhere in argv and
-  // hijacks subcommand flags like `source set --version <v>`. The rule
-  // here: when NO subcommand was given, any -V/--version among the root
-  // flags prints the version — so `fireforge --verbose --version` works,
-  // and `fireforge source set --version 152` is untouched.
+  // Root-level --version/-V handling. This is not a commander `.version()`
+  // option, because under commander's default (non-positional) parsing a
+  // root version option claims `--version` anywhere in argv and hijacks
+  // subcommand flags like `source set --version <v>`. The rule here: when no
+  // subcommand was given, any -V/--version among the root flags prints the
+  // version, so `fireforge --verbose --version` works and
+  // `fireforge source set --version 152` is untouched.
   const userArgs = process.argv.slice(2);
   const hasSubcommand = userArgs.some((arg) => !arg.startsWith('-'));
   if (!hasSubcommand && userArgs.some((arg) => arg === '--version' || arg === '-V')) {
@@ -472,5 +466,9 @@ export async function main(): Promise<void> {
   }
 
   const program = createProgram();
-  await program.parseAsync(process.argv);
+  try {
+    await program.parseAsync(process.argv);
+  } catch (error: unknown) {
+    handleParseError(error, wantsMachineOutput());
+  }
 }

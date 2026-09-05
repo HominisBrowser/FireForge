@@ -4,17 +4,17 @@
  *
  * Tries an exact `git apply` first, then retries with git's real
  * drift-tolerance knob: `-C<n>` (reduced context matching). `git apply` has
- * NO `--fuzz` option — that flag belongs to GNU `patch(1)`, and passing it
+ * no `--fuzz` option. That flag belongs to GNU `patch(1)`, and passing it
  * makes git exit 129 with a usage error that an escalation loop will happily
  * swallow, so every "fuzzy" attempt silently fails and patches that would
  * have applied with context drift are reported as hard conflicts. If all
  * context-reduction levels fail, falls through to `git apply --reject` so
  * the user gets `.rej` files for manual resolution.
  *
- * Semantics note: GNU fuzz *fuzzily matches* context; `-C<n>` *ignores*
+ * Semantics note: GNU fuzz *fuzzily matches* context. `-C<n>` *ignores*
  * outer context lines instead. Step k maps to `-C(3-k)` (git's default
  * context width is 3), so the final step `-C0` matches on line positions and
- * -/+ content alone — the rough analogue of GNU `--fuzz=3` on a 3-context
+ * -/+ content alone, the rough analogue of GNU `--fuzz=3` on a 3-context
  * patch.
  */
 
@@ -36,7 +36,7 @@ export interface FuzzyApplyResult {
   rejectFiles?: string[];
 }
 
-/** Git's default diff context width — the ceiling for reduction steps. */
+/** Git's default diff context width, the ceiling for reduction steps. */
 const GIT_DEFAULT_CONTEXT = 3;
 
 // ── Implementation ──
@@ -53,8 +53,8 @@ const GIT_DEFAULT_CONTEXT = 3;
  * @param maxFuzz   - Maximum context-reduction steps to try (default 3,
  *   0 = exact only). Values above 3 are capped: git cannot reduce below
  *   `-C0`.
- * @throws InvalidArgumentError when `maxFuzz` is not a non-negative integer —
- *   a NaN or negative value would silently skip every apply attempt
+ * @throws InvalidArgumentError when `maxFuzz` is not a non-negative integer.
+ *   A NaN or negative value would silently skip every apply attempt
  *   (including the exact-match one) and fall straight through to `--reject`
  */
 export async function applyPatchWithFuzz(
@@ -64,7 +64,7 @@ export async function applyPatchWithFuzz(
 ): Promise<FuzzyApplyResult> {
   if (!Number.isInteger(maxFuzz) || maxFuzz < 0) {
     throw new InvalidArgumentError(
-      `maxFuzz must be a non-negative integer, got ${String(maxFuzz)}.`,
+      `maxFuzz must be a non-negative integer, got ${maxFuzz}.`,
       'maxFuzz'
     );
   }
@@ -74,7 +74,7 @@ export async function applyPatchWithFuzz(
   // Try exact match first, then escalate context reduction.
   const maxSteps = Math.min(maxFuzz, GIT_DEFAULT_CONTEXT);
   for (let step = 0; step <= maxSteps; step++) {
-    const contextArgs = step > 0 ? [`-C${String(GIT_DEFAULT_CONTEXT - step)}`] : [];
+    const contextArgs = step > 0 ? [`-C${GIT_DEFAULT_CONTEXT - step}`] : [];
 
     const check = await exec('git', ['apply', '--check', ...contextArgs, '--', patchPath], {
       cwd: engineDir,
@@ -89,15 +89,15 @@ export async function applyPatchWithFuzz(
       if (apply.exitCode === 0) {
         if (step > 0) {
           verbose(
-            `Patch applied with reduced context (-C${String(GIT_DEFAULT_CONTEXT - step)}): ${patchPath}`
+            `Patch applied with reduced context (-C${GIT_DEFAULT_CONTEXT - step}): ${patchPath}`
           );
         }
         return { success: true, fuzzFactor: step };
       }
 
-      // Unlikely: --check passed but apply failed; fall through to next step
+      // Unlikely: --check passed but apply failed. Fall through to next step
       verbose(
-        `git apply -C${String(GIT_DEFAULT_CONTEXT - step)} --check passed but apply failed: ${apply.stderr.trim()}`
+        `git apply -C${GIT_DEFAULT_CONTEXT - step} --check passed but apply failed: ${apply.stderr.trim()}`
       );
     }
   }
@@ -126,8 +126,8 @@ export async function applyPatchWithFuzz(
  *   Rejected hunk #1.
  *
  * The reject file is `<file>.rej` next to the target. Matching GNU
- * `patch(1)`'s "saving rejects to file X.rej" phrasing instead — which git
- * never prints — leaves `rejectFiles` always empty and the
+ * `patch(1)`'s "saving rejects to file X.rej" phrasing instead, which git
+ * never prints, leaves `rejectFiles` always empty and the
  * conflict-summary ".rej files created" hint never fires.
  */
 function extractRejectFiles(stderr: string): string[] {

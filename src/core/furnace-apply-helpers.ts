@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { createHash } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
@@ -13,6 +12,7 @@ import type {
 } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { copyFile, ensureDir, pathExists, readText, removeFile } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { verbose } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import { buildCustomDryRunActions } from './furnace-apply-dry-run.js';
@@ -24,37 +24,17 @@ import {
 import { normalizeForChecksum } from './furnace-checksum-utils.js';
 import { CUSTOM_ELEMENTS_JS, JAR_MN } from './furnace-constants.js';
 import { deployFileWithFragments, SHARED_FRAGMENTS_DIR } from './furnace-css-fragments.js';
+import { isRegularFile } from './furnace-dir-entry.js';
 import { addCustomElementRegistration, addJarMnEntries } from './furnace-registration.js';
 import { recordCreatedDir, type RollbackJournal, snapshotFile } from './furnace-rollback.js';
 import { checkRegistrationConsistency } from './furnace-validate-registration.js';
 import { isGitRepository } from './git.js';
 import { fileExistsInHead, restoreTrackedPath } from './git-file-ops.js';
 
-interface DirectoryEntry {
-  isFile(): boolean;
-  isSymbolicLink?(): boolean;
-  name: string;
-}
-
-/**
- * True for a plain-file directory entry — symlinks and directories are
- * never copy candidates. Exported for the patch-owned overwrite probe,
- * which walks the same override copy-candidate set as apply.
- */
-export function isRegularFile(entry: DirectoryEntry): boolean {
-  if (!entry.isFile()) return false;
-  if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) return false;
-  return true;
-}
-
-function isChecksummedComponentFile(name: string): boolean {
-  return name.endsWith('.mjs') || name.endsWith('.css') || name.endsWith('.ftl');
-}
-
 /**
  * Filter deciding which files in an override workspace directory are candidates
  * for copying into the engine. Exported so `furnace remove` can invert apply
- * using the exact same file set — the "files to restore" set is defined as the
+ * using the same file set: the "files to restore" set is defined as the
  * inverse of the "files apply would have written" set.
  */
 export function isOverrideCopyCandidate(
@@ -91,14 +71,14 @@ export function getOverrideEngineTargetPath(
  * Behaviour matches the per-file branch of `restoreOverrideEngineFiles` in
  * `furnace remove`: snapshot first, then either `git restore` (if the file
  * exists in HEAD) or hard-delete (if the override introduced the file). The
- * caller MUST guarantee `engineDir` is a git repository — this helper does
+ * caller must guarantee `engineDir` is a git repository. This helper does
  * not re-check, because both `furnace remove` and `furnace apply` already
  * own the precondition check at their entry points and re-checking on every
  * file would balloon git invocations.
  *
  * Returns the action taken so the caller can produce accurate user-facing
  * counts (`restored` vs `removed`). `noop` means the file was neither in HEAD
- * nor on disk, which can happen when the engine was reset out-of-band — the
+ * nor on disk, which can happen when the engine was reset out-of-band. The
  * caller should treat that as a successful no-op rather than an error.
  */
 export async function restoreOverrideFileToBaseline(
@@ -106,7 +86,7 @@ export async function restoreOverrideFileToBaseline(
   enginePath: string,
   journal: RollbackJournal
 ): Promise<'restored' | 'removed' | 'noop'> {
-  // Engine-relative paths are IDENTIFIERS here, not filesystem arguments:
+  // Engine-relative paths are identifiers here, not filesystem arguments:
   // they are handed to git, recorded in furnace state, and compared against
   // the POSIX paths furnace.json and jar.mn already carry. `relative()`
   // returns backslashes on Windows, so without this the same file has two
@@ -116,8 +96,8 @@ export async function restoreOverrideFileToBaseline(
   // Snapshot before mutation so a later rollback can undo both restoration
   // (writes whatever content we removed back) and deletion (recreates the
   // file). Snapshotting a missing path records `{ existed: false }`, which
-  // restoreFile turns into a delete — exactly the inverse of "we just
-  // wrote a file here", which is correct for the noop case too.
+  // restoreFile turns into a delete, the inverse of "we just wrote a file
+  // here", which is correct for the noop case too.
   await snapshotFile(journal, enginePath);
 
   if (await fileExistsInHead(engineDir, relPath)) {
@@ -143,10 +123,14 @@ export async function computeComponentChecksums(
   for (const entry of entries) {
     if (!isRegularFile(entry)) continue;
     if (entry.name === 'override.json') continue;
-    if (!isChecksummedComponentFile(entry.name)) continue;
+    // The three extensions a component can deploy. Anything else in the
+    // workspace directory is not part of the component's checksum identity.
+    const { name: entryName } = entry;
+    if (!entryName.endsWith('.mjs') && !entryName.endsWith('.css') && !entryName.endsWith('.ftl'))
+      continue;
 
     const content = await readText(join(componentDir, entry.name));
-    const hash = createHash('sha256').update(normalizeForChecksum(content)).digest('hex');
+    const hash = sha256Hex(normalizeForChecksum(content));
     checksums[entry.name] = hash;
   }
 
@@ -156,14 +140,14 @@ export async function computeComponentChecksums(
 /**
  * Removes engine copies of files that the developer has deleted from a custom
  * component's workspace since the last apply. `.ftl` files live under the
- * shared Fluent tree (`engine/${FTL_DIR}`); everything else lives under
+ * shared Fluent tree (`engine/${FTL_DIR}`). Everything else lives under
  * `engine/${config.targetPath}`. Snapshots each removal into the journal so a
  * mid-apply failure can roll the engine back to its pre-undeploy state. Files
  * that are already missing from the engine are silently no-op (the engine
- * may have been reset out-of-band — refusing here would surface a confusing
- * error in a recovery path).
+ * may have been reset out-of-band, and refusing here would surface a
+ * confusing error in a recovery path).
  *
- * Does **not** touch jar.mn or customElements.js: registration churn is the
+ * Does not touch jar.mn or customElements.js: registration churn is the
  * caller's responsibility, since it must coordinate with the new file list
  * computed by the regular apply step that follows.
  */
@@ -190,7 +174,7 @@ export async function undeployCustomFiles(
     }
 
     // When an `.ftl` is deleted from the workspace the corresponding locale
-    // jar.mn entry must also be dropped — otherwise the chrome URI points at
+    // jar.mn entry must also be dropped. Otherwise the chrome URI points at
     // a missing file and runtime Fluent resolution breaks silently.
     // `removeCustomFtlJarMnEntry` early-returns for `sharedFtl` components
     // (the shared bundle is owned elsewhere).
@@ -206,9 +190,9 @@ export async function undeployCustomFiles(
  * HEAD if it was a Firefox baseline file or hard-deletes it if the override
  * had introduced it.
  *
- * Requires `engineDir` to be a git repository — overrides cannot be inverted
+ * Requires `engineDir` to be a git repository: overrides cannot be inverted
  * without git HEAD as the source of truth. The caller is expected to have
- * already validated this precondition for the apply path; we re-check here
+ * already validated this precondition for the apply path. We re-check here
  * so unit tests that exercise this helper directly cannot accidentally
  * silent-fail on a non-git fixture.
  */
@@ -235,11 +219,11 @@ export async function undeployOverrideFiles(
     );
   }
 
-  // Note: we deliberately do not re-filter `deletedFiles` through
+  // Note: we do not re-filter `deletedFiles` through
   // `isOverrideCopyCandidate(fileName, config.type)`. A file recorded in
   // `previous` was already a valid copy candidate when it was deployed, and
   // re-filtering would block cleanup if the override type later flipped
-  // from `full` to `css-only` — exactly the case we need cleanup for.
+  // from `full` to `css-only`, which is the case we need cleanup for.
   const restored: string[] = [];
   const removed: string[] = [];
   for (const fileName of deletedFiles) {
@@ -315,12 +299,12 @@ export async function hasOverrideEngineDrift(
 
     // Fast path: compare engine content hash against cached value from last apply
     if (cachedEngineChecksums) {
-      const engineHash = createHash('sha256').update(engineContent).digest('hex');
+      const engineHash = sha256Hex(engineContent);
       const cachedHash = cachedEngineChecksums[entry.name];
       if (cachedHash && engineHash !== cachedHash) {
         return true;
       }
-      if (cachedHash) continue; // Hash match — skip full source comparison
+      if (cachedHash) continue; // Hash match, skip full source comparison
     }
 
     // Slow path: byte-compare engine content against workspace source
@@ -357,7 +341,7 @@ export async function hasCustomEngineDrift(
   // Registration drift: only check jar.mn entries for the file types that
   // actually exist in source. jarMn{Mjs,Css} are substring checks, so a
   // component with only .mjs (no .css) should not be flagged when jarMnCss
-  // is false — that is the expected post-apply state, not drift.
+  // is false. That is the expected post-apply state, not drift.
   const entries = await readdir(componentDir, { withFileTypes: true, encoding: 'utf8' });
   let hasMjs = false;
   let hasCss = false;
@@ -438,7 +422,7 @@ export async function applyCustomComponent(
     (entry) => isRegularFile(entry) && (entry.name.endsWith('.mjs') || entry.name.endsWith('.css'))
   );
 
-  // Snapshot phase (serial — journal is not concurrent-safe for the same path)
+  // Snapshot phase (serial: journal is not concurrent-safe for the same path)
   for (const entry of filesToCopy) {
     const dest = join(targetDir, entry.name);
     if (rollbackJournal) {
@@ -446,9 +430,9 @@ export async function applyCustomComponent(
     }
   }
 
-  // Copy phase (parallel — independent file writes to different paths).
+  // Copy phase (parallel: independent file writes to different paths).
   // CSS files carrying @fireforge-include directives are written as their
-  // fragment-expanded form; the workspace source keeps only the directive,
+  // fragment-expanded form. The workspace source keeps only the directive,
   // so shared CSS stays single-sourced.
   const sharedDir = join(componentDir, '..', '..', SHARED_FRAGMENTS_DIR);
   await Promise.all(

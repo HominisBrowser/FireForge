@@ -301,7 +301,7 @@ function hasCustomElementDefineCall(mjsContent: string): boolean {
 /**
  * Detects whether the module's `customElements.define(...)` call includes a
  * literal `extends:` option (third argument). That shape is the marker for
- * a customized built-in element — the class extends a specific
+ * a customized built-in element: the class extends a specific
  * `HTMLxxxElement` rather than the autonomous `MozLitElement` path.
  *
  * Firefox's own widgets use this pattern for toolkit anchors (e.g.
@@ -325,24 +325,24 @@ function hasCustomElementExtendsOption(mjsContent: string): boolean {
  *
  * Two shapes are accepted:
  *
- * 1. Autonomous custom element: `class X extends MozLitElement` — the
+ * 1. Autonomous custom element: `class X extends MozLitElement`, the
  *    default FireForge pattern for fork-authored components and most
  *    toolkit widgets.
  * 2. Customized built-in: `class X extends HTML<Something>Element` paired
  *    with a `customElements.define(..., ..., { extends: "<tagname>" })`
  *    call. Firefox's `moz-support-link`, `moz-button-group` tabbing
- *    widgets, and a handful of other toolkit components use this form;
+ *    widgets, and a handful of other toolkit components use this form.
  *    `furnace override` of those components writes the original source
  *    verbatim and the validator must not reject them.
  *
- * A class that extends a plain `HTMLElement` WITHOUT a `extends:` option
- * is still rejected — that's the legitimate `not-moz-lit-element` case
+ * A class that extends a plain `HTMLElement` without an `extends:` option
+ * is still rejected. That is the legitimate `not-moz-lit-element` case
  * the rule was originally designed to catch.
  */
 function classExtendsMozLitElement(mjsContent: string): boolean {
   const hasClassDeclaration = /class\s+\w+\s+extends\s+/.test(mjsContent);
   if (!hasClassDeclaration) {
-    // No class declaration — skip this check since the component may use a
+    // No class declaration, so skip this check since the component may use a
     // different pattern (e.g. function-based). Other validators will catch
     // structural issues.
     return true;
@@ -352,8 +352,8 @@ function classExtendsMozLitElement(mjsContent: string): boolean {
     return true;
   }
 
-  // Customized built-in: extend a specific HTMLxxxElement AND the define
-  // call carries an `extends:` option. Both halves are required — a class
+  // Customized built-in: extend a specific HTMLxxxElement and the define
+  // call carries an `extends:` option. Both halves are required: a class
   // that extends `HTMLAnchorElement` without the matching define option is
   // almost certainly an author mistake, and a define call with `extends:`
   // without a matching class is unreachable.
@@ -381,7 +381,7 @@ function collectCssVariableReferences(cssContent: string): string[] {
 }
 
 /**
- * Collects CSS custom property *declarations* — names appearing on the
+ * Collects CSS custom property *declarations*, i.e. names appearing on the
  * left-hand side of a `--name:` declaration. Used to auto-exempt
  * component-local runtime variables from the token-prefix check: if the
  * component both declares and consumes a variable in its own CSS file, it

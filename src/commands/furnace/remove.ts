@@ -26,6 +26,7 @@ import { deregisterTestManifest } from '../../core/moz-manifest-register.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceRemoveOptions } from '../../types/commands/index.js';
 import type { FurnaceState } from '../../types/furnace.js';
+import type { FurnaceConfig } from '../../types/furnace.js';
 import type { ComponentType } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists, readText, removeDir, writeText } from '../../utils/fs.js';
@@ -35,6 +36,7 @@ import {
   performOverrideRemovalMutations,
 } from './remove-mutations.js';
 import { dropChecksumsByPrefix } from './remove-state.js';
+import { browserTestFileName } from './test-file-name.js';
 
 /**
  * Removes an entire TOML section (header + body lines) for a given test file.
@@ -122,12 +124,7 @@ async function cleanupCustomTestFiles(
 
   const paths = getProjectPaths(projectRoot);
   const binaryName = forgeConfig.binaryName;
-  const strippedName = name.startsWith('moz-') ? name.slice(4) : name;
-  const withoutBinaryPrefix = strippedName.startsWith(binaryName + '-')
-    ? strippedName.slice(binaryName.length + 1)
-    : strippedName;
-  const underscored = withoutBinaryPrefix.replace(/-/g, '_');
-  const testFileName = `browser_${binaryName}_${underscored}.js`;
+  const testFileName = browserTestFileName(name, binaryName);
   const testDir = join(paths.engine, 'browser/base/content/test', binaryName);
 
   if (!(await pathExists(testDir))) return { partialFailures };
@@ -259,7 +256,7 @@ async function cleanupCustomMochikitTestFiles(
  * leaves an operator who ran `furnace create --with-tests --xpcshell`
  * followed by `furnace remove` with orphan `xpcshell.toml` +
  * `test_<name>_packaged.js` files still referencing the removed component.
- * This pass mirrors the mochitest one — snapshot before removal,
+ * This pass mirrors the mochitest one: snapshot before removal,
  * warn-and-continue semantics, explicit summary on partial failures.
  */
 async function cleanupCustomXpcshellTestFiles(
@@ -325,7 +322,7 @@ async function loadFreshRemoveTarget(
   name: string,
   engineDir: string
 ): Promise<{
-  config: Awaited<ReturnType<typeof loadFurnaceConfig>>;
+  config: FurnaceConfig;
   ftlDir: string;
   state: FurnaceState;
   type: ComponentType;
@@ -393,7 +390,7 @@ async function confirmFurnaceRemove(
 
 /**
  * Enforces the engine-as-git precondition for both override and custom
- * removals. Runs BEFORE the lock is acquired or a journal is registered so
+ * removals. Runs before the lock is acquired or a journal is registered so
  * the failure path does not involve any rollback infrastructure.
  */
 async function requireGitEngineForRemove(

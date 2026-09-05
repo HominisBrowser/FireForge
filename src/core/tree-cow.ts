@@ -2,10 +2,10 @@
 /**
  * Copy-on-write cloning for `fireforge tree`.
  *
- * Capability is probed BY DOING — a tiny `cp -c` (APFS clonefile) or
- * `cp --reflink=always` (btrfs/XFS) in the actual destination directory —
- * so the verdict is truthful for the volume the trees will live on. A
- * filesystem without CoW support REFUSES honestly; `--force-copy` opts
+ * Capability is probed by doing it: a tiny `cp -c` (APFS clonefile) or
+ * `cp --reflink=always` (btrfs/XFS) runs in the actual destination
+ * directory, so the verdict is truthful for the volume the trees will live
+ * on. A filesystem without CoW support refuses honestly. `--force-copy` opts
  * into a full physical copy but is never implied (a Firefox tree can be
  * tens of gigabytes).
  *
@@ -19,7 +19,7 @@ import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
 
-/** Runs a clone command; throws on non-zero exit. */
+/** Runs a clone command. Throws on non-zero exit. */
 export type CloneExecutor = (command: string, args: string[]) => Promise<void>;
 
 /** How this host can materialise a tree. */
@@ -29,13 +29,13 @@ const defaultExecutor: CloneExecutor = async (command, args) => {
   const result = await exec(command, args);
   if (result.exitCode !== 0) {
     throw new Error(
-      `${command} ${args.join(' ')} failed (exit ${String(result.exitCode)}): ${result.stderr}`
+      `${command} ${args.join(' ')} failed (exit ${result.exitCode}): ${result.stderr}`
     );
   }
 };
 
 /** Per-platform `cp` argv prefix for a CoW copy of one entry. */
-export function cowCopyArgs(capability: Exclude<CowCapability, 'none'>): string[] {
+function cowCopyArgs(capability: Exclude<CowCapability, 'none'>): string[] {
   return capability === 'clonefile' ? ['-c', '-R', '-p'] : ['--reflink=always', '-a'];
 }
 
@@ -73,9 +73,9 @@ export async function detectCowSupport(
 
 /**
  * Copies one directory entry (file or directory, recursively) from
- * `sourcePath` to `destinationPath` using the given capability —
+ * `sourcePath` to `destinationPath` using the given capability:
  * clonefile/reflink when available, a plain physical copy under
- * 'none' (the `--force-copy` path; the CALLER gates on the flag).
+ * 'none' (the `--force-copy` path, and the caller gates on the flag).
  */
 export async function cloneEntry(
   capability: CowCapability,

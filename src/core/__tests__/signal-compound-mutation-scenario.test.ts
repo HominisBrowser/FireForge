@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Scenario tests for a signal landing during a COMPOUND mutation. The unit
+ * Scenario tests for a signal landing during a compound mutation. The unit
  * suites (`furnace-operation.test.ts`, `signal-critical.test.ts`,
- * `file-lock.test.ts`) pin each lifecycle module alone; these tests pin the
- * cross-module behavior as `bin/fireforge.ts` actually composes it —
+ * `file-lock.test.ts`) pin each lifecycle module alone. These tests pin the
+ * cross-module behavior as `bin/fireforge.ts` actually composes it:
  * `Promise.allSettled` of furnace rollback + critical-section drain, then
  * furnace lock force-release, then (simulated) `process.exit`. See
  * docs/lifecycle-invariants.md for the invariants under test:
  *
  *  1. exit is held until an in-flight "engine apply + state persist" pair
- *     finishes, so bookkeeping can never be left stale relative to the engine;
- *  2. the hold is bounded — a stuck section cannot postpone exit forever;
+ *     finishes, so bookkeeping can never be left stale relative to the
+ *     engine.
+ *  2. the hold is bounded, so a stuck section cannot postpone exit forever.
  *  3. furnace rollback and the critical-section drain compose: the engine
  *     file is restored, the state write still completes, and the furnace
  *     lock is force-released before exit.
@@ -93,8 +94,8 @@ describe('signal during a compound mutation (bin-handler composition)', () => {
     const engineFile = join(root, 'engine-file.txt');
     const sessionFile = join(root, 'session.json');
 
-    // Compound mutation: engine write, then — after the gate, where the
-    // simulated signal lands — the bookkeeping write that must not be lost.
+    // Compound mutation: engine write, then (after the gate, where the
+    // simulated signal lands) the bookkeeping write that must not be lost.
     const gate = deferred();
     const section = runInSignalCriticalSection('rebase apply + session persist', async () => {
       await writeFile(engineFile, 'patched');
@@ -141,7 +142,7 @@ describe('signal during a compound mutation (bin-handler composition)', () => {
     await writeFile(engineFile, 'pristine');
 
     // A furnace mutation mid-flight: journal captured, engine mutated,
-    // body held open — the shape at the moment a signal arrives.
+    // body held open: the shape at the moment a signal arrives.
     const bodyGate = deferred();
     const bodyReady = deferred();
     const runPromise = runFurnaceMutation(root, 'apply-rollback', async (ctx) => {

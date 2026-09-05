@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { FireForgeError } from './base.js';
+import { FireForgeError, remedies } from './base.js';
 import { ExitCode } from './codes.js';
 
 /**
@@ -17,35 +17,32 @@ export class BuildError extends FireForgeError {
   }
 
   override get userMessage(): string {
-    let msg = `Build Error: ${this.message}`;
-
-    if (this.command) {
-      msg += `\n\nCommand: ${this.command}`;
-    }
-
-    msg += '\n\nTo fix this:\n';
-    msg += '  1. Check the build output above for specific errors\n';
-    msg += '  2. Ensure all dependencies are installed with "fireforge bootstrap"\n';
-    msg += '  3. Try a clean build by deleting obj-* directories';
-
-    return msg;
+    return (
+      `Build Error: ${this.message}` +
+      (this.command ? `\n\nCommand: ${this.command}` : '') +
+      remedies([
+        'Check the build output above for specific errors',
+        'Ensure all dependencies are installed with "fireforge bootstrap"',
+        'Try a clean build by deleting obj-* directories',
+      ])
+    );
   }
 }
 
 /**
- * A test SUITE went red — assertions failed, or sharded runs did not all
- * pass. Distinct from its {@link BuildError} parent only in what it TELLS
- * the operator, deliberately not in its exit code: `docs/exit-codes.md`
+ * A test suite went red: assertions failed, or sharded runs did not all
+ * pass. Distinct from its {@link BuildError} parent only in what it tells
+ * the operator, and not in its exit code: `docs/exit-codes.md`
  * documents 5 as "a suite that FAILED", and consumers key CI on it.
  *
- * The parent's remedies are all build remedies — "check the build output",
- * "fireforge bootstrap", "delete obj-* directories" — and none of them apply
+ * The parent's remedies are all build remedies ("check the build output",
+ * "fireforge bootstrap", "delete obj-* directories") and none of them apply
  * to a failing assertion. Worse, the first points at the wrong half of the
  * log, which is exactly the half a `tail` keeps. Ground truth for a test red
  * is the harness's own output, so the remedies here name the failing tests,
  * the `FIREFORGE-VERDICT:` line, and the run log that survives a pipe.
  *
- * Note that `machineErrorCode` derives the `--json` error code from the class
+ * `machineErrorCode` derives the `--json` error code from the class
  * name, so this reports as `test-failure` rather than `build`.
  */
 export class TestFailureError extends BuildError {
@@ -61,27 +58,20 @@ export class TestFailureError extends BuildError {
   }
 
   override get userMessage(): string {
-    let msg = `Test Failure: ${this.message}`;
-
-    if (this.command) {
-      msg += `\n\nCommand: ${this.command}`;
-    }
-    if (this.failureBlocks) {
-      msg += `\n\n${this.failureBlocks}`;
-    }
-
-    msg += '\n\nTo fix this:\n';
-    msg += this.failureBlocks
-      ? '  1. Fix the failing assertions listed above, then re-run just those test paths\n'
-      : '  1. Find the TEST-UNEXPECTED-FAIL lines in the output above — they name what broke\n';
-    msg +=
-      '  2. Read the "FIREFORGE-VERDICT:" line for the run\'s ground truth (checks, unexpected)\n';
-    msg +=
-      this.logPath !== undefined
-        ? `  3. The complete raw output is at ${this.logPath} — it survives a piped/tailed terminal`
-        : '  3. Re-run without piping the output, so the failure lines are not cut off by "tail"';
-
-    return msg;
+    return (
+      `Test Failure: ${this.message}` +
+      (this.command ? `\n\nCommand: ${this.command}` : '') +
+      (this.failureBlocks ? `\n\n${this.failureBlocks}` : '') +
+      remedies([
+        this.failureBlocks
+          ? 'Fix the failing assertions listed above, then re-run just those test paths'
+          : 'Find the TEST-UNEXPECTED-FAIL lines in the output above — they name what broke',
+        'Read the "FIREFORGE-VERDICT:" line for the run\'s ground truth (checks, unexpected)',
+        this.logPath !== undefined
+          ? `The complete raw output is at ${this.logPath} — it survives a piped/tailed terminal`
+          : 'Re-run without piping the output, so the failure lines are not cut off by "tail"',
+      ])
+    );
   }
 }
 

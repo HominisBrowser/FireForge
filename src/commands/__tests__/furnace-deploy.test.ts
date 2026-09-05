@@ -76,7 +76,7 @@ vi.mock('../../core/furnace-rollback.js', () => ({
 
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
+  // the pending-repair marker (the behaviour these suites assert), so it
   // comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
@@ -370,7 +370,7 @@ describe('furnaceDeployCommand', () => {
       },
     });
     // Rollback itself now happens inside applyAllComponents (covered by
-    // furnace-apply tests); deploy's contract is to refuse persisting and
+    // furnace-apply tests). Deploy's contract is to refuse persisting and
     // skip validation when the result carries step errors.
     vi.mocked(applyAllComponents).mockResolvedValue({
       applied: [
@@ -767,7 +767,7 @@ describe('furnaceDeployCommand', () => {
     // when apply succeeds for the requested component, persistence runs
     // under that exact name. The negative case (applied[0] for a *different*
     // component) cannot be triggered from outside the deploy module without
-    // monkey-patching its internal accumulator — it is guarded by an
+    // monkey-patching its internal accumulator. It is guarded by an
     // assert-style throw in getPersistableAppliedEntry that future refactors
     // must not strip.
     vi.mocked(loadFurnaceConfig).mockResolvedValue({
@@ -784,7 +784,7 @@ describe('furnaceDeployCommand', () => {
       },
       custom: {},
     });
-    // Pin Firefox version so baseVersion drift does not fire — earlier
+    // Pin Firefox version so baseVersion drift does not fire. Earlier
     // tests in this file leave loadConfig set to 147.0, which would trip
     // the override-baseVersion preflight.
     vi.mocked(loadConfig).mockResolvedValue({

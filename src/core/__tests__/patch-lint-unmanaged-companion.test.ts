@@ -113,7 +113,7 @@ describe('explainUndefinedIdentifiers', () => {
 
   // One unresolved name means the file may genuinely be missing a helper.
   // Claiming the companion explains everything would hide exactly the bug
-  // the shim remedy hides, which is the point of this whole detection.
+  // the shim remedy hides, which is what this detection exists to prevent.
   it('refuses when any name is not declared in the companion', () => {
     const found = explainUndefinedIdentifiers(
       ["Line 3: Cannot find name 'openSettings'.", "Line 9: Cannot find name 'typoHelper'."],

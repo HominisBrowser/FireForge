@@ -28,15 +28,15 @@ import {
  *
  * xpcshell is the appropriate harness for storage-layer code on forks
  * without a `tabbrowser` (no `openLinkIn` → `URILoadingHelper`). Browser
- * chrome mochitests require tabbrowser; xpcshell does not, so storage,
+ * chrome mochitests require tabbrowser, but xpcshell does not, so storage,
  * observers, and ESM-loading logic can be covered headless.
  *
  * Writes `test_<name>_packaged.js` and an `xpcshell.toml` manifest
  * into `engine/browser/base/content/test/<binary-name>-xpcshell/
- * <component-name>/`. moz.build registration is intentionally left to the
- * operator — wiring an `XPCSHELL_TESTS_MANIFESTS` entry requires a
- * deliberate choice about which moz.build should own it, and an
- * auto-insertion that guessed wrong would be worse than a note.
+ * <component-name>/`. moz.build registration is left to the operator:
+ * wiring an `XPCSHELL_TESTS_MANIFESTS` entry requires a choice about which
+ * moz.build should own it, and an auto-insertion that guessed wrong would
+ * be worse than a note.
  */
 export async function scaffoldXpcshellTestFiles(
   componentName: string,
@@ -49,7 +49,7 @@ export async function scaffoldXpcshellTestFiles(
   const parentRelDir = xpcshellTestParentDir(forgeConfig.binaryName);
   const parentDirName =
     parentRelDir.split('/').slice(-1)[0] ?? `${forgeConfig.binaryName}-xpcshell`;
-  // --test-dir names the FINAL directory (no per-component segment is
+  // --test-dir names the final directory (no per-component segment is
   // appended) so the operator controls the exact scaffold target.
   const testDirRel = resolveXpcshellTestDir(forgeConfig.binaryName, componentName, testDirOverride);
   const testDir = join(paths.engine, testDirRel);
@@ -74,8 +74,8 @@ export async function scaffoldXpcshellTestFiles(
     testFiles.push(testFileName);
   }
 
-  // xpcshell.toml — append the test entry to an existing manifest instead
-  // of scaffolding over it; write a fresh one only when absent.
+  // xpcshell.toml: append the test entry to an existing manifest instead
+  // of scaffolding over it. Write a fresh one only when absent.
   const manifestPath = join(testDir, 'xpcshell.toml');
   if (await pathExists(manifestPath)) {
     const existing = await readText(manifestPath);

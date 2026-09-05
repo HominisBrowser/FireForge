@@ -3,19 +3,19 @@
  * Per-run output logs under `.fireforge/logs/`.
  *
  * A run's diagnosis used to exist in exactly one place: the terminal. Piping
- * through `tail`/`grep` — the ergonomic default when output is long — keeps
- * the summary and discards the `TEST-UNEXPECTED-FAIL` lines that say WHAT
+ * through `tail`/`grep`, the ergonomic default when output is long, keeps
+ * the summary and discards the `TEST-UNEXPECTED-FAIL` lines that say what
  * broke, and it launders the exit code besides. The operator rule ("never
  * pipe a run") was written down three times downstream and broken after each
- * writing, which is the tell that it is not an operator problem: the tool is
- * the only party that can make the log survive the mistake.
+ * writing, so this is not an operator problem: the tool is the only party
+ * that can make the log survive the mistake.
  *
  * So `test` and `build` write their own complete copy as they stream, and the
  * `FIREFORGE-VERDICT:` line names the path. A piped, truncated, or
  * backgrounded run then still leaves a re-readable artifact.
  *
- * Everything here is BEST-EFFORT by construction. A log is a diagnostic aid;
- * a run must never fail because one could not be opened, written, or pruned.
+ * Everything here is best-effort. A log is a diagnostic aid, and a run must
+ * never fail because one could not be opened, written, or pruned.
  * Every entry point swallows its errors and degrades to "no log", which is
  * exactly the behaviour that existed before this module.
  */
@@ -25,8 +25,11 @@ import { mkdir, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 
+import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { FIREFORGE_DIR } from './config-paths.js';
+import { redactRunLogText } from './run-log-redact.js';
+import { fileSafeTimestamp } from './state-file.js';
 
 /** Directory under `.fireforge/` holding run logs. */
 const LOGS_DIRNAME = 'logs';
@@ -38,11 +41,41 @@ const LOGS_DIRNAME = 'logs';
  */
 const RETAINED_LOGS_PER_COMMAND = 20;
 
+/**
+ * Cap on the partial line held back between writes. A child emitting one
+ * enormous unterminated line (a minified dump on stderr) would otherwise
+ * grow the buffer without bound (and, because each write rebuilds
+ * `pending + chunk`, quadratically), with nothing reaching disk until
+ * close. Past the cap the tail is redacted and written as-is. A `KEY=value`
+ * split exactly at the cap boundary is the accepted cost. Same figure as
+ * `line-dispatch.ts` uses for the stream matchers.
+ */
+const MAX_PENDING_LINE_SIZE = 1024 * 1024;
+
+/**
+ * Index just past the last line terminator in `text`, or -1 when there is
+ * none. `\n` and lone `\r` both terminate: progress-bar output (mach,
+ * cargo) repaints a line with carriage returns and may never send a
+ * newline, which would otherwise pin the whole run in `pending`. A single
+ * trailing `\r` is not a terminator yet: it may be the first half of a
+ * `\r\n` split across chunks.
+ */
+function lastLineEnd(text: string): number {
+  const lastNewline = text.lastIndexOf('\n');
+  const lastReturn = text.lastIndexOf('\r');
+  const cut = lastReturn > lastNewline && lastReturn < text.length - 1 ? lastReturn : lastNewline;
+  return cut === -1 ? -1 : cut + 1;
+}
+
 /** A run log sink. `write` never throws. */
 export interface RunLog {
   /** Absolute path to the log file. */
   path: string;
-  /** Appends raw output. Silently drops on any stream error. */
+  /**
+   * Appends output. Complete lines pass through {@link redactRunLogText}
+   * before hitting disk. A trailing partial line is held until its newline
+   * arrives (or until `close`). Silently drops on any stream error.
+   */
   write: (chunk: string) => void;
   /** Flushes and closes. Resolves even when the stream already failed. */
   close: () => Promise<void>;
@@ -54,20 +87,9 @@ export function getRunLogDir(projectRoot: string): string {
 }
 
 /**
- * A filesystem-safe, sortable timestamp: `2026-08-28T14-32-05-123Z`.
- *
- * Colons are not portable in filenames (Windows rejects them outright), so
- * the ISO form is punctuated with dashes only. Lexical order still equals
- * chronological order, which is what the pruning below relies on.
- */
-function logTimestamp(now: Date): string {
-  return now.toISOString().replace(/[:.]/g, '-');
-}
-
-/**
  * Makes room for one new log by deleting the oldest, so that at most
  * {@link RETAINED_LOGS_PER_COMMAND} logs for `command` exist once the new
- * one is created. Pruning runs BEFORE the file is opened — hence the
+ * one is created. Pruning runs before the file is opened, hence the
  * `- 1`, without which the directory settles at N + 1.
  *
  * Best-effort: a failure here must not stop the run that is about to be
@@ -92,7 +114,7 @@ async function pruneRunLogs(dir: string, command: string): Promise<void> {
       })
     );
   } catch (error: unknown) {
-    verbose(`Run-log pruning skipped: ${String(error)}`);
+    verbose(`Run-log pruning skipped: ${toError(error).message}`);
   }
 }
 
@@ -112,13 +134,13 @@ export async function openRunLog(
 ): Promise<RunLog | undefined> {
   const dir = getRunLogDir(projectRoot);
   let stream: WriteStream;
-  const path = join(dir, `${command}-${logTimestamp(now)}.log`);
+  const path = join(dir, `${command}-${fileSafeTimestamp(now)}.log`);
   try {
     await mkdir(dir, { recursive: true });
     await pruneRunLogs(dir, command);
     stream = createWriteStream(path, { flags: 'a' });
   } catch (error: unknown) {
-    verbose(`Run log unavailable (${path}): ${String(error)}`);
+    verbose(`Run log unavailable (${path}): ${toError(error).message}`);
     return undefined;
   }
 
@@ -131,17 +153,41 @@ export async function openRunLog(
     verbose(`Run log write failed (${path}): ${error.message}`);
   });
 
+  // Redaction is per LINE, and chunks arrive at arbitrary byte boundaries,
+  // so a `KEY=value` split across two chunks would slip past a per-chunk
+  // pass. Hold the trailing partial line until its terminator arrives (or
+  // it outgrows MAX_PENDING_LINE_SIZE, or the log is closed).
+  let pending = '';
+  const emit = (text: string): void => {
+    if (broken || text.length === 0) return;
+    try {
+      stream.write(redactRunLogText(text));
+    } catch {
+      broken = true;
+    }
+  };
+
   return {
     path,
     write: (chunk: string): void => {
       if (broken) return;
-      try {
-        stream.write(chunk);
-      } catch {
-        broken = true;
+      const buffered = pending + chunk;
+      const lineEnd = lastLineEnd(buffered);
+      if (lineEnd === -1) {
+        pending = buffered;
+      } else {
+        pending = buffered.slice(lineEnd);
+        emit(buffered.slice(0, lineEnd));
+      }
+      if (pending.length > MAX_PENDING_LINE_SIZE) {
+        emit(pending);
+        pending = '';
       }
     },
     close: async (): Promise<void> => {
+      const tail = pending;
+      pending = '';
+      emit(tail);
       await new Promise<void>((resolve) => {
         stream.end(() => {
           resolve();
@@ -180,7 +226,14 @@ export function writeToActiveRunLog(chunk: string): void {
   activeRunLog?.write(chunk);
 }
 
-/** Closes and clears the active run log. Resolves even when none is open. */
+/**
+ * Closes and clears the active run log. Resolves even when none is open.
+ *
+ * Also called from the entry point's SIGINT/SIGTERM path: the held partial
+ * line and anything queued in the stream would otherwise be lost across
+ * `process.exit`, and a killed run's last line is usually the one that
+ * says what it was doing.
+ */
 export async function closeActiveRunLog(): Promise<void> {
   const log = activeRunLog;
   activeRunLog = undefined;
@@ -188,10 +241,10 @@ export async function closeActiveRunLog(): Promise<void> {
 }
 
 /**
- * A writable that forwards to `base` AND to the active run log.
+ * A writable that forwards to `base` and to the active run log.
  *
  * Used by the stdio-inheriting capture path, whose collectors take a mirror
- * stream rather than per-chunk callbacks — so the tee reuses the mirror the
+ * stream rather than per-chunk callbacks, so the tee reuses the mirror the
  * exec layer already supports instead of growing a second hook.
  *
  * @param base - The stream to forward to (normally `process.stdout`)

@@ -247,7 +247,7 @@ describe('markdown-table', () => {
     });
 
     it('preserves existing merge-overflow behavior for unescaped malformed rows', () => {
-      // Legacy tables written before escape support — an unescaped `|` in
+      // Legacy tables written before escape support: an unescaped `|` in
       // a two-column table still parses via the overflow-merge path.
       const lines = ['| A | B |', '|---|---|', '| one | two | three |'];
       const table = findNextTable(lines, 0);

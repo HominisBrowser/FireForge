@@ -13,7 +13,7 @@ const parserFallbackMock = vi.hoisted(() =>
 vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../parser-fallback.js', async (importOriginal) => ({
-  // Pure logic with no side effects; only `withParserFallback` needs
+  // Pure logic with no side effects. Only `withParserFallback` needs
   // controlling here.
   ...(await importOriginal<typeof import('../parser-fallback.js')>()),
   withParserFallback: parserFallbackMock,
@@ -62,7 +62,7 @@ describe('wire-init', () => {
 
   it('uses the caller-supplied marker so patch-lint recognises wire-generated edits', () => {
     // A fork whose `binaryName` is `freshforge` expects the marker to
-    // be `FRESHFORGE:`; the emitted comment must include the
+    // be `FRESHFORGE:`, and the emitted comment must include the
     // project-specific token so `lintModificationComments` does not
     // trip `missing-modification-comment` on the wire-generated block.
     const updated = addInitAST(
@@ -295,10 +295,10 @@ const gBrowserInit = {
   });
 
   it('coerces a bare property chain into a function call (AST path)', () => {
-    // Passing `X.init` (no parens) emits `X.init;` — a plain property
-    // reference, not a function call. The validator accepts both shapes but
-    // the template interpolates the expression verbatim, so `coerceToCall`
-    // inside `addInitAST` appends `()` when missing.
+    // Passing `X.init` (no parens) emits `X.init;`, a plain property
+    // reference rather than a function call. The validator accepts both
+    // shapes but the template interpolates the expression verbatim, so
+    // `coerceToCall` inside `addInitAST` appends `()` when missing.
     const updated = addInitAST(BASE_BROWSER_INIT, 'EvalStartup.init');
     expect(updated).toContain('EvalStartup.init();');
     expect(updated).not.toMatch(/EvalStartup\.init;[^(]/);
@@ -319,7 +319,7 @@ const gBrowserInit = {
   it('idempotency check recognises a previously coerced call when re-running with the bare form', async () => {
     // Simulate: the first `wire --init EvalStartup.init` coerced and
     // persisted `EvalStartup.init();`. Re-running with the same bare form
-    // should be a no-op — the idempotency regex now matches the coerced
+    // should be a no-op. The idempotency regex now matches the coerced
     // shape stored in the file.
     vi.mocked(readText).mockResolvedValue(`${BASE_BROWSER_INIT}\n    EvalStartup.init();\n`);
 

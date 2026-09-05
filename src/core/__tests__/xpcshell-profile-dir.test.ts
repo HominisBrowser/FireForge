@@ -78,16 +78,17 @@ describe('withXpcshellProfileDir', () => {
     });
   });
 
-  // POSIX mode bits are the refusal mechanism here; NTFS ignores
-  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  // POSIX mode bits are the refusal mechanism here. NTFS ignores
+  // `chmod`, so this cannot be ported to Windows, only skipped honestly.
   it.skipIf(process.platform === 'win32')(
     'warns instead of throwing when cleanup fails',
     async () => {
       delete process.env['XPCSHELL_TEST_PROFILE_DIR'];
-      // Force a REAL cleanup failure: a child file inside a directory whose
+      // Force a real cleanup failure: a child file inside a directory whose
       // permission bits forbid unlinking (no write/execute on the dir).
       const { chmod, writeFile } = await import('node:fs/promises');
-      const { join } = await import('node:path');
+      const pathMod = await import('node:path');
+      const join = (...parts: string[]): string => pathMod.join(...parts);
       let seenDir = '';
       await expect(
         withXpcshellProfileDir(undefined, async (env) => {

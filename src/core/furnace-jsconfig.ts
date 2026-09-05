@@ -12,10 +12,10 @@
  * automatically on every deploy.
  *
  * Ownership contract: only entries whose key starts with
- * `chrome://global/content/elements/` AND whose mapped path resolves into
+ * `chrome://global/content/elements/` and whose mapped path resolves into
  * the Furnace custom-components workspace are managed (added, updated,
- * pruned). Everything else in the jsconfig — including hand-written `paths`
- * entries pointing elsewhere — is preserved verbatim. No `baseUrl` is
+ * pruned). Everything else in the jsconfig, including hand-written `paths`
+ * entries pointing elsewhere, is preserved verbatim. No `baseUrl` is
  * required or written: relative `paths` resolve against the config file's
  * directory.
  */
@@ -58,18 +58,18 @@ interface JsconfigShape {
 
 /**
  * Computes the desired managed `paths` entries: one per `.mjs` file of
- * every custom component — registered or not — keyed by its deployed
+ * every custom component, registered or not, keyed by its deployed
  * chrome URL and mapped to the workspace source relative to the jsconfig
  * directory. `register: false` components (notably `kind: "library"`
- * base-class modules, which REQUIRE register: false) are included because
+ * base-class modules, which require register: false) are included because
  * deploy copies their files and writes jar.mn entries under
- * `content/global/elements/` unconditionally — only the customElements.js
- * registration is gated on `register` — so their chrome URLs are just as
+ * `content/global/elements/` unconditionally. Only the customElements.js
+ * registration is gated on `register`, so their chrome URLs are just as
  * real as a registered component's.
  *
- * Workspace sources (not deployed engine copies) are the mapping target —
- * they are the files developers edit, and they exist even when the engine
- * has not been deployed yet.
+ * The mapping target is the workspace source, not the deployed engine
+ * copy. Those are the files developers edit, and they exist even when the
+ * engine has not been deployed yet.
  */
 async function computeDesiredChromePathEntries(
   config: FurnaceConfig,
@@ -88,7 +88,7 @@ async function computeDesiredChromePathEntries(
       if (!file.endsWith('.mjs')) continue;
       // Emit a `./`-prefixed relative value. TypeScript treats a bare
       // `paths` value (`moz-widget/moz-widget.mjs`) as non-relative and
-      // rejects it without `baseUrl` (TS5090); a `./`-prefixed value
+      // rejects it without `baseUrl` (TS5090). A `./`-prefixed value
       // resolves against the jsconfig directory with no `baseUrl` (which
       // TS6 deprecates, TS5101). `../`-prefixed paths are already relative
       // and left untouched.
@@ -122,19 +122,20 @@ function isManagedEntry(
   if (!Array.isArray(value) || value.length !== 1 || typeof value[0] !== 'string') return false;
   // Containment via `relative`, not a string prefix: a hard-coded `'/'`
   // separator never matches the backslashes `resolve` emits on Windows, which
-  // demoted every managed entry to "unmanaged" there — no pruning, no updates.
+  // demoted every managed entry to "unmanaged" there, so no pruning and no
+  // updates.
   return isPathInsideRoot(customDir, resolve(jsconfigDir, value[0]));
 }
 
 /**
  * Reconciles the managed `compilerOptions.paths` entries of the configured
- * jsconfig against the current Furnace workspace. Idempotent; writes only
- * when something actually changes; dry-run returns the diff without
+ * jsconfig against the current Furnace workspace. Idempotent, and writes
+ * only when something actually changes. Dry-run returns the diff without
  * writing.
  *
  * The consumer owns the jsconfig file: a missing file is an error with
  * guidance rather than a silent scaffold. JSONC comments and trailing commas
- * are preserved; Furnace edits only `compilerOptions.paths`.
+ * are preserved. Furnace edits only `compilerOptions.paths`.
  *
  * @param root - Project root directory
  * @param config - Loaded Furnace configuration (must carry `typecheckJsconfig`)
@@ -197,8 +198,8 @@ export async function syncFurnaceJsconfigPaths(
   };
   const nextPaths: Record<string, unknown> = {};
 
-  // Preserve every unmanaged entry verbatim; prune managed entries that are
-  // no longer desired; update managed entries whose target moved.
+  // Preserve every unmanaged entry verbatim. Prune managed entries that are
+  // no longer desired. Update managed entries whose target moved.
   for (const [key, value] of Object.entries(currentPaths)) {
     if (!isManagedEntry(key, value, jsconfigDir, furnacePaths.customDir)) {
       nextPaths[key] = value;
@@ -211,8 +212,9 @@ export async function syncFurnaceJsconfigPaths(
     }
     // Treat `./x` and bare `x` as equal so a previously-synced bare value (or
     // a hand-written `./` prefix) is not rewritten as "stale" on every run.
-    // The existing value is kept verbatim when equivalent — no churn either
-    // way; only a genuinely different target updates (to the `./` form).
+    // The existing value is kept verbatim when equivalent, so there is no
+    // churn either way. Only a genuinely different target updates (to the
+    // `./` form).
     if (!samePathValue(value[0], want[0] ?? '')) {
       result.updated.push(key);
       nextPaths[key] = want;
@@ -239,7 +241,7 @@ export async function syncFurnaceJsconfigPaths(
 
 /**
  * Computes jsconfig `paths` drift for `furnace validate`: managed entries
- * that are missing or stale relative to the current workspace. Read-only —
+ * that are missing or stale relative to the current workspace. Read-only:
  * delegates to {@link syncFurnaceJsconfigPaths} in dry-run mode.
  */
 export async function findJsconfigPathsDrift(

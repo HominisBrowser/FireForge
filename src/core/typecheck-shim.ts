@@ -5,7 +5,7 @@
  * `fireforge typecheck` command (`typecheck.ts`).
  *
  * Centralised so both flows agree on the same Firefox-globals shim
- * and the same set of suppressed diagnostic codes — drift between the
+ * and the same set of suppressed diagnostic codes. Drift between the
  * two would mean a patch could lint clean under `fireforge lint` but
  * still fail `fireforge typecheck`, or vice versa, for reasons the
  * operator could not infer from the rule names.
@@ -21,7 +21,7 @@ export const SHIM_FILENAME = '__fireforge_firefox_globals.d.ts';
 /**
  * Minimal `.d.ts` shim for Firefox privileged-scope globals.
  *
- * Firefox source is plain JS — no TypeScript allowed. The shim lets
+ * Firefox source is plain JS, with no TypeScript allowed. The shim lets
  * TS-driven type checking run without reporting "cannot find name"
  * for the most common Mozilla APIs. Types are intentionally loose
  * (`any`) because full Firefox type coverage is out of scope.
@@ -29,7 +29,7 @@ export const SHIM_FILENAME = '__fireforge_firefox_globals.d.ts';
  * Structured globals (`ChromeUtils`, `Localization`) are declared via
  * named global interfaces (`ChromeUtilsShim`, `LocalizationShim`, …)
  * rather than closed object-literal types, so a project's extra shim
- * (`patchLint.checkJsExtraShim` / `typecheck.extraShim`) can ADD members
+ * (`patchLint.checkJsExtraShim` / `typecheck.extraShim`) can add members
  * through TypeScript interface merging:
  *
  *   // my-extra-shim.d.ts
@@ -38,27 +38,27 @@ export const SHIM_FILENAME = '__fireforge_firefox_globals.d.ts';
  *   }
  *
  * (A second `declare var ChromeUtils` in the extra shim remains a
- * duplicate-identifier error by design — merge the interface instead.)
+ * duplicate-identifier error by design. Merge the interface instead.)
  * The member lists track upstream WebIDL additions per Firefox release
- * (`dom/chrome-webidl/ChromeUtils.webidl` for ChromeUtils); when a new
+ * (`dom/chrome-webidl/ChromeUtils.webidl` for ChromeUtils). When a new
  * release adds a commonly-patched member, add a loose signature here.
  *
  * Notable patterns that require shimming:
  * - `const lazy = {};` + `ChromeUtils.defineESModuleGetters(lazy, { ... })`
- *   populates `lazy` at runtime; we declare it as `Record<string, any>`.
+ *   populates `lazy` at runtime, so we declare it as `Record<string, any>`.
  * - `Services.obs`, `Services.prefs`, etc. are XPCOM service accessors.
  * - `Ci`, `Cc`, `Cr`, `Cu` are XPCOM component shortcuts.
  * - Browser chrome globals like `gBrowser`, `gURLBar` are common in
  *   content scripts wired via `browser.js`.
  * - Dynamic `import("resource:-…")` / `import("chrome:-…")` under patch
  *   checkJs: imports of *patch-owned* modules resolve to their real
- *   sources (see `patch-lint-checkjs.ts`); everything else fails host
+ *   sources (see `patch-lint-checkjs.ts`). Everything else fails host
  *   resolution and lands on these URL ambient wildcards, keeping
  *   upstream Firefox imports pragmatically loose, same posture as globals.
  */
 const FIREFOX_GLOBALS_SHIM = `
 declare var Services: any;
-// Extensible via interface merging from a project extra shim — see the
+// Extensible via interface merging from a project extra shim; see the
 // module doc comment in typecheck-shim.ts.
 interface ChromeUtilsShim {
   defineESModuleGetters(target: any, modules: Record<string, string>): void;
@@ -71,7 +71,7 @@ interface ChromeUtilsShim {
   getClassName(obj: any, unwrap?: boolean): string;
   isClassInfo(obj: any): boolean;
   // Firefox 153, dom/chrome-webidl/ChromeUtils.webidl: two overloads
-  // (URI string / nsIURI) with a PredictRemoteTypeOptions dictionary —
+  // (URI string / nsIURI) with a PredictRemoteTypeOptions dictionary,
   // collapsed into one loose signature per the shim's pragmatic posture.
   predictRemoteTypeForURI(uri: string | object | null, options?: object): string | null;
 }
@@ -102,7 +102,7 @@ declare class JSWindowActorParent {
   sendAsyncMessage(name: string, data?: any, transfers?: any[]): void;
   sendQuery(name: string, data?: any, transfers?: any[]): Promise<any>;
 }
-// Fluent localization — a stable chrome global. Members stay loose (any),
+// Fluent localization, a stable chrome global. Members stay loose (any),
 // but the constructor shape is declared so "new Localization([...])" and
 // "new Localization([...], true)" typecheck without a local cast. Both
 // interfaces are extensible via interface merging from a project extra
@@ -126,7 +126,7 @@ interface LocalizationShim {
 }
 declare var Localization: LocalizationShim;
 
-// Shorthand ambient modules — exports from matching URL imports are loosely typed,
+// Shorthand ambient modules: exports from matching URL imports are loosely typed,
 // avoiding noResolve empty-graph namespaces. (Named member access broke when we tried
 // export= Record under moduleResolution Bundler.)
 declare module 'resource:*';
@@ -136,15 +136,15 @@ declare module 'chrome:*';
 
 /**
  * Loose declarations for Firefox test-harness globals (mochitest
- * browser-chrome and xpcshell), appended AFTER the composed
+ * browser-chrome and xpcshell), appended after the composed
  * Firefox-globals + consumer shim when `patchLint.checkJsTestFiles`
  * extends the checkJs pass to patch-adopted test scripts.
- * Deliberately `any`-typed — the pragmatic posture matches the main
- * shim. A consumer that wants TYPED harness members (so e.g. a call to
- * a method the harness does not declare fails at the patch boundary)
- * declares them in `patchLint.checkJsTestShim`; because that shim
- * composes BEFORE this baseline and TypeScript resolves conflicting
- * `declare var` redeclarations to the FIRST declaration, the typed
+ * These are `any`-typed, the same pragmatic posture as the main
+ * shim. A consumer that wants typed harness members (so that, say, a call
+ * to a method the harness does not declare fails at the patch boundary)
+ * declares them in `patchLint.checkJsTestShim`. Because that shim
+ * composes before this baseline and TypeScript resolves conflicting
+ * `declare var` redeclarations to the first declaration, the typed
  * consumer declaration wins over the loose fallback here.
  */
 export const TEST_HARNESS_SHIM = `
@@ -180,7 +180,7 @@ declare function run_test(): any;
  * build system: the resolver can't follow `resource://`/`chrome://`
  * URLs and the global shim is intentionally narrow.
  *
- * Widening this set should be deliberate and per-code — silently
+ * Widening this set should be deliberate and per-code: silently
  * suppressing more codes hides real type errors. The same set is used
  * by both flows so a patch can't pass one and fail the other for a
  * reason the operator couldn't infer from the docs.
@@ -200,8 +200,9 @@ export const SUPPRESSED_DIAGNOSTIC_CODES: ReadonlySet<number> = new Set([
  * a module reference a name with no import or declaration anywhere and still
  * typecheck with 0 errors, so the failure surfaces as a runtime
  * `ReferenceError`. Both flows report these at a configurable severity
- * (default `'warning'`: visible without breaking gates; genuine shim gaps
- * are silenced by adding the global to `extraShim`, or per-run via `'off'`).
+ * (default `'warning'`: visible without breaking gates, while genuine shim
+ * gaps are silenced by adding the global to `extraShim`, or per-run via
+ * `'off'`).
  */
 export const UNDEFINED_IDENTIFIER_CODES: ReadonlySet<number> = new Set([
   2304, // Cannot find name '{0}'.
@@ -268,18 +269,18 @@ async function inlineTripleSlashReferences(
 /**
  * Composes the synthetic shim source by concatenating the built-in Firefox
  * globals shim with the contents of an optional user-supplied `.d.ts` file.
- * The user file is appended verbatim — the augment direction is intentional
+ * The user file is appended verbatim. The augment direction is intentional
  * (declarations later in concat order augment earlier ones), so a project
  * that wants to refine `Services` with a more specific type can do so in the
- * extra shim, and members can be ADDED to the structured globals by merging
- * their interfaces (`interface ChromeUtilsShim { newMember(): any }` — see
+ * extra shim, and members can be added to the structured globals by merging
+ * their interfaces (`interface ChromeUtilsShim { newMember(): any }`, see
  * the module doc comment). Any triple-slash `/// <reference path="…">`
  * directives inside the extra shim are inlined (resolved against the extra
  * shim's own directory) so they are not silently dropped at the synthetic
  * shim path.
  *
  * Missing extra-shim files raise a clear error rather than failing silently
- * with a confusing "type not found" downstream — this is the one
+ * with a confusing "type not found" downstream. This is the one
  * config-driven path where a user typo in `fireforge.json` produces a
  * runtime error, so it needs to be unmistakable.
  *

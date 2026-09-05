@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Tests for Furnace-maintained jsconfig `compilerOptions.paths` entries.
- * Real temp directories — the module's contract is mostly about what it
- * writes and, just as importantly, what it refuses to touch.
+ * Real temp directories. The module's contract is about what it writes and
+ * about what it refuses to touch.
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -88,8 +88,8 @@ describe('syncFurnaceJsconfigPaths', () => {
         '../components/custom/moz-widget/widget-helper.mjs',
       ],
     });
-    // No baseUrl is required or written — paths resolve against the
-    // config directory (baseUrl is deprecated territory in newer TS).
+    // No baseUrl is required or written. Paths resolve against the config
+    // directory (baseUrl is deprecated territory in newer TS).
     expect(written.compilerOptions).not.toHaveProperty('baseUrl');
   });
 
@@ -101,7 +101,7 @@ describe('syncFurnaceJsconfigPaths', () => {
         compilerOptions: {
           checkJs: true,
           paths: {
-            // Hand-written entry pointing outside the Furnace workspace —
+            // Hand-written entry pointing outside the Furnace workspace:
             // same chrome prefix, but not Furnace-managed.
             'chrome://global/content/elements/upstream-widget.mjs': [
               '../engine/toolkit/content/widgets/upstream-widget.mjs',
@@ -506,7 +506,7 @@ describe('syncFurnaceJsconfigPaths — root-level jsconfig (./-relative, TS5090)
     expect(synced).not.toContain(5090);
     expect(synced).not.toContain(5101);
 
-    // Control: the bare form TS5090s — proving the ./ prefix is what avoids it.
+    // Control: the bare form TS5090s, showing the ./ prefix is what avoids it.
     const bare = buildDiagnostics({
       paths: {
         'chrome://global/content/elements/moz-widget.mjs': [

@@ -154,7 +154,7 @@ describe('addToken', () => {
     expect(cssCall).toBeDefined();
     const cssContent = cssCall?.[1] ?? '';
 
-    // Should be in Colors — Canvas section
+    // Should land in the canvas colors section.
     const canvasSectionIdx = cssContent.indexOf('Colors — Canvas');
     const dotSizeIdx = cssContent.indexOf('--testbrowser-canvas-dot-size');
     const spacingSectionIdx = cssContent.indexOf('Spacing');
@@ -393,8 +393,8 @@ describe('addToken', () => {
     );
     expect(lightEntryIdx).toBeGreaterThan(lightBlockIdx);
 
-    // Media-query dark override still written too — all four themed lists
-    // now carry the token.
+    // Media-query dark override still written too, so all four themed
+    // lists now carry the token.
     const mediaIdx = cssContent.indexOf('prefers-color-scheme: dark');
     expect(cssContent.indexOf('--testbrowser-canvas-theme-test: #000', mediaIdx)).toBeGreaterThan(
       mediaIdx
@@ -402,13 +402,13 @@ describe('addToken', () => {
   });
 
   it('mirrors an override into a QUALIFIED :root[data-theme="light"] block', async () => {
-    // Regression. `rootAttributeSelector` sliced the selector to the LAST
+    // Regression. `rootAttributeSelector` sliced the selector to the last
     // `]` before the brace, so for
     // `:root[data-theme="light"]:not([data-private])` the computed fragment
     // was `:root[data-theme="light"]:not([data-private]` and the canonical
     // comparison could never match. The unqualified dark block beside it
-    // matched fine, so an override wrote dark and SILENTLY skipped light —
-    // a Light choice under a dark OS then inherited the new dark token, and
+    // matched fine, so an override wrote dark and silently skipped light.
+    // A Light choice under a dark OS then inherited the new dark token, and
     // the operator learned about it from a theme bug rather than the tool.
     const cssWithQualifiedLight = `${MOCK_TOKENS_CSS}
 :root[data-theme="dark"] {
@@ -517,9 +517,9 @@ describe('addToken', () => {
       (line, idx) => idx >= rootOpenIdx && line.includes('--testbrowser-canvas-dark-anchor: #000')
     );
     expect(darkEntryIdx).toBeGreaterThan(rootOpenIdx);
-    // First `}` after the inner `:root {` is the nested root's own close;
-    // the dark entry must appear before it. The depth counter is the
-    // reliable way to find "the brace that closes the inner :root" — any
+    // First `}` after the inner `:root {` is the nested root's own close,
+    // and the dark entry must appear before it. The depth counter is the
+    // reliable way to find "the brace that closes the inner :root": any
     // `}` after `rootOpenIdx` that brings depth back to 0 is the one.
     let depth = 0;
     let innerRootCloseIdx = -1;
@@ -559,7 +559,7 @@ describe('addToken', () => {
     expect(cssCall).toBeDefined();
     const cssContent = cssCall?.[1] ?? '';
 
-    // Should be in Colors — Canvas section (before Spacing section)
+    // Should land in the canvas colors section, before the Spacing section.
     const canvasSectionIdx = cssContent.indexOf('Colors — Canvas');
     const dotSizeIdx = cssContent.indexOf('--testbrowser-canvas-dot-size');
     const spacingSectionIdx = cssContent.indexOf('Spacing');
@@ -692,7 +692,7 @@ describe('addToken --variant', () => {
 
     expect(result.cssAdded).toBe(true);
     expect(result.skipped).toBe(false);
-    // Variant overrides are CSS-only — the base token owns the docs row.
+    // Variant overrides are CSS-only, and the base token owns the docs row.
     expect(result.docsAdded).toBe(false);
 
     const css = findTokensCssWrite();
@@ -752,7 +752,7 @@ describe('addToken --variant', () => {
 
   it('reports WHERE a variant skip happened, so a no-op re-run is legible', async () => {
     // The variant path returned a bare `{ added: false }` while the base
-    // path returned a location — so a re-run meant to CHANGE a value exited
+    // path returned a location, so a re-run meant to change a value exited
     // 0 having changed nothing and said nothing about where the existing
     // declaration was.
     mockReadText.mockImplementation(
@@ -838,8 +838,8 @@ describe('addToken --variant', () => {
   it('accepts the grammar the block matcher parses: a fragment run and a pseudo-class tail', async () => {
     // 0.44.2 widened `rootAttributeSelector` to consume consecutive `[…]`
     // groups and stop at a pseudo-class tail, but the CLI validator kept its
-    // own single-fragment regex — so a block the tool could FIND was one it
-    // would not let you NAME, and the private-exclusion selectors this shape
+    // own single-fragment regex, so a block the tool could find was one it
+    // would not let you name, and the private-exclusion selectors this shape
     // exists for had to be maintained by hand.
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 
@@ -932,8 +932,9 @@ describe('addToken --variant', () => {
 
 describe('addToken missing-category bypasses', () => {
   it('a TOC comment merely mentioning the category no longer satisfies the banner lookup', async () => {
-    // A `/* ====`-opened comment containing "Colors — Terminal" as a
-    // substring satisfies a loose lookup even though no such section exists.
+    // A `/* ====`-opened comment that merely contains the requested category
+    // name as a substring satisfies a loose lookup even though no such
+    // section exists.
     const cssWithToc =
       ':root {\n' +
       '  /* ================================================================\n' +
@@ -956,8 +957,8 @@ describe('addToken missing-category bypasses', () => {
   });
 
   it('a category name no longer matches a longer banner by substring', async () => {
-    // Bypass 1b: `--category "Colors"` used to match the "Colors — Canvas"
-    // banner and write the token into the wrong section.
+    // Bypass 1b: `--category "Colors"` used to prefix-match the longer
+    // canvas colors banner and write the token into the wrong section.
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 
     await expect(
@@ -1006,7 +1007,7 @@ describe('addToken missing-category bypasses', () => {
   it('a token already declared in a DIFFERENT category refuses instead of skipping', async () => {
     // Bypass 3: the whole-file idempotency check returned skipped:true
     // (exit 0) and silently discarded --create-category when the token
-    // name existed anywhere — including another category's section.
+    // name existed anywhere, including another category's section.
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 
     await expect(
@@ -1084,7 +1085,7 @@ describe('addToken --create-category', () => {
     const cssCalls = mockWriteText.mock.calls.filter((c) =>
       c[0].includes('testbrowser-tokens.css')
     );
-    // Exactly one CSS write — banner + token land in the same edit.
+    // Exactly one CSS write: banner and token land in the same edit.
     expect(cssCalls).toHaveLength(1);
     const cssContent = cssCalls[0]?.[1] ?? '';
 
@@ -1122,7 +1123,7 @@ describe('addToken --create-category', () => {
     expect(second.cssAdded).toBe(true);
     const secondWrite =
       mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'))?.[1] ?? '';
-    // No duplicate banner; new token sits in the existing section.
+    // No duplicate banner. The new token sits in the existing section.
     expect(secondWrite.match(/\/\* = Shadows = \*\//g)).toHaveLength(1);
     const bannerIdx = secondWrite.indexOf('/* = Shadows = */');
     expect(secondWrite.indexOf('--testbrowser-shadow-high')).toBeGreaterThan(bannerIdx);

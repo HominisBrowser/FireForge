@@ -5,7 +5,6 @@ import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js
 
 vi.mock('../patch-apply.js', () => ({
   discoverPatches: vi.fn(),
-  isNewFilePatch: vi.fn(),
   withPatchDirectoryLock: vi.fn((_patchesDir: string, operation: () => unknown) =>
     Promise.resolve(operation())
   ),
@@ -38,30 +37,22 @@ import { unlink } from 'node:fs/promises';
 import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText, removeFile, writeText } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
-import { discoverPatches, isNewFilePatch } from '../patch-apply.js';
+import { discoverPatches } from '../patch-apply.js';
 import {
   commitExportedPatch,
-  findAllPatchesForFiles,
-  findExistingPatchForFile,
-  findSupersededPatches,
   getNextPatchFilename,
   getNextPatchNumber,
-  isPatchFullyCovered,
-  parseFilename,
-  planExport,
   updatePatchAndMetadata,
-  updatePatchMetadata,
 } from '../patch-export.js';
 import {
   addPatchToManifest,
-  findPatchesAffectingFile,
   loadPatchesManifest,
   loadPatchesManifestForWrite,
   mutatePatchRowsInManifest,
   savePatchesManifest,
 } from '../patch-manifest.js';
 
-describe('patch-export threshold coverage', () => {
+describe('patch-export rollback and supersede paths', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(discoverPatches).mockResolvedValue([]);
@@ -71,7 +62,7 @@ describe('patch-export threshold coverage', () => {
     vi.mocked(removeFile).mockResolvedValue(undefined);
     vi.mocked(unlink).mockResolvedValue(undefined);
     vi.mocked(loadPatchesManifest).mockResolvedValue(null);
-    // The write paths use the ForWrite loader (corrupt-aborting); these
+    // The write paths use the ForWrite loader (corrupt-aborting). These
     // unit fixtures never simulate corruption, so it mirrors the reader.
     vi.mocked(loadPatchesManifestForWrite).mockImplementation((dir: string) =>
       vi.mocked(loadPatchesManifest)(dir)
@@ -79,7 +70,6 @@ describe('patch-export threshold coverage', () => {
     vi.mocked(mutatePatchRowsInManifest).mockResolvedValue([]);
     vi.mocked(savePatchesManifest).mockResolvedValue(undefined);
     vi.mocked(addPatchToManifest).mockResolvedValue(undefined);
-    vi.mocked(findPatchesAffectingFile).mockResolvedValue([]);
   });
 
   it('rolls back commit state when manifest update fails', async () => {
@@ -126,45 +116,14 @@ describe('patch-export threshold coverage', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('returns the most recent patch affecting a file', async () => {
-    vi.mocked(findPatchesAffectingFile).mockResolvedValue([
-      {
-        patch: { filename: '001-ui-old.patch', path: nativePath('/patches/001-ui-old.patch') },
-        metadata: { filename: '001-ui-old.patch', order: 1 },
-      },
-      {
-        patch: { filename: '002-ui-new.patch', path: '/patches/002-ui-new.patch' },
-        metadata: { filename: '002-ui-new.patch', order: 2 },
-      },
-    ] as never);
-
-    const existingPatch = await findExistingPatchForFile(
-      '/patches',
-      'browser/base/content/browser.js'
-    );
-    expect(existingPatch?.patch.filename).toBe('002-ui-new.patch');
-
-    const repeatedLookup = await findExistingPatchForFile('/patches', 'missing.js');
-    expect(repeatedLookup?.patch.filename).toBe('002-ui-new.patch');
-
-    vi.mocked(findPatchesAffectingFile).mockResolvedValueOnce([]);
-    await expect(findExistingPatchForFile('/patches', 'missing.js')).resolves.toBeNull();
-  });
-
-  it('delegates metadata edits to the row-scoped manifest mutator', async () => {
-    await expect(
-      updatePatchMetadata('/patches', '001-ui-old.patch', { description: 'new' })
-    ).resolves.toBeUndefined();
-    expect(mutatePatchRowsInManifest).toHaveBeenCalledWith(
-      '/patches',
-      ['001-ui-old.patch'],
-      expect.any(Function)
-    );
-  });
-
   it('refuses updatePatchAndMetadata when patches.json is missing or the patch file is absent', async () => {
     await expect(
-      updatePatchAndMetadata('/patches', '001-ui-old.patch', 'new body', { description: 'new' })
+      updatePatchAndMetadata({
+        patchesDir: '/patches',
+        filename: '001-ui-old.patch',
+        newContent: 'new body',
+        updates: { description: 'new' },
+      })
     ).rejects.toThrow(/patches\.json is missing/);
 
     vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
@@ -185,7 +144,12 @@ describe('patch-export threshold coverage', () => {
     vi.mocked(pathExists).mockResolvedValue(false);
 
     await expect(
-      updatePatchAndMetadata('/patches', '001-ui-old.patch', 'new body', { description: 'new' })
+      updatePatchAndMetadata({
+        patchesDir: '/patches',
+        filename: '001-ui-old.patch',
+        newContent: 'new body',
+        updates: { description: 'new' },
+      })
     ).rejects.toThrow(/patch file is missing on disk/);
   });
 
@@ -194,70 +158,20 @@ describe('patch-export threshold coverage', () => {
       { filename: 'legacy.patch', path: '/patches/legacy.patch', order: Number.NaN },
       { filename: '002-ui-real.patch', path: '/patches/002-ui-real.patch', order: 2 },
     ] as never);
-
     await expect(getNextPatchNumber('/patches')).resolves.toBe('003');
     await expect(getNextPatchFilename('/patches', 'ui', 'Dock Panel')).resolves.toBe(
       '003-ui-dock-panel.patch'
     );
-  });
 
-  it('parses new-format, legacy, and invalid patch filenames', () => {
-    expect(parseFilename('001-ui-sidebar.patch')).toEqual({
-      order: 1,
-      category: 'ui',
-      name: 'sidebar',
-    });
-    expect(parseFilename('002-sidebar.patch')).toEqual({
-      order: 2,
-      category: null,
-      name: 'sidebar',
-    });
-    expect(parseFilename('garbage')).toEqual({
-      order: Number.POSITIVE_INFINITY,
-      category: null,
-      name: 'garbage',
-    });
-  });
-
-  it('finds superseded single-file new-file patches and respects exclusions', async () => {
-    vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
-      version: 1,
-      patches: [
-        {
-          filename: '001-ui-old.patch',
-          order: 1,
-          category: 'ui',
-          name: 'old',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['browser/base/content/browser.js'],
-        },
-        {
-          filename: '002-ui-other.patch',
-          order: 2,
-          category: 'ui',
-          name: 'other',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['browser/components/preferences/main.js'],
-        },
-      ],
-    } as never);
     vi.mocked(discoverPatches).mockResolvedValue([
-      { filename: '001-ui-old.patch', path: nativePath('/patches/001-ui-old.patch') },
-      { filename: '002-ui-other.patch', path: '/patches/002-ui-other.patch' },
+      { filename: '999-ui-big.patch', path: '/patches/999-ui-big.patch', order: 999 },
     ] as never);
-    vi.mocked(isNewFilePatch).mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === nativePath('/patches/001-ui-old.patch'))
-    );
+    await expect(getNextPatchNumber('/patches')).resolves.toBe('1000');
 
-    await expect(
-      findSupersededPatches('/patches', ['browser/base/content/browser.js'], '002-ui-other.patch')
-    ).resolves.toEqual([
-      { filename: '001-ui-old.patch', path: nativePath('/patches/001-ui-old.patch') },
-    ]);
+    vi.mocked(discoverPatches).mockResolvedValue([
+      { filename: 'legacy.patch', path: '/patches/legacy.patch', order: Number.POSITIVE_INFINITY },
+    ] as never);
+    await expect(getNextPatchNumber('/patches')).resolves.toBe('001');
   });
 
   it('removes superseded patch files after a successful commit', async () => {
@@ -302,48 +216,6 @@ describe('patch-export threshold coverage', () => {
     );
 
     expect(removeFile).toHaveBeenCalledWith(nativePath('/patches/001-ui-old.patch'));
-  });
-
-  it('plans an export even when there is no existing manifest', async () => {
-    vi.mocked(discoverPatches).mockResolvedValue([] as never);
-    vi.mocked(loadPatchesManifest).mockResolvedValue(null);
-
-    const plan = await planExport({
-      patchesDir: '/patches',
-      category: 'ui',
-      name: 'dock',
-      description: 'Dock',
-      filesAffected: ['browser/base/content/browser.js'],
-      sourceEsrVersion: '140.9.0esr',
-    });
-
-    expect(plan.patchFilename).toBe('001-ui-dock.patch');
-    expect(plan.manifestBefore).toBeNull();
-    expect(plan.manifestAfter.patches[0]?.filename).toBe('001-ui-dock.patch');
-  });
-
-  it('parses a filename with valid format but invalid category as legacy', () => {
-    // Regex matches 001-xyz-name.patch but "xyz" is not in PATCH_CATEGORIES
-    const result = parseFilename('001-xyz-sidebar.patch');
-    expect(result).toEqual({ order: 1, category: null, name: 'xyz-sidebar' });
-  });
-
-  it('isPatchFullyCovered returns false for empty patchFiles', () => {
-    expect(isPatchFullyCovered([], ['a.js'])).toEqual({ covered: false, byFiles: [] });
-  });
-
-  it('isPatchFullyCovered returns byFiles when fully covered', () => {
-    expect(isPatchFullyCovered(['a.js', 'b.js'], ['a.js', 'b.js', 'c.js'])).toEqual({
-      covered: true,
-      byFiles: ['a.js', 'b.js'],
-    });
-  });
-
-  it('isPatchFullyCovered returns empty byFiles when not fully covered', () => {
-    expect(isPatchFullyCovered(['a.js', 'b.js'], ['a.js'])).toEqual({
-      covered: false,
-      byFiles: [],
-    });
   });
 
   it('commitExportedPatch backs up existing patch content and restores it on rollback', async () => {
@@ -417,7 +289,7 @@ describe('patch-export threshold coverage', () => {
         },
       ],
     } as never);
-    // Superseded patch does NOT exist on disk
+    // Superseded patch does not exist on disk
     vi.mocked(pathExists).mockResolvedValue(false);
 
     const result = await commitExportedPatch({
@@ -431,7 +303,7 @@ describe('patch-export threshold coverage', () => {
     });
 
     expect(result.superseded).toHaveLength(1);
-    // readText should NOT have been called for the superseded patch backup
+    // readText should not have been called for the superseded patch backup
     expect(readText).not.toHaveBeenCalledWith(nativePath('/patches/001-ui-old.patch'));
   });
 
@@ -483,7 +355,12 @@ describe('patch-export threshold coverage', () => {
     } as never);
 
     await expect(
-      updatePatchAndMetadata('/patches', '999-ui-missing.patch', 'body', { description: 'new' })
+      updatePatchAndMetadata({
+        patchesDir: '/patches',
+        filename: '999-ui-missing.patch',
+        newContent: 'body',
+        updates: { description: 'new' },
+      })
     ).rejects.toThrow(/not found in patches\.json/);
   });
 
@@ -507,7 +384,12 @@ describe('patch-export threshold coverage', () => {
     vi.mocked(readText).mockResolvedValue('old body');
 
     await expect(
-      updatePatchAndMetadata('/patches', '001-ui-old.patch', 'new body', { description: 'updated' })
+      updatePatchAndMetadata({
+        patchesDir: '/patches',
+        filename: '001-ui-old.patch',
+        newContent: 'new body',
+        updates: { description: 'updated' },
+      })
     ).resolves.toBe(true);
 
     expect(writeText).toHaveBeenCalledWith(nativePath('/patches/001-ui-old.patch'), 'new body');
@@ -540,7 +422,12 @@ describe('patch-export threshold coverage', () => {
     vi.mocked(mutatePatchRowsInManifest).mockRejectedValueOnce(new Error('manifest save fail'));
 
     await expect(
-      updatePatchAndMetadata('/patches', '001-ui-old.patch', 'new body', { description: 'new' })
+      updatePatchAndMetadata({
+        patchesDir: '/patches',
+        filename: '001-ui-old.patch',
+        newContent: 'new body',
+        updates: { description: 'new' },
+      })
     ).rejects.toThrow('manifest save fail');
 
     // Should have attempted rollback of patch content
@@ -574,141 +461,14 @@ describe('patch-export threshold coverage', () => {
     vi.mocked(mutatePatchRowsInManifest).mockRejectedValueOnce(new Error('manifest fail'));
 
     await expect(
-      updatePatchAndMetadata('/patches', '001-ui-old.patch', 'new body', { description: 'new' })
+      updatePatchAndMetadata({
+        patchesDir: '/patches',
+        filename: '001-ui-old.patch',
+        newContent: 'new body',
+        updates: { description: 'new' },
+      })
     ).rejects.toThrow('manifest fail');
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Rollback warning'));
-  });
-
-  it('updatePatchMetadata returns early when entry is not found', async () => {
-    await expect(
-      updatePatchMetadata('/patches', '999-ui-missing.patch', { description: 'new' })
-    ).resolves.toBeUndefined();
-
-    expect(mutatePatchRowsInManifest).toHaveBeenCalledWith(
-      '/patches',
-      ['999-ui-missing.patch'],
-      expect.any(Function)
-    );
-  });
-
-  it('findSupersededPatches returns empty when manifest is null', async () => {
-    vi.mocked(loadPatchesManifest).mockResolvedValue(null);
-    await expect(findSupersededPatches('/patches', ['a.js'])).resolves.toEqual([]);
-  });
-
-  it('findSupersededPatches skips multi-file patches and non-matching files', async () => {
-    vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
-      version: 1,
-      patches: [
-        {
-          filename: '001-ui-multi.patch',
-          order: 1,
-          category: 'ui',
-          name: 'multi',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['a.js', 'b.js'],
-        },
-        {
-          filename: '002-ui-other.patch',
-          order: 2,
-          category: 'ui',
-          name: 'other',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['c.js'],
-        },
-      ],
-    } as never);
-    vi.mocked(discoverPatches).mockResolvedValue([
-      { filename: '001-ui-multi.patch', path: '/patches/001-ui-multi.patch' },
-      { filename: '002-ui-other.patch', path: '/patches/002-ui-other.patch' },
-    ] as never);
-
-    // Neither should be superseded: 001 is multi-file, 002 doesn't match
-    await expect(findSupersededPatches('/patches', ['a.js'])).resolves.toEqual([]);
-  });
-
-  it('findAllPatchesForFiles returns empty when manifest is null', async () => {
-    vi.mocked(loadPatchesManifest).mockResolvedValue(null);
-    await expect(findAllPatchesForFiles('/patches', ['a.js'])).resolves.toEqual([]);
-  });
-
-  it('findAllPatchesForFiles finds fully covered patches and respects exclusions', async () => {
-    vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
-      version: 1,
-      patches: [
-        {
-          filename: '001-ui-a.patch',
-          order: 1,
-          category: 'ui',
-          name: 'a',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['a.js'],
-        },
-        {
-          filename: '002-ui-b.patch',
-          order: 2,
-          category: 'ui',
-          name: 'b',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['b.js', 'c.js'],
-        },
-      ],
-    } as never);
-    vi.mocked(discoverPatches).mockResolvedValue([
-      { filename: '001-ui-a.patch', path: '/patches/001-ui-a.patch' },
-      { filename: '002-ui-b.patch', path: '/patches/002-ui-b.patch' },
-    ] as never);
-
-    // Only a.js is in target — 001 is covered, 002 is not (needs b.js+c.js)
-    const result = await findAllPatchesForFiles('/patches', ['a.js']);
-    expect(result).toEqual([{ filename: '001-ui-a.patch', path: '/patches/001-ui-a.patch' }]);
-
-    // With exclusion of the matching patch
-    vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
-      version: 1,
-      patches: [
-        {
-          filename: '001-ui-a.patch',
-          order: 1,
-          category: 'ui',
-          name: 'a',
-          description: '',
-          createdAt: '',
-          sourceEsrVersion: '140.9.0esr',
-          filesAffected: ['a.js'],
-        },
-      ],
-    } as never);
-    vi.mocked(discoverPatches).mockResolvedValue([
-      { filename: '001-ui-a.patch', path: '/patches/001-ui-a.patch' },
-    ] as never);
-
-    const excluded = await findAllPatchesForFiles('/patches', ['a.js'], '001-ui-a.patch');
-    expect(excluded).toEqual([]);
-  });
-
-  it('getNextPatchNumber pads numbers beyond 3 digits correctly', async () => {
-    vi.mocked(discoverPatches).mockResolvedValue([
-      { filename: '999-ui-big.patch', path: '/patches/999-ui-big.patch', order: 999 },
-    ] as never);
-
-    await expect(getNextPatchNumber('/patches')).resolves.toBe('1000');
-  });
-
-  it('getNextPatchNumber returns 001 when all patches have non-finite orders', async () => {
-    vi.mocked(discoverPatches).mockResolvedValue([
-      { filename: 'legacy.patch', path: '/patches/legacy.patch', order: Number.POSITIVE_INFINITY },
-    ] as never);
-
-    await expect(getNextPatchNumber('/patches')).resolves.toBe('001');
   });
 });

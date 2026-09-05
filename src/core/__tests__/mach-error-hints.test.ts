@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it } from 'vitest';
 
-import { explainMachError, MACH_ERROR_HINTS } from '../mach-error-hints.js';
+import { explainMachError } from '../mach-error-hints.js';
 
 describe('explainMachError', () => {
   it('returns an empty array for empty or unknown stderr', () => {
@@ -28,15 +28,6 @@ describe('explainMachError', () => {
     ].join('\n');
     const hints = explainMachError(stderr);
     expect(hints).toHaveLength(1);
-  });
-
-  it('exposes its pattern table for inspection', () => {
-    expect(MACH_ERROR_HINTS.length).toBeGreaterThan(0);
-    for (const entry of MACH_ERROR_HINTS) {
-      expect(entry.pattern).toBeInstanceOf(RegExp);
-      expect(typeof entry.hint).toBe('string');
-      expect(entry.hint.length).toBeGreaterThan(20);
-    }
   });
 
   it('surfaces the packager NoneType hint when packager.py trips on None.open', () => {
@@ -74,8 +65,7 @@ describe('explainMachError', () => {
   it('does NOT fire the NoneType hint on unrelated AttributeErrors', () => {
     // Keep the pattern narrow so unrelated NoneType errors elsewhere in
     // mach (e.g. a preprocessor pass) don't train operators to ignore
-    // the hint. Maintaining this negative case also pins the branch
-    // count for the 100/95/100 coverage threshold.
+    // the hint.
     const stderr = [
       'Traceback (most recent call last):',
       '  File "/engine/python/mozbuild/mozbuild/config.py", line 42, in load',
@@ -162,8 +152,8 @@ describe('explainMachError', () => {
   it('surfaces the fireforge bootstrap hint on the cbindgen too-old configure failure', () => {
     // 152.0b7 → 153.0b8 source-refresh drill: the first post-hop build
     // died ~8s into `mach configure` with this exact die() text, whose
-    // own remediation names "./mach bootstrap" — the wrong entry point
-    // for a FireForge-managed repo. The hint must name
+    // own remediation names "./mach bootstrap", which is the wrong entry
+    // point for a FireForge-managed repo. The hint must name
     // `fireforge bootstrap` instead.
     const stderr = [
       'ERROR: cbindgen version 0.29.1 is too old. At least version 0.29.4 is required.',
@@ -222,8 +212,8 @@ describe('explainMachError', () => {
 
     expect(hints.length).toBeGreaterThanOrEqual(1);
     const joined = hints.join('\n');
-    // The rule is the part operators get wrong, and the ASCII reading is
-    // the wrong one: mozbuild lowercases before comparing.
+    // Operators tend to get this rule wrong by reading it as an ASCII
+    // comparison. mozbuild lowercases before comparing.
     expect(joined).toContain('CASE-INSENSITIVELY');
     expect(joined).toContain('mozbuild-unsorted-list');
   });

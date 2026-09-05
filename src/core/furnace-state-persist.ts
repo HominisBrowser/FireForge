@@ -5,19 +5,19 @@
  * There are exactly two sanctioned ways checksums land in
  * furnace-state.json:
  *
- *  1. The BATCH path inside `applyAllComponents` (persistState: true), which
- *     replaces `appliedChecksums` wholesale — correct only when the run
- *     covered every component.
- *  2. The per-component MERGE in this module, which rewrites only the
+ *  1. The batch path inside `applyAllComponents` (persistState: true), which
+ *     replaces `appliedChecksums` wholesale. That is correct only when the
+ *     run covered every component.
+ *  2. The per-component merge in this module, which rewrites only the
  *     `<type>/<name>/…` keys of the component that was applied.
  *
- * Every targeted (named) apply/deploy MUST use path 2 with
+ * Every targeted (named) apply/deploy must use path 2 with
  * `persistState: false`. Routing a named run through the batch path wipes
  * every other component's checksum state: the batch loops filter to the
  * named component, so the wholesale replace persists a state file containing
  * only that component. Downstream, `diffDeletedFiles` and
  * `findOrphanedEngineFiles` both key on `appliedChecksums`, so the wiped
- * components' stale engine files become undetectable by apply AND by
+ * components' stale engine files become undetectable by apply and by
  * `furnace validate`.
  */
 
@@ -29,11 +29,11 @@ import {
   computeComponentChecksums,
   prefixChecksums,
 } from './furnace-apply.js';
-import { type getFurnacePaths, updateFurnaceState } from './furnace-config.js';
+import { type FurnacePaths, updateFurnaceState } from './furnace-config.js';
 import { countEntriesWithBlockingStepErrors } from './furnace-step-errors.js';
 
 /**
- * Counts applied entries that carry at least one BLOCKING step error
+ * Counts applied entries that carry at least one blocking step error
  * (advisory step errors are warnings and never fail a run).
  */
 export function getStepFailureCount(result: ApplyAllComponentsResult): number {
@@ -47,7 +47,7 @@ export function getStepFailureCount(result: ApplyAllComponentsResult): number {
  * Named runs are atomic: if any apply step fails, the rollback journal
  * restores the engine to its pre-run state and this helper returns `false`
  * so state is not touched. The conditions must stay in lock-step with the
- * rollback trigger in `applyAllComponents` — both read step errors, so a
+ * rollback trigger in `applyAllComponents`: both read step errors, so a
  * future refactor cannot drift them apart and accidentally persist partial
  * state.
  */
@@ -66,7 +66,7 @@ export function shouldPersistSingleComponentState(
  *
  * Guards against future refactors that might reorder or misroute the
  * applied[] array: a named run persists state under a single component
- * name, so the first applied entry MUST be that component. Persisting a
+ * name, so the first applied entry must be that component. Persisting a
  * different component's checksums would cause the next status/apply run to
  * mis-report health for both components involved.
  *
@@ -110,7 +110,7 @@ export function getPersistableAppliedEntry(
 
 /**
  * Persists checksum state for a successfully applied named component by
- * MERGING its `<type>/<name>/…` keys into the existing state — never
+ * merging its `<type>/<name>/…` keys into the existing state rather than
  * replacing the whole map.
  *
  * @param projectRoot - Root directory of the project
@@ -120,7 +120,7 @@ export function getPersistableAppliedEntry(
 export async function persistSingleComponentState(
   projectRoot: string,
   appliedEntry: { name: string; type: 'override' | 'custom' },
-  furnacePaths: ReturnType<typeof getFurnacePaths>
+  furnacePaths: FurnacePaths
 ): Promise<void> {
   const componentDir =
     appliedEntry.type === 'override'

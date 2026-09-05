@@ -37,12 +37,12 @@ function formatWaitProgressLine(
   timeoutMs: number,
   holder: LockHolder | undefined
 ): string {
-  const progress = `${String(Math.round(waitedMs / 1000))}s of up to ${String(Math.round(timeoutMs / 1000))}s`;
+  const progress = `${Math.round(waitedMs / 1000)}s of up to ${Math.round(timeoutMs / 1000)}s`;
   if (holder === undefined) {
     return `Waiting for the FireForge patch directory lock — ${progress}.`;
   }
   const details = holder.metadata.length > 0 ? ` (${holder.metadata.join(', ')})` : '';
-  return `Waiting for the FireForge patch directory lock held by PID ${String(holder.pid)}${details} — ${progress}.`;
+  return `Waiting for the FireForge patch directory lock held by PID ${holder.pid}${details} — ${progress}.`;
 }
 
 /**
@@ -56,7 +56,7 @@ function formatWaitProgressLine(
  * is held, so an unlocked caller silently reintroduces the interleaving the
  * lock exists to prevent.
  *
- * Fail-open on an unreadable owner record, deliberately: `withFileLock`
+ * Fail-open on an unreadable owner record, on purpose: `withFileLock`
  * treats writing that record as non-fatal, so a live holder can legitimately
  * have no readable PID and asserting on its presence would fire on a lock we
  * really do hold.
@@ -75,7 +75,7 @@ export async function assertPatchDirectoryLockHeld(
     status.holder === undefined || status.holder.pid === process.pid,
     () =>
       `patch directory lock is owned by this process before ${context} ` +
-      `(held by PID ${String(status.holder?.pid)}, we are ${String(process.pid)})`
+      `(held by PID ${status.holder?.pid}, we are ${process.pid})`
   );
 }
 
@@ -91,7 +91,7 @@ export async function withPatchDirectoryLock<T>(
   const lockDir = join(patchesDir, PATCH_DIRECTORY_LOCK);
   const { waitLockSeconds, command } = options;
 
-  // Tag whatever the BODY throws so the catch below can tell it apart from a
+  // Tag whatever the body throws so the catch below can tell it apart from a
   // lock-acquire/release failure. Narrowing by origin rather than by error
   // shape is what "the rewrap is for lock I/O" actually means: an errno test
   // would still reclassify an EACCES raised while the body writes a .patch
@@ -125,10 +125,10 @@ export async function withPatchDirectoryLock<T>(
       : {}),
     // Reason first, remedy second. The remedy is waiting, not deleting: bulk
     // exports/re-exports legitimately hold this lock for minutes, and
-    // FireForge reaps genuinely stale locks on its own — advice to `rm -rf`
-    // while a holder is alive destroys a live lock. The leading sentence is
-    // a message contract; extend, do not reword. withFileLock appends the
-    // holder identification.
+    // FireForge reaps genuinely stale locks on its own, and advice to
+    // `rm -rf` while a holder is alive destroys a live lock. The leading
+    // sentence is a message contract. Extend, do not reword. withFileLock
+    // appends the holder identification.
     onTimeoutMessage:
       `Timed out waiting for another FireForge command mutating ${patchesDir}.\n` +
       `Pass --wait-lock [seconds] to wait longer (bare --wait-lock waits up to 60 seconds). ` +
@@ -142,7 +142,7 @@ export async function withPatchDirectoryLock<T>(
     // reports an EACCES writing patches.json, a postcondition failure from
     // renumberPatchesInManifest, or a plain TypeError from a FireForge bug
     // as a "Patch Error" carrying three fixed remedies about Firefox-version
-    // compatibility and `fireforge reset` — none of which apply. Worse,
+    // compatibility and `fireforge reset`, none of which apply. Worse,
     // src/cli.ts prints a stack only for non-FireForgeError throwables, so
     // the rewrap moves real bugs into the branch that discards their stack.
     if (bodyThrew && error === bodyFailure) {
@@ -153,7 +153,7 @@ export async function withPatchDirectoryLock<T>(
       throw error;
     }
 
-    // CommandError is the one class in src/errors/ that does NOT extend
+    // CommandError is the one class in src/errors/ that does not extend
     // FireForgeError: it is the sentinel carrying an already-rendered exit
     // code to the entrypoint. The `instanceof FireForgeError` guard above
     // misses it, so without this the exit code was replaced by PATCH_ERROR.

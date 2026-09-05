@@ -8,6 +8,7 @@ vi.mock('../logger.js', () => ({
   warn: vi.fn(),
 }));
 
+import { ExecTimeoutError } from '../../errors/base.js';
 import { verbose, warn } from '../logger.js';
 import {
   exec,
@@ -79,8 +80,8 @@ describe('exec', () => {
 
   it('removes envUnset keys from the inherited environment', async () => {
     // `env` can only add or overwrite, and mozbuild's coding-agent check
-    // reads CLAUDECODE for its PRESENCE — setting it empty would not unset
-    // it. The delete has to actually delete.
+    // reads CLAUDECODE only for its presence, so setting it empty would not
+    // unset it. The delete has to actually delete.
     const child = makeChild();
     mockSpawn.mockReturnValue(child);
     process.env['FIREFORGE_TEST_MARKER'] = '1';
@@ -151,7 +152,7 @@ describe('exec', () => {
     mockSpawn.mockReturnValue(child);
 
     const promise = exec('echo', ['hello']);
-    // 'ü' is 0xC3 0xBC — emit the two bytes in separate chunks, as a pipe
+    // 'ü' is 0xC3 0xBC, so emit the two bytes in separate chunks, as a pipe
     // boundary can do. Per-chunk Buffer.toString() produced two U+FFFD here.
     child.stdout.emit('data', Buffer.from([0x66, 0xc3]));
     child.stdout.emit('data', Buffer.from([0xbc, 0x72]));
@@ -192,6 +193,34 @@ describe('exec', () => {
       timeoutMs: 5,
     });
   });
+
+  it('carries the output captured before the timeout on the ExecTimeoutError', async () => {
+    // A `git add -A` killed at its budget used to reject with nothing but the
+    // budget: the partial stdout/stderr that said what git was doing when it
+    // died had already been collected and was dropped on the floor.
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const promise = exec('git', ['add', '-A'], { timeout: 5 });
+    child.stdout.emit('data', Buffer.from('progress 1\nprogress 2\n'));
+    child.stderr.emit('data', Buffer.from('warning: slow disk\n'));
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    child.emit('error', abortError);
+
+    const error = await promise.then(
+      () => undefined,
+      (rejection: unknown) => rejection
+    );
+    expect(error).toBeInstanceOf(ExecTimeoutError);
+    const timeout = error as ExecTimeoutError;
+    expect(timeout.stdout).toBe('progress 1\nprogress 2\n');
+    expect(timeout.stderr).toBe('warning: slow disk\n');
+    expect(timeout.outputTruncated).toBe(false);
+    // The user-facing rendering shows the tail, so the timeout is diagnosable.
+    expect(timeout.userMessage).toContain('Output before the timeout (stderr)');
+    expect(timeout.userMessage).toContain('warning: slow disk');
+  });
 });
 
 describe('execStream', () => {
@@ -230,8 +259,8 @@ describe('execInherit', () => {
     mockSpawn.mockReturnValue(child);
 
     const promise = execInherit('long-running', [], { shutdownGraceMs: 50 });
-    // Parent receives SIGINT — helper should kill the child with SIGTERM, not
-    // synchronously exit the Node process.
+    // Parent receives SIGINT. The helper should kill the child with SIGTERM,
+    // not synchronously exit the Node process.
     process.emit('SIGINT');
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
 
@@ -419,7 +448,7 @@ describe('execSmokeRun', () => {
 
   it('sends SIGTERM to the process group when the deadline fires and reports timedOut=true', async () => {
     vi.useFakeTimers();
-    // execSmokeRun picks its kill strategy from process.platform — pin the
+    // execSmokeRun picks its kill strategy from process.platform, so pin the
     // POSIX branch so this test exercises the process-group kill even when
     // the suite runs on Windows (the taskkill test below owns that branch).
     const originalPlatform = process.platform;
@@ -435,8 +464,8 @@ describe('execSmokeRun', () => {
       });
 
       vi.advanceTimersByTime(250);
-      // Negative PID targets the whole process group — this is the critical
-      // invariant: a bare child.kill would leave forked content processes alive.
+      // Negative PID targets the whole process group. That is the invariant
+      // here: a bare child.kill would leave forked content processes alive.
       expect(killSpy).toHaveBeenCalledWith(-98765, 'SIGTERM');
 
       vi.advanceTimersByTime(100);
@@ -460,7 +489,7 @@ describe('execSmokeRun', () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
     try {
       const child = makeSmokeChild(4242);
-      // First spawn call is the smoke child; subsequent calls are taskkill.
+      // First spawn call is the smoke child. Subsequent calls are taskkill.
       mockSpawn.mockImplementation((command: string) =>
         command === 'taskkill' ? makeChild() : child
       );
@@ -472,8 +501,8 @@ describe('execSmokeRun', () => {
       });
 
       vi.advanceTimersByTime(250);
-      // No process group on Windows — the tree kill must go through taskkill,
-      // otherwise firefox descendants of the python wrapper survive.
+      // No process group on Windows, so the tree kill must go through
+      // taskkill, otherwise firefox descendants of the python wrapper survive.
       expect(mockSpawn).toHaveBeenCalledWith('taskkill', ['/pid', '4242', '/T', '/F'], {
         stdio: 'ignore',
       });
@@ -546,9 +575,9 @@ describe('process-group reaping', () => {
   }
 
   /**
-   * A LAZY fake pgrep child: the close emission is scheduled when spawn()
+   * A lazy fake pgrep child: the close emission is scheduled when spawn()
    * actually runs (mockImplementationOnce), not when the test builds the
-   * queue — otherwise the event fires before exec attaches listeners.
+   * queue. Otherwise the event fires before exec attaches listeners.
    */
   function pgrepChild(lines: string | undefined): () => MockChildProcess {
     return () => {
@@ -564,7 +593,7 @@ describe('process-group reaping', () => {
   describe('sweepProcessGroup', () => {
     it('reaps a stranded multiprocessing worker with a group SIGTERM (simulated startup death)', async () => {
       const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
-      // First pgrep: the stranded spawn worker survives; after the group
+      // First pgrep: the stranded spawn worker survives. After the group
       // SIGTERM + grace, the re-list comes back empty.
       mockSpawn
         .mockImplementationOnce(pgrepChild(`${ORPHAN_LINE}\n`))
@@ -603,7 +632,7 @@ describe('process-group reaping', () => {
 
     it("keeps the grace timer ref'd so the parent cannot exit mid-sweep", async () => {
       // The sweep runs from a child 'close' handler after the signal
-      // forwarder is disposed — an unref'd grace timer let Node exit
+      // forwarder is disposed. An unref'd grace timer let Node exit
       // during the grace window and skip the SIGKILL escalation. Pin
       // that the awaited delay holds a ref on the event loop.
       const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
@@ -664,7 +693,7 @@ describe('process-group reaping', () => {
 
     it('treats EPERM from the fallback group probe as live members, not an empty group', async () => {
       // A root-owned group (sudo build, container uid mismatch) makes
-      // kill(-pgid, 0) throw EPERM. That is proof the group EXISTS; reading
+      // kill(-pgid, 0) throw EPERM. That is proof the group exists. Reading
       // it as "gone" is the same misclassification isProcessAlive fixes.
       const eperm = Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
       const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
@@ -748,7 +777,7 @@ describe('process-group reaping', () => {
 
       const promise = execStream('fake-mach', ['test'], { processGroup: true });
       process.emit('SIGTERM');
-      // Group-targeted kill: negative PID, and NOT the bare child.kill path.
+      // Group-targeted kill: negative PID, and not the bare child.kill path.
       expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
       expect(child.kill).not.toHaveBeenCalled();
 

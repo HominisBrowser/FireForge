@@ -32,7 +32,7 @@ export function dropChecksumsByPrefix(state: FurnaceState, prefix: string): Furn
  * Per-file, never a recursive `removeDir` of the whole directory: nothing
  * stops two components from sharing a targetPath (or a hand-edited config
  * from pointing at an upstream-shared directory), and the recursive delete
- * permanently destroyed the co-located files on success — the rollback
+ * permanently destroyed the co-located files on success. The rollback
  * journal only protects the failure path. Deployed files come from the
  * component's state checksums, falling back to the conventional
  * `<name>.{mjs,css,ftl}` set when state carries no record (cleared by a

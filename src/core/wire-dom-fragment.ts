@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Top-level chrome document — DOM fragment insertion.
+ * Top-level chrome document: DOM fragment insertion.
  *
  * Default target is `browser/base/content/browser.xhtml`. Forks that replace
  * browser.xhtml with a custom top-level chrome document pass the replacement
- * path in via `targetPath`; the insertion logic is shape-agnostic (looks for
+ * path in via `targetPath`. The insertion logic is shape-agnostic (looks for
  * `#include browser-sets.inc`, then falls back to `<html:body>`), so any
  * browser.xhtml-shaped xhtml works.
  */
@@ -14,6 +14,7 @@ import { dirname, join, relative } from 'node:path';
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { toRootRelativePath } from '../utils/paths.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { escapeRegex } from '../utils/regex.js';
 import { tokenizeXhtml } from './wire-utils.js';
 
@@ -27,24 +28,16 @@ export function addDomFragmentTokenized(content: string, includeDirective: strin
   const tokens = tokenizeXhtml(lines);
 
   // Find the #include browser-sets.inc token
-  let insertIndex = -1;
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    if (token && token.type === 'macro' && token.raw.includes('browser-sets.inc')) {
-      insertIndex = i;
-      break;
-    }
-  }
+  let insertIndex = tokens.findIndex(
+    (token) => token.type === 'macro' && token.raw.includes('browser-sets.inc')
+  );
 
   if (insertIndex === -1) {
     // Fallback: after <html:body>
-    for (let i = 0; i < tokens.length; i++) {
-      const token = tokens[i];
-      if (token && token.type === 'xml' && /<html:body/.test(token.raw)) {
-        insertIndex = i + 1;
-        break;
-      }
-    }
+    const bodyIndex = tokens.findIndex(
+      (token) => token.type === 'xml' && /<html:body/.test(token.raw)
+    );
+    insertIndex = bodyIndex === -1 ? -1 : bodyIndex + 1;
   }
 
   if (insertIndex === -1) {
@@ -58,7 +51,7 @@ export function addDomFragmentTokenized(content: string, includeDirective: strin
 /**
  * Dry-run precheck for `addDomFragment`. Reads the resolved chrome document
  * and verifies it either already contains the `#include` directive (the
- * idempotent-skip case) OR offers a locatable insertion point via
+ * idempotent-skip case) or offers a locatable insertion point via
  * {@link addDomFragmentTokenized} / {@link legacyAddDomFragment}. Throws the
  * same `Could not find insertion point in chrome document` error the real
  * run would throw when neither condition holds.
@@ -75,7 +68,7 @@ export async function probeDomFragmentInsertionPoint(
   const targetAbsPath = join(engineDir, targetPath);
   if (!(await pathExists(targetAbsPath))) {
     // The callers in `wire.ts` run their own existence probe before
-    // invoking this helper, but a well-behaved probe is paranoid — if
+    // invoking this helper, but a well-behaved probe is careful: if
     // something changed between the two checks, fail with the same
     // error the real run would surface.
     throw new GeneralError(`${targetPath} not found in engine`);
@@ -83,12 +76,12 @@ export async function probeDomFragmentInsertionPoint(
 
   const safeDomFilePath = toRootRelativePath(engineDir, domFilePath);
   const targetDir = dirname(targetPath);
-  const includePath = relative(targetDir, safeDomFilePath).replace(/\\/g, '/');
+  const includePath = normalizePathSlashes(relative(targetDir, safeDomFilePath));
   const includeDirective = `#include ${includePath}`;
 
   const content = await readText(targetAbsPath);
   if (new RegExp(`^${escapeRegex(includeDirective)}$`, 'm').test(content)) {
-    // Already wired — the real run would idempotent-skip here, so
+    // Already wired. The real run would idempotent-skip here, so
     // dry-run is allowed to proceed too.
     return;
   }
@@ -127,12 +120,12 @@ export async function addDomFragment(
     throw new GeneralError(`${targetPath} not found in engine`);
   }
 
-  // Compute include path relative to the target's directory — the `#include`
+  // Compute include path relative to the target's directory. The `#include`
   // directive is resolved by the preprocessor relative to the file that
   // contains it, so this must track the chrome doc's location, not a
   // hardcoded `browser/base/content/`.
   const targetDir = dirname(targetPath);
-  const includePath = relative(targetDir, safeDomFilePath).replace(/\\/g, '/');
+  const includePath = normalizePathSlashes(relative(targetDir, safeDomFilePath));
   const includeDirective = `#include ${includePath}`;
 
   let content = await readText(targetAbsPath);

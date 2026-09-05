@@ -2,7 +2,7 @@
 /**
  * Browser-chrome test scaffolding for `furnace create --with-tests`,
  * including the `--test-dir` redirect and collision safety (existing
- * manifests are appended to; head.js and test implementations are never
+ * manifests are appended to, and head.js and test implementations are never
  * overwritten). Split out of `create.ts` to keep that command file within
  * the per-file line budget.
  */
@@ -27,6 +27,7 @@ import { toError } from '../../utils/errors.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { info, success, warn } from '../../utils/logger.js';
 import { stripEnginePrefix } from '../../utils/paths.js';
+import { browserTestFileName, deriveTestStem } from './test-file-name.js';
 
 /**
  * Validates the `--test-dir` option against the resolved test style before
@@ -96,15 +97,9 @@ export async function scaffoldTestFiles(
   journal?: RollbackJournal,
   testDirOverride?: string
 ): Promise<string[]> {
-  const strippedName = componentName.startsWith('moz-') ? componentName.slice(4) : componentName;
-  // Avoid double-prefixing: strip binaryName prefix since the default test
-  // dir name already uses it
   const binaryName = forgeConfig.binaryName;
-  const withoutBinaryPrefix = strippedName.startsWith(binaryName + '-')
-    ? strippedName.slice(binaryName.length + 1)
-    : strippedName;
-  const underscored = withoutBinaryPrefix.replace(/-/g, '_');
-  const testFileName = `browser_${binaryName}_${underscored}.js`;
+  const underscored = deriveTestStem(componentName, binaryName);
+  const testFileName = browserTestFileName(componentName, binaryName);
   // --test-dir redirects the scaffold: the hardcoded
   // `.../test/<binaryName>/` target can collide with a test suite owned by a
   // different patch. The manifest-registration name is the path below
@@ -121,12 +116,12 @@ export async function scaffoldTestFiles(
   const hashHeader = getLicenseHeader(license, 'hash');
   const testFiles: string[] = [];
 
-  // browser.toml — create if missing, append entry if existing
+  // browser.toml: create if missing, append entry if existing.
   const tomlPath = join(testDir, 'browser.toml');
   if (await pathExists(tomlPath)) {
     // Defensive guard: only append if the entry is not already present.
     // With a fresh journal per create, the same test file name cannot be
-    // appended twice in a single run — but retaining the check protects
+    // appended twice in a single run, but retaining the check protects
     // against accidental re-entrance or a future refactor that reuses the
     // helper with a stale test directory.
     const existingToml = await readText(tomlPath);
@@ -151,7 +146,7 @@ support-files = ["head.js"]
   }
   testFiles.push('browser.toml');
 
-  // head.js — only create if it doesn't exist (shared across components)
+  // head.js: only create if it doesn't exist (shared across components).
   const headPath = join(testDir, 'head.js');
   if (!(await pathExists(headPath))) {
     if (journal) await snapshotFile(journal, headPath);

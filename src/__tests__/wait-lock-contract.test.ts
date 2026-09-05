@@ -4,16 +4,16 @@
  *
  * Two contracts, and they are different:
  *
- *  - EVERY command accepts `--wait-lock`, so a scripted sequence that
+ *  - Every command accepts `--wait-lock`, so a scripted sequence that
  *    blanket-appends the flag gets a lock message where one applies and a
- *    no-op elsewhere — never a usage error that kills the sequence.
- *  - Exactly the lock-taking commands HONOR it. Any command that
+ *    no-op elsewhere, never a usage error that kills the sequence.
+ *  - Exactly the lock-taking commands honor it. Any command that
  *    serializes on a FireForge lock (`withEngineSessionLock` for
  *    engine-mutating commands, `withPatchDirectoryLock` at command level
- *    for queue-mutating ones) must register `addWaitLockOption` AND appear
+ *    for queue-mutating ones) must register `addWaitLockOption` and appear
  *    in the expected list below.
  *
- * Set equality is asserted in BOTH directions, so a lock-taking command
+ * Set equality is asserted in both directions, so a lock-taking command
  * that forgets the flag fails here, and a newly flagged command that is
  * not added to the list fails here too (forcing a deliberate decision
  * instead of snapshot-regeneration drift).
@@ -23,7 +23,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createProgram } from '../cli.js';
 
-/** Fully-qualified command paths expected to HONOR `--wait-lock`. */
+/** Fully-qualified command paths expected to honor `--wait-lock`. */
 const EXPECTED_WAIT_LOCK_COMMANDS = [
   'build',
   'export',
@@ -40,7 +40,7 @@ const EXPECTED_WAIT_LOCK_COMMANDS = [
   'patch split',
   'patch compact',
   // These mutate patch state under the patch-directory lock, so they must
-  // HONOR the flag rather than carry the accept-and-ignore registration
+  // honor the flag rather than carry the accept-and-ignore registration
   // whose help text claims the command takes no FireForge lock.
   'patch tier',
   'patch lint-ignore',
@@ -106,8 +106,8 @@ describe('--wait-lock structural coverage', () => {
     );
     expect(ignored).not.toHaveLength(0);
     expect(ignored).toContain('status');
-    // `config` is a genuinely lock-free command — the right example for the
-    // accept-and-ignore half of the contract.
+    // `config` is a genuinely lock-free command, so it is the right example
+    // for the accept-and-ignore half of the contract.
     expect(ignored).toContain('config');
     // A lock-taking command must never be downgraded to the ignored form.
     for (const honoring of EXPECTED_WAIT_LOCK_COMMANDS) {

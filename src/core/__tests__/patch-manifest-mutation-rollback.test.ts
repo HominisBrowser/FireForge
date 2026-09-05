@@ -123,7 +123,7 @@ describe('removePatchFileAndManifest rollback', () => {
 
   it('throws PatchDeleteRollbackError when both delete and rollback fail', async () => {
     // Compound failure: the file delete fails, so the helper tries to
-    // restore the manifest — and the manifest restore also fails. A stderr
+    // restore the manifest, and that restore also fails. A stderr
     // warning alongside the original delete error makes the compound failure
     // invisible to programmatic callers, so a dedicated error type surfaces
     // both causes.
@@ -140,10 +140,10 @@ describe('removePatchFileAndManifest rollback', () => {
     vi.mocked(writeJson).mockImplementation(async (path: string, data: unknown) => {
       writeJsonCalls += 1;
       if (writeJsonCalls === 1) {
-        // First write is the row-removal commit — let it through.
+        // First write is the row-removal commit, so let it through.
         return actual.writeJson(path, data);
       }
-      // Second write is the rollback restore — fail it.
+      // Second write is the rollback restore, so fail it.
       throw new Error('simulated manifest rollback failure');
     });
 
@@ -160,7 +160,7 @@ describe('removePatchFileAndManifest rollback', () => {
 describe('renumberPatchesInManifest phase-3 rollback', () => {
   // Phase-3: phase 1 (stage) and phase 2 (stage → final) both succeed, and
   // then the final manifest save throws. Without the rollback the directory
-  // is fully renumbered while patches.json still records the old names — the
+  // is fully renumbered while patches.json still records the old names, the
   // exact drift the two-phase rename exists to prevent. Every completed
   // final rename is reversed before re-throwing, so the directory and
   // manifest stay in agreement even though the caller sees the save failure.
@@ -208,7 +208,7 @@ describe('renumberPatchesInManifest phase-3 rollback', () => {
       )
     ).rejects.toThrow('simulated manifest save failure');
 
-    // Disk: files must be back at their ORIGINAL names. If the rollback
+    // Disk: files must be back at their original names. If the rollback
     // short-circuited, we would see 005/006 on disk and 001/002 missing.
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
     expect(entries).toEqual(['001-infra-a.patch', '002-infra-b.patch']);

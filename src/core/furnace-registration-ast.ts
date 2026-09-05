@@ -35,7 +35,7 @@ import { validateRegistrationPlacement, validateTagName } from './furnace-regist
  *
  * Matches any of:
  *   1. `setElementCreationCallback("tag"` / `setElementCreationCallback('tag'`
- *   2. Single-line array entry: `["tag", "..."]` — column 0 only, comments allowed after
+ *   2. Single-line array entry: `["tag", "..."]` (column 0 only, comments allowed after)
  *   3. Multi-line array entry: `"tag",` on its own line, optional trailing `//` comment
  */
 export function isTagAlreadyRegistered(content: string, tagName: string): boolean {
@@ -73,11 +73,6 @@ function formatMarkerSuffix(markerComment: string | undefined): string {
   if (!markerComment) return '';
   return `  // ${markerComment}:`;
 }
-
-// Re-export from split modules so existing import sites continue working
-export { removeCustomElementRegistration } from './furnace-registration-remove.js';
-
-// Re-export constants so existing import sites continue working
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -333,8 +328,8 @@ function addRegistrationAST(
  * fails. Finds the last existing `["tag", "path"],` line in the appropriate
  * block and inserts the new entry after it in alphabetical order.
  *
- * This is intentionally less precise than the AST approach — it does not
- * validate indentation or multi-line format — but it is robust against
+ * This is intentionally less precise than the AST approach (it does not
+ * validate indentation or multi-line format), but it is robust against
  * upstream syntax changes that break the parser.
  */
 function addRegistrationRegexFallback(
@@ -417,7 +412,7 @@ function hasRecognizableRegistrationLoop(content: string): boolean {
  * ```
  *
  * New entries are inserted in alphabetical order relative to existing entries.
- * This operation is idempotent — if the tag is already registered the file is
+ * This operation is idempotent: if the tag is already registered the file is
  * left unchanged.
  *
  * @param engineDir - Path to the Firefox engine source root
@@ -440,14 +435,14 @@ export async function addCustomElementRegistration(
 
   // Idempotency: check column-0 of each array entry rather than a literal
   // substring match. A previous apply may have written this entry with
-  // trailing marker comments (see `options.markerComment`); matching on the
+  // trailing marker comments (see `options.markerComment`). Matching on the
   // full line would then miss it and insert a duplicate on re-apply, which
   // throws NotSupportedError at every window-load.
   if (isTagAlreadyRegistered(content, tagName)) {
     return;
   }
 
-  // Validate upfront — tag name errors must not fall through to the regex fallback.
+  // Validate upfront. Tag name errors must not fall through to the regex fallback.
   validateTagName(tagName);
 
   const isESModule = modulePath.endsWith('.mjs');
@@ -457,7 +452,7 @@ export async function addCustomElementRegistration(
   // right-hand side, and (for ESM tags) at least one such loop inside a
   // `document.addEventListener("DOMContentLoaded", ...)` block. If either
   // assumption is violated the AST path errors with a confusing
-  // "Could not find DOMContentLoaded block" message — fail fast here with
+  // "Could not find DOMContentLoaded block" message, so fail fast here with
   // actionable guidance instead.
   if (!hasRecognizableRegistrationLoop(content)) {
     throw new FurnaceError(
@@ -485,7 +480,7 @@ export async function addCustomElementRegistration(
     );
   } catch (error: unknown) {
     if (error instanceof FurnaceError) {
-      // AST structural errors (missing DOMContentLoaded block, etc.) — try regex fallback
+      // AST structural errors (missing DOMContentLoaded block, etc.): try regex fallback
       warn(
         `AST-based registration failed for ${tagName}: ${error.message}. ` +
           'Falling back to regex-based insertion. Please report this so the AST parser can be updated.'
@@ -578,7 +573,7 @@ export async function validateCustomElementRegistration(
   try {
     addRegistrationAST(content, tagName, modulePath, isESModule);
   } catch {
-    // Validation only — if AST fails, try regex to see if the entry could be placed
+    // Validation only: if AST fails, try regex to see if the entry could be placed
     addRegistrationRegexFallback(content, tagName, modulePath, isESModule);
   }
 }

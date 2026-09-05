@@ -2,18 +2,18 @@
 /**
  * Patch-owned overwrite warnings for `furnace apply`.
  *
- * For Furnace-managed components, apply OVERWRITES the deployed engine
+ * For Furnace-managed components, apply overwrites the deployed engine
  * copies with the `components/` sources. A fix made directly in `engine/` and
- * exported into a patch — but never back-ported to the component source — is
+ * exported into a patch (but never back-ported to the component source) is
  * silently undone by the next apply, and a plain drift line reads like
- * "someone's uncommitted work". This module detects that exact case BEFORE
- * the copy (deployed bytes differ from the component source AND the file is
+ * "someone's uncommitted work". This module detects that case before
+ * the copy (deployed bytes differ from the component source and the file is
  * patch-owned) and produces a per-file warning naming the file, the owning
  * patch, and the consequence.
  *
- * The per-file byte comparison already exists —
+ * The per-file byte comparison already exists:
  * `checkRegistrationConsistency` for custom components (fragment- and
- * ftl-aware) and the copy-candidate walk for overrides — so this module only
+ * ftl-aware) and the copy-candidate walk for overrides. This module only
  * surfaces what was previously computed and thrown away.
  */
 
@@ -24,13 +24,11 @@ import type { CustomComponentConfig, OverrideComponentConfig } from '../types/fu
 import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { getProjectPaths } from './config.js';
-import {
-  getOverrideEngineTargetPath,
-  isOverrideCopyCandidate,
-  isRegularFile,
-} from './furnace-apply-helpers.js';
+import { getOverrideEngineTargetPath, isOverrideCopyCandidate } from './furnace-apply-helpers.js';
 import { FTL_DIR } from './furnace-constants.js';
+import { isRegularFile } from './furnace-dir-entry.js';
 import { checkRegistrationConsistency } from './furnace-validate-registration.js';
 import { loadPatchesManifest } from './patch-manifest.js';
 import { buildPatchClaims } from './status-classify.js';
@@ -46,7 +44,7 @@ export interface PatchOwnedOverwriteWarning {
 
 /**
  * Loads the file → owning-patch map for the overwrite warning.
- * A missing or unreadable patches manifest degrades to an empty map — the
+ * A missing or unreadable patches manifest degrades to an empty map. The
  * warning is advisory and must never block an apply.
  */
 export async function loadPatchClaimsForApply(
@@ -122,7 +120,7 @@ async function findOverrideOverwrites(args: {
     const enginePath = getOverrideEngineTargetPath(engineDir, config, entry.name, ftlDir);
     // A missing target is a fresh deploy, not a lost engine edit.
     if (!(await pathExists(enginePath))) continue;
-    const engineRel = relative(engineDir, enginePath).replace(/\\/g, '/');
+    const engineRel = normalizePathSlashes(relative(engineDir, enginePath));
     const owners = patchClaims.get(engineRel);
     if (owners === undefined || owners.length === 0) continue;
     const [engineContent, sourceContent] = await Promise.all([
@@ -158,8 +156,8 @@ export type PatchOwnedOverwriteProbe =
 
 /**
  * Finds deployed files this component's apply is about to overwrite whose
- * engine bytes differ from the component source AND that are patch-owned.
- * Probe failures degrade to a verbose line and an empty list — the apply
+ * engine bytes differ from the component source and that are patch-owned.
+ * Probe failures degrade to a verbose line and an empty list. The apply
  * itself must not fail because the warning probe could not run.
  */
 export async function findPatchOwnedOverwrites(

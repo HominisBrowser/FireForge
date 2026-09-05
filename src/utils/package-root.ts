@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { getNodeErrorCode, toError } from './errors.js';
+import { parseObject } from './parse.js';
 import { isObject } from './validation.js';
 
 interface PackageMetadata {
@@ -12,25 +13,10 @@ interface PackageMetadata {
   bin?: unknown;
 }
 
-function validatePackageMetadata(data: unknown, filePath: string): PackageMetadata {
-  if (typeof data !== 'object' || data === null) {
-    throw new Error(`Invalid package metadata in ${filePath}: expected an object`);
-  }
-
-  const name = 'name' in data ? data.name : undefined;
-  const version = 'version' in data ? data.version : undefined;
-  if (typeof name !== 'string' || typeof version !== 'string') {
-    throw new Error(
-      `Invalid package metadata in ${filePath}: expected string "name" and "version" fields`
-    );
-  }
-
-  return { name, version, bin: 'bin' in data ? data.bin : undefined };
-}
-
 function readPackageMetadata(filePath: string): PackageMetadata {
   const raw = readFileSync(filePath, 'utf-8');
-  return validatePackageMetadata(JSON.parse(raw), filePath);
+  const parsed = parseObject(JSON.parse(raw), 'package.json');
+  return { name: parsed.string('name'), version: parsed.string('version'), bin: parsed.raw('bin') };
 }
 
 let cachedPackageRoot: string | undefined;
@@ -61,8 +47,8 @@ export function getPackageRoot(): string {
         return current;
       }
     } catch (error: unknown) {
-      // Absent package.json: keep walking. A package.json that EXISTS but
-      // fails to parse is a different animal — walking past it could bind
+      // Absent package.json: keep walking. A package.json that exists but
+      // fails to parse is a different case: walking past it could bind
       // to a wrong ancestor package (any parent exposing bin.fireforge) or
       // end in the unhelpful generic "could not locate" error, hiding the
       // actual syntax problem.

@@ -55,8 +55,8 @@ jobs:
       # The bump is committed BEFORE anything builds. `npm version
       # --no-git-tag-version` leaves package.json/package-lock.json modified
       # in the worktree, and prepack stamps dist/build-info.json from live
-      # git state — so publishing here used to ship a `.dirty` identity
-      # naming the PRE-bump commit, while the tag was created afterwards on
+      # git state, so publishing here used to ship a `.dirty` identity
+      # naming the pre-bump commit, while the tag was created afterwards on
       # a commit that was never built. Committing first makes the tree clean
       # at prepack, and makes the published `+g<sha>` the same commit the
       # tag below points at. Runs on dry-run too (the runner is ephemeral,

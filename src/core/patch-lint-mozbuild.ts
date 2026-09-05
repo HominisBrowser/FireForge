@@ -4,7 +4,7 @@
  *
  * mozbuild enforces alphabetical ordering on `StrictOrderingOnAppendList`
  * variables and raises `mozbuild.util.UnsortedError: … expected "X" but got
- * "Y"` — but only at CONFIGURE time, i.e. minutes into a `fireforge build`
+ * "Y"`, but only at configure time, i.e. minutes into a `fireforge build`
  * or `fireforge test --build` dispatch. This check reads the patched
  * `moz.build` files from the engine tree (the working tree carries the
  * applied patch state, same as every other per-patch rule) and reports the
@@ -20,8 +20,8 @@ import { mozbuildSortCompare } from './moz-manifest-helpers.js';
 /**
  * moz.build list variables mozbuild declares as `StrictOrderingOnAppendList`
  * (python/mozbuild/mozbuild/frontend/context.py). configure raises
- * `UnsortedError` on append when out of order. `DIRS` is deliberately absent
- * — directory order is meaningful and not strict-ordered. Dotted namespaces
+ * `UnsortedError` on append when out of order. `DIRS` is absent on purpose:
+ * directory order is meaningful and not strict-ordered. Dotted namespaces
  * (`EXTRA_JS_MODULES.<subdir>`, `EXPORTS.<ns>`) inherit strict ordering
  * from their parent variable.
  */
@@ -53,7 +53,7 @@ interface MozBuildListOccurrence {
  */
 /**
  * True when `line` contains a `]` outside any quoted span. A bracket inside an
- * item (`"icons[2x].png"`) is filename text, not the list's close — reading it
+ * item (`"icons[2x].png"`) is filename text, not the list's close. Reading it
  * as one truncated the item set and left every later item unchecked.
  */
 function hasUnquotedCloseBracket(line: string): boolean {
@@ -98,8 +98,8 @@ function stripMozBuildComment(line: string): string {
  * - a quoted string in a trailing comment would otherwise be scraped in as a
  *   phantom list item (`"Zeta.cpp",  # replaces "Beta.cpp"` yielding a
  *   `Beta.cpp` entry), so the sort check reports an unsorted list naming a
- *   file that is not in it — with a fingerprint that can never stabilise,
- *   because the item does not exist to be moved;
+ *   file that is not in it, with a fingerprint that can never stabilise,
+ *   because the item does not exist to be moved.
  * - a `]` anywhere in a comment (`# see foo[0]`) would close the list early
  *   and silently truncate the item set.
  *
@@ -107,9 +107,9 @@ function stripMozBuildComment(line: string): string {
  * list would otherwise consume the rest of the file and skip every later
  * list in it.
  *
- * Nor does an unterminated list borrow the NEXT list's bracket. The forward
- * scan stops at the next list opener rather than reading through it —
- * otherwise an unclosed `EXTRA_COMPONENTS` swallows the following
+ * Nor does an unterminated list borrow the next list's bracket. The forward
+ * scan stops at the next list opener rather than reading through it.
+ * Otherwise an unclosed `EXTRA_COMPONENTS` swallows the following
  * `EXTRA_JS_MODULES`, merging its items into the first list and accepting
  * its `]` as the first list's close, reporting a sorting error against a
  * variable that never contained those items.
@@ -157,7 +157,7 @@ function collectStrictOrderedLists(content: string): MozBuildListOccurrence[] {
     }
     if (closed) {
       occurrences.push({ varName, items });
-      // Resume after the list we just consumed; a list that never closed
+      // Resume after the list we just consumed. A list that never closed
       // leaves `i` untouched so the next line is still examined.
       i = cursor;
     }

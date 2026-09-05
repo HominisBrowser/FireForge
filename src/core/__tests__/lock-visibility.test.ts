@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * The engine-session lock was correct but INVISIBLE. Operators under
+ * The engine-session lock was correct but invisible. Operators under
  * several concurrent sessions inferred queue state from `ps` and their own
  * wait lines.
  */

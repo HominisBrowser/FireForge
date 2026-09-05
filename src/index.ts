@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * FireForge — a toolkit for building and maintaining Firefox-based browsers.
+ * FireForge: a toolkit for building and maintaining Firefox-based browsers.
  *
  * This module re-exports the public API surface used by downstream consumers.
  * For CLI usage, see `bin/fireforge.ts`.
  *
- * **Stability:** Pre-1.0. The exports listed here are functional and tested,
+ * Stability: pre-1.0. The exports listed here are functional and tested,
  * but may change between minor versions until 1.0 is released. Pin to an
  * exact version if you depend on the programmatic API.
  *
- * **What belongs here:** a type earns a place on this surface only if it is
- * reachable from the signature of an exported VALUE — i.e. a consumer needs
+ * What belongs here: a type earns a place on this surface only if it is
+ * reachable from the signature of an exported value, i.e. a consumer needs
  * it to name an argument or a return. Everything else stays internal to
  * `src/types/`.
  *

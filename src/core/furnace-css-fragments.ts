@@ -10,8 +10,8 @@
  *     @fireforge-include shared-anims.css
  *
  * naming a fragment file in `components/shared/`. `furnace deploy` expands
- * the fragment into the *deployed* copy only — the workspace source stays
- * DRY — fencing the expansion between the directive line and a matching
+ * the fragment into the *deployed* copy only (the workspace source stays
+ * DRY), fencing the expansion between the directive line and a matching
  * `@fireforge-end-include` marker so re-deploys can refresh it idempotently.
  *
  * Drift contract: the apply fast-path and `furnace validate` compare the
@@ -29,7 +29,7 @@ import { copyFile, pathExists, readText, writeText } from '../utils/fs.js';
 
 export { SHARED_FRAGMENTS_DIR } from './furnace-config.js';
 
-// Local copy of the directory name for message text — importing the
+// Local copy of the directory name for message text. Importing the
 // binding for value use keeps a single source of truth.
 import { SHARED_FRAGMENTS_DIR } from './furnace-config.js';
 
@@ -48,7 +48,7 @@ export function listFragmentIncludes(css: string): string[] {
 
 /**
  * Collapses fenced fragment expansions back to their bare directives.
- * Inverse of {@link expandCssFragments}; used to compare a deployed file
+ * Inverse of {@link expandCssFragments}. Used to compare a deployed file
  * against its workspace source and to re-expand idempotently.
  */
 export function stripExpandedFragments(css: string): string {
@@ -60,8 +60,8 @@ export function stripExpandedFragments(css: string): string {
     const inc = INCLUDE_PATTERN.exec(line);
     if (!inc?.[1]) continue;
     // A bare directive (workspace file) has no fence to strip. Only skip
-    // the expansion body when a matching end marker actually follows —
-    // otherwise an unterminated fence would silently eat the rest of the
+    // the expansion body when a matching end marker actually follows.
+    // Otherwise an unterminated fence would silently eat the rest of the
     // file.
     let endIndex = -1;
     for (let j = i + 1; j < lines.length; j++) {
@@ -157,7 +157,7 @@ export function extractExpandedFragmentBodies(css: string): Map<string, string> 
 
 /**
  * Deploys one component file: CSS sources carrying include directives are
- * written as their fragment-expanded form; everything else is a plain
+ * written as their fragment-expanded form. Everything else is a plain
  * copy. Extracted here so `applyCustomComponent` stays inside the
  * per-file line budget.
  *
@@ -200,8 +200,8 @@ export async function describeFragmentExpansion(src: string): Promise<string> {
  * @param componentDir - Workspace directory of the component
  * @param tagName - Component tag name for issue attribution
  * @param sharedDir - Shared fragments directory
- * @param engineTargetDir - Deployed directory in the engine (optional —
- *   pre-deploy validation skips the staleness check)
+ * @param engineTargetDir - Deployed directory in the engine. Optional, and
+ *   pre-deploy validation skips the staleness check.
  */
 export async function validateCssFragments(
   componentDir: string,
@@ -218,8 +218,8 @@ export async function validateCssFragments(
   try {
     entries = await readdir(componentDir);
   } catch {
-    // An unreadable component directory contributes no fragment issues; return
-    // what has been collected so far rather than failing validation.
+    // An unreadable component directory contributes no fragment issues.
+    // Return what has been collected so far rather than failing validation.
     return issues;
   }
   for (const fileName of entries) {

@@ -30,6 +30,7 @@ import type { DownloadOptions } from '../types/commands/index.js';
 import type { FirefoxProduct } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { checkDiskSpace, ensureDir, pathExists, pathExistsStrict, removeDir } from '../utils/fs.js';
+import type { SpinnerHandle } from '../utils/logger.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 
@@ -54,9 +55,9 @@ async function getPatchTouchedFiles(patchesDir: string): Promise<Set<string>> {
 
 /**
  * Outcome of {@link cleanPatchTouchedFiles}. `restored` is the number of
- * dirty patch-touched files that were reset to HEAD; `preserved` is the
+ * dirty patch-touched files that were reset to HEAD. `preserved` is the
  * number that were dirty before the download started and were left alone.
- * A `hadQueue: false` result means the project has no patches — callers
+ * A `hadQueue: false` result means the project has no patches, so callers
  * can use that to avoid printing "Patch-touched files restored" on a
  * workspace that has never exported a patch.
  */
@@ -118,7 +119,7 @@ async function cleanPatchTouchedFiles(
  * Prints a one-line nudge pointing at `fireforge import` when the project
  * carries a non-empty patch queue but the just-downloaded engine has not yet
  * had any patches applied. The post-download spinner closes with
- * "Patch-touched files already match baseline" because a fresh tree IS at
+ * "Patch-touched files already match baseline" because a fresh tree is at
  * baseline, which reads as "patches are restored" and invites skipping the
  * import step. Suppressed when patches/ is missing or the manifest is empty
  * so unconfigured projects stay quiet.
@@ -135,15 +136,13 @@ async function noteUnappliedPatches(patchesDir: string): Promise<void> {
 
 /**
  * Stops `restoreSpinner` with a message that reflects what actually
- * happened. Three branches: empty queue → explicit no-op; queue present but
- * nothing dirty → "already clean"; queue with dirty files → the usual
- * "Patch-touched files restored" success line. Always closing with the third
- * claims restore work that did not happen on a project with zero patches.
+ * happened. Three branches. An empty queue gives an explicit no-op. A queue
+ * that is present but has nothing dirty gives "already clean". A queue with
+ * dirty files gives the usual "Patch-touched files restored" success line.
+ * Always closing with the third claims restore work that did not happen on a
+ * project with zero patches.
  */
-function closeRestoreSpinner(
-  restoreSpinner: ReturnType<typeof spinner>,
-  result: CleanPatchResult
-): void {
+function closeRestoreSpinner(restoreSpinner: SpinnerHandle, result: CleanPatchResult): void {
   if (!result.hadQueue) {
     restoreSpinner.stop('No patches in queue — nothing to restore');
     return;
@@ -153,12 +152,6 @@ function closeRestoreSpinner(
     return;
   }
   restoreSpinner.stop('Patch-touched files restored');
-}
-
-async function clearStaleFurnaceApplyState(projectRoot: string): Promise<void> {
-  // --force installs a new baseCommit, which invalidates every applied
-  // checksum in furnace-state.json.
-  await clearAppliedFurnaceState(projectRoot);
 }
 
 async function activateReplacementEngine(args: {
@@ -218,19 +211,21 @@ async function downloadAndExtractFirefox(args: {
   cacheDir: string;
   sha256?: string;
   candidate?: string;
+  allowUnverifiedDownload?: boolean;
 }): Promise<void> {
-  const { version, product, engineDir, cacheDir, sha256, candidate } = args;
+  const { version, product, engineDir, cacheDir, sha256, candidate, allowUnverifiedDownload } =
+    args;
   let s = spinner(`Downloading Firefox ${version}...`);
   let lastPercent = 0;
   const phaseState: { value: 'download' | 'extract' } = { value: 'download' };
 
   try {
-    await downloadFirefoxSource(
-      version,
-      product,
-      engineDir,
-      cacheDir,
-      (downloaded, total) => {
+    await downloadFirefoxSource({
+      version: version,
+      product: product,
+      destDir: engineDir,
+      cacheDir: cacheDir,
+      onProgress: (downloaded, total) => {
         if (total <= 0) return;
         const percent = Math.floor((downloaded / total) * 100);
         if (percent !== lastPercent && percent % 5 === 0) {
@@ -240,7 +235,7 @@ async function downloadAndExtractFirefox(args: {
           lastPercent = percent;
         }
       },
-      (phase) => {
+      onPhase: (phase) => {
         if (phase === 'extract' && phaseState.value === 'download') {
           s.stop(`Firefox ${version} downloaded`);
           phaseState.value = 'extract';
@@ -249,12 +244,13 @@ async function downloadAndExtractFirefox(args: {
           );
         }
       },
-      sha256,
-      (message) => {
+      expectedSha256: sha256,
+      onPhaseProgress: (message) => {
         s.message(message);
       },
-      candidate
-    );
+      candidate: candidate,
+      integrity: allowUnverifiedDownload === undefined ? undefined : { allowUnverifiedDownload },
+    });
 
     s.stop(
       phaseState.value === 'extract'
@@ -269,7 +265,7 @@ async function downloadAndExtractFirefox(args: {
 
 /**
  * Prints the major-version-hop toolchain nudge when this download moved the
- * engine across a Firefox MAJOR version — the first post-hop build otherwise
+ * engine across a Firefox major version. The first post-hop build otherwise
  * dies in `mach configure` on a moved cbindgen minimum with nothing in the
  * download output suggesting `fireforge bootstrap`. Quiet on first downloads
  * and same-major re-downloads.
@@ -340,7 +336,9 @@ async function initializeDownloadedEngine(args: {
     }
 
     if (replacementActivated) {
-      await clearStaleFurnaceApplyState(projectRoot);
+      // --force installs a new baseCommit, which invalidates every applied
+      // checksum in furnace-state.json.
+      await clearAppliedFurnaceState(projectRoot);
     }
 
     await updateState(projectRoot, {
@@ -382,7 +380,7 @@ export async function downloadCommand(
   const config = await loadConfig(projectRoot),
     version = config.firefox.version;
   const paths = getProjectPaths(projectRoot);
-  // Captured BEFORE any state update so the post-download major-hop
+  // Captured before any state update so the post-download major-hop
   // notice compares against what was actually on disk until now.
   const previousVersion = (await loadState(projectRoot)).downloadedVersion;
 
@@ -393,7 +391,7 @@ export async function downloadCommand(
   // A legitimate holder of this lock runs for 10+ minutes (download +
   // extract + git indexing). A 30 s timeout fails the second invocation with
   // "remove the lock directory if it is stale" advice while the lock is
-  // actively held — dangerous guidance mid-extraction. Wait generously
+  // actively held, which is dangerous guidance mid-extraction. Wait generously
   // instead: a dead holder is reaped within seconds by the PID-based stale
   // probe, so a long timeout only ever waits on real work.
   const downloadLockOptions = {
@@ -411,7 +409,7 @@ export async function downloadCommand(
       // Reclaim multi-GB partial trees left behind by interrupted runs.
       // Safe under the download lock: any `.tmp-*`/`.replacement-*` dir
       // present now is orphaned, since live ones only exist while a
-      // download holds this lock. `.backup-*` dirs are NOT swept — a
+      // download holds this lock. `.backup-*` dirs are not swept: a
       // backup can hold the previous engine after a failed forced
       // replacement and is the operator's recovery copy.
       const sweptDirs = await sweepOrphanedEngineWorkDirs(paths.engine);
@@ -434,7 +432,8 @@ export async function downloadCommand(
               await getHead(paths.engine);
             } catch (error: unknown) {
               if (isMissingHeadError(error)) {
-                // Partial init detected — attempt to resume instead of requiring --force
+                // Partial init detected. Attempt to resume instead of
+                // requiring --force.
                 info('Detected partially initialized engine. Attempting to resume...');
 
                 // Snapshot patch-touched files that are already dirty so we
@@ -461,7 +460,7 @@ export async function downloadCommand(
                   const baseCommit = await getHead(paths.engine);
                   resumeSpinner.stop('Git repository resumed successfully');
 
-                  // Restore patch-touched files BEFORE stamping state. If this
+                  // Restore patch-touched files before stamping state. If this
                   // step fails (disk full, permission denied, git object issue),
                   // state.json keeps the previous downloadedVersion so the
                   // invariant "state.downloadedVersion matches a clean engine"
@@ -482,7 +481,7 @@ export async function downloadCommand(
                   return;
                 } catch (error: unknown) {
                   resumeSpinner.error('Resume failed');
-                  // Preserve the underlying cause so the operator sees *why*
+                  // Preserve the underlying cause so the operator sees why
                   // the resume failed (timeout, permission denied, corrupted
                   // object, disk full) instead of only the generic "partial
                   // engine exists" story. The cause reaches them through the
@@ -495,7 +494,7 @@ export async function downloadCommand(
               // Re-throw unexpected git errors (corrupted objects, permission
               // denied, …) wrapped in PartialEngineExistsError so the user sees
               // both narratives: "we detected a partial engine and attempted
-              // resume" AND the underlying git failure. Without the wrap the
+              // resume" and the underlying git failure. Without the wrap the
               // raw git error loses the context that resume was in flight.
               throw new PartialEngineExistsError(paths.engine, toError(error));
             }
@@ -525,6 +524,9 @@ export async function downloadCommand(
           ...(config.firefox.sha256 !== undefined ? { sha256: config.firefox.sha256 } : {}),
           ...(config.firefox.candidate !== undefined
             ? { candidate: config.firefox.candidate }
+            : {}),
+          ...(config.firefox.allowUnverifiedDownload !== undefined
+            ? { allowUnverifiedDownload: config.firefox.allowUnverifiedDownload }
             : {}),
         });
 

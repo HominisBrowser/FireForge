@@ -83,7 +83,7 @@ async function clearPendingRepairMarker(projectRoot: string): Promise<void> {
  * `stock` and name is the tag name.
  *
  * Stock components are never checksummed by apply, so they never appear
- * in the state file — any stock-prefixed entry is automatically stale.
+ * in the state file, so any stock-prefixed entry is automatically stale.
  */
 function collectStaleChecksumKeys(
   appliedChecksums: Record<string, string>,
@@ -143,7 +143,7 @@ async function collectFurnaceDrift(
         drifted.push(name);
       }
     } catch {
-      // Drift check throws on unreadable paths; treat as drift so the
+      // Drift check throws on unreadable paths. Treat as drift so the
       // operator is told to run apply rather than swallowing the error.
       drifted.push(name);
     }
@@ -162,9 +162,9 @@ async function collectFurnaceDrift(
         drifted.push(name);
       }
     } catch {
-      // A drift probe that cannot complete is reported AS drift: the doctor check
-      // must not claim a component is clean when it failed to look. Mirrors the
-      // documented twin above.
+      // A drift probe that cannot complete is reported as drift: the doctor
+      // check must not claim a component is clean when it failed to look.
+      // Mirrors the documented twin above.
       drifted.push(name);
     }
   }
@@ -233,7 +233,7 @@ const furnaceStateConsistencyCheck: DoctorCheckDefinition = {
 
     const ghostSet = new Set<string>();
     for (const key of staleKeys) {
-      // Keys look like "override/<name>/<file>" — the ghost component is
+      // Keys look like "override/<name>/<file>", so the ghost component is
       // the first two segments joined for display purposes.
       const segments = key.split('/');
       if (segments.length >= 2) {
@@ -282,14 +282,14 @@ const furnaceStateConsistencyCheck: DoctorCheckDefinition = {
 
 /**
  * "Furnace engine state" check: detect the `pendingRepair` marker set by
- * a failed preview teardown AND any on-disk drift between the workspace
+ * a failed preview teardown and any on-disk drift between the workspace
  * and the engine. Repair runs `applyAllComponents` to reconcile and
  * clears the marker on success.
  */
 const furnaceEngineStateCheck: DoctorCheckDefinition = {
   name: 'Furnace engine state',
   dependsOn: ['Furnace configuration'],
-  // Requires both a furnace project AND an engine checkout — the drift
+  // Requires both a furnace project and an engine checkout: the drift
   // oracles resolve engine paths, so a missing engine dir would throw.
   skipIf: (ctx) => !ctx.furnaceConfigExists || !ctx.furnaceConfig || !ctx.engineExists,
   run: async (ctx) => {
@@ -386,9 +386,9 @@ const furnaceEngineStateCheck: DoctorCheckDefinition = {
 
     // Repair path: run apply to reconcile the engine with the workspace
     // state, then clear the pendingRepair marker on success. We re-run
-    // apply even when only the marker is set — the marker exists
-    // specifically because the last mutation could not clean up, so the
-    // cheapest honest thing we can do is re-reconcile end-to-end.
+    // apply even when only the marker is set. The marker exists
+    // specifically because the last mutation could not clean up, so
+    // re-reconciling end-to-end is the cheapest honest thing to do.
     try {
       const applyResult = await runRepairApply(ctx.projectRoot);
       const totalFailures = countApplyFailures(applyResult);
@@ -401,7 +401,7 @@ const furnaceEngineStateCheck: DoctorCheckDefinition = {
         );
       }
 
-      // Apply succeeded — clear the pendingRepair marker so subsequent
+      // Apply succeeded, so clear the pendingRepair marker so subsequent
       // doctor runs stop reporting the issue. updateFurnaceState merges
       // its return value via `validateFurnaceState` which simply writes
       // whatever object we return, so dropping the key from the spread
@@ -476,9 +476,9 @@ const furnaceEnginePathsCheck: DoctorCheckDefinition = {
 /**
  * Furnace Storybook backend check: verifies that the engine contains the
  * Storybook workspace required by `furnace preview`. Missing Storybook
- * support is a warning, not a failure, since furnace works fine without
- * preview — but operators should know upfront rather than discovering it
- * mid-command.
+ * support is a warning rather than a failure, since furnace works fine
+ * without preview. Operators should still know upfront rather than
+ * discovering it mid-command.
  */
 const furnaceStorybookCheck: DoctorCheckDefinition = {
   name: 'Furnace Storybook backend',
@@ -565,7 +565,7 @@ const furnaceComponentValidationCheck: DoctorCheckDefinition = {
 /**
  * Reads the owner PID from a furnace lock directory. Returns `null` when
  * the PID file is missing, unreadable, or does not parse as a finite
- * integer — the caller then falls back to an age-only heuristic.
+ * integer. The caller then falls back to an age-only heuristic.
  */
 async function readFurnaceLockPid(lockPath: string): Promise<number | null> {
   try {
@@ -586,10 +586,10 @@ async function readFurnaceLockPid(lockPath: string): Promise<number | null> {
  *
  * This is the recovery path when the signal-handler sweep
  * (`forceReleaseFurnaceLocksForActiveOperations` in `bin/fireforge.ts`)
- * misses — a SIGKILL'd process that never ran the handler, or a lock created
+ * misses: a SIGKILL'd process that never ran the handler, or a lock created
  * by an older FireForge release without a PID file. SIGINT'ing `furnace
  * preview` leaves the lock behind, and the next `fireforge test --build`
- * then times out waiting for it; `doctor --repair-furnace` clears it so the
+ * then times out waiting for it. `doctor --repair-furnace` clears it so the
  * next command runs immediately.
  */
 const furnaceStaleLockCheck: DoctorCheckDefinition = {
@@ -609,12 +609,12 @@ const furnaceStaleLockCheck: DoctorCheckDefinition = {
 
     // Two signals mark a lock as stale:
     //   1. PID file says owner is dead → unambiguous, remove immediately.
-    //   2. PID file absent AND lock is older than 60s → older FireForge
+    //   2. PID file absent and lock is older than 60s → older FireForge
     //      releases (or an externally-created lock directory) fall into this
-    //      bucket; the age gate avoids false positives on a lock just
+    //      bucket. The age gate avoids false positives on a lock just
     //      acquired by a concurrent process that has not written its PID yet.
     //
-    // `isProcessAlive` treats EPERM as ALIVE. Returning false for EPERM
+    // `isProcessAlive` treats EPERM as alive. Returning false for EPERM
     // reports a furnace lock held by a live process owned by another uid as
     // "owner is no longer running", and --repair-furnace then deletes it,
     // dropping mutual exclusion under a concurrent furnace operation.
@@ -623,7 +623,7 @@ const furnaceStaleLockCheck: DoctorCheckDefinition = {
     const isStale = ownerDead || pidMissingAndOld;
 
     if (!isStale) {
-      // Lock is held by a running FireForge process — nothing to report.
+      // Lock is held by a running FireForge process, so nothing to report.
       return ok('Furnace lock');
     }
 

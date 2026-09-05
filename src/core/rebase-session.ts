@@ -33,11 +33,11 @@ export type RebasePatchStatus =
  * A discriminated union on `status`, so a payload can only be present on the
  * status it belongs to. A flat-optionals shape makes
  * `{ status: 'resolved', error, conflictingFiles }` representable, and
- * `rebase --continue` will write it — flipping the status without clearing
+ * `rebase --continue` will write it, flipping the status without clearing
  * the failure payload, then persisting that to the session file.
  *
- * The on-disk validator (`isValidPatchEntry`) is deliberately NOT tightened
- * to match. The session file carries no schema version, so a stricter
+ * The on-disk validator (`isValidPatchEntry`) is not tightened to
+ * match, on purpose. The session file carries no schema version, so a stricter
  * validator would reject an older file mid-rebase, where the only remedies
  * discard the operator's in-progress conflict resolution. Instead
  * {@link normalizeEntry} drops payload that does not belong to the status on
@@ -72,7 +72,8 @@ export interface RebaseSession {
 
 const SESSION_FILENAME = 'rebase-session.json';
 
-function sessionPath(projectRoot: string): string {
+/** Absolute path of the session file, for messages that must name it. */
+export function getRebaseSessionPath(projectRoot: string): string {
   return join(getProjectPaths(projectRoot).fireforgeDir, SESSION_FILENAME);
 }
 
@@ -89,9 +90,9 @@ const REBASE_PATCH_STATUSES: readonly RebasePatchStatus[] = [
 /**
  * Drops payload that does not belong to an entry's status.
  *
- * Applied on read so a session written by an older FireForge — where
+ * Applied on read so a session written by an older FireForge, where
  * `rebase --continue` left `error`/`conflictingFiles` on a now-`resolved`
- * entry — loads cleanly and is corrected, instead of being refused by a
+ * entry, loads cleanly and is corrected, instead of being refused by a
  * stricter validator mid-rebase.
  *
  * @param entry - A structurally valid entry, possibly carrying stale payload
@@ -132,26 +133,26 @@ function isValidOptionalProduct(value: unknown): boolean {
 
 /**
  * Validates a session file against the shape the rebase commands actually
- * consume — not merely against broad field types.
+ * consume, not merely against broad field types.
  *
  * A looser predicate that checks six `typeof`s and nothing else admits
  * sessions the resume path then acts on. `patches: [null]` reaches
  * `patch-loop.ts`, which reads `.filename` off each entry and hands it to
  * `stampPatchVersions`. A `currentIndex` of `NaN` (legal for
  * `typeof === 'number'`) makes the resume loop run zero iterations and
- * report success; a negative one indexes out of range in `continue.ts`.
+ * report success. A negative one indexes out of range in `continue.ts`.
  * `toVersion: ""` passes `isString` and is stamped verbatim onto every
  * Furnace override's `baseVersion`. `fromProduct`/`toProduct` go unchecked
  * despite being typed `FirefoxProduct`.
  *
  * The session file is written only by `rebase/index.ts` from validated CLI
  * and config values, so every one of these is a corrupt-file or hand-edit
- * case — which is exactly what this predicate exists to catch.
+ * case, which is exactly what this predicate exists to catch.
  */
 function isValidSession(data: unknown): data is RebaseSession {
   if (!isObject(data)) return false;
   if (!isString(data['startedAt']) || Number.isNaN(Date.parse(data['startedAt']))) return false;
-  // 4 is git's own minimum abbreviation length; 40/64 are full SHA-1/SHA-256.
+  // 4 is git's own minimum abbreviation length. 40/64 are full SHA-1/SHA-256.
   if (!isString(data['preRebaseCommit']) || !/^[0-9a-f]{4,64}$/i.test(data['preRebaseCommit'])) {
     return false;
   }
@@ -177,9 +178,9 @@ function isValidSession(data: unknown): data is RebaseSession {
  * discriminated-union form rather than collapsing three states into `null`.
  *
  * Distinguishing `present: false` from `present: true, valid: false` is
- * load-bearing. Collapsing both to `null` while reporting liveness from
+ * important. Collapsing both to `null` while reporting liveness from
  * `pathExists` alone wedges the operator in a closed cycle: `rebase` says
- * "already in progress — use --continue or --abort", and both of those say
+ * "already in progress, use --continue or --abort", and both of those say
  * "no rebase session in progress", with no CLI path deleting the file and no
  * message naming it.
  */
@@ -187,11 +188,6 @@ export type RebaseSessionRead =
   | { present: false }
   | { present: true; valid: true; session: RebaseSession }
   | { present: true; valid: false; reason: string };
-
-/** Absolute path of the session file, for messages that must name it. */
-export function getRebaseSessionPath(projectRoot: string): string {
-  return sessionPath(projectRoot);
-}
 
 /**
  * Reads the session file, reporting absent, valid, and corrupt as three
@@ -203,11 +199,11 @@ export function getRebaseSessionPath(projectRoot: string): string {
  * that read mean `absent`. A pathExists pre-probe both races deletion (a
  * file removed between probe and read misreports an absent session as
  * corrupt) and swallows EACCES (an unreadable `.fireforge/` misreports a
- * session as absent) — the same failure `readTreeMarker` avoids for tree
- * markers.
+ * session as absent). It is the same failure `readTreeMarker` avoids for
+ * tree markers.
  */
 export async function readRebaseSession(projectRoot: string): Promise<RebaseSessionRead> {
-  const path = sessionPath(projectRoot);
+  const path = getRebaseSessionPath(projectRoot);
 
   let data: unknown;
   try {
@@ -234,23 +230,13 @@ export async function readRebaseSession(projectRoot: string): Promise<RebaseSess
 }
 
 /**
- * Loads an existing rebase session, or returns `null` when none exists or the
- * file on disk is unusable. Callers that must tell those two apart — every
- * command that reports to an operator — should use {@link readRebaseSession}.
- */
-export async function tryReadRebaseSession(projectRoot: string): Promise<RebaseSession | null> {
-  const result = await readRebaseSession(projectRoot);
-  return result.present && result.valid ? result.session : null;
-}
-
-/**
  * Persists a rebase session atomically.
  */
 export async function saveRebaseSession(
   projectRoot: string,
   session: RebaseSession
 ): Promise<void> {
-  const path = sessionPath(projectRoot);
+  const path = getRebaseSessionPath(projectRoot);
   await withFileLock(createSiblingLockPath(path, '.rebase-session.lock'), async () => {
     await writeJson(path, session);
   });
@@ -260,7 +246,7 @@ export async function saveRebaseSession(
  * Removes the rebase session file.
  */
 export async function clearRebaseSession(projectRoot: string): Promise<void> {
-  const path = sessionPath(projectRoot);
+  const path = getRebaseSessionPath(projectRoot);
   if (await pathExists(path)) {
     await removeFile(path);
   }

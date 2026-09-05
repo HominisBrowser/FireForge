@@ -3,7 +3,7 @@
  * FireForge's read-only git plumbing must not write the primary checkout's
  * `.git/index`.
  *
- * These run against a REAL git repository on purpose. The defect is a
+ * These run against a real git repository on purpose. The defect is a
  * side effect of git itself (a `status`/`diff` stat-cache refresh rewrites
  * `.git/index`), so nothing short of observing the real index file proves
  * the fix.
@@ -16,8 +16,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createTempProject, initCommittedRepo, removeTempProject } from '../../test-utils/index.js';
 import { getAllDiff } from '../git-diff.js';
 import {
-  hasReadOnlyGitIndexScope,
   mintDisposableGitIndex,
+  readOnlyGitIndexEnv,
   withPrivateGitIndex,
 } from '../git-readonly-index.js';
 import { getWorkingTreeStatus } from '../git-status.js';
@@ -59,7 +59,7 @@ describe('withPrivateGitIndex', () => {
     const before = await stat(indexPath);
 
     await withPrivateGitIndex(repoDir, async () => {
-      expect(hasReadOnlyGitIndexScope()).toBe(true);
+      expect(readOnlyGitIndexEnv(repoDir)).toBeDefined();
       await getWorkingTreeStatus(repoDir);
       await getAllDiff(repoDir);
     });
@@ -71,7 +71,7 @@ describe('withPrivateGitIndex', () => {
 
   it('still reports the same working-tree facts through the private index', async () => {
     await writeFile(join(repoDir, 'browser/b.js'), 'const b = 3;\n');
-    // `const b = 2;` -> `const b = 3;` is the SAME SIZE, written within the
+    // `const b = 2;` -> `const b = 3;` is the same size, written within the
     // same second as the index entry. Git's racy-clean heuristic can then
     // treat the file as unmodified without reading its content, so the scoped
     // and unscoped probes could disagree. The sibling test above already
@@ -98,7 +98,7 @@ describe('withPrivateGitIndex', () => {
     await expect(
       withPrivateGitIndex(repoDir, () => Promise.reject(new Error('boom')))
     ).rejects.toThrow('boom');
-    expect(hasReadOnlyGitIndexScope()).toBe(false);
+    expect(readOnlyGitIndexEnv(repoDir)).toBeUndefined();
   });
 
   it('fails open on a directory that is not a git checkout', async () => {
@@ -106,7 +106,7 @@ describe('withPrivateGitIndex', () => {
     await createTempProject('unused-');
     await writeFile(join(projectRoot, 'plain.txt'), 'x\n');
     await expect(withPrivateGitIndex(notARepo, () => Promise.resolve('ran'))).resolves.toBe('ran');
-    expect(hasReadOnlyGitIndexScope()).toBe(false);
+    expect(readOnlyGitIndexEnv(notARepo)).toBeUndefined();
   });
 });
 
@@ -130,7 +130,7 @@ describe('mintDisposableGitIndex', () => {
     expect(minted).toBeDefined();
     const indexFile = minted?.env['GIT_INDEX_FILE'];
     expect(indexFile).toBeDefined();
-    // Seeded from the repo's own index — an empty one would make a tracked,
+    // Seeded from the repo's own index. An empty one would make a tracked,
     // unmodified file look like a fresh add.
     await expect(access(indexFile ?? '')).resolves.toBeUndefined();
 

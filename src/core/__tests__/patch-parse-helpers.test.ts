@@ -32,7 +32,7 @@ const MULTI_HUNK_PATCH = [
   '',
 ].join('\n');
 
-describe('patch parse helper coverage', () => {
+describe('patch parsing — order, hunks, and diff headers', () => {
   it('extracts numeric patch order and falls back to Infinity for non-prefixed names', () => {
     expect(extractOrder('001-test.patch')).toBe(1);
     expect(extractOrder('patch.patch')).toBe(Number.POSITIVE_INFINITY);
@@ -220,7 +220,7 @@ describe('patch parse helper coverage', () => {
 
   it('parses a CRLF-saved patch file identically to its LF twin', () => {
     // A patch file saved with CRLF endings (Windows editor, autocrlf
-    // checkout) has \r on EVERY line. The historical '\n'-only walkers
+    // checkout) has \r on every line. The historical '\n'-only walkers
     // failed target-file matching (captured path kept the trailing \r)
     // and never saw the `\ No newline` marker.
     const crlfPatch = MULTI_HUNK_PATCH.split('\n').join('\r\n');
@@ -262,7 +262,7 @@ describe('patch parse helper coverage', () => {
   });
 
   it('splits an unquoted header whose path itself contains " b/"', () => {
-    // The historical greedy regex split at the LAST ' b/', truncating the
+    // The historical greedy regex split at the last ' b/', truncating the
     // path to 'x.js'. The symmetric split recovers the real path.
     expect(parseDiffGitHeader('diff --git a/lib b/x.js b/lib b/x.js')).toEqual({
       sourcePath: 'lib b/x.js',
@@ -277,7 +277,8 @@ describe('patch parse helper coverage', () => {
       'index 0000000..1111111',
       'GIT binary patch',
       'literal 5',
-      // base85 payload legitimately starts with '+' — must not parse as an added line.
+      // base85 payload legitimately starts with '+', so it must not parse
+      // as an added line.
       '+K}0e#0ssI2',
       '',
       'diff --git a/readme.txt b/readme.txt',
@@ -331,7 +332,8 @@ describe('patch parse helper coverage', () => {
       indexNewHash: 'fedcba0987654321fedcba0987654321fedcba09',
       isBinary: true,
     });
-    // Abbreviated hashes (text sections) parse too; mode suffix optional.
+    // Abbreviated hashes (text sections) parse too, with an optional mode
+    // suffix.
     expect(sections[1]).toMatchObject({ indexOldHash: 'abc1234', indexNewHash: 'def5678' });
     expect(sections[2]?.indexOldHash).toBeUndefined();
     expect(sections[2]?.indexNewHash).toBeUndefined();
@@ -382,9 +384,9 @@ describe('parseDiffSections binary payload detection', () => {
   });
 
   it('still parses the index hashes off a stub, which is why hasBinaryDelta is needed', () => {
-    // The stub carries a CORRECT new-side hash. Any check keyed on the hash
+    // The stub carries a correct new-side hash. Any check keyed on the hash
     // alone concludes the recorded bytes match the live file, for a body that
-    // cannot produce those bytes — the trap `hasBinaryDelta` closes.
+    // cannot produce those bytes. That is the trap `hasBinaryDelta` closes.
     const [section] = parseDiffSections(STUB_SECTION);
     expect(section?.indexOldHash).toBe('1d94f88ad7');
     expect(section?.indexNewHash).toBe('37ae6960c3');

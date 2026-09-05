@@ -25,6 +25,8 @@ import { buildPatchSourceMetadata } from '../core/patch-source-metadata.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ExportOptions } from '../types/commands/index.js';
+import type { ProjectPaths } from '../types/config.js';
+import type { FireForgeConfig } from '../types/config.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner } from '../utils/logger.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../utils/options.js';
@@ -36,15 +38,24 @@ import {
   runSupersedeAndOverlapGates,
 } from './export-shared.js';
 
+/**
+ * The engine paths an export-all entry owns: its current file plus, for a
+ * rename, the path it came from. Spelled once because three call sites had
+ * copied the same `filter((value): value is string => !!value)` narrowing.
+ * @param entry - Export entry carrying `file` and an optional `originalPath`.
+ * @returns Both paths when the entry was renamed, otherwise just `file`.
+ */
+function ownedPaths(entry: { file: string; originalPath?: string | undefined }): string[] {
+  return [entry.file, entry.originalPath].filter((value): value is string => !!value);
+}
+
 async function checkBrandingManagedFiles(
-  paths: ReturnType<typeof getProjectPaths>,
-  config: Awaited<ReturnType<typeof loadConfig>>
+  paths: ProjectPaths,
+  config: FireForgeConfig
 ): Promise<void> {
   const changedFiles = await getWorkingTreeStatus(paths.engine);
   const brandingManagedFiles = changedFiles
-    .flatMap((entry) =>
-      [entry.file, entry.originalPath].filter((value): value is string => !!value)
-    )
+    .flatMap((entry) => ownedPaths(entry))
     .filter((file) => isBrandingManagedPath(file, config.binaryName));
 
   if (brandingManagedFiles.length > 0) {
@@ -68,7 +79,7 @@ async function checkBrandingManagedFiles(
  * policy is "refuse" and nothing is in the working tree).
  */
 async function resolveFurnaceExclusionPolicy(
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   projectRoot: string,
   excludeFurnace: boolean | undefined
 ): Promise<Set<string>> {
@@ -76,15 +87,13 @@ async function resolveFurnaceExclusionPolicy(
   if (prefixes.size === 0) return new Set();
 
   // Expand collapsed `?? dir/` entries before matching against Furnace
-  // prefixes — otherwise a Furnace-introduced directory slips past the
+  // prefixes, otherwise a Furnace-introduced directory slips past the
   // filter and later lands in the non-Furnace path list that feeds the
   // aggregate diff, where `getDiffForFilesAgainstHead` crashes with EISDIR.
   const rawStatus = await getWorkingTreeStatus(paths.engine);
   const changedFiles = await expandUntrackedDirectoryEntries(paths.engine, rawStatus);
   const furnaceManagedFiles = changedFiles
-    .flatMap((entry) =>
-      [entry.file, entry.originalPath].filter((value): value is string => !!value)
-    )
+    .flatMap((entry) => ownedPaths(entry))
     .filter((file) => [...prefixes].some((prefix) => file.startsWith(prefix)));
 
   if (furnaceManagedFiles.length === 0) return new Set();
@@ -108,7 +117,7 @@ async function resolveFurnaceExclusionPolicy(
  * `export-all --exclude-furnace` after `furnace create --localized
  * --with-tests` otherwise produces a patch that adds
  * `toolkit/content/widgets/<tag>/*` via jar.mn / customElements.js / locale
- * jar.mn while excluding the component source files themselves — a
+ * jar.mn while excluding the component source files themselves, a
  * structurally broken queue that `fireforge verify` stays silent about. The
  * operator is asked to either include the component sources (skip
  * `--exclude-furnace`) or revert the furnace changes before exporting.
@@ -169,7 +178,7 @@ async function checkDanglingFurnaceRegistrations(
  * path that some existing patch in the queue already creates. `verify`
  * detects this post-hoc via `collectNewFileCreatorsByPath`, but by the time
  * `verify` runs the operator has already landed a patch that irreversibly
- * sits atop the queue — resolving the conflict from there requires a
+ * sits atop the queue, and resolving the conflict from there requires a
  * `patch delete` or hand-surgery on `re-export --files`. Catching it here,
  * pre-write, keeps the queue clean and gives the operator a specific path
  * to narrow with `export` + explicit file scoping (which lets them drop
@@ -179,10 +188,7 @@ async function checkDanglingFurnaceRegistrations(
  * "export-all refuses" branches remain the single, symmetric fence around
  * unintended captures.
  */
-async function checkDuplicateNewFileCreations(
-  paths: ReturnType<typeof getProjectPaths>,
-  diff: string
-): Promise<void> {
+async function checkDuplicateNewFileCreations(paths: ProjectPaths, diff: string): Promise<void> {
   if (!(await pathExists(paths.patches))) return;
 
   const pendingNewFiles = detectNewFilesInDiff(diff);
@@ -261,9 +267,7 @@ export async function exportAllCommand(
     const nonFurnacePaths = [
       ...new Set(
         allChanged
-          .flatMap((entry) =>
-            [entry.file, entry.originalPath].filter((value): value is string => !!value)
-          )
+          .flatMap((entry) => ownedPaths(entry))
           .filter((file) => !furnaceExcluded.has(file))
       ),
     ].sort();
@@ -298,14 +302,14 @@ export async function exportAllCommand(
 
   // Dangling-furnace-registration preflight. Runs after the diff is
   // assembled so it can inspect the exact hunks the operator is about to
-  // land, and BEFORE any write so a refusal leaves the patches directory
+  // land, and before any write so a refusal leaves the patches directory
   // untouched.
   await checkDanglingFurnaceRegistrations(projectRoot, diff, furnaceExcluded);
 
   // Check for non-interactive mode
   const isInteractive = stdioIsInteractive();
 
-  // Auto-fix missing license headers on new files (interactive only;
+  // Auto-fix missing license headers on new files (interactive only, and
   // report-only under --dry-run so the preview never mutates engine/)
   const headersAdded = await autoFixLicenseHeaders(
     paths.engine,
@@ -326,7 +330,7 @@ export async function exportAllCommand(
   const { patchName, selectedCategory, description } = metadata;
 
   // Ensure patches directory exists. Skip during a dry-run so the command
-  // is purely read-only — `--dry-run` callers should be safe to invoke
+  // is purely read-only. `--dry-run` callers should be safe to invoke
   // against a project that has never exported a patch without leaving the
   // empty `patches/` directory behind.
   if (!isDryRun) {
@@ -342,13 +346,20 @@ export async function exportAllCommand(
     const patchQueueCtx = (await pathExists(paths.patches))
       ? await buildPatchQueueContext(paths.patches)
       : undefined;
-    await runPatchLint(paths.engine, filesAffected, diff, config, options.skipLint, patchQueueCtx);
+    await runPatchLint({
+      engineDir: paths.engine,
+      filesAffected,
+      diffContent: diff,
+      config,
+      skipLint: options.skipLint,
+      patchQueueCtx,
+    });
 
     // Dry-run: enumerate filename, metadata, and supersede coverage without
     // writing. Mirrors `fireforge export --dry-run` so the same preview
     // surface is available for both targeted and aggregate exports. Runs
-    // AFTER lint so the operator sees the same lint output they would on
-    // a real run; runs BEFORE the supersede confirmation prompt because
+    // after lint so the operator sees the same lint output they would on
+    // a real run. It runs before the supersede confirmation prompt because
     // confirming a dry-run is meaningless.
     if (isDryRun) {
       s.stop('Plan ready');

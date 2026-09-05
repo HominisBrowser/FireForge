@@ -54,8 +54,8 @@ describe('formatPatchNotFoundError', () => {
   });
 
   it('falls back to a count-only summary when nothing is close', () => {
-    // An identifier with no plausible match should not list anything;
-    // operators get a "no close match" hint pointing at `patch list`.
+    // An identifier with no plausible match should not list anything.
+    // Operators get a "no close match" hint pointing at `patch list`.
     const patches = [
       makePatch('001-ui-workbench.patch', 'workbench', 1),
       makePatch('002-ui-dashboard.patch', 'dashboard', 2),
@@ -97,7 +97,8 @@ describe('prefix-based suggestions', () => {
       makePatch('001-ui-tab-strip-overhaul.patch', 'tab-strip-overhaul', 1),
       makePatch('002-infra-storage.patch', 'storage', 2),
     ];
-    // Nine edits away from the filename — pure edit distance would miss it.
+    // Nine edits away from the filename, so pure edit distance would miss
+    // it.
     const message = formatPatchNotFoundError('001-ui-tab', patches);
     expect(message).toContain('Did you mean');
     expect(message).toContain('001-ui-tab-strip-overhaul');

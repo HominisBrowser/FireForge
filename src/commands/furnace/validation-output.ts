@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join } from 'node:path';
 
-import type { getFurnacePaths } from '../../core/furnace-config.js';
+import type { FurnacePaths } from '../../core/furnace-config.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { DryRunAction, FurnaceConfig, ValidationIssue } from '../../types/furnace.js';
@@ -54,7 +54,7 @@ function filterProjectedDryRunIssues(
 function resolveNamedValidationTarget(
   name: string,
   config: FurnaceConfig,
-  furnacePaths: ReturnType<typeof getFurnacePaths>
+  furnacePaths: FurnacePaths
 ): { type: 'override' | 'custom'; componentDir: string } | 'stock' {
   if (name in config.overrides) {
     return {
@@ -87,27 +87,43 @@ export type ValidationResult =
       skippedValidationCount: number;
     };
 
+export interface RunDeployValidationOptions {
+  /** Active spinner handle for progress display. */
+  validateSpinner: SpinnerHandle;
+  /** Optional component name (validates all if omitted). */
+  name: string | undefined;
+  /** Loaded Furnace configuration. */
+  config: FurnaceConfig;
+  /** Resolved Furnace workspace paths. */
+  furnacePaths: FurnacePaths;
+  /** Names of components whose apply step failed. */
+  failedComponents: Set<string>;
+  /** Whether deploy is running in dry-run mode. */
+  isDryRun: boolean;
+  /** Root directory of the project. */
+  projectRoot: string;
+  /** Projected actions of a dry run, used to filter projected issues. */
+  dryRunActions?: DryRunAction[] | undefined;
+}
+
 /**
  * Runs the validation phase of a furnace deploy, checking all or a single component.
- * @param validateSpinner - Active spinner handle for progress display
- * @param name - Optional component name (validates all if omitted)
- * @param config - Loaded Furnace configuration
- * @param furnacePaths - Resolved Furnace workspace paths
- * @param failedComponents - Names of components whose apply step failed
- * @param isDryRun - Whether deploy is running in dry-run mode
- * @param projectRoot - Root directory of the project
+ * @param options - See {@link RunDeployValidationOptions}
  * @returns Validation counts, or `done: true` if the caller should early-return
  */
 export async function runDeployValidation(
-  validateSpinner: SpinnerHandle,
-  name: string | undefined,
-  config: FurnaceConfig,
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
-  failedComponents: Set<string>,
-  isDryRun: boolean,
-  projectRoot: string,
-  dryRunActions?: DryRunAction[]
+  options: RunDeployValidationOptions
 ): Promise<ValidationResult> {
+  const {
+    validateSpinner,
+    name,
+    config,
+    furnacePaths,
+    failedComponents,
+    isDryRun,
+    projectRoot,
+    dryRunActions,
+  } = options;
   let totalErrors = 0;
   let totalWarnings = 0;
   let componentCount = 0;

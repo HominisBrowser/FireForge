@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { loadConfig } from '../core/config.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
 import type { TestOptions } from '../types/commands/index.js';
+import type { FireForgeConfig } from '../types/config.js';
 import { info, success } from '../utils/logger.js';
 import type { TestRunOutcome } from './test-run.js';
 import { emitHarnessVerdict } from './test-verdict.js';
 
-type ProjectConfig = Awaited<ReturnType<typeof loadConfig>>;
+type ProjectConfig = FireForgeConfig;
 
 /** Rejects pathless `fireforge test` unless the operator selected a pathless mode. */
 export function assertPathlessTestMode(testPaths: readonly string[], options: TestOptions): void {
@@ -72,7 +72,7 @@ export function canaryTimeoutSeconds(projectConfig: ProjectConfig): number {
 /** Emits or throws the one-word canary verdict. */
 export function reportCanaryOutcome(outcome: TestRunOutcome): void {
   // Written raw as the run's last stdout line on green and throw paths
-  // alike — see the FIREFORGE-VERDICT contract in test-harness-crash.ts.
+  // alike. See the FIREFORGE-VERDICT contract in test-harness-crash.ts.
   try {
     if (outcome.verdict.kind === 'tests-ran-ok') {
       success('Canary: green');
@@ -145,11 +145,11 @@ function buildMixedHarnessMessage(classification: HarnessClassification): string
  * dispatch, so refusing it before spending minutes in a pre-test build
  * is strictly better. A nonexistent path classifies as
  * nonXpcshell (findNearestXpcshellManifest returns null), so classifying
- * before assertTestPathsExist is harmless — existence is still asserted
+ * before assertTestPathsExist is harmless: existence is still asserted
  * after the stale/coverage gates, preserving their precedence over
  * missing-path errors. `xpcshellOnly` (non-empty request, zero
  * nonXpcshell paths) gates the Marionette preflight and the mochitest
- * client flags; pathless runs keep the full-suite behavior.
+ * client flags. Pathless runs keep the full-suite behavior.
  */
 export async function classifyBeforeDispatch(
   engineDir: string,
@@ -158,7 +158,7 @@ export async function classifyBeforeDispatch(
 ): Promise<{ classification: HarnessClassification; xpcshellOnly: boolean }> {
   const classification = await classifyTestHarnesses(engineDir, normalizedPaths);
   if (classification.xpcshell.length > 0 && classification.nonXpcshell.length > 0) {
-    // `--build-only` never dispatches, so a mixed request is legal there —
+    // `--build-only` never dispatches, so a mixed request is legal there:
     // packaging the union is the whole point.
     if (options?.allowMixed !== true) {
       throw new GeneralError(buildMixedHarnessMessage(classification));

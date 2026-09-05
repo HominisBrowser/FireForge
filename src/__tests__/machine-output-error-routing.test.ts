@@ -4,11 +4,12 @@
  *
  * `status --json --fail-on` (and every other machine-mode command) promises
  * that stdout belongs exclusively to the machine payload and diagnostics
- * route to stderr. Restoring machine mode in the command's `finally` WHILE
+ * route to stderr. Restoring machine mode in the command's `finally` while
  * the refusal is still propagating means that by the time
  * `withErrorHandling` logs it, clack's styled error lands on stdout after
  * the JSON. These tests use the real logger and the real
- * `withErrorHandling` — the defect is invisible to suites that mock either.
+ * `withErrorHandling`, since the defect is invisible to suites that mock
+ * either.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -146,7 +147,7 @@ describe('machine-output error routing', () => {
 
     await expect(handler()).rejects.toBeInstanceOf(CommandError);
 
-    // `tree list --json` emits the SAME failure envelope `status --json`
+    // `tree list --json` emits the same failure envelope `status --json`
     // does. Writing nothing to stdout and leaving the operator-facing line
     // on stderr gives a scripted consumer a parseable refusal from one
     // command and a bare non-zero exit from the other. See

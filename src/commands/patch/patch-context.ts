@@ -18,7 +18,7 @@ import { pathExists } from '../../utils/fs.js';
 export interface PatchQueueContext {
   /** Project paths resolved from the project root. */
   paths: ProjectPaths;
-  /** The loaded manifest; guaranteed to contain at least one patch. */
+  /** The loaded manifest, guaranteed to contain at least one patch. */
   manifest: PatchesManifest;
 }
 

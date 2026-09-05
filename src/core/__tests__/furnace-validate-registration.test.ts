@@ -361,9 +361,9 @@ describe('furnace registration validation helpers', () => {
 
   it('auto-detects a replacement chrome document that references the component tag', async () => {
     // Fork mounts moz-dock from a custom `mybrowser.xhtml` chrome document
-    // WITHOUT configuring tokenHostDocuments. The default scan set (only
+    // without configuring tokenHostDocuments. The default scan set (only
     // browser.xhtml) does not link the tokens CSS, but the custom document
-    // does — auto-detection adds it to the scan set and the warning is
+    // does, so auto-detection adds it to the scan set and the warning is
     // suppressed.
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
@@ -389,7 +389,7 @@ describe('furnace registration validation helpers', () => {
         return Promise.resolve('<window><html:body></html:body></window>');
       }
       if (filePath === nativePath('/engine/browser/base/content/mybrowser.xhtml')) {
-        // Replacement document mounts moz-dock AND links the tokens CSS.
+        // Replacement document mounts moz-dock and links the tokens CSS.
         return Promise.resolve(
           '<window><link rel="stylesheet" href="nightlyfox.css" /><moz-dock></moz-dock></window>'
         );
@@ -402,9 +402,9 @@ describe('furnace registration validation helpers', () => {
   });
 
   it('still warns when auto-detected hosts also lack the tokens CSS link', async () => {
-    // A chrome document references the tag but does NOT link the tokens CSS,
+    // A chrome document references the tag but does not link the tokens CSS,
     // and no other document does either. The warning fires and names both
-    // the configured default AND the auto-detected document so the operator
+    // the configured default and the auto-detected document so the operator
     // can see where to add the link.
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(
@@ -435,7 +435,7 @@ describe('furnace registration validation helpers', () => {
   });
 
   it('does not double-scan a document listed in tokenHostDocuments that also mentions the tag', async () => {
-    // When the operator explicitly configures tokenHostDocuments AND the
+    // When the operator explicitly configures tokenHostDocuments and the
     // same document happens to mention the component tag, the auto-detect
     // path must not add a duplicate entry that would render twice in the
     // warning list.
@@ -490,7 +490,7 @@ describe('furnace registration validation helpers', () => {
       // Regression for the false positive that warned for every registered
       // custom component regardless of whether the component had a .css file.
       vi.mocked(pathExists).mockImplementation((filePath: string) => {
-        // jar.mn exists; component CSS source does NOT.
+        // jar.mn exists. The component CSS source does not.
         if (filePath === nativePath('/engine/toolkit/content/jar.mn')) return Promise.resolve(true);
         return Promise.resolve(false);
       });
@@ -558,6 +558,24 @@ describe('furnace registration validation helpers', () => {
       expect(stale[0]?.message).toContain('old-helper.mjs');
     });
 
+    it('skips components with register=false', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue('');
+
+      const issues = await validateJarMnEntries('/project', {
+        ...baseConfig,
+        custom: { 'moz-dock': { ...COMPONENT_CONFIG, register: false } },
+      });
+
+      expect(issues).toHaveLength(0);
+    });
+
+    it('handles a missing jar.mn file gracefully', async () => {
+      vi.mocked(pathExists).mockResolvedValue(false);
+
+      await expect(validateJarMnEntries('/project', baseConfig)).resolves.toHaveLength(0);
+    });
+
     it('does not flag live registrations as stale', async () => {
       vi.mocked(pathExists).mockImplementation((filePath: string) => {
         if (filePath === nativePath('/engine/toolkit/content/jar.mn')) return Promise.resolve(true);
@@ -616,7 +634,7 @@ describe('furnace registration validation helpers', () => {
     });
 
     it('reports a registered component that the file never mentions', async () => {
-      // This used to expect [] — which is exactly the blind spot that made a
+      // This used to expect [], which is the blind spot that made a
       // registration-only defect invisible to validate and unreachable for
       // the scoped `--fix`.
       vi.mocked(pathExists).mockResolvedValue(true);
@@ -625,6 +643,112 @@ describe('furnace registration validation helpers', () => {
       const issues = await validateRegistrationPatterns('/project', baseConfig);
       expect(issues).toHaveLength(1);
       expect(issues[0]?.check).toBe('missing-custom-element-registration');
+    });
+
+    it('reports no issues when the .mjs entry sits in the DOMContentLoaded block', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue(`
+for (let [tag, script] of [
+    ["findbar", "chrome://global/content/elements/findbar.js"],
+]) {
+  customElements.setElementCreationCallback(tag, () => {
+    Services.scriptloader.loadSubScript(script, window);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  for (let [tag, script] of [
+      ["moz-dock", "chrome://global/content/elements/moz-dock.mjs"],
+  ]) {
+    customElements.setElementCreationCallback(tag, () => {
+      ChromeUtils.importESModule(script);
+    });
+  }
+});
+`);
+
+      await expect(validateRegistrationPatterns('/project', baseConfig)).resolves.toHaveLength(0);
+    });
+
+    it('reports an error when the .mjs entry sits in the loadSubScript array', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue(`
+for (let [tag, script] of [
+    ["findbar", "chrome://global/content/elements/findbar.js"],
+    ["moz-dock", "chrome://global/content/elements/moz-dock.mjs"],
+]) {
+  customElements.setElementCreationCallback(tag, () => {
+    Services.scriptloader.loadSubScript(script, window);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  for (let [tag, script] of [
+      ["moz-button", "chrome://global/content/elements/moz-button.mjs"],
+  ]) {
+    customElements.setElementCreationCallback(tag, () => {
+      ChromeUtils.importESModule(script);
+    });
+  }
+});
+`);
+
+      const issues = await validateRegistrationPatterns('/project', baseConfig);
+      expect(issues).toHaveLength(1);
+      expect(issues[0]?.check).toBe('wrong-registration-pattern');
+      expect(issues[0]?.severity).toBe('error');
+      expect(issues[0]?.message).toContain('Pattern A');
+      expect(issues[0]?.message).toContain('Pattern B');
+    });
+
+    it('handles the multi-line DOMContentLoaded format without false positives', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue(`
+for (let [tag, script] of [
+    ["findbar", "chrome://global/content/elements/findbar.js"],
+]) {
+  customElements.setElementCreationCallback(tag, () => {
+    Services.scriptloader.loadSubScript(script, window);
+  });
+}
+
+document.addEventListener(
+  "DOMContentLoaded",
+  () => {
+    for (let [tag, script] of [
+        ["moz-dock", "chrome://global/content/elements/moz-dock.mjs"],
+    ]) {
+      customElements.setElementCreationCallback(tag, () => {
+        ChromeUtils.importESModule(script);
+      });
+    }
+  }
+);
+`);
+
+      await expect(validateRegistrationPatterns('/project', baseConfig)).resolves.toHaveLength(0);
+    });
+
+    it('skips components with register=false even when placed in the wrong block', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue(`
+for (let [tag, script] of [
+    ["moz-dock", "chrome://global/content/elements/moz-dock.mjs"],
+]) {
+  customElements.setElementCreationCallback(tag, () => {
+    Services.scriptloader.loadSubScript(script, window);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {});
+`);
+
+      const issues = await validateRegistrationPatterns('/project', {
+        ...baseConfig,
+        custom: { 'moz-dock': { ...COMPONENT_CONFIG, register: false } },
+      });
+
+      expect(issues).toHaveLength(0);
     });
 
     it('finds a component registered in the wrong (before-DCL) block', async () => {
@@ -832,8 +956,8 @@ describe('furnace registration validation helpers', () => {
     it('scans the chrome-document directory once per batch, not once per component', async () => {
       // `validateAllComponents` walks every component, and each token-using one
       // used to re-scan `browser/base/content/*.xhtml` and re-parse
-      // fireforge.json — work that depends on the project and engine, never on
-      // the component.
+      // fireforge.json. That work depends on the project and engine, never
+      // on the component.
       stubTokenLinkFixture();
       const before = vi.mocked(readdir).mock.calls.length;
 
@@ -847,9 +971,9 @@ describe('furnace registration validation helpers', () => {
     });
 
     it('reads fresh outside a batch, so a direct caller never sees a stale scan', async () => {
-      // The window is explicit precisely so `furnace status` and apply's
-      // consistency check — which call validateComponent directly, possibly
-      // after mutating the engine — are not served a cached document map.
+      // The window is explicit so `furnace status` and apply's consistency
+      // check (which call validateComponent directly, possibly after
+      // mutating the engine) are not served a cached document map.
       stubTokenLinkFixture();
       const before = vi.mocked(readdir).mock.calls.length;
 

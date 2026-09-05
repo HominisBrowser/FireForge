@@ -7,8 +7,8 @@
  * callback or the action body. Both numeric flags reject out-of-range input
  * through `commanderArgParser`, whose whole purpose (see `utils/options.ts`)
  * is making those failures surface through commander's invalid-argument
- * channel instead of escaping `withErrorHandling` as an unformatted crash —
- * so the rejection arms are exactly the behaviour worth pinning.
+ * channel instead of escaping `withErrorHandling` as an unformatted crash,
+ * so the rejection arms are the behaviour worth pinning.
  */
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -86,7 +86,7 @@ describe('registerTest', () => {
 
     it('does not leak accumulated values between program instances', async () => {
       // The `[] as string[]` default is a single shared array literal per
-      // registration; a fresh program must start empty.
+      // registration. A fresh program must start empty.
       await parse('--mach-arg', '--first');
       await parse('--mach-arg', '--second');
       expect(vi.mocked(testCommand).mock.calls[1]?.[2]).toMatchObject({

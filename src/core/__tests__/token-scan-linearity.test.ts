@@ -5,15 +5,19 @@
  * The category, dark-mode and variant scanners each carried a regex whose
  * backtracking was super-linear in the length of a single line (CodeQL
  * `js/polynomial-redos`, alerts 1-6). The input is not adversarial in the
- * usual sense — `tokens.css` and `docs/design/SRC_TOKENS.md` are files
- * FireForge reads out of a CONSUMER's engine tree — so a line that happens to
+ * usual sense. `tokens.css` and `docs/design/SRC_TOKENS.md` are files
+ * FireForge reads out of a consumer's engine tree, so a line that happens to
  * repeat `:root`, `var(` or `/*=` is enough to wedge `token add` with no
  * attacker anywhere. Each case below is a witness that hangs the old
  * implementation for seconds at these sizes and returns instantly now.
  *
- * The assertions are deliberately wall-clock: the defect is a running time,
- * not an output, and every one of these calls returns the SAME answer before
- * and after the fix. The paired behaviour tests pin that answer.
+ * The assertions are about growth, not absolute time: each witness is run at
+ * a size N and at 4N (after a warm-up, best of several repetitions) and the
+ * ratio of the two timings must stay near the linear 4x. A quadratic scan
+ * grows ~16x. Absolute budgets were the previous shape and flaked on loaded
+ * CI boxes for reasons unrelated to the scanners. Every call here returns
+ * the same answer before and after the fix, and the paired behaviour tests
+ * pin that answer.
  */
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -27,15 +31,53 @@ import { addTokenToDocs } from '../token-docs.js';
 import { validateVariantSelector, variantBlockExists } from '../token-variant.js';
 
 /**
- * Generous enough that a loaded CI box never flakes, and still well under the
- * 0.8-8 s each witness below cost the old implementations at these sizes.
+ * Upper bound on time(4N) / time(N). Linear growth sits at ~4, quadratic at
+ * ~16. The gap leaves room for scheduler noise without admitting the old
+ * implementations.
  */
-const BUDGET_MS = 200;
+const MAX_GROWTH_RATIO = 10;
 
-function elapsed(run: () => void): number {
-  const start = performance.now();
-  run();
-  return performance.now() - start;
+/**
+ * Below this, the 4N run finished so fast that the ratio is timer noise
+ * rather than algorithmic growth, so treat it as trivially linear. A quadratic
+ * scan at these sizes cost seconds, not single-digit milliseconds.
+ */
+const NOISE_FLOOR_MS = 5;
+
+const BASE_N = 10_000;
+
+function bestOfMs(run: () => void, reps = 3): number {
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < reps; i++) {
+    const start = performance.now();
+    run();
+    best = Math.min(best, performance.now() - start);
+  }
+  return best;
+}
+
+/**
+ * Times `run` on inputs of size N and 4N (inputs are built outside the timed
+ * region) and asserts the growth is linear-ish. `run` must return the same
+ * shape at either size. Behaviour is pinned separately.
+ */
+function expectLinearGrowth<T>(build: (n: number) => T, run: (input: T) => void): void {
+  const small = build(BASE_N);
+  const large = build(BASE_N * 4);
+  // Warm-up: JIT and regex compilation must not land on the small run.
+  run(small);
+  run(large);
+  const smallMs = bestOfMs(() => {
+    run(small);
+  });
+  const largeMs = bestOfMs(() => {
+    run(large);
+  });
+  if (largeMs < NOISE_FLOOR_MS) return;
+  const ratio = largeMs / smallMs;
+  expect(ratio, `time(4N)=${largeMs.toFixed(2)}ms / time(N)=${smallMs.toFixed(2)}ms`).toBeLessThan(
+    MAX_GROWTH_RATIO
+  );
 }
 
 describe('findCategorySection scans pathological banner lines in linear time', () => {
@@ -43,15 +85,14 @@ describe('findCategorySection scans pathological banner lines in linear time', (
     // Old: /\/\*\s*=+\s*(.+?)\s*=+\s*\*\// in discoverCategoryHeaders.
     // `=+` and the lazy `(.+?)` both match `=`, so the run is re-partitioned
     // once per length. 4 000 `=` took ~8 s.
-    const lines = ['/*' + '='.repeat(4000)];
-
-    const ms = elapsed(() => {
-      expect(() => findCategorySection(lines, 'Missing', 'tokens.css')).toThrow(
-        /Category "Missing" not found/
-      );
-    });
-
-    expect(ms).toBeLessThan(BUDGET_MS);
+    expectLinearGrowth(
+      (n) => ['/*' + '='.repeat(n)],
+      (lines) => {
+        expect(() => findCategorySection(lines, 'Missing', 'tokens.css')).toThrow(
+          /Category "Missing" not found/
+        );
+      }
+    );
   });
 
   it('does not backtrack over a repeated comment opener while bounding a section', () => {
@@ -59,15 +100,15 @@ describe('findCategorySection scans pathological banner lines in linear time', (
     // the unanchored `/*` restarts the whole attempt at every occurrence.
     // The leading `x` keeps the line out of the header-skip loop above it, so
     // the section-end scan is the code under test.
-    const lines = ['/* = Colors = */', '  --a: red;', 'x' + '/*='.repeat(40000)];
-
-    let section: { categoryLine: number; sectionEnd: number } | undefined;
-    const ms = elapsed(() => {
-      section = findCategorySection(lines, 'Colors', 'tokens.css');
-    });
-
-    expect(section).toEqual({ categoryLine: 0, sectionEnd: 3 });
-    expect(ms).toBeLessThan(BUDGET_MS);
+    expectLinearGrowth(
+      (n) => ['/* = Colors = */', '  --a: red;', 'x' + '/*='.repeat(n)],
+      (lines) => {
+        expect(findCategorySection(lines, 'Colors', 'tokens.css')).toEqual({
+          categoryLine: 0,
+          sectionEnd: 3,
+        });
+      }
+    );
   });
 
   it('still bounds a section at the next banner, blank name or not', () => {
@@ -102,27 +143,25 @@ describe('findCategorySection scans pathological banner lines in linear time', (
 
 describe('findDarkRootInsertionIndex scans pathological selector lines in linear time', () => {
   it('does not backtrack over a run of leading whitespace', () => {
-    // Old: /(^|[\s,{])\s*:root\b/ — `[\s,{]` and `\s*` both match a tab, so
+    // Old: /(^|[\s,{])\s*:root\b/. Both `[\s,{]` and `\s*` match a tab, so
     // every split of the run is tried at every start offset.
-    const lines = ['@media (prefers-color-scheme: dark) {', '\t'.repeat(50000), '}'];
-
-    const ms = elapsed(() => {
-      findDarkRootInsertionIndex(lines);
-    });
-
-    expect(ms).toBeLessThan(BUDGET_MS);
+    expectLinearGrowth(
+      (n) => ['@media (prefers-color-scheme: dark) {', '\t'.repeat(n), '}'],
+      (lines) => {
+        findDarkRootInsertionIndex(lines);
+      }
+    );
   });
 
   it('does not restart the brace search at every :root occurrence', () => {
-    // Old: /:root[^{}]*\{/ — unambiguous internally, but the unanchored
+    // Old: /:root[^{}]*\{/. Unambiguous internally, but the unanchored
     // `:root` prefix makes the scan quadratic on a line repeating it.
-    const lines = ['@media (prefers-color-scheme: dark) {', ':root'.repeat(40000), '}'];
-
-    const ms = elapsed(() => {
-      findDarkRootInsertionIndex(lines);
-    });
-
-    expect(ms).toBeLessThan(BUDGET_MS);
+    expectLinearGrowth(
+      (n) => ['@media (prefers-color-scheme: dark) {', ':root'.repeat(n), '}'],
+      (lines) => {
+        findDarkRootInsertionIndex(lines);
+      }
+    );
   });
 
   it('still finds the nested :root block with the brace on the selector line', () => {
@@ -158,15 +197,14 @@ describe('findDarkRootInsertionIndex scans pathological selector lines in linear
 
 describe('variantBlockExists scans pathological attribute selectors in linear time', () => {
   it('does not backtrack over a repeated :root[ opener', () => {
-    // Old: /:root\[[^{]*\]/ — `[^{]` also matches `]`, so the closing bracket
+    // Old: /:root\[[^{]*\]/. Here `[^{]` also matches `]`, so the closing bracket
     // is searched for at every partition, from every `:root[` in the line.
-    const lines = [':root['.repeat(40000)];
-
-    const ms = elapsed(() => {
-      expect(variantBlockExists(lines, '[data-skin="precision"]')).toBe(false);
-    });
-
-    expect(ms).toBeLessThan(BUDGET_MS);
+    expectLinearGrowth(
+      (n) => [':root['.repeat(n)],
+      (lines) => {
+        expect(variantBlockExists(lines, '[data-skin="precision"]')).toBe(false);
+      }
+    );
   });
 
   it('still matches a variant block across quoting styles', () => {
@@ -176,21 +214,20 @@ describe('variantBlockExists scans pathological attribute selectors in linear ti
   });
 
   it('validates a pathological --variant value in linear time too', () => {
-    // The validator runs the SAME parse as the matcher (that is the point of
-    // it), so it inherits the matcher's linearity — and the per-group
-    // identifier check is deliberately applied one bracket group at a time
-    // rather than as a repeated pattern, which is the shape that backtracks.
-    const value = '[data-a'.repeat(20000);
-
-    const ms = elapsed(() => {
-      expect(validateVariantSelector(value).ok).toBe(false);
-    });
-
-    expect(ms).toBeLessThan(BUDGET_MS);
+    // The validator runs the same parse as the matcher (that is what it is
+    // for), so it inherits the matcher's linearity. The per-group identifier
+    // check is applied one bracket group at a time rather than as a repeated
+    // pattern, which is the shape that backtracks.
+    expectLinearGrowth(
+      (n) => '[data-a'.repeat(n),
+      (value) => {
+        expect(validateVariantSelector(value).ok).toBe(false);
+      }
+    );
   });
 
   it('still reads a multi-attribute selector as the whole fragment', () => {
-    // The scanner spans to the LAST `]` before the brace, so a two-attribute
+    // The scanner spans to the last `]` before the brace, so a two-attribute
     // block does not satisfy a one-attribute variant that is its prefix.
     const lines = [':root[data-skin=precision][data-private] {', '  --a: red;', '}'];
     expect(variantBlockExists(lines, '[data-skin=precision]')).toBe(false);
@@ -226,7 +263,7 @@ describe('addTokenToDocs maps a var() value without rescanning every var( occurr
   });
 
   it('still records the referenced custom property in the "Maps to" cell', async () => {
-    // Old: value.replace(/var\(([^)]+)\)/, '$1') — unanchored, so the match is
+    // Old: value.replace(/var\(([^)]+)\)/, '$1'). Unanchored, so the match is
     // retried at every `var(`. The value always starts with `var(` on this
     // branch, so anchoring is both linear and exact.
     await addTokenToDocs(

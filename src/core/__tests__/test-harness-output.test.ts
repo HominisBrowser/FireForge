@@ -28,9 +28,9 @@ describe('findFirstUsefulFailureLine', () => {
   });
 
   it('prefers the real assertion over a recognized teardown traceback that precedes it', () => {
-    // Regression. Selection is first-matching-LINE, and the bare
+    // Regression. Selection is first-matching-line, and the bare
     // `AttributeError:` pattern had the same standing as
-    // `TEST-UNEXPECTED-FAIL` — so an export shard whose real defect was a
+    // `TEST-UNEXPECTED-FAIL`, so an export shard whose real defect was a
     // file-count assertion got diagnosed as the known mozsystemmonitor
     // teardown crash. That is the expensive kind of wrong: the named cause
     // is a real, documented, unrelated upstream defect, so it reads as an

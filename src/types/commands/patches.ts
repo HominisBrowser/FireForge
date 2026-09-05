@@ -37,21 +37,21 @@ export interface PatchResult {
   /** Whether the patch was auto-resolved (new file vs existing file conflict) */
   autoResolved?: boolean;
   /**
-   * Pre-existing BYTES of files the auto-resolve overwrote (or, for a binary
-   * new file, removed), keyed by engine-relative path. Kept for the RUN's
-   * duration (not just the retry): if a later patch fails and
+   * Pre-existing bytes of files the auto-resolve overwrote (or, for a
+   * binary new file, removed), keyed by engine-relative path. Kept for the
+   * whole run's duration, not just the retry: if a later patch fails and
    * `rollbackPatches` reverse-applies this one, reversing a new-file patch
-   * DELETES the file — these snapshots are the only way to restore what was
-   * there before the auto-resolve.
+   * deletes the file, and these snapshots are the only way to restore what
+   * was there before the auto-resolve.
    *
    * Raw bytes rather than decoded text, because the same snapshot has to
    * restore a binary target byte-for-byte.
    *
-   * Typed `Uint8Array`, not `Buffer`: this interface is published, and the
-   * emitted `.d.ts` naming a Node global made a consumer without
+   * Typed `Uint8Array` rather than `Buffer`: this interface is published,
+   * and the emitted `.d.ts` naming a Node global made a consumer without
    * `@types/node` fail to compile against the package (`TS2591` in the
-   * pack smoke test). Every `Buffer` assigns to it — `Buffer` extends
-   * `Uint8Array` — and `fs.writeFile` accepts it, so nothing at the call
+   * pack smoke test). Every `Buffer` assigns to it, since `Buffer` extends
+   * `Uint8Array`, and `fs.writeFile` accepts it, so nothing at the call
    * sites changes.
    */
   autoResolvedOriginals?: Map<string, Uint8Array>;
@@ -87,15 +87,15 @@ export interface PatchMetadata {
   /**
    * Optional per-patch list of lint check IDs to suppress when this patch is
    * the target of `export`, `export-all`, or `re-export`. Exists for the
-   * class of patch that is advisory-noisy by nature — a cohesive branding
-   * bundle, a localised-resource pack, an auto-generated manifest — where
+   * class of patch that is advisory-noisy by nature (a cohesive branding
+   * bundle, a localised-resource pack, an auto-generated manifest) where
    * the generic `large-patch-lines` / `large-patch-files` thresholds do not
    * apply but `--skip-lint`, which silences every error rather than the one
    * that does not apply, is too coarse.
    *
    * Values are free-form check IDs (e.g. `"large-patch-lines"`). Checks not
    * listed here still run normally. An entry for an unknown check ID is a
-   * no-op — the metadata documents the intent to suppress even if the check
+   * no-op: the metadata documents the intent to suppress even if the check
    * is later renamed or removed.
    */
   lintIgnore?: string[];
@@ -105,14 +105,14 @@ export interface PatchMetadata {
    * cross-cutting registration files alongside `browser/branding/<name>/`
    * (notably `browser/moz.configure`, which registers the new branding
    * flavor with the top-level configure). The narrow auto-detect allowlist
-   * in `isBrandingOnlyPatch` covers the canonical shape; a fork whose
+   * in `isBrandingOnlyPatch` covers the canonical shape. A fork whose
    * branding patch also touches an unlisted sibling falls through to the
    * general tier and trips the hard limit on what is legitimately one
    * branding diff.
    *
    * Declaring `tier: "branding"` forces the branding thresholds (notice
    * 8000 / warning 18000 / error 30000 lines, ≤60 files) regardless of
-   * `filesAffected`. It is the weaker claim than test: an all-tests patch
+   * `filesAffected`. It is a weaker claim than test: an all-tests patch
    * stays in the test tier even with this set, because those thresholds are
    * already more permissive.
    *
@@ -137,11 +137,11 @@ export interface PatchStagedDependencies {
   forwardImports?: PatchStagedForwardImport[];
   /**
    * Registration-shaped forward dependencies: packaging or registration
-   * LINES (a jar.mn entry, a customElements registration, an actor
+   * lines (a jar.mn entry, a customElements registration, an actor
    * registration) this patch adds that reference a file a later patch
    * creates. Unlike `forwardImports`, these are validated by matching the
-   * declared line against the patch's added content, not by finding an
-   * import specifier — packaging lines have no import to match.
+   * declared line against the patch's added content rather than by finding
+   * an import specifier, since packaging lines have no import to match.
    */
   registrations?: PatchStagedRegistration[];
 }
@@ -239,8 +239,8 @@ export interface PatchLintIssue {
    * Diff-scoping tag populated by `lint --since <rev>`. Absent when the
    * caller did not request diff-scoping.
    *
-   * - `introduced` — the issue's file was touched in the diff since `<rev>`.
-   * - `cumulative` — the issue is pre-existing patch-state drift not
+   * - `introduced`: the issue's file was touched in the diff since `<rev>`.
+   * - `cumulative`: the issue is pre-existing patch-state drift not
    *   introduced by the current task.
    */
   tag?: 'introduced' | 'cumulative';

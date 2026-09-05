@@ -39,8 +39,8 @@ export function validateTagName(tagName: string): void {
  * Returns why `tagName` is invalid, or `undefined` when it is fine.
  *
  * The message-returning half of {@link validateTagName}, for callers that
- * must not throw — specifically clack `validate` callbacks, which expect a
- * returned string and re-prompt on it. Passing the THROWING form to one
+ * must not throw, specifically clack `validate` callbacks, which expect a
+ * returned string and re-prompt on it. Passing the throwing form to one
  * makes an invalid tag name escape clack's validation loop as a
  * `FurnaceError`, killing the prompt instead of showing the rule inline.
  *

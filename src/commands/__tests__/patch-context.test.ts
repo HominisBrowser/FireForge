@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Unit tests for the shared patch-command preamble. The error wording is
- * load-bearing — every patch subcommand surfaces these exact messages —
- * so the throw paths are pinned here once instead of per command.
+ * load-bearing: every patch subcommand surfaces these exact messages.
+ * The throw paths are pinned here once instead of per command.
  */
 
 import { writeFile } from 'node:fs/promises';

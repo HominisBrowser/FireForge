@@ -2,13 +2,14 @@
 /** Path to customElements.js within the engine source tree */
 export const CUSTOM_ELEMENTS_JS = 'toolkit/content/customElements.js';
 
+import { normalizePathSlashes } from '../utils/paths.js';
 /** Path to jar.mn within the engine source tree (toolkit global) */
 export const JAR_MN = 'toolkit/content/jar.mn';
 
 /**
  * Upstream home of the MozLitElement widget sources.
  *
- * The trailing slash is NOT included: `build-audit-transforms.ts` needs
+ * The trailing slash is not included: `build-audit-transforms.ts` needs
  * `${WIDGETS_DIR}/` and its ordered prefix table depends on that slash, so
  * appending it at the one site that wants it keeps the others correct.
  */
@@ -45,7 +46,7 @@ export function xpcshellTestParentDir(binaryName: string): string {
 /**
  * Resolves the engine-relative directory a browser-chrome scaffold is
  * written to: the `--test-dir` override when given, else
- * `browser/base/content/test/<binaryName>`. The scaffolder AND the
+ * `browser/base/content/test/<binaryName>`. The scaffolder and the
  * dry-run / success formatters resolve through this one function, so the
  * printed plan cannot disagree with the files that land on disk.
  */
@@ -55,8 +56,8 @@ export function resolveBrowserChromeTestDir(binaryName: string, override?: strin
 
 /**
  * Resolves the engine-relative directory an xpcshell scaffold is written
- * to. A `--test-dir` override names the FINAL directory (no per-component
- * segment is appended); the default is
+ * to. A `--test-dir` override names the final directory (no per-component
+ * segment is appended). The default is
  * `browser/base/content/test/<binaryName>-xpcshell/<componentName>`.
  */
 export function resolveXpcshellTestDir(
@@ -94,7 +95,7 @@ export function resolveFtlDir(configuredPath?: string): string {
  * degrade gracefully rather than inventing a path.
  */
 export function resolveFtlChromeSubPath(ftlBasePath?: string): string | undefined {
-  const path = (ftlBasePath ?? FTL_DIR).replace(/\\/g, '/');
+  const path = normalizePathSlashes(ftlBasePath ?? FTL_DIR);
   const match = /^(.*?)\/locales\/[^/]+\/(.+?)\/?$/.exec(path);
   if (!match?.[2]) return undefined;
   return match[2];
@@ -105,11 +106,11 @@ export function resolveFtlChromeSubPath(ftlBasePath?: string): string | undefine
  * given `ftlBasePath`. For the default toolkit tree this yields
  * `toolkit/locales/jar.mn`.
  *
- * Returns `undefined` when the path does not contain a `locales/` segment —
- * callers must treat that as "cannot locate" and degrade gracefully.
+ * Returns `undefined` when the path does not contain a `locales/` segment.
+ * Callers must treat that as "cannot locate" and degrade gracefully.
  */
 export function resolveFtlLocaleJarMnPath(ftlBasePath?: string): string | undefined {
-  const path = (ftlBasePath ?? FTL_DIR).replace(/\\/g, '/');
+  const path = normalizePathSlashes(ftlBasePath ?? FTL_DIR);
   const match = /^(.*?)\/locales\/[^/]+\//.exec(path);
   if (!match?.[1]) return undefined;
   return `${match[1]}/locales/jar.mn`;

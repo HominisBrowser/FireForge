@@ -10,13 +10,19 @@ import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 
 import { DownloadError, VersionNotFoundError } from '../errors/download.js';
+import { sleep } from '../utils/sleep.js';
 
 /**
  * Progress callback for download operations.
  */
 export type ProgressCallback = (downloaded: number, total: number) => void;
 
-/** Default request timeout in milliseconds (60 seconds). */
+/**
+ * Per-attempt request timeout in milliseconds (60 seconds). Every request
+ * the download makes (the tarball and the SHA256SUMS lookup in
+ * `firefox-cache.ts`) goes through {@link fetchWithRetry} and so shares
+ * this abort ceiling.
+ */
 const REQUEST_TIMEOUT_MS = 60_000;
 
 /** Maximum number of download attempts. */
@@ -28,15 +34,24 @@ const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
 /** Base delay between retries in milliseconds. */
 const RETRY_BASE_DELAY_MS = 1_000;
 
-/** Stall detection timeout — abort if no data received for this duration (30 seconds). */
+/** Stall detection timeout: abort if no data received for this duration (30 seconds). */
 const DOWNLOAD_STALL_TIMEOUT_MS = 30_000;
 
 /**
- * Fetches a URL with timeout and bounded retry for transient failures.
+ * Fetches a URL with timeout and bounded retry for transient failures
+ * (429/5xx, network errors, the per-request timeout).
  *
- * Non-retryable errors (e.g. 404) are thrown immediately.
+ * Any other response (2xx or a non-retryable failure such as 404) is
+ * returned as-is on the first attempt. The caller decides what a given
+ * status means for its request. Shared by the tarball download and the
+ * SHA256SUMS lookup so both requests the download makes survive the same
+ * transient blips: with checksum verification failing closed, an
+ * un-retried checksum fetch would throw away a just-landed 600 MB archive
+ * over one dropped connection.
+ *
+ * @throws DownloadError once every attempt has failed with a retryable error
  */
-async function fetchWithRetry(url: string): Promise<Response> {
+export async function fetchWithRetry(url: string): Promise<Response> {
   let lastError: unknown;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -48,21 +63,11 @@ async function fetchWithRetry(url: string): Promise<Response> {
     try {
       const response = await fetch(url, { signal: controller.signal });
 
-      if (response.status === 404) {
-        throw new VersionNotFoundError(basename(url).replace('.source.tar.xz', ''));
-      }
-
-      if (RETRYABLE_STATUS_CODES.has(response.status)) {
-        lastError = new DownloadError(`HTTP ${response.status}: ${response.statusText}`, url);
-      } else if (!response.ok) {
-        throw new DownloadError(`HTTP ${response.status}: ${response.statusText}`, url);
-      } else {
+      if (!RETRYABLE_STATUS_CODES.has(response.status)) {
         return response;
       }
+      lastError = new DownloadError(`HTTP ${response.status}: ${response.statusText}`, url);
     } catch (error: unknown) {
-      if (error instanceof VersionNotFoundError || error instanceof DownloadError) {
-        throw error;
-      }
       // Network / timeout errors are retryable
       lastError = error;
     } finally {
@@ -70,9 +75,7 @@ async function fetchWithRetry(url: string): Promise<Response> {
     }
 
     if (attempt < MAX_ATTEMPTS - 1) {
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, RETRY_BASE_DELAY_MS * (attempt + 1) ** 2);
-      });
+      await sleep(RETRY_BASE_DELAY_MS * (attempt + 1) ** 2);
     }
   }
 
@@ -84,6 +87,21 @@ async function fetchWithRetry(url: string): Promise<Response> {
     url,
     lastError instanceof Error ? lastError : undefined
   );
+}
+
+/**
+ * Fetches the archive itself: a 404 is the release not existing
+ * (`VersionNotFoundError`), any other non-2xx is a `DownloadError`.
+ */
+async function fetchArchive(url: string): Promise<Response> {
+  const response = await fetchWithRetry(url);
+  if (response.status === 404) {
+    throw new VersionNotFoundError(basename(url).replace('.source.tar.xz', ''));
+  }
+  if (!response.ok) {
+    throw new DownloadError(`HTTP ${response.status}: ${response.statusText}`, url);
+  }
+  return response;
 }
 
 /**
@@ -149,7 +167,7 @@ export async function downloadFile(
   destPath: string,
   onProgress?: ProgressCallback
 ): Promise<number | undefined> {
-  const response = await fetchWithRetry(url);
+  const response = await fetchArchive(url);
 
   if (!response.body) {
     throw new DownloadError('No response body received', url);

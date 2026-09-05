@@ -3,11 +3,11 @@
  * Environment construction for spawned children.
  *
  * Its own module rather than a helper inside `process.ts` only because that
- * file sits on a 500-line budget; the logic belongs to the exec layer.
+ * file sits on a 500-line budget. The logic belongs to the exec layer.
  */
 
 /** The `env` / `envUnset` slice of exec options this module needs. */
-export interface ChildEnvOptions {
+interface ChildEnvOptions {
   /** Variables to add or overwrite on top of `process.env`. */
   env?: Record<string, string> | undefined;
   /** Variables to remove after the merge. */
@@ -18,13 +18,13 @@ export interface ChildEnvOptions {
  * The child's environment: `process.env`, with `env` merged over it, then
  * every `envUnset` key removed.
  *
- * One helper rather than five inline spreads — the removal step is easy to
+ * One helper rather than five inline spreads: the removal step is easy to
  * add at four of the five spawn sites and forget at the fifth, which would
  * make the option silently inert exactly where it was not tested.
  *
- * Removal is a real removal, not an assignment to `''`: mozbuild's
- * `is_running_under_coding_agent()` reads `CLAUDECODE` for its PRESENCE, so
- * an empty value would not unset it. `Reflect.deleteProperty` rather than
+ * Removal is a real removal rather than an assignment to `''`: mozbuild's
+ * `is_running_under_coding_agent()` reads `CLAUDECODE` only for its
+ * presence, so an empty value would not unset it. `Reflect.deleteProperty` rather than
  * `delete obj[key]` because the key is computed.
  *
  * @param options - Options carrying `env` / `envUnset`

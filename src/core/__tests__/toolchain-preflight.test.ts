@@ -186,7 +186,7 @@ describe('toolchain preflight', () => {
 
     it('passes when the mozbuild state-dir copy meets the minimum even though the PATH copy is older', async () => {
       // `fireforge bootstrap` installs 0.29.4 into ~/.mozbuild/cbindgen/
-      // cbindgen, which configure tries FIRST, while an old 0.29.1 from
+      // cbindgen, which configure tries first, while an old 0.29.1 from
       // ~/.cargo/bin shadows it on PATH. Probing only the PATH copy blocks a
       // build that succeeds.
       await writeMinimumFixtures(engineDir, { cbindgen: BINDGEN_CONFIGURE_FIXTURE });
@@ -253,7 +253,7 @@ describe('toolchain preflight', () => {
       await writeMinimumFixtures(engineDir, { cbindgen: BINDGEN_CONFIGURE_FIXTURE });
       vi.stubEnv('CBINDGEN', '/opt/tools/cbindgen-custom');
       // A satisfying state-dir copy exists, but configure would use the
-      // env override anyway — so the preflight must fail on it.
+      // env override anyway, so the preflight must fail on it.
       mockHostVersions({
         '/opt/tools/cbindgen-custom': 'cbindgen 0.29.1\n',
         [stateDirCbindgen]: 'cbindgen 0.29.4\n',

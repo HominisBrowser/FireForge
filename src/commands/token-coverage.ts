@@ -47,7 +47,7 @@ export async function tokenCoverageCommand(projectRoot: string): Promise<void> {
 
   // Also scan CSS files deployed by Furnace custom components. Deployed
   // files can be committed (and therefore absent from `git status`) while
-  // still being the primary surface where token adoption matters; looking
+  // still being the primary surface where token adoption matters. Looking
   // only at modified files silently undercounts projects where Furnace
   // writes many component-CSS files into the engine.
   const furnaceCssFiles = await collectFurnaceCustomCssFiles(
@@ -56,7 +56,7 @@ export async function tokenCoverageCommand(projectRoot: string): Promise<void> {
     tokensCssPath
   );
 
-  // De-dupe so a file that is both a custom deploy target AND modified is
+  // De-dupe so a file that is both a custom deploy target and modified is
   // scanned exactly once.
   const cssFiles = [...new Set([...statusCssFiles, ...furnaceCssFiles])];
   const tokenSourceFiles = [...new Set(statusTokenCssFiles)];
@@ -171,7 +171,7 @@ async function validateTokenSourceFiles(
 /**
  * Returns engine-relative `.css` paths deployed by every Furnace custom
  * component registered in `furnace.json`. Only files that actually exist
- * on disk are included — a component whose deploy target is missing (e.g.
+ * on disk are included. A component whose deploy target is missing (e.g.
  * `furnace apply` has not run yet) is skipped silently so a fresh
  * `furnace init` followed immediately by `token coverage` does not error.
  *

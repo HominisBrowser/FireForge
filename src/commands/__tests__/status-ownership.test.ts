@@ -2,7 +2,7 @@
 /**
  * Unit tests for the ownership-table assembly shared by `status
  * --ownership` and the `--include-ownership` JSON block. The
- * command-level wiring is covered by status.test.ts; what matters here is
+ * command-level wiring is covered by status.test.ts. What matters here is
  * that the module builds identical rows for both callers and degrades
  * cleanly when the queue directory does not exist yet.
  */
@@ -14,11 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ClassifiedFile, StatusFile } from '../../core/status-classify.js';
 import type { PatchMetadata } from '../../types/commands/index.js';
-import {
-  buildOwnershipJsonBlock,
-  collectOwnershipRows,
-  summarizeOwnership,
-} from '../status-ownership.js';
+import { collectOwnershipRows, summarizeOwnership } from '../status-ownership.js';
 
 const OWNED = 'browser/base/content/browser.js';
 const STRAY = 'browser/base/content/stray.js';
@@ -97,7 +93,7 @@ describe('collectOwnershipRows', () => {
   });
 });
 
-describe('summarizeOwnership / buildOwnershipJsonBlock', () => {
+describe('summarizeOwnership', () => {
   const rows = [
     {
       path: 'a',
@@ -126,13 +122,7 @@ describe('summarizeOwnership / buildOwnershipJsonBlock', () => {
   ];
 
   it('counts managed, unmanaged, and conflicted rows independently', () => {
-    // A conflicted row is still managed — it has owners, just too many.
+    // A conflicted row is still managed: it has owners, just too many.
     expect(summarizeOwnership(rows)).toEqual({ managed: 2, unmanaged: 1, conflicts: 1 });
-  });
-
-  it('carries the rows verbatim into the JSON block', () => {
-    const block = buildOwnershipJsonBlock([...rows]);
-    expect(block.rows).toEqual(rows);
-    expect(block.summary.conflicts).toBe(1);
   });
 });

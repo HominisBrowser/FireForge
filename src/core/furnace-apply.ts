@@ -2,7 +2,13 @@
 import { join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
-import type { ApplyResult, CustomComponentConfig, DryRunAction } from '../types/furnace.js';
+import type {
+  ApplyResult,
+  CustomComponentConfig,
+  DryRunAction,
+  FurnaceConfig,
+  FurnaceState,
+} from '../types/furnace.js';
 import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
@@ -30,6 +36,7 @@ import {
   buildCustomUndeployActions,
   buildOverrideUndeployActions,
 } from './furnace-apply-undeploy-actions.js';
+import type { FurnacePaths } from './furnace-config.js';
 import {
   getFurnacePaths,
   loadFurnaceConfig,
@@ -55,14 +62,27 @@ import {
 import { blockingStepErrors, hasBlockingStepErrors } from './furnace-step-errors.js';
 import { runPostApplyConsistencyChecks } from './furnace-validate-registration.js';
 
-export {
-  computeComponentChecksums,
-  hasComponentChanged,
-  prefixChecksums,
-} from './furnace-apply-helpers.js';
+export { computeComponentChecksums, prefixChecksums } from './furnace-apply-helpers.js';
 
-type FurnaceConfigData = Awaited<ReturnType<typeof loadFurnaceConfig>>;
-type FurnaceStateData = Awaited<ReturnType<typeof loadFurnaceState>>;
+/**
+ * Records one component's checksums into the run-wide accumulator, under the
+ * flattened `type/name/file` keys the state file stores. A Map keeps the
+ * accumulation explicit. The previous `Object.assign` merges read as if
+ * they replaced the accumulator rather than adding to it.
+ */
+function recordComponentChecksums(
+  accumulator: Map<string, string>,
+  checksums: Record<string, string>,
+  type: string,
+  name: string
+): void {
+  for (const [key, value] of Object.entries(prefixChecksums(checksums, type, name))) {
+    accumulator.set(key, value);
+  }
+}
+
+type FurnaceConfigData = FurnaceConfig;
+type FurnaceStateData = FurnaceState;
 type ApplyAccumulator = ApplyResult & {
   actions?: DryRunAction[];
   rollbackJournal?: RollbackJournal;
@@ -107,8 +127,8 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
 
       if (!changed) {
         // Fast path holds only if the engine still reflects what we deployed.
-        // reset/download/manual edits can silently erase engine files; the
-        // checksum record alone cannot detect that.
+        // reset/download/manual edits can silently erase engine files, and
+        // the checksum record alone cannot detect that.
         const cachedEngine = extractComponentChecksums(state.engineChecksums, 'override', name);
         const drifted = await hasOverrideEngineDrift(
           { engineDir, componentDir, ftlDir },
@@ -117,7 +137,7 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
         );
         if (!drifted) {
           result.skipped.push({ name, reason: 'No changes since last apply' });
-          Object.assign(newChecksums, prefixChecksums(previous, 'override', name));
+          recordComponentChecksums(newChecksums, previous, 'override', name);
           continue;
         }
       }
@@ -149,9 +169,9 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
       }
 
       if (!dryRun) {
-        // Runs unconditionally — including when the component source
-        // changed — because the lost-work case is precisely a deployed
-        // engine edit that the incoming copy is about to replace.
+        // Runs unconditionally, including when the component source
+        // changed, because the lost-work case is a deployed engine edit
+        // that the incoming copy is about to replace.
         recordOverwriteWarnings(
           result,
           await findPatchOwnedOverwrites({
@@ -179,7 +199,7 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
       result.applied.push({ name, type: 'override', filesAffected: filesAffectedTotal });
 
       if (!dryRun) {
-        Object.assign(newChecksums, prefixChecksums(currentChecksums, 'override', name));
+        recordComponentChecksums(newChecksums, currentChecksums, 'override', name);
       }
     } catch (error: unknown) {
       result.errors.push({
@@ -194,19 +214,29 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
  * After undeploying deleted files, the in-engine jar.mn and
  * customElements.js still carry entries for the removed files. Re-sync them
  * by removing all of `name`'s jar.mn entries and re-adding only those that
- * still exist in the workspace; if the .mjs itself was deleted, also drop
+ * still exist in the workspace. If the .mjs itself was deleted, also drop
  * the customElements.js registration. Snapshots are taken under the same
  * journal so the undo path is symmetric with apply.
  */
-async function reconcileCustomRegistrationAfterUndeploy(
-  engineDir: string,
-  name: string,
-  config: CustomComponentConfig,
-  deletedFiles: string[],
-  currentChecksums: Record<string, string>,
-  rollbackJournal: RollbackJournal | undefined,
-  filesAffected: string[]
-): Promise<void> {
+async function reconcileCustomRegistrationAfterUndeploy(args: {
+  engineDir: string;
+  name: string;
+  config: CustomComponentConfig;
+  deletedFiles: string[];
+  currentChecksums: Record<string, string>;
+  rollbackJournal: RollbackJournal | undefined;
+  /** Mutated: receives every engine path this reconciliation touched. */
+  filesAffected: string[];
+}): Promise<void> {
+  const {
+    engineDir,
+    name,
+    config,
+    deletedFiles,
+    currentChecksums,
+    rollbackJournal,
+    filesAffected,
+  } = args;
   if (!config.register || deletedFiles.length === 0) return;
 
   const deletedRegistrationFiles = deletedFiles.filter(
@@ -225,14 +255,15 @@ async function reconcileCustomRegistrationAfterUndeploy(
     (f) => f.endsWith('.mjs') || f.endsWith('.css')
   );
   if (liveJarFiles.length > 0) {
-    // applyCustomComponent has already added live entries; the remove above
-    // dropped them too, so re-add now to leave jar.mn in the correct state.
+    // applyCustomComponent has already added live entries, and the remove
+    // above dropped them too, so re-add now to leave jar.mn in the correct
+    // state.
     await addJarMnEntries(engineDir, name, liveJarFiles);
   }
   filesAffected.push(JAR_MN);
 
   // If the .mjs file itself was deleted, the customElements registration
-  // must go too — otherwise we leave a dangling import in the Pattern B
+  // must go too. Otherwise we leave a dangling import in the Pattern B
   // block that fails at runtime.
   if (deletedFiles.includes(`${name}.mjs`)) {
     if (rollbackJournal) {
@@ -327,7 +358,7 @@ async function applyCustomBatch(
         );
         if (!drifted) {
           result.skipped.push({ name, reason: 'No changes since last apply' });
-          Object.assign(newChecksums, prefixChecksums(previous, 'custom', name));
+          recordComponentChecksums(newChecksums, previous, 'custom', name);
           continue;
         }
       }
@@ -359,9 +390,9 @@ async function applyCustomBatch(
       }
 
       if (!dryRun) {
-        // Runs unconditionally — the `changed === true` path used to skip
-        // drift detection entirely, which is exactly when a deployed
-        // engine-only fix gets silently replaced (J6).
+        // Runs unconditionally. The `changed === true` path used to skip
+        // drift detection entirely, which is when a deployed engine-only
+        // fix gets silently replaced (J6).
         recordOverwriteWarnings(
           result,
           await findPatchOwnedOverwrites({
@@ -391,15 +422,15 @@ async function applyCustomBatch(
       }
 
       if (!dryRun && deletedFiles.length > 0 && blockingStepErrors(stepErrors).length === 0) {
-        await reconcileCustomRegistrationAfterUndeploy(
+        await reconcileCustomRegistrationAfterUndeploy({
           engineDir,
           name,
-          customConfig,
+          config: customConfig,
           deletedFiles,
           currentChecksums,
           rollbackJournal,
-          filesAffectedTotal
-        );
+          filesAffected: filesAffectedTotal,
+        });
       }
 
       filesAffectedTotal.push(...filesAffected);
@@ -410,12 +441,12 @@ async function applyCustomBatch(
         ...(stepErrors.length > 0 ? { stepErrors } : {}),
       });
 
-      // Only store checksums when the component applied without BLOCKING
+      // Only store checksums when the component applied without blocking
       // step errors, so that partially failed components are re-applied on
-      // the next run. Advisory errors (FTL degradation) still persist —
+      // the next run. Advisory errors (FTL degradation) still persist, since
       // re-applying cannot fix a fork that has no locale jar.mn.
       if (!dryRun && blockingStepErrors(stepErrors).length === 0) {
-        Object.assign(newChecksums, prefixChecksums(currentChecksums, 'custom', name));
+        recordComponentChecksums(newChecksums, currentChecksums, 'custom', name);
       }
     } catch (error: unknown) {
       result.errors.push({
@@ -432,8 +463,8 @@ async function applyCustomBatch(
  * Named so consumers can refer to the shape directly instead of going
  * through `Awaited<ReturnType<typeof applyAllComponents>>`.
  *
- * `actions` is populated only on a dry run; `rollbackJournal` only when
- * `persistState: false` hands journal ownership back to the caller.
+ * `actions` is populated only on a dry run. `rollbackJournal` is set only
+ * when `persistState: false` hands journal ownership back to the caller.
  */
 export type ApplyAllComponentsResult = ApplyResult & {
   actions?: DryRunAction[];
@@ -481,7 +512,7 @@ export async function applyAllComponents(
   // When `markerComment` is unset in fireforge.json, default it to
   // `binaryName.toUpperCase()` so the furnace-emitted edits to upstream
   // files (e.g. customElements.js) carry a marker that satisfies
-  // `lintModificationComments` — that rule keys on
+  // `lintModificationComments`. That rule keys on
   // `${binaryName.toUpperCase()}:`. An explicit `markerComment` still wins.
   const forgeConfig = await loadConfig(root).catch(() => undefined);
   const markerComment = resolveFurnaceMarkerComment(forgeConfig);
@@ -494,7 +525,7 @@ export async function applyAllComponents(
   }
 
   // Everything below this line can write to the engine. A real apply that
-  // reached it without a journal would have no way back — neither the
+  // reached it without a journal would have no way back: neither the
   // lifecycle wrapper's throw path nor the signal handler can restore what
   // was never captured. `operationContext` is legitimately absent for the
   // few callers that drive apply outside the wrapper, so the invariant is on
@@ -507,7 +538,7 @@ export async function applyAllComponents(
     errors: [],
   };
   const allActions: DryRunAction[] = [];
-  const newChecksums: Record<string, string> = {};
+  const newChecksums = new Map<string, string>();
 
   const componentName = options?.componentName;
 
@@ -524,7 +555,7 @@ export async function applyAllComponents(
   }
 
   // Patch-claim map for the overwrite warning: loaded once per
-  // apply. A missing/unreadable manifest degrades to an empty map — the
+  // apply. A missing/unreadable manifest degrades to an empty map. The
   // warning is advisory and must never block the apply.
   const patchClaims = await loadPatchClaimsForApply(root);
 
@@ -558,7 +589,7 @@ export async function applyAllComponents(
     await runPostApplyConsistencyChecks(root, config, result, ftlDir);
   }
 
-  // Recompute AFTER the consistency checks: they MUTATE entry.stepErrors
+  // Recompute after the consistency checks: they mutate entry.stepErrors
   // when the applied output is inconsistent (e.g. a jar.mn entry that
   // silently mis-landed). Reading the pre-check snapshot lets those failures
   // skip rollback and persist checksums for a component known to be
@@ -597,8 +628,8 @@ export async function applyAllComponents(
       // instead of byte-comparing against workspace sources.
       await updateFurnaceState(root, {
         lastApply: new Date().toISOString(),
-        appliedChecksums: newChecksums,
-        engineChecksums: { ...newChecksums },
+        appliedChecksums: Object.fromEntries(newChecksums),
+        engineChecksums: Object.fromEntries(newChecksums),
       });
     } else if (rollbackJournal) {
       // Caller owns the journal and will restore on teardown.
@@ -614,12 +645,12 @@ export async function applyAllComponents(
 } /**
  * Shared context threaded through the batch apply loops. Bundles the state
  * both loops mutate (result/actions/checksums) with the immutable run
- * parameters; the 12–13 positional parameters this replaced let call sites
+ * parameters. The 12-13 positional parameters this replaced let call sites
  * drift and made every new parameter a two-signature change.
  */
 interface ApplyBatchContext {
   config: FurnaceConfigData;
-  furnacePaths: ReturnType<typeof getFurnacePaths>;
+  furnacePaths: FurnacePaths;
   state: FurnaceStateData;
   engineDir: string;
   ftlDir: string;
@@ -627,7 +658,7 @@ interface ApplyBatchContext {
   /** Mutated by both loops: results, dry-run actions, run checksums. */
   result: ApplyAccumulator;
   allActions: DryRunAction[];
-  newChecksums: Record<string, string>;
+  newChecksums: Map<string, string>;
   rollbackJournal?: RollbackJournal | undefined;
   componentName?: string | undefined;
   /** File → owning patch filenames, for the overwrite warning. */

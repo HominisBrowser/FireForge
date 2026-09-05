@@ -3,15 +3,15 @@
  * Patch-aware restore planning for `fireforge discard`.
  *
  * The engine convention is: HEAD = pristine upstream Firefox, and the
- * applied patch queue lives as UNCOMMITTED worktree changes on top of it
+ * applied patch queue lives as uncommitted worktree changes on top of it
  * (`git apply` without `--index` → patch-edited tracked files are unstaged
  * modifications, patch-created files are untracked). A purely git-mechanical
- * discard — restore to HEAD, delete untracked files — therefore reverts
- * patch-backed files PAST their owning patch and deletes patch-created files
+ * discard (restore to HEAD, delete untracked files) therefore reverts
+ * patch-backed files past their owning patch and deletes patch-created files
  * outright.
  *
  * This module classifies each status entry against the patch manifest's
- * ownership claims and plans the correct restore target: the PATCH-APPLIED
+ * ownership claims and plans the correct restore target: the patch-applied
  * baseline (HEAD content folded through every affecting patch in order) for
  * claimed files, and the plain git mechanics for unmanaged ones.
  */
@@ -49,26 +49,26 @@ export interface DiscardBaselinePlan {
   owners: string[];
   /** True when more than one patch claims the path (ownership conflict). */
   conflicted: boolean;
-  /** Baseline content for `entry.file`; null = absent at baseline. Unset for 'unmanaged'. */
+  /** Baseline content for `entry.file` (null = absent at baseline). Unset for 'unmanaged'. */
   expectedContent?: string | null;
   /** Rename/copy only: baseline content for `originalPath` when that side is claimed. */
   expectedOriginalContent?: string | null;
 }
 
-/** Builds an all-unmanaged plan set — the `--to-upstream` (legacy) shape. */
+/** Builds an all-unmanaged plan set, the `--to-upstream` (legacy) shape. */
 export function planUpstreamDiscards(entries: readonly GitStatusEntry[]): DiscardBaselinePlan[] {
   return entries.map((entry) => ({ entry, kind: 'unmanaged', owners: [], conflicted: false }));
 }
 
 /**
  * Plans the restore target for each status entry. Entries claimed by the
- * patch manifest restore to the patch-applied baseline; unclaimed entries
+ * patch manifest restore to the patch-applied baseline. Unclaimed entries
  * keep the plain git mechanics. A missing patches dir or empty manifest
  * degrades every plan to `unmanaged`.
  *
- * A corrupt manifest or an unreconstructible patch baseline REFUSES with a
- * GeneralError naming `--to-upstream` — silently falling back to pristine
- * HEAD is exactly the data-loss path this module exists to close.
+ * A corrupt manifest or an unreconstructible patch baseline refuses with a
+ * GeneralError naming `--to-upstream`. Silently falling back to pristine
+ * HEAD is the data-loss path this module exists to close.
  */
 export async function planDiscardBaselines(
   patchesDir: string,
@@ -121,7 +121,7 @@ export async function planDiscardBaselines(
   // `computePatchedContent` folds a deletion into an empty string (an
   // apply-to-content limitation), which is indistinguishable from a
   // legitimately empty file. Consult the owning patches' diff sections
-  // directly: the LAST section (highest-ordered owner) naming the path
+  // directly: the last section (highest-ordered owner) naming the path
   // decides whether the baseline is "absent".
   const sectionCache = new Map<string, DiffSection[]>();
   const isDeletedAtBaseline = async (path: string, owners: string[]): Promise<boolean> => {
@@ -134,11 +134,10 @@ export async function planDiscardBaselines(
           sections = parseDiffSections(await readText(join(patchesDir, owner)));
         } catch (error: unknown) {
           // Fail closed. Swallowing this yields no sections, which falls
-          // through to `return false` — "not deleted at baseline" — so a path
-          // the owning patch DELETES would be restored as present, i.e.
+          // through to `return false` ("not deleted at baseline"), so a
+          // path the owning patch deletes would be restored as present, i.e.
           // rewritten instead of removed: silent data loss on the command
-          // whose header promises a refusal for exactly this class of
-          // failure.
+          // whose header promises a refusal for this class of failure.
           //
           // `computeExpected` above reads the same patch first and refuses,
           // so this is defence-in-depth against a TOCTOU (the patch file
@@ -223,7 +222,7 @@ export async function applyDiscardBaseline(
 
   const { entry } = plan;
   // Drop any staged edits/adds/renames first so the rewritten content is a
-  // plain worktree state (harmless when nothing is staged; skipped for
+  // plain worktree state (harmless when nothing is staged, and skipped for
   // purely-untracked entries which have no index footprint).
   if (!entry.isUntracked) {
     const indexPaths =
@@ -237,7 +236,7 @@ export async function applyDiscardBaseline(
     await writeText(join(engineDir, entry.file), plan.expectedContent);
   }
 
-  // A rename/copy's original side restores to ITS baseline too: the patch
+  // A rename/copy's original side restores to its baseline too: the patch
   // baseline when claimed, else the legacy HEAD restore (matching what
   // discardStatusEntry does for that side).
   if (entry.originalPath !== undefined) {
@@ -294,20 +293,20 @@ export function summarizeDiscardBaselines(
   const deleted = plans.filter((p) => p.kind === 'patch-deleted').length;
   const unmanaged = plans.filter((p) => p.kind === 'unmanaged').length;
   if (patchBacked + created + deleted === 0) {
-    return `${String(succeeded)} file(s) restored to upstream state`;
+    return `${succeeded} file(s) restored to upstream state`;
   }
   const parts: string[] = [];
-  if (patchBacked > 0) parts.push(`${String(patchBacked)} to patch baseline`);
-  if (created > 0) parts.push(`${String(created)} re-materialized`);
-  if (deleted > 0) parts.push(`${String(deleted)} removed per patch baseline`);
-  if (unmanaged > 0) parts.push(`${String(unmanaged)} to upstream state`);
-  return `${String(succeeded)} file(s) restored: ${parts.join(', ')}`;
+  if (patchBacked > 0) parts.push(`${patchBacked} to patch baseline`);
+  if (created > 0) parts.push(`${created} re-materialized`);
+  if (deleted > 0) parts.push(`${deleted} removed per patch baseline`);
+  if (unmanaged > 0) parts.push(`${unmanaged} to upstream state`);
+  return `${succeeded} file(s) restored: ${parts.join(', ')}`;
 }
 
 /** Warn text for a multi-owner (conflicted) restore. */
 export function describeConflictWarning(plan: DiscardBaselinePlan): string {
   return (
-    `${plan.entry.file} is claimed by ${String(plan.owners.length)} patches ` +
+    `${plan.entry.file} is claimed by ${plan.owners.length} patches ` +
     `(${plan.owners.join(', ')}). Restored the cumulative baseline; run ` +
     '"fireforge status --ownership" to resolve ownership.'
   );

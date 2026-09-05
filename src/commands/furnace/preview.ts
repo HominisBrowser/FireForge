@@ -16,8 +16,8 @@ import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro, spinner, warn } from '../../utils/logger.js';
 
 /**
- * Runs the two teardown steps — `cleanStories` and the rollback-journal
- * restore — independently, collecting whatever errors either step throws.
+ * Runs the two teardown steps (`cleanStories` and the rollback-journal
+ * restore) independently, collecting whatever errors either step throws.
  * Both steps must run regardless of the other's outcome, because each
  * operates on a different part of engine state and skipping one leaves
  * the engine in a worse position than a single-step failure.
@@ -84,10 +84,10 @@ function reportPreviewStagingFailures(stageResult: ApplyAllComponentsResult): ne
 
 /**
  * Filenames emitted by the Firefox build backend (not by Storybook's npm
- * package set) — their absence means `mach build` has not produced its
+ * package set). Their absence means `mach build` has not produced its
  * post-configure artifacts, which is a different failure mode from a missing
  * Storybook workspace dependency tree. A
- * `FileNotFoundError: [...] chrome-map.json` AFTER a successful Storybook
+ * `FileNotFoundError: [...] chrome-map.json` after a successful Storybook
  * `npm install` is the case a dep-focused heuristic misdiagnoses, sending
  * the operator back to `--install`. The pattern list is narrow on purpose so
  * the backend-rebuild hint only fires when it is confident.
@@ -118,7 +118,7 @@ export function buildStorybookFailureMessage(output: string, installRequested: b
     output
   );
 
-  // Check backend-artifact signal first — a missing chrome-map.json looks
+  // Check the backend-artifact signal first: a missing chrome-map.json looks
   // like any other "No such file" error to a naïve regex, but the fix is
   // to rerun `fireforge build`, not to reinstall Storybook dependencies.
   if (hasFileNotFoundSignal && BACKEND_ARTIFACT_PATTERNS.some((p) => p.test(output))) {
@@ -148,7 +148,7 @@ export function buildStorybookFailureMessage(output: string, installRequested: b
  * Preflights the Firefox build + toolchain prerequisites `mach storybook`
  * quietly assumes. Without it, preview stages components and launches a
  * ~1000-package `mach storybook upgrade` npm install before the backend
- * surfaces a "missing chrome-map.json" / Cargo-config failure; this refuses
+ * surfaces a "missing chrome-map.json" / Cargo-config failure. This refuses
  * fast and leaves the workspace untouched.
  *
  * @param engineDir - Resolved engine directory
@@ -172,7 +172,7 @@ async function assertPreviewPrerequisites(engineDir: string): Promise<void> {
   // follow the remediation instruction ("run bootstrap then rerun preview")
   // hit the same refusal on the retry, because `fireforge bootstrap` alone
   // produces only `.in`. Either name is sufficient to prove the Rust
-  // toolchain is registered; the stronger `hasBuildArtifacts` check above
+  // toolchain is registered. The stronger `hasBuildArtifacts` check above
   // already guards against a completely un-configured tree.
   const cargoConfigPath = join(engineDir, '.cargo', 'config.toml');
   const cargoConfigInPath = join(engineDir, '.cargo', 'config.toml.in');
@@ -191,10 +191,10 @@ async function assertPreviewPrerequisites(engineDir: string): Promise<void> {
 /**
  * Emits a framing banner when the Storybook workspace has not yet had its npm
  * dependencies installed. `mach storybook` drives the install internally and
- * prints ELSPROBLEMS / UNMET DEPENDENCY lines verbatim; without this banner
+ * prints ELSPROBLEMS / UNMET DEPENDENCY lines verbatim. Without this banner
  * operators reliably read the npm output as a failure.
  *
- * Skipped when `--install` was explicitly requested — that path already runs
+ * Skipped when `--install` was explicitly requested, since that path runs
  * `mach storybook upgrade` before the preview launches, so the npm output
  * for the subsequent `mach storybook` invocation is a no-op.
  */
@@ -220,9 +220,9 @@ async function announceStorybookFirstRunIfNeeded(
 /**
  * Surfaces an explicit success banner after a clean mach-storybook
  * exit so the operator's scrollback visually terminates the npm noise
- * from the first-run install. Only fires on expected exit codes — non-
- * zero cases fall through to the existing
- * `buildStorybookFailureMessage` classification.
+ * from the first-run install. Only fires on expected exit codes. Non-zero
+ * cases fall through to the existing `buildStorybookFailureMessage`
+ * classification.
  */
 function announceStorybookCleanExitIfApplicable(exitCode: number): void {
   if (exitCode === 0 || exitCode === 130 || exitCode === 143) {
@@ -273,9 +273,9 @@ export async function furnacePreviewCommand(
       }
     | undefined;
   // True once we are about to (or have) written to engine/.../stories/furnace.
-  // Intentionally set BEFORE `syncStories` is awaited so a mid-sync failure
-  // still triggers `cleanStories` during teardown. `cleanStories` is a
-  // full-directory wipe, so it is correct to run against partial state —
+  // Set before `syncStories` is awaited so a mid-sync failure still
+  // triggers `cleanStories` during teardown. `cleanStories` is a
+  // full-directory wipe, so it is correct to run against partial state,
   // including state with zero files, where it is a cheap no-op.
   let storiesCleanupRequired = false;
   let previewJournal: RollbackJournal | undefined;
@@ -331,7 +331,7 @@ export async function furnacePreviewCommand(
       }
 
       // Sync story files. Set the cleanup flag before the await so a partial
-      // write failure still triggers the teardown wipe — `syncStories` writes
+      // write failure still triggers the teardown wipe. `syncStories` writes
       // files incrementally with no internal cleanup of its own.
       const syncSpinner = spinner('Syncing component stories...');
       storiesCleanupRequired = true;
@@ -373,7 +373,7 @@ export async function furnacePreviewCommand(
     // cleanStories must not prevent the journal restore, and vice versa.
     // Running teardown in a `finally` that calls
     // `restoreRollbackJournalOrThrow` throws synchronously, bypassing the
-    // primary error and skipping downstream handling — the engine is left
+    // primary error and skipping downstream handling, so the engine is left
     // with staged files and the user gets a teardown message with no
     // guidance. Both failures are collected instead and, if anything went
     // wrong, a `pendingRepair` marker is persisted for `fireforge doctor` to

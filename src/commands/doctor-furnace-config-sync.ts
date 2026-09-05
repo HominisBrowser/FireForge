@@ -3,11 +3,11 @@
  * "Furnace config sync" doctor check.
  *
  * Surfaces orphaned component directories on disk whose names are missing
- * from `furnace.json` — typically the concurrent-override race, where two
+ * from `furnace.json`, typically the concurrent-override race, where two
  * parallel `furnace override` commands both leave their directory on disk
  * but only the second reaches `writeFurnaceConfig`. Under
  * `--repair-furnace`, override orphans are re-registered from the
- * `override.json` sidecar the command wrote during the copy phase; custom
+ * `override.json` sidecar the command wrote during the copy phase. Custom
  * orphans are listed for the operator to either re-run `furnace create`
  * against or delete manually, because custom components have no similar
  * persisted metadata.
@@ -43,10 +43,10 @@ interface OrphanOverride {
  * to catch. The caller surfaces the failure instead.
  */
 async function listComponentDirs(dir: string): Promise<string[]> {
-  // `pathExistsStrict`, not `pathExists`: the latter answers `false` for EVERY
+  // `pathExistsStrict`, not `pathExists`: the latter answers `false` for every
   // access error, so an unreadable components directory reported "no orphans",
-  // i.e. a clean check — the same fail-open the comment above rejects for
-  // `readdir`. Only ENOENT means genuinely absent.
+  // i.e. a clean check. That is the same fail-open the comment above rejects
+  // for `readdir`. Only ENOENT means genuinely absent.
   if (!(await pathExistsStrict(dir))) return [];
   const entries = await readdir(dir, { withFileTypes: true });
   return entries.filter((e) => e.isDirectory()).map((e) => e.name);
@@ -62,7 +62,7 @@ async function recoverOverrideConfig(
   // outer-snapshot config and drops the sibling write's addition.
   //
   // No `pathExists` precheck: it collapses "absent" and "unreadable" into
-  // the same `false`, and both outcomes lead here anyway — a missing file
+  // the same `false`, and both outcomes lead here anyway. A missing file
   // lands in the catch below with the same `undefined` result.
   const sidecarPath = join(overrideDir, name, 'override.json');
   try {
@@ -100,7 +100,7 @@ async function recoverOverrideConfig(
   } catch {
     // Unreadable or malformed sidecar. Returning `undefined` here is the same
     // value as "no sidecar present", so the caller reports the override as
-    // unrecoverable — which is the safe direction (it never invents config),
+    // unrecoverable. That is the safe direction (it never invents config),
     // but the operator sees "no valid override.json" rather than "the
     // override.json is corrupt". The remediation is identical either way.
     return undefined;
@@ -157,7 +157,7 @@ interface RepairOutcome {
   deleted: string[];
   retained: string[];
   errors: string[];
-  /** Set when the repair failed before anything was persisted; names the phase. */
+  /** Set when the repair failed before anything was persisted. Names the phase. */
   repairError?: string;
 }
 
@@ -174,7 +174,7 @@ function emptyOutcome(): RepairOutcome {
 
 /**
  * Re-registers override orphans and deletes empty custom orphan directories,
- * under ONE furnace lock held across both.
+ * under one furnace lock held across both.
  *
  * Two things this must not do, both of which reproduce the lost-write race the
  * check exists to clean up after:
@@ -182,9 +182,9 @@ function emptyOutcome(): RepairOutcome {
  * 1. Write back a decision made before the lock. The orphan list is computed
  *    from a config snapshot loaded well before we hold anything, so by the
  *    time we can write, a concurrent `furnace override` may have registered
- *    the same name — writing our sidecar-reconstructed entry over it discards
+ *    the same name. Writing our sidecar-reconstructed entry over it discards
  *    a live write, and a concurrent `furnace create` registering the name
- *    under `custom` would leave it in BOTH maps, a state nothing validates.
+ *    under `custom` would leave it in both maps, a state nothing validates.
  *    Every orphan is therefore re-checked against `freshConfig` inside the
  *    lock and skipped when it is no longer orphaned.
  * 2. Delete custom directories outside the lock. `repairCustomOrphans` used to
@@ -200,12 +200,12 @@ async function repairOrphans(
   if (orphans.overrides.length === 0 && orphans.customNames.length === 0) return outcome;
 
   const lockPath = getFurnaceLockPath(projectRoot);
-  // One catch covers four distinct phases; naming the one that failed keeps
-  // the report honest — a lock timeout otherwise renders as "failed while
+  // One catch covers four distinct phases. Naming the one that failed keeps
+  // the report honest. A lock timeout otherwise renders as "failed while
   // writing furnace.json", the phase least likely to have been reached.
   // Held in an object rather than two `let`s: the lock callback mutates them
   // from inside a closure, and TS's control-flow analysis does not propagate
-  // that through the call — it would narrow both to their initial literals
+  // that through the call, so it would narrow both to their initial literals
   // in the catch below.
   const progress = { phase: 'waiting for the furnace lock', persisted: false };
   try {
@@ -219,7 +219,7 @@ async function repairOrphans(
           progress.phase = 'writing furnace.json';
           await writeFurnaceConfig(projectRoot, freshConfig);
         }
-        // From here the restore (if any) is on disk; a later failure must not
+        // From here the restore (if any) is on disk. A later failure must not
         // report the whole repair as if it never happened.
         progress.persisted = true;
         progress.phase = 'cleaning custom orphan directories';
@@ -245,7 +245,7 @@ async function repairOrphans(
   return outcome;
 }
 
-/** Override half of {@link repairOrphans}; mutates `freshConfig` in place. */
+/** Override half of {@link repairOrphans}. Mutates `freshConfig` in place. */
 function repairOverridesLocked(
   freshConfig: FurnaceConfig,
   orphans: OrphanOverride[],
@@ -253,7 +253,7 @@ function repairOverridesLocked(
 ): void {
   for (const orphan of orphans) {
     if (orphan.name in freshConfig.overrides || orphan.name in freshConfig.custom) {
-      // Registered while we waited for the lock — no longer an orphan, and
+      // Registered while we waited for the lock, so no longer an orphan, and
       // writing over it would either discard that write or duplicate the name
       // across `overrides` and `custom`.
       outcome.reconciled.push(orphan.name);
@@ -268,7 +268,7 @@ function repairOverridesLocked(
   }
 }
 
-/** Custom half of {@link repairOrphans}; must run under the same lock. */
+/** Custom half of {@link repairOrphans}. Must run under the same lock. */
 async function deleteEmptyCustomOrphans(
   projectRoot: string,
   freshConfig: FurnaceConfig,
@@ -279,8 +279,8 @@ async function deleteEmptyCustomOrphans(
   const furnacePaths = getFurnacePaths(projectRoot);
   for (const name of customNames) {
     if (name in freshConfig.custom || name in freshConfig.overrides) {
-      // A name that was orphaned in BOTH trees is reconciled once, not once
-      // per tree — the report reads "Skipped 2 names (x, x)" otherwise.
+      // A name orphaned in both trees is reconciled once rather than once
+      // per tree. The report reads "Skipped 2 names (x, x)" otherwise.
       if (!outcome.reconciled.includes(name)) outcome.reconciled.push(name);
       continue;
     }
@@ -302,7 +302,7 @@ async function deleteEmptyCustomOrphans(
       // `rmdir`, not `rm`: `rm` without `{ recursive: true }` throws EISDIR on
       // a directory, so on a real filesystem this branch always failed and the
       // "deleted N empty directories" report was unreachable. `rmdir` is also
-      // the exact semantics wanted here — it refuses a non-empty directory,
+      // the exact semantics wanted here: it refuses a non-empty directory,
       // which keeps the emptiness check above from being the only safeguard.
       await rmdir(dir);
       outcome.deleted.push(name);

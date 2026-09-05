@@ -8,7 +8,7 @@ describe('validateChromeScriptJsDoc', () => {
 
   it('flags a top-level class with no JSDoc (script form, no export keyword)', () => {
     // Chrome subscripts use bare `class` declarations rather than ES module
-    // exports — the rule must visit them anyway, since they are exposed as
+    // exports, so the rule must visit them anyway, since they are exposed as
     // globals on the loading window via Services.scriptloader.loadSubScript.
     const source = 'class MyBrowserDock {\n  constructor() {}\n}\n';
     const issues = validateChromeScriptJsDoc(source);
@@ -96,8 +96,8 @@ describe('validateChromeScriptJsDoc', () => {
   // ── Parser-mode boundary ──────────────────────────────────────────────
 
   it('returns no issues when the source uses module-only syntax (parse failure)', () => {
-    // Chrome subscripts that mistakenly use `import`/`export` should NOT
-    // emit pseudo-issues — they should silently disable the rule (parse
+    // Chrome subscripts that mistakenly use `import`/`export` should not
+    // emit pseudo-issues. They should silently disable the rule (parse
     // returns no AST). The orchestrator runs the export-walker rule on
     // `.sys.mjs` separately, so this carve-out only affects `.js` files
     // that were misclassified.
@@ -111,7 +111,8 @@ describe('validateChromeScriptJsDoc', () => {
     const source = 'class Dock {}\n\nfunction tile(host) { return host; }\n';
     const issues = validateChromeScriptJsDoc(source);
 
-    // Both declarations missing JSDoc — expect two missing-jsdoc issues.
+    // Both declarations are missing JSDoc, so expect two missing-jsdoc
+    // issues.
     const missing = issues.filter((i) => i.check === 'missing-jsdoc');
     expect(missing).toHaveLength(2);
     const messages = missing.map((i) => i.message).join('\n');

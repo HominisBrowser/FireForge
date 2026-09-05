@@ -5,7 +5,6 @@
 
 import { join } from 'node:path';
 
-import type { getProjectPaths } from '../../core/config.js';
 import { updateState } from '../../core/config.js';
 import { stampFurnaceOverrideBaseVersions } from '../../core/furnace-config.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
@@ -23,19 +22,21 @@ import {
 } from '../../core/rebase-session.js';
 import { runInSignalCriticalSection } from '../../core/signal-critical.js';
 import { RebaseError } from '../../errors/rebase.js';
+import type { ProjectPaths } from '../../types/config.js';
 import { elapsedSince } from '../../utils/elapsed.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { error, info, outro, spinner, success, warn } from '../../utils/logger.js';
 import { isValidFirefoxVersion } from '../../utils/validation.js';
+import { clearPendingResolution } from '../pending-resolution.js';
 import { buildRebaseConflictSummary } from './conflict-summary.js';
 import { printSummary } from './summary.js';
 
 /**
  * Builds the session entry for a patch-apply outcome.
  *
- * Constructing a whole entry rather than assigning fields is what the
- * discriminated union buys: a status can never be flipped while the previous
+ * The entry is constructed whole rather than assigned field by field, so the
+ * discriminated union stops a status being flipped while the previous
  * status's payload stays behind, which is how
  * `{ status: 'resolved', error, conflictingFiles }` reaches the session file.
  *
@@ -73,7 +74,7 @@ function entryForApplyResult(
 export async function runPatchLoop(
   projectRoot: string,
   session: RebaseSession,
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   maxFuzz: number,
   waitLockSeconds?: number
 ): Promise<void> {
@@ -88,9 +89,10 @@ export async function runPatchLoop(
 
     if (!patchFile) {
       warn(`Patch file not found for ${entry.filename}, skipping.`);
-      // Replaced, not mutated: the entry is a discriminated union, so a status
-      // change is a new value rather than a field assignment. That is what
-      // stops a status flip stranding the previous status's payload.
+      // The entry is replaced rather than mutated: it is a discriminated
+      // union, so a status change is a new value rather than a field
+      // assignment, and a status flip cannot strand the previous status's
+      // payload.
       session.patches[i] = { filename: entry.filename, status: 'skipped' };
       session.currentIndex = i + 1;
       await saveRebaseSession(projectRoot, session);
@@ -122,9 +124,9 @@ export async function runPatchLoop(
       }
     } else {
       // Set pendingResolution in state for visibility. Kept outside the
-      // critical section — it is advisory UX, not a correctness invariant,
-      // and its absence would at most cause `fireforge status` to omit the
-      // pending-conflict hint until the next state write.
+      // critical section, since it is advisory UX rather than a correctness
+      // invariant, and its absence would at most cause `fireforge status`
+      // to omit the pending-conflict hint until the next state write.
       await updateState(projectRoot, (current) => ({
         ...current,
         pendingResolution: {
@@ -169,7 +171,7 @@ export async function runPatchLoop(
 
   // Re-export all successfully applied patches. Failures here mean the
   // engine has been rebased onto the new Firefox version but some .patch
-  // files were not refreshed — the queue would lie about what version each
+  // files were not refreshed, so the queue would lie about what version each
   // patch was tested against if we proceeded to stamp. Refuse to claim
   // success and leave the session in place so the user can recover via
   // `fireforge rebase --continue` after fixing the underlying cause.
@@ -198,7 +200,7 @@ export async function runPatchLoop(
     );
   }
 
-  // Stamp versions — only for patches whose .patch file now actually
+  // Stamp versions, only for patches whose .patch file now actually
   // reflects the new source (overlap-skipped ones keep their old stamp so
   // the queue does not lie about what each patch was tested against).
   const overlapSkippedSet = new Set(overlapSkipped);
@@ -215,19 +217,19 @@ export async function runPatchLoop(
 
   // Stamp every Furnace override's `baseVersion` to match the rebased
   // Firefox source version. Without it, a successful source bump leaves
-  // overrides in a doctor-failing drift state — each still claiming the
-  // pre-rebase source as its baseline — and every subsequent
+  // overrides in a doctor-failing drift state, each still claiming the
+  // pre-rebase source as its baseline, and every subsequent
   // `fireforge doctor` fails `Furnace component validation`. The stamp is
   // unconditional per the helper's contract: rebase already succeeded on
   // the patch side, so the operator is committing to the new source
-  // baseline; per-component health checking stays with
+  // baseline. Per-component health checking stays with
   // `fireforge furnace validate` / `doctor --repair-furnace`.
   //
   // "Unconditional" means unconditional on component health, not on the
   // value: `stampFurnaceOverrideBaseVersions` assigns and persists whatever
   // string it is handed, so a session whose `toVersion` is not a real
   // Firefox version would rewrite every override's baseline to that value.
-  // `isValidSession` rejects such a session at read time; this refuses to
+  // `isValidSession` rejects such a session at read time. This refuses to
   // persist it even if a future caller reaches here another way.
   if (!isValidFirefoxVersion(session.toVersion)) {
     throw new RebaseError(
@@ -252,12 +254,7 @@ export async function runPatchLoop(
 
   // Clear pending resolution if any (transactionally, so a concurrent
   // state write to an unrelated key is not clobbered by a stale reload).
-  await updateState(projectRoot, (current) => {
-    if (!current.pendingResolution) return current;
-    const next = { ...current };
-    delete next.pendingResolution;
-    return next;
-  });
+  await clearPendingResolution(projectRoot);
 
   info('');
   success(`All patches re-exported with sourceVersion=${session.toVersion}`);
@@ -266,7 +263,7 @@ export async function runPatchLoop(
 
 async function reExportAppliedPatches(
   session: RebaseSession,
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   waitLockSeconds: number | undefined
 ): Promise<{
   failures: Array<{ filename: string; error: string }>;
@@ -278,13 +275,13 @@ async function reExportAppliedPatches(
   const manifest = await loadPatchesManifest(paths.patches);
   if (!manifest) return { failures, overlapSkipped };
 
-  // Re-export writes `getDiffForFilesAgainstHead(files)` — the CUMULATIVE
+  // Re-export writes `getDiffForFilesAgainstHead(files)`, the cumulative
   // diff of those files. For a file claimed by two patches (a supported
-  // `--allow-overlap` queue), that diff contains BOTH patches' hunks, so
+  // `--allow-overlap` queue), that diff contains both patches' hunks, so
   // rewriting each patch with it would duplicate the shared file's hunks
   // into every owner: the very next import then fails or silently
   // double-materialises. Refuse to auto-re-export any patch whose files
-  // overlap another patch; the operator re-exports those manually where
+  // overlap another patch. The operator re-exports those manually where
   // per-patch attribution is possible.
   const fileOwners = new Map<string, number>();
   for (const patch of manifest.patches) {

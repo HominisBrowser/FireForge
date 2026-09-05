@@ -16,7 +16,7 @@
  * implied chrome suffix is a confident match: the scorer never runs and the
  * structural-relation check is bypassed.
  *
- * Scope is intentionally narrow — only subtrees whose packaging target is
+ * Scope is narrow: only subtrees whose packaging target is
  * stable across forks. A fork that reroutes a known subtree can still win by
  * adding `(source)` annotations in its own `jar.mn`, which
  * `resolveArtifactByRegistration` consults first.
@@ -54,8 +54,8 @@ const KNOWN_TRANSFORMS: ReadonlyArray<{
 
 /**
  * Returns the expected chrome-tree suffix for an engine-relative POSIX
- * source path when the path falls under a known transform prefix;
- * undefined otherwise.
+ * source path when the path falls under a known transform prefix.
+ * Returns undefined otherwise.
  *
  * @param source Engine-relative POSIX source path.
  */

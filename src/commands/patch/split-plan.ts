@@ -4,7 +4,7 @@
  * construction from the worktree, staged-dependency owner-rewrite
  * discovery, cross-patch lint projection, and policy-manifest projection.
  * Split out of `split.ts` to keep both files within the per-file line
- * budget; consumed only by the split command.
+ * budget. It is consumed only by the split command.
  */
 
 import { join } from 'node:path';
@@ -13,25 +13,24 @@ import { type ConflictReport } from '../../core/destructive.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import { extractAffectedFiles } from '../../core/patch-apply.js';
 import {
-  buildModifiedFileAdditionsFromDiff,
-  buildPatchQueueContext,
   collectForwardImportEdges,
   formatPatchLintIssue,
   lintPatchQueue,
   type PatchQueueEntry,
 } from '../../core/patch-lint.js';
+import type { PatchQueueContext } from '../../core/patch-lint-cross.js';
 import { computeProjectedLintRegressions } from '../../core/patch-lint-projection.js';
 import { rewriteStagedDependencyOwners } from '../../core/patch-manifest.js';
 import { applyRenameMapToManifest, buildProjectedManifest } from '../../core/patch-policy.js';
 import { buildPatchSourceMetadata } from '../../core/patch-source-metadata.js';
-import { buildNewFileTextProjection } from '../../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { PatchStagedForwardImport } from '../../types/commands/index.js';
-import type { PatchCategory, PatchMetadata } from '../../types/commands/index.js';
+import type { PatchCategory, PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import type { FireForgeConfig } from '../../types/config.js';
 import { pathExists } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
 import { type PlacementPlan } from '../export-flow.js';
+import { projectEntryBody } from './entry-projection.js';
 
 /** Everything the commit step needs, computed and confirmed up front. */
 export interface SplitPlan {
@@ -51,7 +50,7 @@ export interface SplitPlan {
   /**
    * Staged forward-import declarations the split introduces, keyed by the
    * importing patch's post-rename filename. These are the new forward edges
-   * from existing patches into the freshly-created patch (owner known); they
+   * from existing patches into the freshly-created patch (owner known). They
    * are injected into the projected lint so dry-run matches the real gate,
    * and persisted on commit so the real per-patch gate stays clean.
    */
@@ -152,16 +151,9 @@ export function rewriteSplitOwners(
   };
 }
 
-function buildEntryProjection(
-  diff: string
-): Pick<PatchQueueEntry, 'diff' | 'newFiles' | 'modifiedFileAdditions'> {
-  const newFiles = buildNewFileTextProjection(diff);
-  return { diff, newFiles, modifiedFileAdditions: buildModifiedFileAdditionsFromDiff(diff) };
-}
-
 /** Builds the projected post-split queue entries (renumber + shrunken source + new patch). */
 function buildProjectedSplitEntries(
-  baseCtx: Awaited<ReturnType<typeof buildPatchQueueContext>>,
+  baseCtx: PatchQueueContext,
   plan: SplitPlan
 ): PatchQueueEntry[] {
   const movedSet = new Set(plan.movedFiles);
@@ -184,14 +176,14 @@ function buildProjectedSplitEntries(
       ? { ...entry, metadata, filename: rename.newFilename, order: rename.newOrder }
       : { ...entry, metadata };
     if (entry.filename !== plan.source.filename) return base;
-    return { ...base, ...buildEntryProjection(plan.remainingDiff) };
+    return { ...base, ...projectEntryBody(plan.remainingDiff) };
   });
 
   entries.push({
     filename: plan.placement.newFilename,
     order: plan.placement.insertionOrder,
     metadata: null,
-    ...buildEntryProjection(plan.movedDiff),
+    ...projectEntryBody(plan.movedDiff),
   });
   entries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
   return entries;
@@ -200,11 +192,12 @@ function buildProjectedSplitEntries(
 /**
  * Computes the staged forward-import declarations the split introduces:
  * forward edges from existing patches into the freshly-created patch (its
- * `creates` files are the moved files; the owner is the new patch, so it is
- * known). Keyed by the importing patch's projected (post-rename) filename.
+ * `creates` files are the moved files, and the owner is the new patch, so
+ * it is known). Keyed by the importing patch's projected (post-rename)
+ * filename.
  *
  * These edges did not exist before the split (importer and imported file
- * lived in the same patch), so they have no declaration yet — without this
+ * lived in the same patch), so they have no declaration yet. Without this
  * the projected lint flags them while the real per-patch gate would resolve
  * them once declared. Auto-declaring keeps the two in lock-step and lets a
  * sound split read as sound.
@@ -281,7 +274,7 @@ function injectStagedDependencyAdditions(
  */
 export function runProjectedSplitLint(
   plan: SplitPlan,
-  baseCtx: Awaited<ReturnType<typeof buildPatchQueueContext>>
+  baseCtx: PatchQueueContext
 ): {
   conflicts: ConflictReport | null;
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
@@ -325,7 +318,7 @@ export function projectSplitManifest(
   manifest: { version: 1; patches: PatchMetadata[] },
   plan: SplitPlan,
   newMetadata: PatchMetadata
-): ReturnType<typeof buildProjectedManifest> {
+): PatchesManifest {
   const movedSet = new Set(plan.movedFiles);
   const renamed = applyRenameMapToManifest(manifest, plan.placement.renameMap);
   const effectiveSourceFilename =
@@ -361,7 +354,7 @@ export function buildNewPatchMetadata(plan: SplitPlan, config: FireForgeConfig):
 }
 
 /**
- * Renders the operator-facing summary lines for a planned split — the text
+ * Renders the operator-facing summary lines for a planned split: the text
  * shown by `--dry-run` and by the destructive-operation confirmation prompt.
  */
 export function buildSplitSummary(plan: SplitPlan): string[] {

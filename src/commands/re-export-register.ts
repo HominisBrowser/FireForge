@@ -4,7 +4,7 @@
  *
  * Split out of `re-export.ts`, which was otherwise over the per-file line
  * cap. The split direction matches the existing `re-export-scan.ts` /
- * `re-export-options.ts` boundary; folding `re-export-files.ts` back into
+ * `re-export-options.ts` boundary. Folding `re-export-files.ts` back into
  * the orchestrator would go the wrong way.
  */
 

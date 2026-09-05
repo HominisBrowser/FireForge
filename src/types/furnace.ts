@@ -52,7 +52,7 @@ export interface CustomComponentConfig {
   /** Whether to register in customElements.js */
   register: boolean;
   /**
-   * What the component IS. `'element'` (the default when unset) is a custom
+   * What the component is. `'element'` (the default when unset) is a custom
    * element with its own tag. `'library'` is a base class + helpers module
    * that defines no element of its own (e.g. a shared MozLitElement
    * subclass other components extend): `furnace validate` skips the
@@ -60,7 +60,7 @@ export interface CustomComponentConfig {
    * and the `missing-css` structural advisory for it, while headers, module
    * shape, `relative-import`, and (when a `.css` exists) the CSS
    * compatibility rules still apply. A library exports no element, so
-   * `kind: "library"` requires `register: false` — the combination with
+   * `kind: "library"` requires `register: false`. The combination with
    * `register: true` is rejected at config parse time.
    */
   kind?: 'element' | 'library';
@@ -90,18 +90,18 @@ export interface CustomComponentConfig {
    * participates in, in the same form used by `insertFTLIfNeeded` (for
    * example `browser/mybrowser-dock.ftl`). When set:
    *
-   *   - `furnace create --localized` does NOT scaffold a per-component
-   *     `.ftl` stub — the component shares the feature bundle.
+   *   - `furnace create --localized` does not scaffold a per-component
+   *     `.ftl` stub. The component shares the feature bundle.
    *   - The generated `.mjs` calls `insertFTLIfNeeded("<sharedFtl>")` at
    *     the shared path instead of the per-component one.
    *   - `furnace validate`'s `missing-ftl` structural rule is skipped for
    *     the component (there is no `<tag>.ftl` to require).
-   *   - `furnace apply` does NOT copy a per-component `.ftl` into the FTL
-   *     tree nor register a new entry in the locale `jar.mn` — the shared
+   *   - `furnace apply` does not copy a per-component `.ftl` into the FTL
+   *     tree nor register a new entry in the locale `jar.mn`. The shared
    *     file is owned by whoever authored the feature bundle.
    *
    * Requires `localized: true`. Mutually exclusive with the per-component
-   * `.ftl` scaffold. Does NOT auto-migrate previous per-component FTL
+   * `.ftl` scaffold. Does not auto-migrate previous per-component FTL
    * state: flipping an existing component onto `sharedFtl` leaves the
    * prior per-component entry in the engine tree and the locale `jar.mn`
    * until explicitly cleaned up.
@@ -126,12 +126,12 @@ export interface FurnaceConfig {
    * variables the fork does not own. `token coverage` counts matches as
    * `allowlisted` rather than `unknown` so a copied upstream baseline does
    * not drag fork-owned coverage percentages down. Defaults to `['--moz-']`
-   * when unset; pass an explicit empty array to count every prefix.
+   * when unset. Pass an explicit empty array to count every prefix.
    */
   platformPrefixes?: string[];
   /**
-   * Custom properties used as runtime state channels — written and read by the
-   * component itself (e.g. per-frame camera/tile positions) rather than
+   * Custom properties used as runtime state channels, written and read by
+   * the component itself (e.g. per-frame camera/tile positions) rather than
    * consumed as design tokens. Listed names are exempt from the
    * `token-prefix-violation` check even when they do not match `tokenPrefix`
    * and are not in `tokenAllowlist`. Use this for cross-component runtime
@@ -145,7 +145,7 @@ export interface FurnaceConfig {
    * the tokens CSS file is `<link>`ed. Forks with multiple chrome host
    * documents (e.g. `mybrowser.xhtml` beside the stock `browser.xhtml`) should
    * list every document that may own the link. When omitted, defaults to
-   * `['browser/base/content/browser.xhtml']` — the upstream Firefox path.
+   * `['browser/base/content/browser.xhtml']`, the upstream Firefox path.
    */
   tokenHostDocuments?: string[];
   /**
@@ -163,7 +163,7 @@ export interface FurnaceConfig {
    * `compilerOptions.paths` entries for deployed component modules
    * (`chrome://global/content/elements/<file>.mjs`) Furnace keeps in sync
    * on deploy. Only entries under that chrome prefix that map into
-   * `components/custom/` are managed; everything else is preserved.
+   * `components/custom/` are managed. Everything else is preserved.
    * Unset disables jsconfig maintenance.
    */
   typecheckJsconfig?: string;
@@ -209,11 +209,11 @@ export type FurnacePendingRepairOperation = (typeof FURNACE_PENDING_REPAIR_OPERA
  * out-of-band from what the state file records.
  */
 export interface FurnacePendingRepair {
-  /** The operation that failed to clean up; used by doctor to route the fix. */
+  /** The operation that failed to clean up. Doctor uses it to route the fix. */
   operation: FurnacePendingRepairOperation;
   /** ISO timestamp of when the repair marker was written. */
   timestamp: string;
-  /** Human-readable summary of the failure; shown by doctor. */
+  /** Human-readable summary of the failure. Doctor shows it. */
   reason: string;
 }
 
@@ -276,13 +276,13 @@ export interface ApplyResult {
   /**
    * Set to true when the rollback journal was restored after a partial failure.
    * When true, entries in `applied` reflect what was attempted, not what
-   * persisted — the engine has been restored to its pre-apply state.
+   * persisted. The engine has been restored to its pre-apply state.
    */
   rolledBack?: boolean;
   /**
    * Operator-facing warnings, printed by `logApplyResult`. Populated when
    * apply overwrote a deployed, patch-owned file whose engine bytes
-   * differed from the component source — the case where a
+   * differed from the component source, which is the case where a
    * shipped engine-only fix is silently reverted by the copy.
    */
   warnings?: string[];
@@ -363,7 +363,7 @@ export type ResolvedTestStyle = 'mochikit' | 'browser-chrome' | 'xpcshell' | 'no
  * caller is never asked to invent a value it does not have.
  */
 export interface ComponentApplyContext {
-  /** Project root — what registration consistency resolves against. */
+  /** Project root, what registration consistency resolves against. */
   root: string;
   /** Firefox source directory the component deploys into. */
   engineDir: string;

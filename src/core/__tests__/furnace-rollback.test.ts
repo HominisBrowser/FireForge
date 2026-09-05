@@ -47,8 +47,8 @@ describe('furnace rollback journal helpers', () => {
     expect(journal.createdDirs.size).toBe(0);
   });
 
-  // POSIX mode bits are the refusal mechanism here; NTFS ignores
-  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  // POSIX mode bits are the refusal mechanism here. NTFS ignores
+  // `chmod`, so this cannot be ported to Windows, only skipped honestly.
   it.skipIf(process.platform === 'win32')(
     'restores original file content and mode from the first snapshot only',
     async () => {
@@ -131,8 +131,8 @@ describe('furnace rollback journal helpers', () => {
     await expect(readFile(filePath, 'utf8')).resolves.toBe('original\n');
   });
 
-  // POSIX mode bits are the refusal mechanism here; NTFS ignores
-  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  // POSIX mode bits are the refusal mechanism here. NTFS ignores
+  // `chmod`, so this cannot be ported to Windows, only skipped honestly.
   it.skipIf(process.platform === 'win32')(
     'cleans up the temp file when the atomic rename fails',
     async () => {
@@ -204,6 +204,32 @@ describe('snapshotDir', () => {
     expect(journal.files.has(join(nested, 'real.txt'))).toBe(true);
     expect(journal.files.has(join(nested, 'link.txt'))).toBe(false);
     expect(journal.skippedSymlinks.has(join(nested, 'link.txt'))).toBe(true);
+  });
+
+  it('does not traverse symlinked directories', async () => {
+    const { symlink } = await import('node:fs/promises');
+    const tempDir = await makeTempDir('fireforge-furnace-rollback-symlink-dir-');
+    const componentDir = join(tempDir, 'component');
+    const deepDir = join(tempDir, 'deep');
+    await mkdir(componentDir);
+    await mkdir(deepDir);
+    await writeFile(join(componentDir, 'root.css'), ':host { display: block; }');
+    await writeFile(join(deepDir, 'secret.txt'), 'should not be snapshotted');
+    await symlink(deepDir, join(componentDir, 'symlinked-subdir'));
+
+    const journal = createRollbackJournal();
+    await snapshotDir(journal, componentDir);
+
+    await writeFile(join(deepDir, 'secret.txt'), 'modified secret');
+    await writeFile(join(componentDir, 'root.css'), ':host { display: flex; }');
+    await restoreRollbackJournal(journal);
+
+    expect(await readFile(join(componentDir, 'root.css'), 'utf-8')).toBe(
+      ':host { display: block; }'
+    );
+    // The symlinked directory was never descended into, so its contents are
+    // untouched by the restore.
+    expect(await readFile(join(deepDir, 'secret.txt'), 'utf-8')).toBe('modified secret');
   });
 
   it('returns without recording anything when the path does not exist', async () => {

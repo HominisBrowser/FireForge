@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Tracked binary files must round-trip through a real `GIT binary patch`
- * body, against a REAL git repository.
+ * body, against a real git repository.
  *
- * The batched diff path used to route only UNTRACKED binaries through
- * `generateBinaryFilePatch`; a binary already tracked in HEAD fell through to
- * a plain `git diff HEAD`, which degrades to the informational
+ * The batched diff path used to route only untracked binaries through
+ * `generateBinaryFilePatch`. A binary already tracked in HEAD fell through
+ * to a plain `git diff HEAD`, which degrades to the informational
  * `Binary files a/x and b/x differ`. That body carries none of the bytes and
  * cannot be replayed by `git apply`, so a `re-export` silently replaced real
  * signing-certificate deltas with an un-appliable stub while every gate

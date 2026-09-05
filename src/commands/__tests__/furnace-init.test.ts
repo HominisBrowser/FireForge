@@ -66,7 +66,7 @@ vi.mock('../../core/config.js', () => ({
   })),
   // `furnaceInitCommand` now probes `fireforge.json` to derive the
   // tokenPrefix default. We resolve a typical config so the derived
-  // `tokenPrefix` can be asserted directly; individual tests can
+  // `tokenPrefix` can be asserted directly. Individual tests can
   // override the mock to simulate a missing `fireforge.json`.
   loadConfig: vi.fn(() =>
     Promise.resolve({
@@ -108,7 +108,7 @@ vi.mock('../../utils/fs.js', () => ({
 
 vi.mock('../../core/token-manager.js', async (importOriginal) => ({
   // TOKEN_MODES and its `isTokenMode` guard are pure data and a pure
-  // predicate; the command's validation is what these tests exercise.
+  // predicate. The command's validation is what these tests exercise.
   ...(await importOriginal<typeof import('../../core/token-manager.js')>()),
   getTokensCssPath: vi.fn((binaryName: string) => `browser/themes/shared/${binaryName}-tokens.css`),
 }));
@@ -200,44 +200,23 @@ describe('furnaceInitCommand', () => {
     );
   });
 
-  it('rejects path traversal in --ftlBasePath', async () => {
-    await expect(furnaceInitCommand('/project', { ftlBasePath: '../escape/path' })).rejects.toThrow(
-      /must not escape the engine checkout via parent-directory segments/
-    );
-  });
-
-  it('rejects absolute paths in --ftlBasePath', async () => {
-    await expect(furnaceInitCommand('/project', { ftlBasePath: '/absolute/path' })).rejects.toThrow(
-      /must be a relative path/
-    );
-  });
-
-  it('rejects Windows-drive absolute paths in --ftlBasePath', async () => {
-    await expect(
-      furnaceInitCommand('/project', { ftlBasePath: 'C:\\absolute\\path' })
-    ).rejects.toThrow(/must be a relative path/);
-  });
-
-  it('rejects null bytes in --ftlBasePath', async () => {
-    await expect(furnaceInitCommand('/project', { ftlBasePath: 'bad\0path' })).rejects.toThrow(
-      /must not contain null bytes/
-    );
-  });
-
-  it('rejects file-shaped --ftl-base-path values ending in .ftl', async () => {
-    // Passing a file-like path to --ftl-base-path must be refused up-front:
-    // accepting it makes the subsequent localized `furnace create` write an
-    // `.mjs` importing `<name>.ftl` while never registering the component in
-    // furnace.json, stranding the scaffold.
-    await expect(
-      furnaceInitCommand('/project', { ftlBasePath: 'browser/forgefresh.ftl' })
-    ).rejects.toThrow(/looks like a file/);
-  });
-
-  it('rejects file-shaped --ftl-base-path values ending in .properties', async () => {
-    await expect(
-      furnaceInitCommand('/project', { ftlBasePath: 'browser/strings.properties' })
-    ).rejects.toThrow(/looks like a file/);
+  // A file-shaped value must be refused up-front: accepting it makes the
+  // subsequent localized `furnace create` write an `.mjs` importing
+  // `<name>.ftl` while never registering the component in furnace.json,
+  // stranding the scaffold.
+  it.each<[string, string, RegExp]>([
+    [
+      'path traversal',
+      '../escape/path',
+      /must not escape the engine checkout via parent-directory segments/,
+    ],
+    ['an absolute path', '/absolute/path', /must be a relative path/],
+    ['a Windows-drive absolute path', 'C:\\absolute\\path', /must be a relative path/],
+    ['a null byte', 'bad\0path', /must not contain null bytes/],
+    ['a file-shaped .ftl value', 'browser/forgefresh.ftl', /looks like a file/],
+    ['a file-shaped .properties value', 'browser/strings.properties', /looks like a file/],
+  ])('rejects %s in --ftlBasePath', async (_label, ftlBasePath, expected) => {
+    await expect(furnaceInitCommand('/project', { ftlBasePath })).rejects.toThrow(expected);
   });
 
   it('accepts directory-shaped --ftl-base-path values', async () => {
@@ -333,11 +312,11 @@ describe('furnaceInitCommand', () => {
     // `patchLint.rawColorAllowlist` without registering it in
     // `browser/themes/shared/jar.inc.mn` leaves the next `fireforge status`
     // correctly flagging the file as unmanaged + unregistered, and
-    // `furnace deploy --dry-run` reporting "No components to deploy" — a
+    // `furnace deploy --dry-run` reporting "No components to deploy": a
     // documented init command turning a clean project unclean.
     // `registerSharedCSS` makes the file owned end-to-end.
     vi.mocked(pathExists).mockImplementation((path: string) => {
-      // engine/ exists; tokens CSS does not yet exist (so we exercise
+      // engine/ exists. Tokens CSS does not yet exist (so we exercise
       // the scaffold + register path).
       if (path === '/project/engine') return Promise.resolve(true);
       return Promise.resolve(false);
@@ -415,14 +394,14 @@ describe('furnaceInitCommand', () => {
     expect(vi.mocked(warn)).toHaveBeenCalledWith(
       expect.stringContaining('Could not register tokens CSS in browser/themes/shared/jar.inc.mn')
     );
-    // Init still completed — `success("Created furnace.json")` fired.
+    // Init still completed. `success("Created furnace.json")` fired.
     expect(vi.mocked(success)).toHaveBeenCalledWith('Created furnace.json');
   });
 
   it('falls back to the prefix-less default when fireforge.json cannot be loaded', async () => {
     // A project that initialises furnace before running `fireforge
     // setup` has no binaryName to derive from. The init must still
-    // succeed; `token coverage` will emit its existing "no tokenPrefix"
+    // succeed. `token coverage` will emit its existing "no tokenPrefix"
     // warning when the operator gets around to running it.
     const { loadConfig } = await import('../../core/config.js');
     vi.mocked(loadConfig).mockRejectedValueOnce(new Error('no config'));
@@ -449,7 +428,7 @@ describe('furnaceInitCommand — ftlBasePath filesystem shape probe', () => {
     const { mkdtemp } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     engineRoot = await mkdtemp(join(tmpdir(), 'ff-init-probe-'));
-    // The probe only runs when the engine directory exists; point the mocked
+    // The probe only runs when the engine directory exists. Point the mocked
     // project paths at a real tempdir so the unmocked `stat` has something to
     // look at. The all-mocked suite above never reached this block.
     vi.mocked(getProjectPaths).mockReturnValue({
@@ -514,7 +493,7 @@ describe('furnaceInitCommand — interactive ftlBasePath prompt', () => {
     vi.mocked(furnaceConfigExists).mockResolvedValue(false);
     vi.mocked(pathExists).mockResolvedValue(false);
     // `vi.clearAllMocks()` clears calls but not implementations, so reset the
-    // two prompt mocks explicitly — earlier blocks leave `mockResolvedValueOnce`
+    // two prompt mocks explicitly. Earlier blocks leave `mockResolvedValueOnce`
     // queues and `isCancel` overrides behind.
     vi.mocked(text).mockReset();
     vi.mocked(isCancel).mockReset();
@@ -562,7 +541,7 @@ describe('furnaceInitCommand — interactive ftlBasePath prompt', () => {
 
   it('rejects an empty component prefix through the prompt validator', async () => {
     // This asserted `expect(true).toBe(true)` on a validator it read from a
-    // mock call that the test never made — the command was not invoked at all.
+    // mock call that the test never made. The command was not invoked at all.
     vi.mocked(text).mockResolvedValueOnce('moz-').mockResolvedValueOnce('');
 
     await furnaceInitCommand('/project', {});

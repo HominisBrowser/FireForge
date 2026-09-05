@@ -359,13 +359,13 @@ project_flag(
     await setupBranding('/engine', { ...config, license: '0BSD' });
 
     const calls = vi.mocked(writeTextIfChanged).mock.calls;
-    // configure.sh, brand.properties, brand.ftl — all three must carry the
+    // configure.sh, brand.properties and brand.ftl must all carry the
     // `# SPDX-License-Identifier: 0BSD` header (hash-style comments for all
     // three file types).
     expect(calls[0]?.[1]).toContain('# SPDX-License-Identifier: 0BSD');
     expect(calls[1]?.[1]).toContain('# SPDX-License-Identifier: 0BSD');
     expect(calls[2]?.[1]).toContain('# SPDX-License-Identifier: 0BSD');
-    // moz.configure patching (call 3) never rewrites the license — it's
+    // moz.configure patching (call 3) never rewrites the license, which is
     // upstream-owned.
     expect(calls[3]?.[1]).not.toContain('SPDX-License-Identifier: 0BSD');
   });
@@ -436,8 +436,8 @@ describe('splitAppId', () => {
 });
 
 describe('doubled-bundle-id regression', () => {
-  // Upstream composes the bundle id as <distribution-id>.<MOZ_MACBUNDLE_ID>;
-  // a configure.sh carrying the FULL appId is exactly the bug that shipped
+  // Upstream composes the bundle id as <distribution-id>.<MOZ_MACBUNDLE_ID>.
+  // A configure.sh carrying the full appId is exactly the bug that shipped
   // org.mozilla.org.hominis.browser. Such content must read as stale so
   // setupBranding rewrites it to the leaf.
   it('treats a configure.sh carrying the full appId as stale', async () => {

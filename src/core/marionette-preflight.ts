@@ -4,7 +4,7 @@
  *
  * Answers a single question before tests run: "does marionette come up?" A
  * silent 360-second mach-test hang is indistinguishable from "tests failed
- * to discover"; this helper surfaces the failure in under a minute with a
+ * to discover". This helper surfaces the failure in under a minute with a
  * clear PASS/FAIL line and the tail of the browser's stderr.
  *
  * The probe is a cascade of layered checks (engine → mach → python →
@@ -25,6 +25,7 @@ import { pathExists } from '../utils/fs.js';
 import { info, verbose, warn } from '../utils/logger.js';
 import { installGracefulShutdownForwarder, trackChildClosure } from '../utils/process.js';
 import { killProcessTree, sweepProcessGroup } from '../utils/process-group.js';
+import { sleep } from '../utils/sleep.js';
 import { ensureMach } from './mach.js';
 import { getPython } from './mach-python.js';
 
@@ -40,7 +41,7 @@ const SOCKET_ATTEMPT_TIMEOUT_MS = 2_000;
 /**
  * Grace window after spawn() returns before we accept the child as
  * "spawned OK". A browser binary that exits immediately (missing dylib,
- * wrong CPU arch, corrupt profile) must be caught here — not 30 seconds
+ * wrong CPU arch, corrupt profile) must be caught here, not 30 seconds
  * later at the socket layer.
  */
 const SPAWN_SETTLE_MS = 750;
@@ -78,7 +79,7 @@ export interface MarionettePreflightResult {
 export interface MarionettePreflightOptions {
   /** Total budget in ms. Defaults to 30 seconds. */
   timeoutMs?: number;
-  /** Overrides marionette TCP port — primarily used in tests. */
+  /** Overrides marionette TCP port. Primarily used in tests. */
   port?: number;
   /**
    * Grace window after spawn() before the browser is considered "running
@@ -94,9 +95,9 @@ export interface MarionettePreflightOptions {
 
 /**
  * Runs the marionette preflight. Returns PASS on first byte read from the
- * marionette socket within the budget; FAIL otherwise, with a diagnostic
- * identifying which layer of the cascade broke. Always tears down the
- * spawned browser before returning.
+ * marionette socket within the budget, and FAIL otherwise, with a
+ * diagnostic identifying which layer of the cascade broke. Always tears
+ * down the spawned browser before returning.
  */
 export async function runMarionettePreflight(
   engineDir: string,
@@ -159,15 +160,15 @@ export async function runMarionettePreflight(
   let stderrTail = '';
   // Shutdown contract for a child spawned outside the exec layer.
   //
-  // This is the repo's one legitimate raw `spawn`: the preflight needs the
-  // live `ChildProcess` mid-run (`hasChildExited` gates the socket poll),
+  // This is the one raw `spawn` in the repo. The preflight needs the live
+  // `ChildProcess` mid-run (`hasChildExited` gates the socket poll),
   // returns while the browser is still running, and aborts on a TCP byte
-  // rather than on a deadline — none of which any wrapper in utils/process
-  // can express. What it does NOT get to skip is the contract every wrapper
-  // applies to a detached child: register the closure so the bin signal
-  // handler waits for it, and forward the parent's SIGINT/SIGTERM to the
-  // group. Without both, Ctrl+C during `fireforge test --doctor` left the
-  // whole mach → Firefox tree running.
+  // rather than on a deadline. No wrapper in utils/process can express
+  // that. It still has to honour the contract every wrapper applies to a
+  // detached child: register the closure so the bin signal handler waits
+  // for it, and forward the parent's SIGINT/SIGTERM to the group. Without
+  // both, Ctrl+C during `fireforge test --doctor` left the whole
+  // mach → Firefox tree running.
   let closure: { settle: () => void } | undefined;
   let forwarder: { dispose: () => void } | undefined;
 
@@ -192,7 +193,7 @@ export async function runMarionettePreflight(
           // `detached: true` puts the child in a new process group so we can
           // signal it and every descendant (Firefox, its helpers) via
           // `process.kill(-pid, …)` in the finally block. Without it, the
-          // child is Python running mach; a SIGTERM kills Python but the
+          // child is Python running mach. A SIGTERM kills Python but the
           // Firefox grandchild inherits the stderr pipe FD and keeps Node's
           // event loop alive even after the preflight PASS log, so
           // `fireforge test --doctor` prints `Marionette preflight: PASS`
@@ -211,7 +212,7 @@ export async function runMarionettePreflight(
     const spawnedChild = child;
     closure = trackChildClosure();
     forwarder = installGracefulShutdownForwarder(spawnedChild, 500, (signal) => {
-      killProcessGroup(spawnedChild, signal);
+      killProcessTree(spawnedChild, signal, process.platform !== 'win32');
     });
 
     child.stderr?.on('data', (data: Buffer) => {
@@ -219,18 +220,18 @@ export async function runMarionettePreflight(
       stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LIMIT);
     });
 
-    // Short settle window — catches "binary exits immediately" failures
+    // Short settle window. Catches "binary exits immediately" failures
     // (missing dylib, wrong CPU arch, corrupt profile) before the socket
     // poll swallows the full overall budget waiting for bytes that will
     // never come.
     const settleDeadline = Math.min(spawnSettleMs, Math.max(0, timeoutMs - elapsed()));
     if (settleDeadline > 0) {
-      await delay(settleDeadline);
+      await sleep(settleDeadline, { unref: true });
     }
     if (hasChildExited(spawnedChild)) {
       return fail(
         'browser-spawns',
-        `Browser process exited during spawn (exit code ${String(spawnedChild.exitCode)}, signal ${spawnedChild.signalCode ?? 'none'}). ` +
+        `Browser process exited during spawn (exit code ${spawnedChild.exitCode}, signal ${spawnedChild.signalCode ?? 'none'}). ` +
           `stderr tail: ${stderrTail.trim().slice(-2_000) || '(empty)'}`,
         elapsed()
       );
@@ -249,12 +250,12 @@ export async function runMarionettePreflight(
       };
     }
 
-    // Child may have exited before the socket was ever ready — surface that
+    // Child may have exited before the socket was ever ready. Surface that
     // distinctly from "socket never answered" so the operator has a lead.
     if (hasChildExited(spawnedChild)) {
       return fail(
         'marionette-handshake',
-        `Browser process exited before marionette handshake (exit code ${String(spawnedChild.exitCode)}, signal ${spawnedChild.signalCode ?? 'none'}). ` +
+        `Browser process exited before marionette handshake (exit code ${spawnedChild.exitCode}, signal ${spawnedChild.signalCode ?? 'none'}). ` +
           `stderr tail: ${stderrTail.trim().slice(-2_000) || '(empty)'}`,
         elapsed()
       );
@@ -294,17 +295,17 @@ async function teardownPreflightChild(
   forwarder?.dispose();
   const groupPid = child?.pid;
   if (child && !hasChildExited(child)) {
-    killProcessGroup(child, 'SIGTERM');
+    killProcessTree(child, 'SIGTERM', process.platform !== 'win32');
     // Small escalation: if the child doesn't honour SIGTERM quickly, SIGKILL
     // so we don't leave a ghost mach process around after a failed probe.
-    await delay(500);
+    await sleep(500, { unref: true });
     if (!hasChildExited(child)) {
-      killProcessGroup(child, 'SIGKILL');
+      killProcessTree(child, 'SIGKILL', process.platform !== 'win32');
     }
   }
   // Reap anything that outlived the group signal. The file's own comments
-  // worry about exactly this — Firefox grandchildren surviving the Python
-  // mach wrapper — and every exec-layer wrapper sweeps for it.
+  // worry about exactly this case (Firefox grandchildren surviving the
+  // Python mach wrapper), and every exec-layer wrapper sweeps for it.
   if (groupPid !== undefined && process.platform !== 'win32') {
     try {
       await sweepProcessGroup(groupPid);
@@ -315,8 +316,8 @@ async function teardownPreflightChild(
   closure?.settle();
   // Destroy the stderr pipe explicitly. Firefox (a grandchild of the Python
   // mach wrapper we spawned) can inherit and hold the stderr FD even after
-  // its direct parent exits — until the pipe closes, Node's readable
-  // stream stays attached and `uv__io_poll` keeps the event loop alive.
+  // its direct parent exits. Until the pipe closes, Node's readable stream
+  // stays attached and `uv__io_poll` keeps the event loop alive.
   // `destroy()` closes the local end regardless, so `fireforge test
   // --doctor` exits cleanly after a passing preflight.
   child?.stderr?.destroy();
@@ -325,20 +326,6 @@ async function teardownPreflightChild(
   } catch (error: unknown) {
     warn(`Could not clean up marionette preflight profile: ${toError(error).message}`);
   }
-}
-
-/**
- * Sends `signal` to the child's whole process group when possible, falling
- * back to a direct `child.kill` for environments that don't support
- * `detached: true` (Windows in particular: Node still returns a pid, but
- * `kill(-pid, …)` is not a supported kernel primitive).
- */
-function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  // Delegates to the shared implementation, which is a strict superset of
-  // the hand-rolled one this replaced: same POSIX `kill(-pid)` with the same
-  // fall-through to a direct `child.kill`, plus a Windows `taskkill /T /F`
-  // branch and an already-exited early return.
-  killProcessTree(child, signal, process.platform !== 'win32');
 }
 
 function fail(layer: LayerName, message: string, durationMs: number): MarionettePreflightResult {
@@ -364,7 +351,7 @@ async function waitForMarionetteSocket(
     if (result.ok) {
       return { ok: true };
     }
-    await delay(400);
+    await sleep(400, { unref: true });
   }
   return { ok: false };
 }
@@ -383,7 +370,7 @@ function attemptMarionetteConnect(
       try {
         socket.destroy();
       } catch {
-        // Ignore — already closed.
+        // Ignore: already closed.
       }
       resolve({ ok });
     };
@@ -394,7 +381,7 @@ function attemptMarionetteConnect(
     attemptTimer.unref();
 
     socket.once('connect', () => {
-      // Connect alone is insufficient — the marionette server performs a
+      // Connect alone is insufficient. The marionette server performs a
       // handshake send as soon as the socket opens, so wait for at least one
       // byte to confirm the server is actually speaking marionette.
       const readTimer = setTimeout(() => {
@@ -416,13 +403,6 @@ function attemptMarionetteConnect(
   });
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref();
-  });
-}
-
 /** Renders a PASS/FAIL banner to the CLI using the shared logger helpers. */
 export function reportMarionettePreflight(result: MarionettePreflightResult): void {
   if (result.ok) {
@@ -434,7 +414,7 @@ export function reportMarionettePreflight(result: MarionettePreflightResult): vo
 
 /**
  * Formats the PASS/FAIL banner as a plain string for direct
- * `process.stdout.write` use — bypassing the clack logger entirely so
+ * `process.stdout.write` use, bypassing the clack logger entirely so
  * operators running `fireforge test --doctor` under a non-TTY (pipe, CI,
  * `tee`-wrapped capture) always see the final line. Clack's renderer can
  * swallow trailing log output just before process exit, and a

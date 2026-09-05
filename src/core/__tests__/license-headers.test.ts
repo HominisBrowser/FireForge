@@ -69,8 +69,8 @@ describe('hasAnyLicenseHeader', () => {
   });
 
   it('tolerates Emacs + vim editor directives followed by the canonical block-form MPL header', () => {
-    // Mozilla's canonical layout for upstream Firefox source files —
-    // editor directives on lines 1–2, license block on lines 3+.
+    // Mozilla's canonical layout for upstream Firefox source files: editor
+    // directives on lines 1 and 2, license block on lines 3+.
     const cssStyleMpl = getLicenseHeader('MPL-2.0', 'css');
     const content =
       '/* -*- Mode: javascript; tab-width: 8; indent-tabs-mode: nil; js-indent-level: 2 -*- */\n' +
@@ -90,9 +90,9 @@ describe('hasAnyLicenseHeader', () => {
 
   it('accepts the older upstream MPL wrap (break after "file,") on js and css styles', () => {
     // Upstream files like ext-browser.js ship the older Mozilla wrap that
-    // breaks after "file," instead of "with this" — same wording, only
-    // the line-break position differs. Must match on normalized
-    // whitespace, not exact wrap.
+    // breaks after "file," instead of "with this": same wording, only the
+    // line-break position differs. Must match on normalized whitespace, not
+    // exact wrap.
     const olderWrap =
       '/* This Source Code Form is subject to the terms of the Mozilla Public\n' +
       ' * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
@@ -241,7 +241,7 @@ describe('containsUpstreamLicenseText', () => {
   it('recognizes the CC0 public-domain dedication in every upstream comment style', () => {
     // mozilla-central test files carry this dedication instead of the MPL
     // header. Until it was recognized, a modified upstream test whose
-    // notice was UNCHANGED warned `modified-file-missing-header`, and the
+    // notice was unchanged warned `modified-file-missing-header`, and the
     // downstream workaround was to edit the upstream notice (an SPDX line
     // above it) just to satisfy the recognizer.
     const block =
@@ -265,10 +265,10 @@ describe('containsUpstreamLicenseText', () => {
 
   it('rejects malformed or unrelated public-domain-looking notices', () => {
     // Negative controls: a different Creative Commons license, a made-up
-    // CC0 version, and a bare "public domain" mention are NOT the
-    // dedication and must not be accepted as one. (A bare SPDX tag of ANY
-    // id is accepted by this predicate by design — see the marker list —
-    // so the CC-BY SPDX control lives on hasThirdPartyPermissiveBanner.)
+    // CC0 version, and a bare "public domain" mention are not the
+    // dedication and must not be accepted as one. (A bare SPDX tag of any
+    // id is accepted by this predicate by design, see the marker list, so
+    // the CC-BY SPDX control lives on hasThirdPartyPermissiveBanner.)
     const notCc0 = [
       '/* http://creativecommons.org/licenses/by/4.0/ */\nconst x = 1;\n',
       '/* http://creativecommons.org/publicdomain/zero/2.0/ */\nconst x = 1;\n',

@@ -21,7 +21,7 @@ const TOKENS_DOC = 'docs/design/SRC_TOKENS.md';
 /**
  * Minimal token shape the docs updater needs. Declared locally (rather than
  * importing `AddTokenOptions`) so this module has no edge back to
- * `token-manager.ts` — `AddTokenOptions` is structurally compatible.
+ * `token-manager.ts`. `AddTokenOptions` is structurally compatible.
  */
 export interface TokenDocInput {
   tokenName: string;

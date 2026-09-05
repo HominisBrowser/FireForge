@@ -162,8 +162,8 @@ describe('Furnace drift detection (integration)', () => {
     const stateBefore = await readFile(stateFile, 'utf8');
     const engineBefore = await readFile(engineButtonCss, 'utf8');
 
-    // Re-apply with no changes anywhere — drift detector should report no
-    // drift and the apply should be a fast-path skip. The workspace file
+    // Re-apply with no changes anywhere. The drift detector should report
+    // no drift and the apply should be a fast-path skip. The workspace file
     // is left untouched.
     expect(await readFile(workspaceButtonCss, 'utf8')).toBe(OVERRIDE_BUTTON_CSS);
     await furnaceApplyCommand(projectRoot);
@@ -181,7 +181,7 @@ describe('Furnace drift detection (integration)', () => {
   it('reports patch-owned drift after deploying an edited component over its exported patch', async () => {
     // Deploy the override, export a patch capturing the deployed copy, then
     // edit the workspace source and deploy again. The engine copy now has
-    // content the owning patch's body lacks; a furnace-prefix short-circuit
+    // content the owning patch's body lacks. A furnace-prefix short-circuit
     // in the status classifier would silently bucket the path as `furnace`
     // and the ownership table row would read `owned`.
     await furnaceDeployCommand(projectRoot, undefined, { skipValidate: true });
@@ -203,7 +203,7 @@ describe('Furnace drift detection (integration)', () => {
     await furnaceDeployCommand(projectRoot, undefined, { skipValidate: true });
     expect(await readFile(engineButtonCss, 'utf8')).toBe(editedCss);
 
-    // Only the ownership table's rows matter below — drop the deploy and
+    // Only the ownership table's rows matter below, so drop the deploy and
     // export chatter captured so far.
     logger.info.mockClear();
     await statusCommand(projectRoot, { ownership: true });

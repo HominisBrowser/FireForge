@@ -4,20 +4,15 @@
  * sequential per-file sharding of multi-path invocations.
  *
  * Sharding exists because passing several browser-chrome files to one mach
- * invocation destabilizes later files — cross-file profile/pref bleed in the
+ * invocation destabilizes later files: cross-file profile/pref bleed in the
  * shared mochitest profile makes the second file time out at window-open
  * while each file passes in isolation. Sequential single-file harness runs
- * cost startup time but make results reproducible; the combined invocation
+ * cost startup time but make results reproducible. The combined invocation
  * stays available via `--no-shard`.
  */
 
 import { type DisplaySleepState, probeDisplaySleepState } from '../core/display-state.js';
-import {
-  type MachCommandResult,
-  mochitestWithOutput,
-  testWithOutput,
-  xpcshellTestWithOutput,
-} from '../core/mach.js';
+import { type MachCommandResult, type MachTestSuiteKind, runMachTestSuite } from '../core/mach.js';
 import { getActiveRunLogPath } from '../core/run-log.js';
 import { changedPrefNoiseVerdictNote } from '../core/test-changed-prefs.js';
 import {
@@ -28,7 +23,7 @@ import {
   headedDisplayAsleepVerdictNote,
   headedNoOutputTimeoutHint,
 } from '../core/test-harness-crash.js';
-import { retryAfterXpcshellSymlinkRepair, type TestDispatch } from '../core/test-xpcshell-retry.js';
+import { retryAfterXpcshellSymlinkRepair } from '../core/test-xpcshell-retry.js';
 import { withXpcshellProfileDir } from '../core/xpcshell-profile-dir.js';
 import { TestFailureError } from '../errors/build.js';
 import { info, note, warn } from '../utils/logger.js';
@@ -48,11 +43,11 @@ export const DEFAULT_HARNESS_RETRIES = 2;
  */
 export type TestSuite = 'xpcshell' | 'mochitest' | 'generic';
 
-/** Resolves the capturing mach dispatcher for a suite. */
-function dispatchForSuite(suite: TestSuite): TestDispatch {
-  if (suite === 'xpcshell') return xpcshellTestWithOutput;
-  if (suite === 'mochitest') return mochitestWithOutput;
-  return testWithOutput;
+/** Resolves the mach test command a suite dispatches to. */
+function machKindForSuite(suite: TestSuite): MachTestSuiteKind {
+  if (suite === 'xpcshell') return 'xpcshell-test';
+  if (suite === 'mochitest') return 'mochitest';
+  return 'test';
 }
 
 /** Inputs shared by every harness invocation in one `fireforge test` run. */
@@ -85,8 +80,8 @@ export interface TestRunOutcome {
   /** Whether xpcshell appdir injection was attempted for this invocation. */
   appdirInjectionAttempted: boolean;
   /**
-   * Display power state measured for a HEADED no-output stall;
-   * undefined when the shape did not apply and no probe ran.
+   * Display power state measured for a HEADED no-output stall. Undefined
+   * when the shape did not apply and no probe ran.
    */
   displayState?: DisplaySleepState | undefined;
 }
@@ -100,16 +95,16 @@ export async function runTestsWithRetries(
   ctx: TestRunContext,
   paths: string[]
 ): Promise<TestRunOutcome> {
-  // Pure mochitest dispatches keep their env byte-identical — the profile
+  // Pure mochitest dispatches keep their env byte-identical, since the profile
   // variable is xpcshell-harness-specific. Generic `mach
   // test` runs may include xpcshell paths, so they get the isolation too.
   if (ctx.suite === 'mochitest') {
     return runTestsWithRetriesInner(ctx, paths, ctx.env);
   }
   // Fresh profile dir per harness invocation: shards isolate from each
-  // other and from concurrent `fireforge test` processes; the crash /
-  // symlink-repair retries inside one invocation deliberately REUSE the
-  // same directory (they are the same logical run and the harness
+  // other and from concurrent `fireforge test` processes. The crash /
+  // symlink-repair retries inside one invocation reuse the same directory
+  // on purpose (they are the same logical run and the harness
   // re-initialises the profile contents itself).
   return withXpcshellProfileDir(ctx.env, (env) => runTestsWithRetriesInner(ctx, paths, env));
 }
@@ -127,7 +122,7 @@ async function runTestsWithRetriesInner(
     extraArgs
   );
 
-  const dispatch = dispatchForSuite(ctx.suite);
+  const kind = machKindForSuite(ctx.suite);
   const maxAttempts = Math.max(1, ctx.harnessRetries + 1);
   let attempts = 0;
   let result: MachCommandResult;
@@ -135,27 +130,24 @@ async function runTestsWithRetriesInner(
 
   for (;;) {
     attempts += 1;
-    // Arity is kept minimal when there is nothing extra to pass: the
-    // dispatchers' trailing parameters are optional, and appending explicit
-    // `undefined`s would only make every call site's shape depend on
-    // features the run is not using.
-    result =
-      ctx.fullOutput === true
-        ? await dispatch(ctx.engineDir, paths, extraArgs, env, true)
-        : env
-          ? await dispatch(ctx.engineDir, paths, extraArgs, env)
-          : await dispatch(ctx.engineDir, paths, extraArgs);
-    result = await retryAfterXpcshellSymlinkRepair(
-      ctx.engineDir,
-      ctx.objDir,
+    result = await runMachTestSuite(kind, {
+      engineDir: ctx.engineDir,
+      testPaths: paths,
+      args: extraArgs,
+      env,
+      fullOutput: ctx.fullOutput,
+    });
+    result = await retryAfterXpcshellSymlinkRepair({
+      engineDir: ctx.engineDir,
+      objDir: ctx.objDir,
       result,
-      ctx.classification,
-      paths,
+      classification: ctx.classification,
+      normalizedPaths: paths,
       extraArgs,
       env,
-      dispatch,
-      ctx.fullOutput
-    );
+      kind,
+      fullOutput: ctx.fullOutput,
+    });
     const combined = `${result.stdout}\n${result.stderr}`;
     verdict = classifyHarnessRun(result.exitCode, combined, paths);
     if (verdict.kind !== 'harness-crash' || attempts >= maxAttempts) break;
@@ -167,7 +159,7 @@ async function runTestsWithRetriesInner(
   }
 
   // A verdict whose every unexpected result is time-driven pref noise is
-  // still a FAIL — only the note changes, so a `unexpected=2` line is not
+  // still a FAIL. Only the note changes, so a `unexpected=2` line is not
   // read as two real assertion failures.
   if (verdict.kind === 'test-failures' && verdict.note === undefined) {
     const prefNote = changedPrefNoiseVerdictNote(`${result.stdout}\n${result.stderr}`);
@@ -188,9 +180,9 @@ async function runTestsWithRetriesInner(
 }
 
 /**
- * Probes the display's power state for a HEADED no-output stall, and only for
- * that shape. Every other outcome — a passing run, a real test failure, a
- * headless run, any other crash shape — skips the probe entirely, so the
+ * Probes the display's power state for a headed no-output stall, and only for
+ * that shape. Every other outcome (a passing run, a real test failure, a
+ * headless run, any other crash shape) skips the probe entirely, so the
  * common paths spawn nothing.
  *
  * @returns The measured state, or undefined when the shape does not apply
@@ -208,7 +200,7 @@ async function probeDisplayStateForStall(
 /**
  * One sequential harness invocation of a sharded run: a requested path
  * argument and the mach paths dispatched for it. A file argument is a group
- * of one; a directory argument groups its enumerated test files so the whole
+ * of one. A directory argument groups its enumerated test files so the whole
  * directory still runs in ONE browser instance, keeping cross-file state
  * behaviour within a directory run.
  */
@@ -237,15 +229,15 @@ export interface ShardedRunSummary {
   shards: ShardOutcome[];
   passed: number;
   total: number;
-  /** Aggregate classifier verdict — see {@link deriveAggregateShardVerdict}. */
+  /** Aggregate classifier verdict. See {@link deriveAggregateShardVerdict}. */
   aggregate: HarnessRunVerdict;
 }
 
 /**
  * Derives the aggregate classification for a sharded run: all-green is
- * `tests-ran-ok`; otherwise the most structural failure wins — a crashed
+ * `tests-ran-ok`. Otherwise the most structural failure wins. A crashed
  * shard makes the whole run `harness-crash`, then `no-tests`, then plain
- * `test-failures` — so the aggregate `reason=` keeps the classifier-driven
+ * `test-failures`, so the aggregate `reason=` keeps the classifier-driven
  * contract instead of collapsing every failure to `test-failures`.
  */
 export function deriveAggregateShardVerdict(shards: ShardOutcome[]): HarnessRunVerdict {
@@ -259,11 +251,11 @@ export function deriveAggregateShardVerdict(shards: ShardOutcome[]): HarnessRunV
 /**
  * Runs each requested path argument as its own sequential harness
  * invocation (a directory argument's enumerated files stay together in
- * one invocation — see {@link ShardGroup}) and prints an aggregate
+ * one invocation, see {@link ShardGroup}) and prints an aggregate
  * report. Per-shard failures are diagnosed via `diagnoseShardFailure`
  * (which receives the throwing diagnosis chain from the command layer)
  * but downgraded to warnings so every shard runs. The aggregate verdict
- * line and the aggregate error are NOT produced here — the caller runs
+ * line and the aggregate error are not produced here: the caller runs
  * the engine-generation integrity check first and then calls
  * {@link finalizeShardedOutcome}, so a run invalidated by a concurrent
  * `engine/` mutation can never print `PASS` before the check fails.
@@ -314,7 +306,7 @@ export async function runShardedTests(
 
 /**
  * Emits the aggregate FIREFORGE-VERDICT line for a sharded run, then
- * throws the aggregate error when any shard did not pass — the same
+ * throws the aggregate error when any shard did not pass, the same
  * emit-then-throw shape as `finalizeSingleRunOutcome`. Called only after
  * the engine-generation check succeeded.
  */

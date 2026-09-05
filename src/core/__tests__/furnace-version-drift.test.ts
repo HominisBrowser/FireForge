@@ -67,8 +67,8 @@ describe('findOverrideBaseVersionDrift', () => {
       'moz-button': { baseVersion: '140.9.0esr' },
     });
 
-    // An empty current version means fireforge.json is broken; the caller
-    // surfaces that separately — the drift helper must not fabricate a
+    // An empty current version means fireforge.json is broken. The caller
+    // surfaces that separately, and the drift helper must not fabricate a
     // warning against an unknown anchor.
     expect(findOverrideBaseVersionDrift(config, '')).toEqual([]);
   });

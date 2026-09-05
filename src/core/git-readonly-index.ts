@@ -1,26 +1,26 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Private-index scope for FireForge's READ-ONLY git plumbing.
+ * Private-index scope for FireForge's read-only git plumbing.
  *
  * `git status` and `git diff HEAD` are read-only in the sense operators care
- * about — they never change tracked content — but they are NOT read-only to
+ * about (they never change tracked content), but they are not read-only to
  * git: both refresh the index's stat cache and write `.git/index` (through
  * `.git/index.lock`) when a file's stat data has moved. That makes
- * `fireforge verify` / `lint --per-patch` / `typecheck` a second WRITER of
+ * `fireforge verify` / `lint --per-patch` / `typecheck` a second writer of
  * the primary `engine/` checkout, even when the command was pointed at a CoW
  * tree clone.
  *
  * The consequence is not cosmetic. A concurrent `fireforge test`
  * fingerprints `engine/` before and after the harness run and refuses a
  * verdict taken across a change (`FAIL reason=inconclusive`). That refusal is
- * CORRECT and stays; the defect is FireForge's own read-only commands
+ * correct and stays. The defect is FireForge's own read-only commands
  * tripping it.
  *
- * The fix is the standard git one: point the plumbing at a PRIVATE index
+ * The fix is the standard git one: point the plumbing at a private index
  * (`GIT_INDEX_FILE`) seeded from the repository's own, in a temp directory.
- * Refreshes land there and are thrown away; the primary `.git/index` — and
- * `.git/index.lock`, which is what makes a concurrent `git status` fail
- * outright rather than merely churn — is never touched.
+ * Refreshes land there and are thrown away. The primary `.git/index` is
+ * never touched, and neither is `.git/index.lock`, which is what makes a
+ * concurrent `git status` fail outright rather than merely churn.
  *
  * Fail-open by design: if the git dir or the index cannot be resolved or
  * copied, the scope does not activate and the commands behave exactly as
@@ -68,14 +68,9 @@ export function readOnlyGitIndexEnv(cwd: string): Record<string, string> | undef
   return { GIT_INDEX_FILE: activeScope.indexFile };
 }
 
-/** True while a private-index scope is installed (diagnostics and tests). */
-export function hasReadOnlyGitIndexScope(): boolean {
-  return activeScope !== undefined;
-}
-
 /**
  * Resolves a repository's git directory. Returns undefined for anything
- * that is not a readable git checkout — `engine/` is not always one
+ * that is not a readable git checkout. `engine/` is not always one
  * (`fireforge download` extracts a source tarball).
  */
 async function resolveGitDir(repoDir: string): Promise<string | undefined> {
@@ -127,7 +122,7 @@ export async function withPrivateGitIndex<T>(
 /**
  * A private index file plus the cleanup that removes it.
  *
- * `env` is meant to be handed to a SINGLE git invocation (or a small
+ * `env` is meant to be handed to a single git invocation (or a small
  * sequence of them), rather than installed process-wide the way
  * {@link withPrivateGitIndex} installs a scope.
  */
@@ -140,20 +135,20 @@ export interface DisposableGitIndex {
 
 /**
  * Mints a private index seeded from `repoDir`'s own, for a caller that
- * needs to WRITE the index without the write being visible to anyone else.
+ * needs to write the index without the write being visible to anyone else.
  *
  * The distinction from {@link withPrivateGitIndex} matters. That one exists
  * so a read-only command's incidental index refreshes do not touch the
  * primary checkout, and it is process-global, non-reentrant, and fail-open,
  * all of which are right for that job. This one serves a caller whose index
- * write is DELIBERATE and whose visibility is the defect: it is per-call, so
+ * write is intentional and whose visibility is the defect: it is per-call, so
  * two concurrent callers cannot collide, and it never depends on an ambient
  * scope having been installed by whichever command happens to be running.
  *
  * The seed is a plain copy, which is safe against a concurrent writer: git
  * writes the index through `index.lock` and an atomic rename, so a reader
  * sees either the old file or the new one, never a torn one. Seeding is
- * REQUIRED rather than merely tidy — an empty index makes a tracked,
+ * required rather than merely tidy: an empty index makes a tracked,
  * unmodified file look like a fresh add.
  *
  * @param repoDir - Repository whose index should be shadowed

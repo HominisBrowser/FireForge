@@ -5,6 +5,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return {
     ...actual,
     rm: vi.fn(actual.rm),
+    writeFile: vi.fn(actual.writeFile),
   };
 });
 
@@ -17,7 +18,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
-import { FireForgeError, LockContentionError } from '../../errors/base.js';
+import { FireForgeError, GeneralError, LockContentionError } from '../../errors/base.js';
 import { warn } from '../../utils/logger.js';
 import {
   createSiblingLockPath,
@@ -52,8 +53,8 @@ async function exists(path: string): Promise<boolean> {
 
 describe('file-lock', () => {
   it('derives a sibling lock path', () => {
-    // Pure suffix concatenation — no join/resolve, so the separators of the
-    // input survive verbatim on every platform.
+    // Pure suffix concatenation, with no join/resolve, so the separators of
+    // the input survive verbatim on every platform.
     expect(createSiblingLockPath('/tmp/fireforge/state.json')).toBe(
       '/tmp/fireforge/state.json.fireforge.lock'
     );
@@ -193,7 +194,7 @@ describe('file-lock', () => {
     await mkdir(lockPath);
     // Spawn-and-wait for a short-lived child so we capture a PID we know
     // was real but is now gone. Using a literal PID like 99999 is fragile
-    // because the kernel may have recycled it; this pattern gives a
+    // because the kernel may have recycled it. This pattern gives a
     // deterministically-dead PID for the current test run.
     const { spawn } = await import('node:child_process');
     const child = spawn('true');
@@ -208,8 +209,8 @@ describe('file-lock', () => {
     });
     expect(deadPid).toBeGreaterThan(0);
     await writeFile(join(lockPath, 'pid'), String(deadPid), 'utf-8');
-    // Young lock (mtime = now) — age-only heuristic would NOT remove it.
-    // PID-first check removes immediately.
+    // Young lock (mtime = now), so an age-only heuristic would not remove
+    // it. The PID-first check removes it immediately.
     const result = await withFileLock(lockPath, () => Promise.resolve('recovered'), {
       // Generous staleMs so the age gate cannot be the one doing the work.
       staleMs: 60 * 60 * 1000,
@@ -220,9 +221,9 @@ describe('file-lock', () => {
   });
 
   it('respects a young lock whose PID file points at a live process', async () => {
-    // Defensive complement: the PID-first check must NOT race-remove a
+    // Defensive complement: the PID-first check must not race-remove a
     // lock whose owner is still alive. The current test process's PID
-    // is trivially live — simulate a slow operation by pointing the lock
+    // is trivially live, so simulate a slow operation by pointing the lock
     // at it. Attempting to acquire should time out rather than tear down
     // a legitimate holder.
     const { writeFile } = await import('node:fs/promises');
@@ -245,7 +246,7 @@ describe('file-lock', () => {
 
   it('reaps a lock whose owner dies while waiters are already polling', async () => {
     // The stale probe used to run exactly once per waiter: a holder that
-    // died AFTER that single probe left the waiter polling a permanently
+    // died after that single probe left the waiter polling a permanently
     // dead lock until timeoutMs (24 h for the build lock). The periodic
     // re-probe bounds that to staleReprobeMs.
     const { writeFile } = await import('node:fs/promises');
@@ -255,7 +256,7 @@ describe('file-lock', () => {
     await mkdir(lockPath);
 
     // A genuinely live child owns the lock, so the waiter's first probe
-    // respects it; we kill the child mid-wait.
+    // respects it. We kill the child mid-wait.
     const holder = spawn('sleep', ['30']);
     expect(holder.pid).toBeDefined();
     await writeFile(join(lockPath, 'pid'), String(holder.pid), 'utf-8');
@@ -280,9 +281,9 @@ describe('file-lock', () => {
 
   it('two waiters recovering the same stale lock still exclude each other', async () => {
     // TOCTOU: with rm-by-path recovery, two waiters can both observe the
-    // dead owner, one re-acquires, and the other's rm deletes the fresh lock
-    // — two processes in the critical section at once. The rename-aside reap
-    // lets exactly one reaper win; the loser re-polls.
+    // dead owner, one re-acquires, and the other's rm deletes the fresh
+    // lock, leaving two processes in the critical section at once. The
+    // rename-aside reap lets exactly one reaper win. The loser re-polls.
     const { writeFile } = await import('node:fs/promises');
     const { spawn } = await import('node:child_process');
     const tempDir = await makeTempDir('fireforge-reap-race-');
@@ -320,7 +321,7 @@ describe('file-lock', () => {
   it('does not remove a lock that no longer belongs to this process on release', async () => {
     // If (pathologically) our lock is replaced by another owner while our
     // operation runs, the release path must not delete the new owner's
-    // lock — the historical unconditional `finally { rm }` did exactly
+    // lock. The historical unconditional `finally { rm }` did exactly
     // that, compounding a double-acquisition.
     const { writeFile } = await import('node:fs/promises');
     const { spawn } = await import('node:child_process');
@@ -448,7 +449,7 @@ describe('file-lock', () => {
         timeoutMs: 60,
         pollMs: 5,
         staleMs: 60 * 60 * 1000,
-        onWaitProgress, // No waitProgressMs — progress reporting stays off.
+        onWaitProgress, // No waitProgressMs, so progress reporting stays off.
         onTimeoutMessage: 'lock still held',
       })
     ).rejects.toThrow('lock still held');
@@ -501,7 +502,7 @@ describe('a wait whose queue position keeps improving', () => {
 
   /**
    * Runs a wait against a queue that retires one waiter per probe. The
-   * drain deliberately takes LONGER than `timeoutMs`, so the outcome is
+   * drain takes longer than `timeoutMs` on purpose, so the outcome is
    * decided by whether an advance renews the budget.
    */
   async function runAdvancingQueue(extend: boolean): Promise<string> {
@@ -515,23 +516,23 @@ describe('a wait whose queue position keeps improving', () => {
     ];
 
     // Two constraints fix these numbers, and they pull against each other.
-    // The budget must span at least TWO probes, because the first only seeds
+    // The budget must span at least two probes, because the first only seeds
     // the best-seen position (it is not an advance) and the earliest genuine
-    // extension is observable at the second; and the drain — three probes
-    // apart — must outlast `timeoutMs`, or the sibling test below would
-    // acquire instead of expiring. Probes land at ~200 ms and ~400 ms inside
-    // a 500 ms budget against a ~600 ms drain, which leaves ~100 ms of slack
-    // per probe rather than the ~20 ms that made a Windows runner's readdir
-    // decide the result.
+    // extension is observable at the second. The drain, three probes apart,
+    // must also outlast `timeoutMs`, or the sibling test below would
+    // acquire instead of expiring. Probes land at ~600 ms and ~1200 ms inside
+    // a 1500 ms budget against a ~1800 ms drain, which leaves ~300 ms of
+    // slack per probe. The earlier 200/500 pairing left only ~100 ms, and a
+    // Windows runner's readdir was slow enough to decide the result with it.
     return withFileLock(lockPath, () => Promise.resolve('acquired'), {
-      timeoutMs: 500,
+      timeoutMs: 1_500,
       pollMs: 20,
       staleMs: 60_000,
-      waitProgressMs: 200,
+      waitProgressMs: 600,
       onWaitProgress: (): void => {
         const retiring = ahead.shift();
         // Synchronous removal, because the callback returns void and cannot
-        // await the promise form: an un-awaited retirement can land AFTER
+        // await the promise form: an un-awaited retirement can land after
         // the probe that was supposed to observe it, and an un-awaited
         // release leaves `mkdir` seeing EEXIST past the intended free. Both
         // races are wide enough to decide the outcome on a slow runner.
@@ -614,15 +615,21 @@ describe('a wait whose queue position keeps improving', () => {
     ];
     const extensions: { ahead: number; budgetMs: number }[] = [];
 
+    // Same shape as `runAdvancingQueue` above, for the same reasons: the
+    // retirement is synchronous so the probe that follows it cannot land
+    // first, and the budget spans two probes with ~300 ms of slack each.
+    // The un-awaited `rm` this used to do lost that race on a Windows
+    // runner: the second probe still saw both waiters, the wait expired
+    // "2 from the head of a queue of 3", and no extension was ever granted.
     await withFileLock(lockPath, () => Promise.resolve('acquired'), {
-      timeoutMs: 100,
-      pollMs: 10,
+      timeoutMs: 1_500,
+      pollMs: 20,
       staleMs: 60_000,
-      waitProgressMs: 40,
+      waitProgressMs: 600,
       onWaitProgress: (): void => {
         const retiring = ahead.shift();
-        if (retiring !== undefined) void rm(retiring, { force: true });
-        if (ahead.length === 0) void rm(lockPath, { recursive: true, force: true });
+        if (retiring !== undefined) rmSync(retiring, { force: true });
+        if (ahead.length === 0) rmSync(lockPath, { recursive: true, force: true });
       },
       onWaitExtended: (extension): void => {
         extensions.push(extension);
@@ -632,9 +639,9 @@ describe('a wait whose queue position keeps improving', () => {
     });
 
     expect(extensions.length).toBeGreaterThan(0);
-    // The reported budget is the new TOTAL from the start of the wait, so it
+    // The reported budget is the new total from the start of the wait, so it
     // can be compared directly against what the operator asked for.
-    expect(extensions[0]?.budgetMs).toBeGreaterThan(100);
+    expect(extensions[0]?.budgetMs).toBeGreaterThan(1_500);
   });
 
   it('names the queue position the expired wait reached', async () => {
@@ -662,7 +669,7 @@ describe('forceReleaseHeldLocksForSignal', () => {
     const tempDir = await makeTempDir('fireforge-signal-lock-');
     const lockPath = join(tempDir, 'engine-session.lock');
 
-    // `withFileLock`'s finally never runs across process.exit; the sweep is
+    // `withFileLock`'s finally never runs across process.exit. The sweep is
     // what keeps `status --lock` from reporting a dead holder.
     let released: string[] = [];
     await withFileLock(lockPath, async () => {
@@ -675,5 +682,77 @@ describe('forceReleaseHeldLocksForSignal', () => {
 
   it('is a no-op when this process holds nothing', async () => {
     await expect(forceReleaseHeldLocksForSignal()).resolves.toEqual([]);
+  });
+});
+
+describe('owner record write at acquisition', () => {
+  // The owner record used to be best-effort: a failed write left a lock
+  // directory with no readable PID, which the age heuristic reaps after five
+  // minutes regardless of the holder being alive. The build lock legitimately
+  // holds for hours, so a second `fireforge build` walked straight into the
+  // critical section. The write is now fatal and the lock is released.
+  it('releases the lock and refuses the operation when the owner record cannot be written', async () => {
+    const tempDir = await makeTempDir('fireforge-owner-write-fail-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    const operation = vi.fn(() => Promise.resolve('never'));
+
+    vi.mocked(writeFile).mockRejectedValueOnce(
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+    );
+
+    const failure = await withFileLock(lockPath, operation).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(GeneralError);
+    expect(failure).toBeInstanceOf(FireForgeError);
+    expect((failure as Error).message).toContain('Could not record ownership of lock');
+    expect((failure as Error).message).toContain('permission denied');
+    expect(operation).not.toHaveBeenCalled();
+    // No lock directory survives: the next contender must not wait five
+    // minutes on an orphan that nobody owns.
+    expect(await exists(lockPath)).toBe(false);
+    // And it is not tracked as held either, so the signal sweep stays clean.
+    await expect(forceReleaseHeldLocksForSignal()).resolves.toEqual([]);
+  });
+
+  it('treats an owner record that does not read back as written as a failed write', async () => {
+    const tempDir = await makeTempDir('fireforge-owner-readback-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    const operation = vi.fn(() => Promise.resolve('never'));
+
+    // The write "succeeds" but lands corrupt (e.g. a full disk truncating
+    // the record): re-verification must catch it, not trust the syscall.
+    const { writeFile: actualWriteFile } =
+      await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    vi.mocked(writeFile).mockImplementationOnce((path) =>
+      actualWriteFile(path, 'not-a-pid\n', 'utf-8')
+    );
+
+    await expect(withFileLock(lockPath, operation)).rejects.toThrow(
+      'owner record did not read back as written'
+    );
+    expect(operation).not.toHaveBeenCalled();
+    expect(await exists(lockPath)).toBe(false);
+  });
+
+  it('records the acquisition time so PID reuse can be detected later', async () => {
+    const tempDir = await makeTempDir('fireforge-owner-acquired-at-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    const before = Date.now();
+    const { readFile } = await import('node:fs/promises');
+
+    const record = await withFileLock(
+      lockPath,
+      async () => readFile(join(lockPath, 'pid'), 'utf-8'),
+      { ownerMetadata: ['command=build'] }
+    );
+
+    const [pidLine, tokenLine, acquiredLine, ...trailing] = record.trimEnd().split('\n');
+    expect(pidLine).toBe(String(process.pid));
+    expect(tokenLine).toMatch(/^[0-9a-f-]{36}$/);
+    expect(acquiredLine).toMatch(/^acquired-at-ms=\d+$/);
+    expect(Number(acquiredLine?.slice('acquired-at-ms='.length))).toBeGreaterThanOrEqual(before);
+    // `start-tick=` is written only where procfs exposes it (Linux), so the
+    // assertion on the caller's metadata must not depend on the platform.
+    expect(trailing.filter((line) => !line.startsWith('start-tick='))).toEqual(['command=build']);
   });
 });

@@ -13,6 +13,9 @@ import { pathExists } from '../../utils/fs.js';
 import { info } from '../../utils/logger.js';
 import { resolveCommand } from '../resolve.js';
 
+/** Options object `updatePatchAndMetadata` is called with, for matcher casts. */
+type UpdateArgs = Parameters<typeof updatePatchAndMetadata>[0];
+
 /**
  * Returns a minimal unified-diff body that `extractAffectedFiles` parses into
  * the supplied file list. `resolve` derives `filesAffected` from the diff
@@ -41,7 +44,6 @@ vi.mock('../../core/config.js', () => ({
     componentsDir: '/fake/root/src/components',
   }),
   loadState: vi.fn(),
-  saveState: vi.fn(),
   updateState: vi.fn(),
   loadConfig: vi.fn(),
 }));
@@ -80,8 +82,8 @@ describe('resolveCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Simulate interactive terminal for resolve command
-    // resolve requires BOTH streams to be TTYs (piped stdout would render
-    // the confirm prompt into the pipe) — stub both.
+    // resolve requires both streams to be TTYs (piped stdout would render
+    // the confirm prompt into the pipe), so stub both.
     process.stdin.isTTY = true;
     process.stdout.isTTY = true;
     vi.mocked(loadConfig).mockResolvedValue({
@@ -133,22 +135,22 @@ describe('resolveCommand', () => {
     await resolveCommand(projectRoot);
 
     expect(stageFiles).toHaveBeenCalledWith(expect.any(String), ['file1.js']);
-    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      expect.any(String),
-      patchFilename,
-      diff,
-      expect.objectContaining({
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith({
+      patchesDir: expect.any(String) as string,
+      filename: patchFilename,
+      newContent: diff,
+      updates: expect.objectContaining({
         filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
-      }),
-      undefined,
-      undefined,
+      }) as UpdateArgs['updates'],
+      onCommitted: undefined,
+      policyGate: undefined,
       // `resolve` honours `--wait-lock`: it rewrites a patch body and its
       // metadata under the patch-directory lock.
-      expect.objectContaining({ command: 'resolve' })
-    );
+      lockOptions: expect.objectContaining({ command: 'resolve' }) as UpdateArgs['lockOptions'],
+    });
     // updateState is called with a transactional updater that deletes
-    // pendingResolution; exercise the updater to confirm the delete.
+    // pendingResolution. Exercise the updater to confirm the delete.
     expect(updateState).toHaveBeenCalledWith(projectRoot, expect.any(Function));
     const updater = vi.mocked(updateState).mock.calls.at(-1)?.[1] as (
       current: Record<string, unknown>
@@ -223,20 +225,20 @@ describe('resolveCommand', () => {
 
     expect(stageFiles).toHaveBeenCalledWith(expect.any(String), ['file1.js']);
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
-    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      expect.any(String),
-      patchFilename,
-      diff,
-      expect.objectContaining({
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith({
+      patchesDir: expect.any(String) as string,
+      filename: patchFilename,
+      newContent: diff,
+      updates: expect.objectContaining({
         filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
-      }),
-      undefined,
-      undefined,
+      }) as UpdateArgs['updates'],
+      onCommitted: undefined,
+      policyGate: undefined,
       // `resolve` honours `--wait-lock`: it rewrites a patch body and its
       // metadata under the patch-directory lock.
-      expect.objectContaining({ command: 'resolve' })
-    );
+      lockOptions: expect.objectContaining({ command: 'resolve' }) as UpdateArgs['lockOptions'],
+    });
   });
 
   it('refuses to resolve when the patch file is missing on disk', async () => {
@@ -260,7 +262,7 @@ describe('resolveCommand', () => {
         },
       ],
     });
-    // Engine and engine files exist; the patch file itself does not.
+    // Engine and engine files exist. The patch file itself does not.
     vi.mocked(pathExists).mockImplementation((targetPath) =>
       Promise.resolve(!targetPath.endsWith('001-test.patch'))
     );
@@ -311,7 +313,7 @@ describe('resolveCommand', () => {
     // A manual fix can eliminate every hunk for a file while the file still
     // exists on disk. Keeping the stale `filesAffected` because
     // `activeFiles.length === existingFiles.length` then fails the next
-    // import's patch-manifest consistency check; `filesAffected` is
+    // import's patch-manifest consistency check. `filesAffected` is
     // recomputed from the diff itself every time.
     //
     // Reset updatePatchAndMetadata explicitly: `vi.clearAllMocks()` only
@@ -340,27 +342,27 @@ describe('resolveCommand', () => {
       ],
     });
     vi.mocked(pathExists).mockResolvedValue(true);
-    // The staged diff only contains file1.js; file2.js's hunks were
+    // The staged diff only contains file1.js. The hunks for file2.js were
     // dropped by the manual fix but the file itself still exists.
     const diff = fakeUnifiedDiff(['file1.js']);
     vi.mocked(getStagedDiffForFiles).mockResolvedValue(diff);
 
     await resolveCommand(projectRoot);
 
-    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      expect.any(String),
-      patchFilename,
-      diff,
-      expect.objectContaining({
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith({
+      patchesDir: expect.any(String) as string,
+      filename: patchFilename,
+      newContent: diff,
+      updates: expect.objectContaining({
         filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
-      }),
-      undefined,
-      undefined,
+      }) as UpdateArgs['updates'],
+      onCommitted: undefined,
+      policyGate: undefined,
       // `resolve` honours `--wait-lock`: it rewrites a patch body and its
       // metadata under the patch-directory lock.
-      expect.objectContaining({ command: 'resolve' })
-    );
+      lockOptions: expect.objectContaining({ command: 'resolve' }) as UpdateArgs['lockOptions'],
+    });
   });
 
   describe('non-interactive --yes flag', () => {
@@ -400,7 +402,7 @@ describe('resolveCommand', () => {
 
     it('completes in non-interactive mode when --yes is passed', async () => {
       // Scripted recovery flows hit the unconditional TTY refusal even after
-      // the operator has manually merged; `--yes` lets the same flow
+      // the operator has manually merged. `--yes` lets the same flow
       // continue without forcing them back into a terminal.
       process.stdin.isTTY = false;
       try {
@@ -411,7 +413,7 @@ describe('resolveCommand', () => {
 
       // Confirmation prompt must not have fired (that would require a TTY anyway).
       expect(vi.mocked(confirm)).not.toHaveBeenCalled();
-      // The refresh still ran — `updatePatchAndMetadata` is the
+      // The refresh still ran: `updatePatchAndMetadata` is the
       // observable effect of a completed resolve.
       expect(updatePatchAndMetadata).toHaveBeenCalled();
     });
@@ -425,7 +427,7 @@ describe('resolveCommand', () => {
 
     it('surfaces clearer two-step continuation messaging on success', async () => {
       // The info line must name the second-step command and say explicitly
-      // that resolve does not continue the queue itself — help text reading
+      // that resolve does not continue the queue itself. Help text reading
       // "...and continue" implies a one-step flow.
       process.stdin.isTTY = false;
       try {

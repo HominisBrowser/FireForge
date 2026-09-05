@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
 
-# Overlapping pushes cancel the older run — the quality job runs the full
+# Overlapping pushes cancel the older run: the quality job runs the full
 # release:check suite and is expensive to duplicate.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -82,4 +82,39 @@ jobs:
       # platform-specific code paths this leg exists to cover were the ones
       # not running. The full suite takes ~35s, which is cheaper than
       # maintaining the list.
+      - run: npm test
+
+  # Node-version axis, Ubuntu only. A separate job rather than a wider
+  # `smoke` matrix: the ruleset requires the three `smoke (<os>)` contexts
+  # by exact name (scripts/setup-rulesets.sh), and adding a second matrix
+  # dimension would rename all of them. `22` is the engines floor
+  # (`>=22.22.2`), `24` the next LTS line, and `.nvmrc` the pinned dev
+  # version, so the floor is exercised on every PR instead of only being
+  # claimed in `engines`.
+  node-floor:
+    name: node-floor (${{ matrix.node }})
+    needs: quality
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24', 'nvmrc']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.node != 'nvmrc'
+        with:
+          node-version: ${{ matrix.node }}
+          cache: 'npm'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.node == 'nvmrc'
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+      - name: Pin npm to the packageManager version
+        run: |
+          NPM_VERSION="$(node -p "require('./package.json').packageManager.split('@')[1]")"
+          npm install -g "npm@${NPM_VERSION}"
+      - run: npm ci
+      - run: npm run typecheck
       - run: npm test

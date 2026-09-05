@@ -23,6 +23,7 @@ vi.mock('../git-status.js', () => ({
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { warn } from '../../utils/logger.js';
+import { isXpcomManifestPath } from '../build-audit.js';
 import { readBuildBaseline } from '../build-baseline.js';
 import { type BuildBaseline, DELETED_FILE_FINGERPRINT } from '../build-baseline-types.js';
 import { hasChanges } from '../git.js';
@@ -38,7 +39,6 @@ import {
   formatStaticComponentsRefusal,
   formatTestCoverageRefusal,
   FULL_SUITE_REQUEST,
-  isXpcomManifestPath,
   warnIfStaticComponentsStale,
 } from '../test-stale-check.js';
 
@@ -76,7 +76,7 @@ describe('checkStaleBuildForTest', () => {
       builtAt: new Date().toISOString(),
       binaryName: 'mybrowser',
     });
-    // Only a non-packaged path changed (tools/, .py) — not a bundle concern.
+    // Only a non-packaged path changed (tools/, .py), not a bundle concern.
     mockGit.mockResolvedValueOnce('tools/ci.py\n');
 
     const result = await checkStaleBuildForTest('/project', '/project/engine');
@@ -133,7 +133,7 @@ describe('checkStaleBuildForTest', () => {
       builtAt: new Date().toISOString(),
       binaryName: 'mybrowser',
     });
-    // 12 packageable files — 10 should render inline, 2 should be truncated.
+    // 12 packageable files: 10 should render inline, 2 should be truncated.
     const paths = Array.from(
       { length: 12 },
       (_, i) => `browser/base/content/file${String(i).padStart(2, '0')}.js`
@@ -162,13 +162,14 @@ describe('checkStaleBuildForTest', () => {
   it('skips fingerprint-matching files when the baseline carries packageableFingerprints', async () => {
     // With per-file fingerprints in the baseline, the stale check must not
     // flag a path whose live content still matches what it was at build
-    // time — the case for projects with persistent patch/furnace workdir
-    // diffs that stay byte-identical between builds. Uses a real temp engine
+    // time. That is the case for projects with persistent patch/furnace
+    // workdir diffs that stay byte-identical between builds. Uses a real temp engine
     // directory because `node:fs/promises.readFile` is an ESM namespace
     // export that vitest cannot spy on.
     const { mkdtemp, writeFile: fsWriteFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
-    const { join: joinPath } = await import('node:path');
+    const pathMod = await import('node:path');
+    const joinPath = (...parts: string[]): string => pathMod.join(...parts);
     const { createHash } = await import('node:crypto');
 
     const engineDir = await mkdtemp(joinPath(tmpdir(), 'ff-stale-fp-'));
@@ -200,7 +201,8 @@ describe('checkStaleBuildForTest', () => {
   it('still flags packageable paths whose live content differs from the fingerprint', async () => {
     const { mkdtemp, writeFile: fsWriteFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
-    const { join: joinPath } = await import('node:path');
+    const pathMod = await import('node:path');
+    const joinPath = (...parts: string[]): string => pathMod.join(...parts);
     const { createHash } = await import('node:crypto');
 
     const engineDir = await mkdtemp(joinPath(tmpdir(), 'ff-stale-fp-'));
@@ -323,7 +325,7 @@ describe('findUncoveredRequestPaths', () => {
 
   it('covers a same-manifest sibling of a covered file (item 5: manifest granularity)', () => {
     // The field-incident shape: a run scoped to file_A refuses file_B of
-    // the SAME manifest, even though the scoped build staged the whole
+    // the same manifest, even though the scoped build staged the whole
     // manifest directory into obj-*/_tests/.
     expect(
       findUncoveredRequestPaths(
@@ -368,7 +370,7 @@ describe('formatTestCoverageRefusal', () => {
   });
 
   it('names --extend-coverage, so the union is discoverable at the moment it is needed', () => {
-    // A scoped build REPLACES the claim, so under concurrent sessions a
+    // A scoped build replaces the claim, so under concurrent sessions a
     // peer's build erases coverage you still hold. The flag that fixes that
     // is useless if the refusal never mentions it.
     const message = formatTestCoverageRefusal(
@@ -380,7 +382,7 @@ describe('formatTestCoverageRefusal', () => {
     expect(message).toContain('engine/mozconfig');
   });
 
-  // The refusal was already correct; what it left to the reader was WHY
+  // The refusal was already correct. What it left to the reader was why
   // this run needs coverage. A manifest that gained an entry is the fact
   // that explains it, and FireForge already holds it.
   it('names the changed manifest that explains the uncovered path', () => {
@@ -433,8 +435,8 @@ describe('isXpcomManifestPath', () => {
 
 describe('checkStaticComponentsStale', () => {
   const anchoredBaseline = (fingerprints: Record<string, string> = {}): BuildBaseline => ({
-    // A scoped `test --build` advanced the top-level SHA; the anchor keeps
-    // the last FULL build's SHA. The check must diff against the anchor.
+    // A scoped `test --build` advanced the top-level SHA. The anchor keeps
+    // the last full build's SHA. The check must diff against the anchor.
     engineHeadSha: 'scoped-sha',
     builtAt: new Date().toISOString(),
     binaryName: 'mybrowser',
@@ -484,7 +486,8 @@ describe('checkStaticComponentsStale', () => {
   it('treats a dirty manifest whose content still matches the anchor fingerprint as fresh', async () => {
     const { mkdtemp, writeFile: fsWriteFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
-    const { join: joinPath } = await import('node:path');
+    const pathMod = await import('node:path');
+    const joinPath = (...parts: string[]): string => pathMod.join(...parts);
     const { createHash } = await import('node:crypto');
 
     const engineDir = await mkdtemp(joinPath(tmpdir(), 'ff-static-comp-'));
@@ -511,7 +514,8 @@ describe('checkStaticComponentsStale', () => {
   it('still flags a manifest whose live content diverges from the anchor fingerprint', async () => {
     const { mkdtemp, writeFile: fsWriteFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
-    const { join: joinPath } = await import('node:path');
+    const pathMod = await import('node:path');
+    const joinPath = (...parts: string[]): string => pathMod.join(...parts);
     const { createHash } = await import('node:crypto');
 
     const engineDir = await mkdtemp(joinPath(tmpdir(), 'ff-static-comp-'));

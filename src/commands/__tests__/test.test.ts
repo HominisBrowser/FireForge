@@ -5,8 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // FIREFORGE-VERDICT line as ` log=<path>`, so these exact-string verdict
 // assertions require no log to be open. Stating that here replaces the
 // accident they used to rely on: `/project` is a filesystem root on POSIX,
-// so the best-effort open failed and degraded to "no log" — while on
-// Windows the same path resolves against the current drive and succeeds.
+// so the best-effort open failed and degraded to "no log". On Windows the
+// same path resolves against the current drive and succeeds.
 vi.mock('../../core/run-log.js', async () =>
   (await import('../../test-utils/module-mocks.js')).createRunLogMock()
 );
@@ -24,7 +24,7 @@ vi.mock('../../core/build-baseline.js', async () =>
 );
 
 // The --extend-coverage anchor probes real git/file state (covered by
-// src/core/__tests__/coverage-extend.test.ts); here the command-level
+// src/core/__tests__/coverage-extend.test.ts). Here the command-level
 // contract is what the command does with each verdict, so the probes are
 // mocked and the union stays real.
 vi.mock('../../core/coverage-extend.js', async (importOriginal) =>
@@ -32,7 +32,7 @@ vi.mock('../../core/coverage-extend.js', async (importOriginal) =>
 );
 
 // Default to the pass-through analysis (file args, no siblings) so every
-// existing dispatch assertion stays valid; the directory-scope tests
+// existing dispatch assertion stays valid. The directory-scope tests
 // override per case. formatScopeNotice stays real so notice assertions
 // pin the actual wording. The fs-walking analysis itself is covered by
 // src/core/__tests__/test-path-scope.test.ts.
@@ -74,10 +74,10 @@ vi.mock('../../core/xpcshell-appdir.js', async () =>
   (await import('./test-command-mocks.js')).xpcshellAppdirMock()
 );
 
-// The in-tree objdir/marker cross-check is a pass-through by default; the
+// The in-tree objdir/marker cross-check is a pass-through by default. The
 // dedicated test drives its refusal. Real behavior is covered in
 // tree-store.integration.test.ts.
-// The orphan census shells out to `ps`; stub it so the command suite stays
+// The orphan census shells out to `ps`. Stub it so the command suite stays
 // hermetic (the census itself is unit-tested in harness-orphans.test.ts).
 vi.mock('../../core/harness-orphans.js', () => ({
   reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve([])),
@@ -94,8 +94,8 @@ import {} from '../../core/coverage-extend.js';
 import {
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
+  runMachTestSuite,
   runProtectedMachBuild,
-  testWithOutput,
   withBuildLock,
 } from '../../core/mach.js';
 import {} from '../../core/marionette-port.js';
@@ -115,9 +115,9 @@ import { testCommand } from '../test.js';
 
 // Suite 1 of 6 for `fireforge test`: discovery, failure-message rewriting,
 // build gating, the canary verdict, and harness dispatch/sharding. The
-// siblings — `test-staleness-coverage`, `test-xpcshell-appdir`,
+// siblings (`test-staleness-coverage`, `test-xpcshell-appdir`,
 // `test-marionette-forwarding`, `test-harness-resilience` and
-// `test-verdict-contract` — share this header through
+// `test-verdict-contract`) share this header through
 // `test-command-mocks.ts`.
 describe('testCommand', () => {
   beforeEach(() => {
@@ -145,11 +145,11 @@ describe('testCommand', () => {
       testCommand('/project', ['browser/modules/mybrowser/test/missing.js'])
     ).rejects.toThrow(/run "fireforge import" first/i);
 
-    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(runMachTestSuite).not.toHaveBeenCalled();
   });
 
   it('surfaces UNKNOWN TEST as a discovery error instead of a generic build failure', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout: 'UNKNOWN TEST: browser/modules/mybrowser/test/browser_mybrowser_schema.js',
       stderr: '',
@@ -161,7 +161,7 @@ describe('testCommand', () => {
   });
 
   it('surfaces harness startup failures before reporting a generic test failure', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout:
         'INFO Running browser-chrome tests\n' +
@@ -178,7 +178,7 @@ describe('testCommand', () => {
   });
 
   it('surfaces zero selected tests run as a harness/discovery failure', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout: 'SUITE-START | Running 0 tests\nRan 0 tests and 0 subtests',
       stderr: '',
@@ -190,7 +190,7 @@ describe('testCommand', () => {
   });
 
   it('keeps ordinary nonzero mach test failures on the generic BuildError path', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout: 'TEST-UNEXPECTED-FAIL | browser_dummy.js | expected true got false',
       stderr: '',
@@ -202,7 +202,7 @@ describe('testCommand', () => {
   });
 
   it('summarizes the first focused test failure after a successful --build rebuild', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout:
         'INFO Running browser-chrome tests\n' +
@@ -230,7 +230,7 @@ describe('testCommand', () => {
   });
 
   it('rewrites stale-branding failures into an actionable rebuild hint', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout: 'No chrome package registered for chrome://branding/locale/brand.properties',
       stderr:
@@ -243,7 +243,7 @@ describe('testCommand', () => {
   });
 
   it('separates stale-shaped failures after --build from stale deployed artifacts', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout: 'No chrome package registered for chrome://branding/locale/brand.properties',
       stderr:
@@ -267,11 +267,11 @@ describe('testCommand', () => {
   });
 
   it('routes fork-module load failures to the module-registration hint', async () => {
-    // Both the fork-module signal AND the branding-stale signal fire
+    // Both the fork-module signal and the branding-stale signal fire
     // because the harness teardown prints a branding warning. The
-    // fork-module diagnosis must win — telling the operator to rebuild
+    // fork-module diagnosis must win: telling the operator to rebuild
     // when the module is missing from moz.build sends them in a loop.
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout:
         'ERROR Error: Failed to load resource:///modules/mybrowser/MybrowserStore.sys.mjs\n' +
@@ -285,7 +285,7 @@ describe('testCommand', () => {
   });
 
   it('rewrites missing generated branding moz.build failures into the same rebuild hint', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout: '',
       stderr:
@@ -300,7 +300,7 @@ describe('testCommand', () => {
   });
 
   it('calls prepareBuildEnvironment before an incremental test rebuild', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -334,7 +334,7 @@ describe('testCommand', () => {
       reconfigured: false,
       fullBuildRequired: true,
     });
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -349,16 +349,16 @@ describe('testCommand', () => {
       '/project/engine',
       expect.objectContaining({ retries: 2 })
     );
-    expect(writeBuildBaseline).toHaveBeenCalledWith(
-      '/project',
-      '/project/engine',
-      'mybrowser',
-      ['browser/components/tests/unit/test_distribution.js'],
-      undefined,
-      'fireforge test --build browser/components/tests/unit/test_distribution.js',
-      'refresh',
-      'full'
-    );
+    expect(writeBuildBaseline).toHaveBeenCalledWith({
+      projectRoot: '/project',
+      engineDir: '/project/engine',
+      binaryName: 'mybrowser',
+      testPackagingCoverage: ['browser/components/tests/unit/test_distribution.js'],
+      previousBaseline: undefined,
+      recordedBy: 'fireforge test --build browser/components/tests/unit/test_distribution.js',
+      staticComponentsHandling: 'refresh',
+      buildKind: 'full',
+    });
   });
 
   it('fails with an AmbiguousBuildArtifactsError when multiple objdirs are detected', async () => {
@@ -372,7 +372,7 @@ describe('testCommand', () => {
       AmbiguousBuildArtifactsError
     );
 
-    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(runMachTestSuite).not.toHaveBeenCalled();
   });
 
   it('surfaces build artifact mismatch messages before invoking mach test', async () => {
@@ -386,7 +386,7 @@ describe('testCommand', () => {
       /copied or relocated build artifacts/i
     );
 
-    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(runMachTestSuite).not.toHaveBeenCalled();
   });
 
   it('requires a completed build when no objdir exists and --build was not requested', async () => {
@@ -396,13 +396,13 @@ describe('testCommand', () => {
       'Tests require a completed build'
     );
 
-    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(runMachTestSuite).not.toHaveBeenCalled();
   });
 
   it('refuses inside a tree when the objdir found is not the one the marker vouched for', async () => {
-    // The guard admits build-less in-tree test on the marker's clonedObjdir;
-    // preflight must then prove the objdir it actually found IS that one —
-    // any other objdir was never rewritten/reconfigured to the tree.
+    // The guard admits build-less in-tree test on the marker's clonedObjdir.
+    // Preflight must then prove the objdir it actually found is that one.
+    // Any other objdir was never rewritten/reconfigured to the tree.
     vi.mocked(assertObjdirMatchesTreeMarker).mockRejectedValueOnce(
       new GeneralError('This verification tree\'s marker records "obj-e2e" as its cloned build')
     );
@@ -412,17 +412,17 @@ describe('testCommand', () => {
     );
 
     expect(assertObjdirMatchesTreeMarker).toHaveBeenCalledWith('/project', 'obj-debug');
-    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(runMachTestSuite).not.toHaveBeenCalled();
   });
 
   it('rejects pathless test runs without an explicit pathless mode', async () => {
     await expect(testCommand('/project', [])).rejects.toThrow(/requires an explicit test path/);
     expect(hasBuildArtifacts).not.toHaveBeenCalled();
-    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(runMachTestSuite).not.toHaveBeenCalled();
   });
 
   it('forwards --auto through generic mach test when no paths are provided', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | auto\nTEST-OK | auto',
       stderr: '',
@@ -430,26 +430,28 @@ describe('testCommand', () => {
 
     await expect(testCommand('/project', [], { auto: true })).resolves.toBeUndefined();
 
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      [],
-      expect.arrayContaining(['--auto']),
-      expect.objectContaining({ XPCSHELL_TEST_PROFILE_DIR: expect.any(String) as string })
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: [],
+      args: expect.arrayContaining(['--auto']) as string[],
+      env: expect.objectContaining({
+        XPCSHELL_TEST_PROFILE_DIR: expect.any(String) as string,
+      }) as Record<string, string>,
+    });
   });
 
   it('rejects --auto with explicit paths', async () => {
     await expect(
       testCommand('/project', ['browser/base/content/test/foo/browser_foo.js'], { auto: true })
     ).rejects.toThrow(/--auto.*only when no explicit paths/i);
-    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(runMachTestSuite).not.toHaveBeenCalled();
   });
 
   it('fails --canary with setup guidance when no canary path is configured', async () => {
     await expect(testCommand('/project', [], { canary: true })).rejects.toThrow(
       /No test canary path is configured/
     );
-    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(runMachTestSuite).not.toHaveBeenCalled();
   });
 
   it('reports a green canary verdict for the configured canary path', async () => {
@@ -464,7 +466,7 @@ describe('testCommand', () => {
         canaryTimeoutSeconds: 12,
       },
     });
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | browser_canary.js\nTEST-OK | browser_canary.js',
       stderr: '',
@@ -474,11 +476,11 @@ describe('testCommand', () => {
     try {
       await expect(testCommand('/project', [], { canary: true })).resolves.toBeUndefined();
 
-      expect(testWithOutput).toHaveBeenCalledWith(
-        '/project/engine',
-        ['browser/base/content/test/foo/browser_canary.js'],
-        expect.arrayContaining(['--timeout=12'])
-      );
+      expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+        engineDir: '/project/engine',
+        testPaths: ['browser/base/content/test/foo/browser_canary.js'],
+        args: expect.arrayContaining(['--timeout=12']) as string[],
+      });
       expect(success).toHaveBeenCalledWith('Canary: green');
       // The canary path ends with the machine-readable verdict.
       const rawWrites = writeSpy.mock.calls
@@ -491,7 +493,7 @@ describe('testCommand', () => {
   });
 
   it('classifies a canary no-output timeout as hang', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout: 'TEST-INFO | timed out after 60 seconds with no output',
       stderr: '',
@@ -537,7 +539,7 @@ describe('testCommand', () => {
     const message = error instanceof Error ? error.message : '';
     expect(message).not.toContain('Post-rebuild test failure:');
 
-    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(runMachTestSuite).not.toHaveBeenCalled();
   });
 
   // The pre-test --build routes through the protected mach dispatch:
@@ -545,14 +547,14 @@ describe('testCommand', () => {
 
   it('proceeds to tests when the protected pre-test build recovered via retry', async () => {
     // The protected dispatch retried internally and reports success on the
-    // second attempt; the command layer proceeds to mach test.
+    // second attempt. The command layer proceeds to mach test.
     vi.mocked(runProtectedMachBuild).mockResolvedValueOnce({
       exitCode: 0,
       stdout: '',
       stderr: '',
       attempts: 2,
     });
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | t\nTEST-OK | t',
       stderr: '',
@@ -565,7 +567,7 @@ describe('testCommand', () => {
     ).resolves.toBeUndefined();
 
     expect(runProtectedMachBuild).toHaveBeenCalledTimes(1);
-    expect(testWithOutput).toHaveBeenCalled();
+    expect(runMachTestSuite).toHaveBeenCalled();
   });
 
   it('forwards --harness-retries into the protected pre-test build and reports an exhausted crash budget', async () => {
@@ -596,7 +598,7 @@ describe('testCommand', () => {
       '/project/engine',
       expect.objectContaining({ retries: 1 })
     );
-    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(runMachTestSuite).not.toHaveBeenCalled();
     expect(error instanceof Error ? error.message : '').toMatch(/harness/i);
   });
 
@@ -629,7 +631,7 @@ describe('testCommand', () => {
       stderr: '',
       attempts: 3, // dispatch retried twice internally
     });
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | t\nTEST-OK | t',
       stderr: '',
@@ -641,22 +643,22 @@ describe('testCommand', () => {
       })
     ).resolves.toBeUndefined();
 
-    // Retries must never re-run mach configure / build prep — the field's
-    // 64-minute rebuild incident is exactly what re-preparing would risk.
+    // Retries must never re-run mach configure / build prep: the field's
+    // 64-minute rebuild incident is what re-preparing would risk.
     expect(prepareBuildEnvironment).toHaveBeenCalledTimes(1);
   });
 
   it('treats a green embedded summary with a non-zero exit as a pass', async () => {
     // mach exited 1 on harness noise (degradation warnings + caught
-    // telemetry traceback), but the embedded summary completed green — the
-    // wrapper must exit 0 instead of forcing operators to parse embedded
+    // telemetry traceback), but the embedded summary completed green, so
+    // the wrapper must exit 0 instead of forcing operators to parse embedded
     // summaries by hand.
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout: [
         'UserWarning: psutil failed to run: host_statistics64 syscall failed',
-        // The requested file must appear started AND ended: a green
-        // summary whose requested files never ran is precisely what the
+        // The requested file must appear started and ended: a green
+        // summary whose requested files never ran is what the
         // crash green-wash rejection is for.
         ' 0:00.60 TEST_START | browser/components/tests/unit/test_distribution.js',
         ' 0:02.18 INFO | TEST_END: Test PASS',
@@ -675,7 +677,7 @@ describe('testCommand', () => {
   });
 
   it('sharded green runs with degradation noise pass instead of reporting CRASH', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: [
         'UserWarning: psutil failed to run: host_statistics64 syscall failed',
@@ -697,7 +699,7 @@ describe('testCommand', () => {
   });
 
   it('announces per-file sharding and points at --no-shard', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
       stderr: '',
@@ -718,7 +720,7 @@ describe('testCommand', () => {
   });
 
   it('does not announce sharding for a single path or under --no-shard', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
       stderr: '',
@@ -736,7 +738,7 @@ describe('testCommand', () => {
 
   it('dispatches a directory argument as its explicit file list in ONE invocation and echoes excluded prefix siblings', async () => {
     // mach's string-prefix match means `…/test/hominis` also runs the
-    // sibling `…/test/hominis-tiles`, and a trailing-slash form does NOT
+    // sibling `…/test/hominis-tiles`, and a trailing-slash form does not
     // stop it. The dispatch must be the enumerated explicit file list, which
     // cannot prefix-match a sibling, in a single mach invocation so
     // cross-file state still carries within the directory.
@@ -756,7 +758,7 @@ describe('testCommand', () => {
         ],
       },
     ]);
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
       stderr: '',
@@ -767,8 +769,12 @@ describe('testCommand', () => {
     // One combined invocation carrying exactly the directory's own files:
     // a prefix-named sibling cannot be swept in, and the one-browser-
     // instance semantics of a directory run are preserved.
-    expect(testWithOutput).toHaveBeenCalledTimes(1);
-    expect(testWithOutput).toHaveBeenCalledWith('/project/engine', hominisFiles, []);
+    expect(runMachTestSuite).toHaveBeenCalledTimes(1);
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: hominisFiles,
+      args: [],
+    });
     // No sharding notice for a single directory argument.
     expect(info).not.toHaveBeenCalledWith(expect.stringContaining('pass --no-shard'));
     expect(info).toHaveBeenCalledWith(
@@ -798,7 +804,7 @@ describe('testCommand', () => {
         siblingPrefixMatches: [],
       },
     ]);
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
       stderr: '',
@@ -809,18 +815,21 @@ describe('testCommand', () => {
       'browser/components/tests/browser_other.js',
     ]);
 
-    expect(testWithOutput).toHaveBeenCalledTimes(2);
-    expect(testWithOutput).toHaveBeenNthCalledWith(1, '/project/engine', dirFiles, []);
-    expect(testWithOutput).toHaveBeenNthCalledWith(
-      2,
-      '/project/engine',
-      ['browser/components/tests/browser_other.js'],
-      []
-    );
+    expect(runMachTestSuite).toHaveBeenCalledTimes(2);
+    expect(runMachTestSuite).toHaveBeenNthCalledWith(1, expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: dirFiles,
+      args: [],
+    });
+    expect(runMachTestSuite).toHaveBeenNthCalledWith(2, expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser/components/tests/browser_other.js'],
+      args: [],
+    });
   });
 
   it('normalizes engine-prefixed test paths and passes headless through to mach test', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -832,15 +841,15 @@ describe('testCommand', () => {
       })
     ).resolves.toBeUndefined();
 
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/components/tests/unit/test_distribution.js'],
-      ['--headless']
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser/components/tests/unit/test_distribution.js'],
+      args: ['--headless'],
+    });
   });
 
   it('strips a case-insensitive engine prefix on case-insensitive filesystems', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -850,15 +859,15 @@ describe('testCommand', () => {
       testCommand('/project', ['Engine/browser/components/tests/unit/test_distribution.js'])
     ).resolves.toBeUndefined();
 
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/components/tests/unit/test_distribution.js'],
-      []
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser/components/tests/unit/test_distribution.js'],
+      args: [],
+    });
   });
 
   it('strips engine prefix using a Windows-style backslash separator', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -870,15 +879,15 @@ describe('testCommand', () => {
 
     // backslashes survive into mach (Windows mach handles them), but the
     // engine prefix is stripped.
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser\\components\\tests\\unit\\test_distribution.js'],
-      []
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser\\components\\tests\\unit\\test_distribution.js'],
+      args: [],
+    });
   });
 
   it('trims surrounding whitespace from supplied test paths', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -888,11 +897,11 @@ describe('testCommand', () => {
       testCommand('/project', ['  engine/browser/components/tests/unit/test_distribution.js  '])
     ).resolves.toBeUndefined();
 
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/components/tests/unit/test_distribution.js'],
-      []
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser/components/tests/unit/test_distribution.js'],
+      args: [],
+    });
   });
 
   it('runs the marionette preflight without calling mach test when --doctor is supplied alone', async () => {
@@ -913,11 +922,11 @@ describe('testCommand', () => {
 
       expect(runMarionettePreflight).toHaveBeenCalledWith('/project/engine');
       expect(reportMarionettePreflight).toHaveBeenCalled();
-      expect(testWithOutput).not.toHaveBeenCalled();
+      expect(runMachTestSuite).not.toHaveBeenCalled();
       // The doctor-only success path writes the PASS line via
       // `process.stdout.write` so non-TTY captures always see the summary.
-      // This test runs with `isTTY: false`, so that raw write is the ONLY
-      // emission — a redundant `success()` call would make the same line
+      // This test runs with `isTTY: false`, so that raw write is the only
+      // emission. A redundant `success()` call would make the same line
       // appear three times on a terminal.
       expect(success).not.toHaveBeenCalled();
       expect(outro).toHaveBeenCalledWith('Test completed');
@@ -962,6 +971,6 @@ describe('testCommand', () => {
       })
     ).rejects.toThrow(/Marionette preflight reported FAIL/i);
 
-    expect(testWithOutput).not.toHaveBeenCalled();
+    expect(runMachTestSuite).not.toHaveBeenCalled();
   });
 });

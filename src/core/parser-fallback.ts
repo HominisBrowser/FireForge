@@ -27,8 +27,8 @@ export function consumeParserFallbackEvents(): ParserFallbackEvent[] {
  *
  * Rethrows internal-invariant `GeneralError`s ("Unexpected empty …array"):
  * those are programming bugs, and retrying the legacy scanner cannot fix a
- * broken invariant — it just buries the stack. Everything else still falls
- * back, which is load-bearing: the AST path raises a raw acorn SyntaxError
+ * broken invariant, it just buries the stack. Everything else still falls
+ * back, which matters: the AST path raises a raw acorn SyntaxError
  * on chrome sources acorn cannot parse (preprocessor directives), and
  * BuildError when the file's shape is unexpected. Both are exactly what the
  * legacy scanner is here to handle.
@@ -60,7 +60,7 @@ export interface ParserResult<T> {
  * @param primary - The modern parser implementation
  * @param fallback - The legacy fallback implementation
  * @param context - File/context name used in the warning message
- * @param rethrowIf - Optional predicate; if it returns true for the caught
+ * @param rethrowIf - Optional predicate. If it returns true for the caught
  *   error the error is re-thrown instead of falling back (useful for
  *   domain-specific errors that should not be swallowed).
  */

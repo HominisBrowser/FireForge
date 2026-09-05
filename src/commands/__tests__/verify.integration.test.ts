@@ -275,7 +275,7 @@ describe('verify command', () => {
   // files themselves. Verify reports "Verify clean" for it, because the
   // manifest is internally consistent. The dangling-registration check walks
   // each patch body, extracts component-shaped references, and fails when
-  // the referenced path is supplied by no patch AND does not exist in
+  // the referenced path is supplied by no patch and does not exist in
   // engine/.
   it('fails on a patch that registers a widget it does not itself carry', async () => {
     const registrationBody = [
@@ -300,7 +300,7 @@ describe('verify command', () => {
   });
 
   it('passes when the registration references a file another patch in the queue creates', async () => {
-    // Patch 1 creates the widget source; patch 2 registers it via
+    // Patch 1 creates the widget source. Patch 2 registers it via
     // jar.mn. The cross-patch coverage set (union of filesAffected)
     // satisfies the reference, so verify stays quiet.
     const widgetDiff = createDiff(

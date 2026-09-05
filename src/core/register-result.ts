@@ -2,7 +2,7 @@
 /**
  * Shared result shape for manifest registration operations, split out of
  * the `manifest-register.ts` barrel so the `register-*` leaf modules can
- * import it without importing the barrel that re-exports them — that
+ * import it without importing the barrel that re-exports them. That
  * type-only back-edge made the registration dependency graph cyclic.
  */
 

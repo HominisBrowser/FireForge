@@ -4,12 +4,12 @@
  *
  * `export-all --exclude-furnace` can produce a patch whose jar.mn /
  * customElements.js / locales jar.mn hunks add references to furnace
- * component files the patch does NOT itself carry, while `fireforge verify`
+ * component files the patch does not itself carry, while `fireforge verify`
  * reports "Verify clean". The scanner extracts the component-shaped
  * references so verify can cross-check them against patch bodies and engine
  * files.
  *
- * The scan is deliberately narrow — only component-shaped references (widget
+ * The scan is narrow on purpose: only component-shaped references (widget
  * tag names, locale FTL names) match. Unrelated edits to the same files pass
  * through silently so the check never spurious-warns on ordinary patches.
  */
@@ -89,7 +89,7 @@ describe('collectPatchRegistrationReferences', () => {
   });
 
   it('ignores the +++ header line itself', () => {
-    // The `+++ b/<path>` header starts with `+` but must not match — it
+    // The `+++ b/<path>` header starts with `+` but must not match. It
     // is diff metadata, not added content.
     const body = [
       'diff --git a/toolkit/content/jar.mn b/toolkit/content/jar.mn',
@@ -107,7 +107,7 @@ describe('collectPatchRegistrationReferences', () => {
 
   it('ignores removed lines in registration files', () => {
     // Only `+` lines (additions) count. A `-` removal describes the
-    // OLD state, which is not what we are verifying.
+    // old state, which is not what we are verifying.
     const body = [
       'diff --git a/toolkit/content/jar.mn b/toolkit/content/jar.mn',
       '--- a/toolkit/content/jar.mn',

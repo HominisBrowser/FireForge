@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Cross-patch lint tests — duplicate /dev/null creation and forward-import
+ * Cross-patch lint tests: duplicate /dev/null creation and forward-import
  * detection. These exercise the rule bodies directly against synthetic
  * PatchQueueContext instances so the tests do not need a temp patch
  * directory on disk.
@@ -11,15 +11,16 @@ import { describe, expect, it } from 'vitest';
 import type { PatchMetadata } from '../../types/commands/index.js';
 import {
   collectNewFileCreatorsByPath,
-  extractImportSpecifiers,
+  extractImportSpecifiersWithLines,
   FORWARD_IMPORT_IGNORE_MARKER,
   lintPatchQueue,
   lintPatchQueueDuplicateCreations,
   lintPatchQueueForwardImports,
-  lintPatchQueueModuleRegistrations,
   type PatchQueueContext,
   type PatchQueueEntry,
 } from '../patch-lint.js';
+import { detectNewFilesInDiff } from '../patch-lint-diff.js';
+import { lintPatchQueueModuleRegistrations } from '../patch-lint-module-registration.js';
 
 function makeEntry(
   filename: string,
@@ -45,6 +46,11 @@ function makeEntry(
     },
     diff,
     newFiles: new Map(Object.entries(newFiles)),
+    // Derived from the body rather than from `newFiles`, which is what the
+    // field is for: a binary creation has no text projection but is still a
+    // creation. The union with `newFiles` keeps the many fixtures that pass
+    // a newFiles map with a stub diff working.
+    createdFiles: new Set([...detectNewFilesInDiff(diff), ...Object.keys(newFiles)]),
     modifiedFileAdditions: new Map(Object.entries(modifiedFileAdditions)),
   };
 }
@@ -329,7 +335,8 @@ describe('lintPatchQueueForwardImports', () => {
       }),
     ];
 
-    // The importing patch's category range ends at 2 — order 3 is illegal.
+    // The importing patch's category range ends at 2, so order 3 is
+    // illegal.
     const issues = lintPatchQueueForwardImports({
       entries,
       patchPolicy: { ranges: [{ category: 'ui', from: 1, to: 2 }] },
@@ -456,7 +463,7 @@ describe('lintPatchQueueForwardImports', () => {
 
   // Registration-kind staged dependencies: a jar.mn packaging line (or
   // customElements/actor registration) referencing a later-created file has
-  // no import to match; the declaration is used when the declared line
+  // no import to match. The declaration is used when the declared line
   // appears in the patch's added content.
 
   it('accepts a registration-kind entry whose jar.mn line the patch adds (item 5 acc 1)', () => {
@@ -549,8 +556,8 @@ describe('lintPatchQueueForwardImports', () => {
         }),
       ],
     };
-    // The forward import is NOT suppressed by a registration entry (they are
-    // different claims); the registration itself matches its line, so the
+    // The forward import is not suppressed by a registration entry (they are
+    // different claims). The registration itself matches its line, so the
     // only issue is the forward-import error.
     const issues = lintPatchQueueForwardImports(ctx);
     expect(issues.map((issue) => issue.check)).toEqual(['forward-import']);
@@ -727,8 +734,8 @@ describe('lintPatchQueueForwardImports', () => {
     const issues = lintPatchQueueForwardImports(ctx);
     expect(issues).toHaveLength(1);
     // The dependency lives at order 5, so the closest legal placement
-    // for the importer is order 6 — operator turns "two attempts at
-    // --order N" into one shot.
+    // for the importer is order 6, which turns the operator's "two attempts
+    // at --order N" into one shot.
     expect(issues[0]?.message).toContain(
       'Closest legal ordinal that satisfies this dependency: 6.'
     );
@@ -969,7 +976,10 @@ describe('collectNewFileCreatorsByPath', () => {
   });
 });
 
-describe('extractImportSpecifiers — adversarial shapes', () => {
+describe('import-specifier extraction — adversarial shapes', () => {
+  const extractImportSpecifiers = (source: string): string[] =>
+    extractImportSpecifiersWithLines(source).map((item) => item.specifier);
+
   it('captures side-effect imports (`import "..."` with no `from` clause)', () => {
     // Side-effect imports are a valid ES module form Firefox uses for
     // observer-registration modules. The optional `from` group in the regex
@@ -1074,11 +1084,11 @@ describe('lintPatchQueueForwardImports — suppression marker', () => {
 describe('lintPatchQueueForwardImports — same-patch self-imports', () => {
   it('does not flag a patch that both creates a module and imports it from another file in the same patch', () => {
     // Intentional non-case: a single patch may legitimately create a new
-    // `.sys.mjs` module AND, in the same body, modify a pre-existing file to
+    // `.sys.mjs` module and, in the same body, modify a pre-existing file to
     // add an import targeting that module. Both sites belong to the same
-    // patch, so there is no forward reference across patch boundaries — the
+    // patch, so there is no forward reference across patch boundaries: the
     // creator and the importer commit atomically. The forward-import rule's
-    // filter excludes an entry from being its own later owner; this pins
+    // filter excludes an entry from being its own later owner. This pins
     // that so a refactor of the filter cannot regress same-patch
     // self-imports into false positives.
     const ctx: PatchQueueContext = {
@@ -1100,9 +1110,9 @@ describe('lintPatchQueueForwardImports — same-patch self-imports', () => {
   it('still flags a same-order import when the owner is lexicographically later', () => {
     // Tiebreaker: two patches sharing an order but with different
     // filenames. The rule breaks the tie by filename so the forward
-    // direction is unambiguous — a patch with the lexicographically earlier
-    // filename importing from the later one is a forward-import; the reverse
-    // is not. Pinned so the self-import exclusion does not accidentally
+    // direction is unambiguous: a patch with the lexicographically earlier
+    // filename importing from the later one is a forward-import. The
+    // reverse is not. Pinned so the self-import exclusion does not accidentally
     // exempt genuine same-order cross-patch forward references.
     const ctx: PatchQueueContext = {
       entries: [
@@ -1122,9 +1132,9 @@ describe('lintPatchQueueForwardImports — same-patch self-imports', () => {
 
 describe('lintPatchQueueDuplicateCreations — delete/recreate in same patch', () => {
   it('still flags the path when a second patch deletes and re-creates it', () => {
-    // A patch that deletes an existing file AND creates a new one at
+    // A patch that deletes an existing file and creates a new one at
     // the same path emits both `deleted file mode` and
-    // `new file mode` markers — the duplicate-creation rule should
+    // `new file mode` markers. The duplicate-creation rule should
     // still see the `new file mode` marker and count the patch as a
     // creator, so two patches both doing this still collide.
     const deleteAndRecreateDiff = [
@@ -1152,5 +1162,128 @@ describe('lintPatchQueueDuplicateCreations — delete/recreate in same patch', (
     const issues = lintPatchQueueDuplicateCreations(ctx);
     expect(issues).toHaveLength(1);
     expect(issues[0]?.file).toBe('foo/A.sys.mjs');
+  });
+});
+
+describe('binary creations and staged registrations (item 3)', () => {
+  // The downstream 102/103 shape: patch 102's xpcshell.toml registers a
+  // fixture glob, and patch 103 creates the fixture as a binary new file.
+  const MANIFEST = 'browser/modules/hominis/test/unit/xpcshell.toml';
+  const FIXTURE = 'browser/modules/hominis/test/unit/fixtures/schema-v32.sqlite';
+  const REGISTRATION_LINE = 'support-files = ["fixtures/*.sqlite"]';
+
+  const MANIFEST_EDIT_DIFF = [
+    `diff --git a/${MANIFEST} b/${MANIFEST}`,
+    '--- a/' + MANIFEST,
+    '+++ b/' + MANIFEST,
+    '@@ -1,2 +1,4 @@',
+    ' ["test_HominisStoreSchema.js"]',
+    `+${REGISTRATION_LINE}`,
+    '',
+  ].join('\n');
+
+  const BINARY_CREATE_DIFF = [
+    `diff --git a/${FIXTURE} b/${FIXTURE}`,
+    'new file mode 100644',
+    'index 0000000..1111111',
+    'GIT binary patch',
+    'literal 12',
+    'zcmZQzU|<4ZV1PgP',
+    '',
+    'literal 0',
+    'HcmV?d00001',
+    '',
+  ].join('\n');
+
+  const BINARY_STUB_DIFF = [
+    `diff --git a/${FIXTURE} b/${FIXTURE}`,
+    'new file mode 100644',
+    'index 0000000..1111111',
+    `Binary files /dev/null and b/${FIXTURE} differ`,
+    '',
+  ].join('\n');
+
+  const registrationMetadata = {
+    stagedDependencies: {
+      registrations: [
+        {
+          file: MANIFEST,
+          line: REGISTRATION_LINE,
+          creates: FIXTURE,
+          owner: '103-infra-storage-spine.patch',
+        },
+      ],
+    },
+  } as Partial<PatchMetadata>;
+
+  function declaringEntry(metadata: Partial<PatchMetadata>): PatchQueueEntry {
+    return makeEntry(
+      '102-infra-security-primitives.patch',
+      102,
+      MANIFEST_EDIT_DIFF,
+      {},
+      { [MANIFEST]: `+${REGISTRATION_LINE}\n${REGISTRATION_LINE}` },
+      metadata
+    );
+  }
+
+  it('resolves a declared registration against a BINARY creation', () => {
+    // Before the fix `newFiles` dropped the binary body, so `creates` never
+    // resolved and the declaration was reported stale on every run.
+    const issues = lintPatchQueueForwardImports({
+      entries: [
+        declaringEntry(registrationMetadata),
+        makeEntry('103-infra-storage-spine.patch', 103, BINARY_CREATE_DIFF),
+      ],
+    });
+    expect(issues.filter((i) => i.check === 'staged-dependency-unused')).toEqual([]);
+  });
+
+  it('counts a payload-less "Binary files … differ" creation the same way', () => {
+    // The file will exist after apply either way. Only the body differs.
+    const issues = lintPatchQueueForwardImports({
+      entries: [
+        declaringEntry(registrationMetadata),
+        makeEntry('103-infra-storage-spine.patch', 103, BINARY_STUB_DIFF),
+      ],
+    });
+    expect(issues.filter((i) => i.check === 'staged-dependency-unused')).toEqual([]);
+  });
+
+  it('flags the same shape as an undeclared forward registration when nothing declares it', () => {
+    // The other half of the report: with the declaration removed, lint was
+    // equally silent, so neither arm could tell the operator anything.
+    const issues = lintPatchQueue({
+      entries: [
+        declaringEntry({}),
+        makeEntry('103-infra-storage-spine.patch', 103, BINARY_CREATE_DIFF),
+      ],
+    });
+    const forward = issues.filter((i) => i.check === 'forward-registration');
+    expect(forward).toHaveLength(1);
+    expect(forward[0]?.file).toBe(MANIFEST);
+    expect(forward[0]?.severity).toBe('error');
+    expect(forward[0]?.message).toContain(FIXTURE);
+    expect(forward[0]?.message).toContain('103-infra-storage-spine.patch');
+    expect(forward[0]?.message).toContain('--kind registration');
+  });
+
+  it('stays silent once the staged dependency is declared', () => {
+    const issues = lintPatchQueue({
+      entries: [
+        declaringEntry(registrationMetadata),
+        makeEntry('103-infra-storage-spine.patch', 103, BINARY_CREATE_DIFF),
+      ],
+    });
+    expect(issues.filter((i) => i.check === 'forward-registration')).toEqual([]);
+  });
+
+  it('says nothing when the fixture is created by an EARLIER patch', () => {
+    // Applying the queue up to the manifest edit already has the file, so
+    // there is no dangling registration to report.
+    const issues = lintPatchQueue({
+      entries: [makeEntry('101-infra-fixtures.patch', 101, BINARY_CREATE_DIFF), declaringEntry({})],
+    });
+    expect(issues.filter((i) => i.check === 'forward-registration')).toEqual([]);
   });
 });

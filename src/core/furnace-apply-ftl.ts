@@ -5,9 +5,9 @@
  * per-file LOC budget.
  *
  * Every helper here degrades gracefully: if the locale jar.mn is missing or
- * the FTL tree is non-standard, apply logs an ADVISORY `stepError`
+ * the FTL tree is non-standard, apply logs an advisory `stepError`
  * (`advisory: true`) rather than aborting the whole command. Advisory step
- * errors are reported as warnings and never trigger rollback — a missing
+ * errors are reported as warnings and never trigger rollback: a missing
  * jar.mn on a fork without a locale package must not block a working
  * `.mjs`/`.css` from shipping.
  */
@@ -60,12 +60,12 @@ function resolveSharedFtlPruneTarget(
  *
  * A `localized: true` widget that opts into a feature-scoped `sharedFtl`
  * bundle (its strings live under `browser/...` and load via
- * `insertFTLIfNeeded`) must NOT carry a per-widget
+ * `insertFTLIfNeeded`) must not carry a per-widget
  * `locale/@AB_CD@/<chromeSubPath>/<name>.ftl` line. Such a line points at a
  * `.ftl` that does not exist, so `mach build` fails hard (`Cannot find
  * <chromeSubPath>/<name>.ftl`) and blocks every build.
  *
- * The pruned line is the per-widget toolkit entry only; the shared bundle's
+ * The pruned line is the per-widget toolkit entry only. The shared bundle's
  * own line (a different chrome sub-path / base name) is never matched, so
  * pruning one widget cannot orphan the shared bundle. Idempotent: when no
  * dangling entry exists the file is left untouched (no journal churn).
@@ -154,8 +154,8 @@ export async function describeSharedFtlPrune(
  * in the locale jar.mn.
  *
  * Failure modes (missing jar.mn, regex write error) are captured as
- * stepErrors rather than thrown — a well-formed `.mjs`/`.css` must never be
- * blocked by a broken locale path.
+ * stepErrors rather than thrown, since a well-formed `.mjs`/`.css` must
+ * never be blocked by a broken locale path.
  */
 export async function applyCustomFtlFile(
   ctx: Pick<ComponentApplyContext, 'engineDir' | 'name' | 'componentDir' | 'ftlDir'>,
@@ -173,7 +173,7 @@ export async function applyCustomFtlFile(
     await snapshotFile(rollbackJournal, ftlDest);
   }
   await copyFile(ftlSrc, ftlDest);
-  // Sibling pushes on this list are POSIX literals (`localeJarRel`); keep
+  // Sibling pushes on this list are POSIX literals (`localeJarRel`). Keep
   // the computed one in the same spelling.
   affectedPaths.push(normalizePathSlashes(relative(engineDir, ftlDest)));
 
@@ -230,7 +230,7 @@ export function describeLocaleFtlJarMnRegistration(
 
 /**
  * Drops the locale jar.mn entry for `fileName` when it's a `.ftl` whose
- * source workspace file has been deleted. Idempotent — absent entries are a
+ * source workspace file has been deleted. Idempotent: absent entries are a
  * no-op. Early-returns for `sharedFtl` components: the shared bundle is
  * owned elsewhere, and dropping its jar.mn line on our component's delete
  * would orphan every other participant.

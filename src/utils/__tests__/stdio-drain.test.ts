@@ -2,7 +2,7 @@
 /**
  * Unit coverage for the bounded stdio drain: the waiter must release the
  * exit as soon as the stream is safe (drained, destroyed, or errored) and
- * never later than the timeout — a hang here turns every failed
+ * never later than the timeout. A hang here turns every failed
  * `status --json | slow-consumer` into a wedged process.
  */
 import { EventEmitter } from 'node:events';
@@ -67,7 +67,7 @@ describe('waitForStdioDrain', () => {
     const stream = new FakeStream();
     stream.writableLength = 70_000;
     const wait = waitForStdioDrain(5_000, [stream]);
-    // The waiter's own listener consumes the event; no unhandled 'error'.
+    // The waiter's own listener consumes the event, so no unhandled 'error'.
     stream.emit('error');
     await expect(wait).resolves.toBeUndefined();
   });

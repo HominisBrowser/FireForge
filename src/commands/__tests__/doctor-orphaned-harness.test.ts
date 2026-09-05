@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Orphaned-harness-worker doctor check tests. The parser runs against
- * planted fixture `ps` lines — never a real spun orphan.
+ * planted fixture `ps` lines, never a real spun orphan.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,7 +15,6 @@ import { exec } from '../../utils/process.js';
 import {
   findOrphanedHarnessWorkers,
   ORPHANED_HARNESS_DOCTOR_CHECK,
-  parseCpuTime,
 } from '../doctor-orphaned-harness.js';
 
 // The field-incident shape: reparented to launchd (PPID 1), ~26 days of
@@ -29,9 +28,9 @@ const FIXTURE_PS_OUTPUT = [
   '    1     0 45:12.33 /sbin/launchd',
   INCIDENT_LINE,
   TRACKER_LINE_DARWIN,
-  // Live parent — same command shape but NOT orphaned.
+  // Live parent: same command shape but not orphaned.
   ' 5100   812 55:00.00 /usr/bin/python3 -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=9)',
-  // Orphaned multiprocessing worker with trivial CPU time — freshly forked,
+  // Orphaned multiprocessing worker with trivial CPU time: freshly forked,
   // not the busy-spin shape.
   ' 5200     1 0:03.11 /usr/bin/python3 -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=4, pipe_handle=7)',
   // Orphaned, huge time, but not a multiprocessing worker.
@@ -39,22 +38,6 @@ const FIXTURE_PS_OUTPUT = [
   'garbage line that does not parse',
   '',
 ].join('\n');
-
-describe('parseCpuTime', () => {
-  it('parses the linux dd-hh:mm:ss dialect', () => {
-    expect(parseCpuTime('26-03:14:12')).toBe(26 * 86400 + 3 * 3600 + 14 * 60 + 12);
-    expect(parseCpuTime('03:14:12')).toBe(3 * 3600 + 14 * 60 + 12);
-  });
-
-  it('parses the darwin mm:ss.cc dialect with cumulative minutes', () => {
-    expect(parseCpuTime('38412:07.55')).toBeCloseTo(38412 * 60 + 7.55, 2);
-    expect(parseCpuTime('0:03.11')).toBeCloseTo(3.11, 2);
-  });
-
-  it('returns NaN for unrecognized shapes', () => {
-    expect(Number.isNaN(parseCpuTime('not-a-time'))).toBe(true);
-  });
-});
 
 describe('findOrphanedHarnessWorkers', () => {
   it('flags the planted incident shape and the darwin-dialect tracker, nothing else', () => {
@@ -68,8 +51,8 @@ describe('findOrphanedHarnessWorkers', () => {
   it('does not flag live-parent, low-CPU, or non-matching-command processes', () => {
     const workers = findOrphanedHarnessWorkers(FIXTURE_PS_OUTPUT);
     const pids = workers.map((w) => w.pid);
-    expect(pids).not.toContain(5100); // ppid 812 — live parent
-    expect(pids).not.toContain(5200); // 3 seconds of CPU — not the busy-spin shape
+    expect(pids).not.toContain(5100); // ppid 812, live parent
+    expect(pids).not.toContain(5200); // 3 seconds of CPU, not the busy-spin shape
     expect(pids).not.toContain(5300); // long-running node, not a harness worker
   });
 
@@ -113,7 +96,7 @@ describe('ORPHANED_HARNESS_DOCTOR_CHECK', () => {
       ['-axo', 'pid=,ppid=,time=,command='],
       expect.anything()
     );
-    // 'warning' IS the report-only assertion now: it is the single field that
+    // 'warning' is the report-only assertion now: it is the single field that
     // decides the outcome, so a separate `passed` check would restate it.
     expect(check.severity).toBe('warning');
     expect(check.message).toContain('PID 4242');

@@ -44,10 +44,22 @@ describe('refreshOverrideFile fatal merge-file handling', () => {
     await writeFile(overridePath, 'ours\n');
 
     await expect(
-      refreshOverrideFile('/engine', overridePath, 'widget.css', 'base-sha', 'widget.css')
+      refreshOverrideFile({
+        engineDir: '/engine',
+        overridePath,
+        engineRelPath: 'widget.css',
+        baseCommit: 'base-sha',
+        fileName: 'widget.css',
+      })
     ).rejects.toThrow(FurnaceError);
     await expect(
-      refreshOverrideFile('/engine', overridePath, 'widget.css', 'base-sha', 'widget.css')
+      refreshOverrideFile({
+        engineDir: '/engine',
+        overridePath,
+        engineRelPath: 'widget.css',
+        baseCommit: 'base-sha',
+        fileName: 'widget.css',
+      })
     ).rejects.toThrow(/git merge-file failed/);
   });
 });

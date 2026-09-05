@@ -1,30 +1,30 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Preflight census of ORPHANED test-harness helper processes.
+ * Preflight census of orphaned test-harness helper processes.
  *
  * Stopping a long mochitest run mid-flight does not necessarily take its
  * helpers with it. A downstream incident left `xpcshell` (the harness
  * httpd, pegged at 100% CPU), `pywebsocket`, `ssltunnel` and `moz-http2`
- * alive for an hour. Every subsequent run crawled — a three-second suite
- * took six minutes of wall clock and audio-start waits timed out — and
- * nothing in FireForge's output connected the slowness to the survivors.
+ * alive for an hour. Every subsequent run crawled: a three-second suite
+ * took six minutes of wall clock and audio-start waits timed out. Nothing
+ * in FireForge's output connected the slowness to the survivors.
  * The hour was spent mis-attributing it to the change under test.
  *
  * Visibility alone would have collapsed that hour, which is why the census
  * runs by default and the kill does not. Two rules keep it honest:
  *
- *  - The census runs at PREFLIGHT, before this run spawns anything, so
- *    every matching process is by construction a survivor of an earlier
- *    run. No age heuristic is needed, and none is used.
+ *  - The census runs at preflight, before this run spawns anything, so
+ *    every matching process must be a survivor of an earlier run. No age
+ *    heuristic is needed, and none is used.
  *  - A match must be anchored to a Firefox OBJDIR. `xpcshell` and
- *    `server.js` are far too generic on their own; the same rule
+ *    `server.js` are far too generic on their own. The same rule
  *    `mochitest-server-port.ts` applies to the httpd holder applies here,
- *    for the same reason — FireForge has no business reporting, let alone
+ *    for the same reason. FireForge has no business reporting, let alone
  *    terminating, a process it cannot attribute to the harness.
  *
  * `--reap-orphans` opts into termination. Without it the census is
  * report-only, exactly like the `Orphaned harness workers` doctor check
- * (which covers a DIFFERENT shape: reparented Python multiprocessing
+ * (which covers a different shape: reparented Python multiprocessing
  * workers, matched on PPID 1 and accumulated CPU time).
  */
 
@@ -32,6 +32,7 @@ import { toError } from '../utils/errors.js';
 import { info, verbose, warn } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
 import { parsePsDuration } from '../utils/ps-duration.js';
+import { sleep } from '../utils/sleep.js';
 
 /** One surviving harness helper process. */
 export interface OrphanedHarnessProcess {
@@ -46,7 +47,7 @@ export interface OrphanedHarnessProcess {
 
 /**
  * Harness helper executables/scripts. Every one of these is started by the
- * mochitest/xpcshell harness and is expected to die with it; none of them
+ * mochitest/xpcshell harness and is expected to die with it. None of them
  * is a thing a developer runs by hand.
  */
 const HARNESS_HELPER_PATTERN =
@@ -61,10 +62,10 @@ function isObjdirAnchored(command: string, objDir: string | undefined): boolean 
 
 /**
  * Scans `ps -axo pid=,ppid=,etime=,command=` output for surviving harness
- * helpers. Pure — fixture-testable without spawning anything.
+ * helpers. Pure, so it is fixture-testable without spawning anything.
  *
  * @param psOutput - Raw `ps` output
- * @param objDir - Absolute objdir of this project, when known; widens the
+ * @param objDir - Absolute objdir of this project, when known. Widens the
  *   provenance test beyond the generic `obj-…` path segment
  * @param selfPid - This process's pid, excluded so FireForge cannot report
  *   itself
@@ -110,14 +111,11 @@ const COMMAND_EXCERPT_LIMIT = 160;
  */
 export function formatOrphanReport(orphans: readonly OrphanedHarnessProcess[]): string {
   const rows = orphans
-    .map(
-      (p) =>
-        `  PID ${String(p.pid)} (up ${p.elapsed}): ${p.command.slice(0, COMMAND_EXCERPT_LIMIT)}`
-    )
+    .map((p) => `  PID ${p.pid} (up ${p.elapsed}): ${p.command.slice(0, COMMAND_EXCERPT_LIMIT)}`)
     .join('\n');
   const pids = orphans.map((p) => String(p.pid)).join(' ');
   return (
-    `${String(orphans.length)} harness helper process(es) from an EARLIER run are still alive ` +
+    `${orphans.length} harness helper process(es) from an EARLIER run are still alive ` +
     `(this preflight runs before the current run spawns anything, so none of these belong to ` +
     `it):\n${rows}\n` +
     `Survivors like these slow every later run without appearing anywhere in its output — a ` +
@@ -130,7 +128,7 @@ export function formatOrphanReport(orphans: readonly OrphanedHarnessProcess[]): 
 async function listSystemProcesses(): Promise<string> {
   const result = await exec('ps', ['-axo', 'pid=,ppid=,etime=,command='], { timeout: 10000 });
   if (result.exitCode !== 0) {
-    throw new Error(`ps exited ${String(result.exitCode)}`);
+    throw new Error(`ps exited ${result.exitCode}`);
   }
   return result.stdout;
 }
@@ -139,11 +137,11 @@ async function listSystemProcesses(): Promise<string> {
  * Preflight census of surviving harness helpers, run before a test
  * dispatch.
  *
- * Best-effort by construction: a host without a usable `ps` (Windows, a
- * locked-down container) logs at verbose and runs exactly as before. It
- * never refuses a run — unlike the server-port preflight, a survivor here
- * degrades performance rather than making the run dispatch against the
- * wrong server, so the correct response is to say so loudly, not to stop.
+ * Best-effort: a host without a usable `ps` (Windows, a locked-down
+ * container) logs at verbose and runs exactly as before. It never refuses a
+ * run. Unlike the server-port preflight, a survivor here degrades
+ * performance rather than making the run dispatch against the wrong server,
+ * so the correct response is to say so loudly rather than to stop.
  *
  * @param objDir - Absolute objdir of this project, when known
  * @param options - `reap` terminates each recognized survivor (SIGTERM,
@@ -178,8 +176,8 @@ export async function reportOrphanedHarnessProcesses(
 
 /**
  * Terminates each census entry: SIGTERM first, then SIGKILL for anything
- * still alive. Failures are reported, never thrown — a process that exited
- * between the census and the signal is the common case, not an error.
+ * still alive. Failures are reported, never thrown. A process that exited
+ * between the census and the signal is the common case rather than an error.
  */
 async function reapOrphanedHarnessProcesses(
   orphans: readonly OrphanedHarnessProcess[]
@@ -188,15 +186,13 @@ async function reapOrphanedHarnessProcesses(
     try {
       process.kill(orphan.pid, 'SIGTERM');
     } catch (error: unknown) {
-      verbose(
-        `--reap-orphans: SIGTERM to ${String(orphan.pid)} failed (${toError(error).message}).`
-      );
+      verbose(`--reap-orphans: SIGTERM to ${orphan.pid} failed (${toError(error).message}).`);
       continue;
     }
     // Grace period before escalating: the httpd shape in the field
     // incident ignored SIGTERM while spinning, but an ordinary helper exits
     // promptly and must not be SIGKILLed for being slow by a millisecond.
-    await new Promise((resolve) => setTimeout(resolve, REAP_GRACE_MS));
+    await sleep(REAP_GRACE_MS);
     let alive = true;
     try {
       process.kill(orphan.pid, 0);
@@ -207,11 +203,9 @@ async function reapOrphanedHarnessProcesses(
       try {
         process.kill(orphan.pid, 'SIGKILL');
       } catch (error: unknown) {
-        verbose(
-          `--reap-orphans: SIGKILL to ${String(orphan.pid)} failed (${toError(error).message}).`
-        );
+        verbose(`--reap-orphans: SIGKILL to ${orphan.pid} failed (${toError(error).message}).`);
       }
     }
-    info(`--reap-orphans: terminated PID ${String(orphan.pid)}.`);
+    info(`--reap-orphans: terminated PID ${orphan.pid}.`);
   }
 }

@@ -208,7 +208,7 @@ describe('lintPatchedCss', () => {
 
     it('falls back to the joined-added-lines scan when the diff and on-disk file disagree', async () => {
       // Added line numbers point past EOF (patch drifted from the applied
-      // file) — the scan must not crash and must still catch the hex on
+      // file), so the scan must not crash and must still catch the hex on
       // the added lines themselves.
       mockPathExists.mockResolvedValue(true);
       mockReadText.mockResolvedValue('.a { color: var(--tok); }\n');
@@ -362,14 +362,14 @@ describe('lintPatchedCss', () => {
 
     const issues = await lintPatchedCss('/engine', ['moz-card.css'], diff);
 
-    // Stock inherited vars on unchanged lines should NOT be flagged. The
+    // Stock inherited vars on unchanged lines should not be flagged. The
     // only introduced var (--ff-text-color) matches the tokenPrefix so
     // no violations should fire.
     expect(issues.filter((i) => i.check === 'token-prefix-violation')).toHaveLength(0);
   });
 
   it('still flags newly-introduced prefix-violating vars on added lines', async () => {
-    // Companion to the previous test — make sure the scoping doesn't
+    // Companion to the previous test: make sure the scoping doesn't
     // silently hide genuine introductions.
     mockLoadFurnaceConfig.mockResolvedValue({
       version: 1,
@@ -591,7 +591,7 @@ describe('lintNewFileHeaders', () => {
 
   it('auto-exempts browser/branding/ when any recognised license header is present', async () => {
     // Copied branding files under browser/branding/ carry Mozilla's MPL-2.0
-    // header, legitimately — the assets are Mozilla's. A fork with a
+    // header, legitimately, since the assets are Mozilla's. A fork with a
     // different project license (0BSD / EUPL-1.2 / GPL-2.0-or-later) would
     // otherwise fail `missing-license-header` on these files with no
     // actionable fix short of rewriting the copied upstream headers, which
@@ -616,8 +616,8 @@ describe('lintNewFileHeaders', () => {
   it('still flags browser/branding/ files that have NO recognised license header', async () => {
     // Guard: the branding carve-out should not be a blanket suppression.
     // A truly unlicensed file under browser/branding/ (no MPL/SPDX marker
-    // at all) still needs a header — operators who hand-add a new branding
-    // file should be prompted to stamp it.
+    // at all) still needs a header, so operators who hand-add a new branding
+    // file are prompted to stamp it.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('.brand { color: #ffffff; }\n');
 
@@ -632,7 +632,7 @@ describe('lintNewFileHeaders', () => {
   it('accepts the verbatim upstream MPL block header on a new JS file regardless of project license', async () => {
     // The MPL block-header carve-out was gated on
     // `license === 'MPL-2.0'`, making it dead code
-    // for an EUPL-1.2 project — a file legitimately copied from upstream
+    // for an EUPL-1.2 project. A file legitimately copied from upstream
     // Firefox (verbatim Mozilla header, anywhere in the tree, not just
     // browser/branding/) had no sanctioned path.
     mockPathExists.mockResolvedValue(true);
@@ -655,8 +655,8 @@ describe('lintNewFileHeaders', () => {
   it('accepts the older upstream MPL wrap (break after "file,") on a new JS file', async () => {
     // Field verification 2026-07: upstream files like ext-browser.js carry
     // the older Mozilla wrap that breaks after "file," instead of "with
-    // this". Same wording, different line-break position — must not fire
-    // "missing EUPL-1.2 license header".
+    // this". Same wording, different line-break position, so it must not
+    // fire "missing EUPL-1.2 license header".
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(
       `/* This Source Code Form is subject to the terms of the Mozilla Public\n` +
@@ -676,7 +676,7 @@ describe('lintNewFileHeaders', () => {
 
   it('accepts the upstream MPL block header behind a leading editor directive', async () => {
     // Mozilla's canonical layout puts `/* -*- Mode: … -*- */` on line 1
-    // with the MPL header on lines 2+ — the copied-from-upstream shape
+    // with the MPL header on lines 2+, so the copied-from-upstream shape
     // must pass with the directive in place.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(
@@ -694,7 +694,7 @@ describe('lintNewFileHeaders', () => {
 
   it('still flags the line-comment MPL form on a non-MPL project (block form only)', async () => {
     // The `// `-style MPL header is what FireForge generates for MPL
-    // projects — it is not upstream provenance, so on an EUPL project it
+    // projects. It is not upstream provenance, so on an EUPL project it
     // stays an error and the operator is prompted for the EUPL header.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(
@@ -743,7 +743,7 @@ describe('lintNewFileHeaders', () => {
   });
 
   it('still flags near-MPL garbage with altered wording on an EUPL project', async () => {
-    // The wrap-agnostic fallback matches on normalized whitespace only —
+    // The wrap-agnostic fallback matches on normalized whitespace only, so
     // any change to the wording (not just the line breaks) keeps the
     // missing-license-header error.
     mockPathExists.mockResolvedValue(true);
@@ -784,7 +784,7 @@ describe('lintNewFileHeaders', () => {
   });
 
   it('still flags the line-comment MPL form on CSS (block form only)', async () => {
-    // `// ` is not even a CSS comment; a file leading with the
+    // `// ` is not even a CSS comment, so a file leading with the
     // FireForge-generated line-comment MPL shape gets no carve-out.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(
@@ -800,8 +800,8 @@ describe('lintNewFileHeaders', () => {
   });
 
   it('does not extend the upstream-MPL carve-out to hash-style files (FTL)', async () => {
-    // `/* … */` is not a comment in Fluent files — the block header
-    // cannot legitimately lead an .ftl file, so hash style keeps
+    // `/* … */` is not a comment in Fluent files, so the block header
+    // cannot legitimately lead an .ftl file and hash style keeps
     // requiring the project's own header.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(
@@ -921,120 +921,6 @@ describe('lintPatchedJs', () => {
     expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
   });
 
-  it('does not flag new files below the notice threshold', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const smallFile = Array.from({ length: 400 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(smallFile);
-
-    const issues = await lintPatchedJs('/engine', ['small.js'], new Set(['small.js']), mockConfig);
-
-    expect(issues.some((i) => i.check === 'file-too-large')).toBe(false);
-  });
-
-  it('emits notice for new files in the notice tier (501–750 lines)', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 550 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs('/engine', ['mid.js'], new Set(['mid.js']), mockConfig);
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('notice');
-  });
-
-  it('emits warning for new files in the warning tier (751–900 lines)', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 800 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs('/engine', ['big.js'], new Set(['big.js']), mockConfig);
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('warning');
-  });
-
-  it('emits error for new files above the error tier (901+ lines)', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 950 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs('/engine', ['huge.js'], new Set(['huge.js']), mockConfig);
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('error');
-  });
-
-  it('uses test-file thresholds for files in /test/ paths', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 1300 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs(
-      '/engine',
-      ['browser/base/content/test/general/browser_foo.js'],
-      new Set(['browser/base/content/test/general/browser_foo.js']),
-      mockConfig
-    );
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('notice');
-    expect(sizeIssue?.message).toContain('Test file');
-  });
-
-  it('emits warning for test files in the warning tier (1401–1600 lines)', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 1500 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs(
-      '/engine',
-      ['browser/base/content/test/general/browser_bar.js'],
-      new Set(['browser/base/content/test/general/browser_bar.js']),
-      mockConfig
-    );
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('warning');
-    expect(sizeIssue?.message).toContain('splitting');
-  });
-
-  it('emits error for test files above 1600 lines', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 1700 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs(
-      '/engine',
-      ['test_utils.js'],
-      new Set(['test_utils.js']),
-      mockConfig
-    );
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('error');
-  });
-
-  it('does not flag test files below 1200 lines', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 1100 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs(
-      '/engine',
-      ['browser/base/content/test/general/browser_baz.js'],
-      new Set(['browser/base/content/test/general/browser_baz.js']),
-      mockConfig
-    );
-
-    expect(issues.some((i) => i.check === 'file-too-large')).toBe(false);
-  });
-
   // ── file-too-large boundary triads (limits are inclusive: strict >) ────
 
   const makeJsFile = (lines: number): string =>
@@ -1072,10 +958,23 @@ describe('lintPatchedJs', () => {
     expect(await fileSizeSeverityAt(1201, file)).toBe('notice');
   });
 
+  it('uses the test-file tier and says so in the message for /test/ paths', async () => {
+    const file = 'browser/base/content/test/general/browser_bar.js';
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(makeJsFile(1500));
+    const issue = (await lintPatchedJs('/engine', [file], new Set([file]), mockConfig)).find(
+      (i) => i.check === 'file-too-large'
+    );
+    expect(issue?.severity).toBe('warning');
+    expect(issue?.message).toContain('Test file');
+    expect(issue?.message).toContain('splitting');
+    expect(await fileSizeSeverityAt(1700, file)).toBe('error');
+  });
+
   it('counts lines like wc -l — a trailing newline adds no phantom line', async () => {
-    // Exactly 750 content lines WITH a trailing '\n'. The old
+    // Exactly 750 content lines with a trailing '\n'. The old
     // `split('\n').length` accounting saw 751 and (with the old `>=`)
-    // reported "750 lines (soft limit: 750)" on a wc-749 file; the
+    // reported "750 lines (soft limit: 750)" on a wc-749 file. The
     // fixed rule must stay silent above the notice band only.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(makeJsFile(750) + '\n');
@@ -1156,7 +1055,7 @@ describe('lintPatchedJs', () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue('export function doWork() {\n  return 1;\n}\n');
 
-    // File is not in newFiles but IS in patchOwnedFiles (owned by queue)
+    // File is not in newFiles but is in patchOwnedFiles (owned by queue)
     const patchOwned = new Set(['MyModule.sys.mjs']);
     const issues = await lintPatchedJs(
       '/engine',
@@ -1183,7 +1082,7 @@ describe('lintPatchedJs', () => {
   it('does not match observer topics across newlines (no false positive)', async () => {
     mockPathExists.mockResolvedValue(true);
     // notifyObservers call with no string literal on the same line,
-    // followed by an unrelated string on a later line — must NOT be captured.
+    // followed by an unrelated string on a later line, must not be captured.
     mockReadText.mockResolvedValue(
       'Services.obs.notifyObservers(STORAGE_EVENTS.TILES_APPLET_NULLED, {\n' +
         '  data: someValue,\n' +
@@ -1218,7 +1117,7 @@ describe('lintPatchedJs', () => {
     expect(issues).toEqual([]);
   });
 
-  // ── jsdocClassMethods knob — severity propagation ──────────────────────
+  // ── jsdocClassMethods knob: severity propagation ──────────────────────
 
   it("propagates 'warning' severity when jsdocClassMethods is 'warning'", async () => {
     mockPathExists.mockResolvedValue(true);
@@ -1258,7 +1157,7 @@ describe('lintPatchedJs', () => {
     expect(issues.some((i) => i.check.includes('class-method'))).toBe(false);
   });
 
-  // ── chromeScriptJsDoc — patch-owned chrome subscripts ─────────────────
+  // ── chromeScriptJsDoc: patch-owned chrome subscripts ─────────────────
 
   it("flags a patch-owned chrome .js with no class JSDoc when chromeScriptJsDoc='warning'", async () => {
     // Chrome subscripts (script form, no `export` keyword) are loaded via
@@ -1327,9 +1226,9 @@ describe('lintPatchedJs', () => {
   });
 
   it('does not double-flag a .sys.mjs with both jsdocClassMethods and chromeScriptJsDoc set', async () => {
-    // The .sys.mjs path goes through validateExportJsDoc; chromeScriptJsDoc
-    // must not also emit issues for the same file (the dispatch gate
-    // requires `.js && !.sys.mjs`).
+    // The .sys.mjs path goes through validateExportJsDoc, and
+    // chromeScriptJsDoc must not also emit issues for the same file (the
+    // dispatch gate requires `.js && !.sys.mjs`).
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(
       '/** Store. */\nexport class Store {\n  /** Save.\n   * @param key - key id\n   * @returns key\n   */\n  save(key) { return key; }\n}\n'
@@ -1346,13 +1245,13 @@ describe('lintPatchedJs', () => {
       new Set([file]),
       config,
       new Set([file]),
-      new Set<string>() // .sys.mjs is NOT in patchOwnedChromeScripts
+      new Set<string>() // .sys.mjs is not in patchOwnedChromeScripts
     );
 
     expect(issues).toEqual([]);
   });
 
-  // ── testAssertionFloor — Change B ──────────────────────────────────────
+  // ── testAssertionFloor: Change B ──────────────────────────────────────
 
   it('does not flag a browser_*.js test that contains Assert.equal', async () => {
     mockPathExists.mockResolvedValue(true);
@@ -1457,7 +1356,7 @@ describe('lintPatchedJs', () => {
       patchLint: { testAssertionFloor: 'warning' },
     };
     const file = 'browser/base/content/test/general/browser_focus.js';
-    // file is in affectedFiles but NOT in newFiles → modified upstream test
+    // file is in affectedFiles but not in newFiles → modified upstream test
     const issues = await lintPatchedJs('/engine', [file], new Set<string>(), config);
 
     const issue = issues.find((i) => i.check === 'test-needs-assertion');
@@ -1652,7 +1551,7 @@ describe('countNonBinaryDiffLines', () => {
       'zdata2\n' +
       '\n';
     const result = countNonBinaryDiffLines(diff);
-    // Only the two "diff --git" header lines are non-binary; everything after
+    // Only the two "diff --git" header lines are non-binary. Everything after
     // each "GIT binary patch" stays binary until the next header.
     expect(result.textLines).toBe(2);
   });
@@ -1725,7 +1624,7 @@ describe('lintPatchSize', () => {
     const fileIssue = issues.find((i) => i.check === 'large-patch-files');
     expect(fileIssue?.severity).toBe('warning');
     // Message must reference the branding tier's threshold (60), not the
-    // general default of 5 — operators reading the warning need to see the
+    // general default of 5. Operators reading the warning need to see the
     // limit the rule actually applied.
     expect(fileIssue?.message).toContain('≤60');
   });
@@ -1756,7 +1655,7 @@ describe('lintPatchSize', () => {
   it('keeps the general 5-file threshold for test patches', () => {
     // Test tier elevates the line-count thresholds (a table-driven
     // regression test legitimately runs into the thousands of lines) but
-    // file fan-out remains general — a single test rarely spans many
+    // file fan-out remains general, since a single test rarely spans many
     // files. Six test files is still suspicious, even if six general .js
     // files would be flagged the same way.
     const testFiles = [
@@ -1768,29 +1667,6 @@ describe('lintPatchSize', () => {
       'test/test_f.js',
     ];
     expect(lintPatchSize(testFiles, 100).some((i) => i.check === 'large-patch-files')).toBe(true);
-  });
-
-  it('returns notice when patch exceeds 800 lines', () => {
-    const issues = lintPatchSize(['a.js'], 801);
-
-    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('notice');
-  });
-
-  it('returns warning when patch exceeds 1500 lines', () => {
-    const issues = lintPatchSize(['a.js'], 1501);
-
-    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('warning');
-  });
-
-  it('returns error when patch exceeds 3000 lines', () => {
-    const issues = lintPatchSize(['a.js'], 3001);
-
-    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('error');
-  });
-
-  it('returns no line-count issue at or below 800 lines', () => {
-    expect(lintPatchSize(['a.js'], 799).some((i) => i.check === 'large-patch-lines')).toBe(false);
-    expect(lintPatchSize(['a.js'], 800).some((i) => i.check === 'large-patch-lines')).toBe(false);
   });
 
   it('notice boundary triad: 799/800 pass, 801 is the first notice', () => {
@@ -1866,7 +1742,7 @@ describe('lintPatchSize', () => {
   });
 
   it('uses the branding tier when every file is under browser/branding/', () => {
-    // A first export of setup-generated branding lands around 15–16k lines
+    // A first export of setup-generated branding lands around 15k to 16k lines
     // (localized brand.ftl across many locales + SVG path data + copied
     // upstream CSS). Under the general hard limit of 3000 that is an error,
     // even though the patch is the minimum branding diff. The branding bands
@@ -1900,8 +1776,8 @@ describe('lintPatchSize', () => {
     // `browser/moz.configure` to register the new branding flavor with the
     // top-level configure. A strict "every file under browser/branding/"
     // predicate returns false, falls through to the general tier, and fires
-    // ERROR. The narrow registration-file allowlist keeps the invariant —
-    // nothing outside branding plus the one-line registration sibling —
+    // an error. The narrow registration-file allowlist keeps the invariant
+    // (nothing outside branding plus the one-line registration sibling)
     // while tolerating the edit every real branding patch must make.
     const brandingWithRegistration = [
       'browser/branding/mybrowser/content/aboutDialog.css',
@@ -1927,7 +1803,7 @@ describe('lintPatchSize', () => {
   });
 
   it('does not apply the branding tier when a non-allowlisted sibling is mixed in', () => {
-    // The allowlist is tight on purpose — a random non-branding,
+    // The allowlist is tight on purpose: a random non-branding,
     // non-registration sibling (e.g. a vendor-specific component
     // under browser/components/) still disqualifies auto-detection
     // so an operator bundling unrelated changes into a branding edit
@@ -1943,9 +1819,9 @@ describe('lintPatchSize', () => {
 
   it('does NOT qualify as branding when moz.configure is the only file', () => {
     // Guard against a config-only patch accidentally landing in the
-    // branding tier — the allowlist is a registration escape hatch
-    // for a branding patch, not a blanket exemption for any config
-    // edit. Requires ≥1 file under browser/branding/ to qualify.
+    // branding tier. The allowlist is a registration escape hatch for a
+    // branding patch, not a blanket exemption for any config edit. It
+    // requires ≥1 file under browser/branding/ to qualify.
     const configOnly = ['browser/moz.configure'];
     expect(
       lintPatchSize(configOnly, 15904).find((i) => i.check === 'large-patch-lines')?.severity
@@ -2257,8 +2133,9 @@ describe('hasBrowserChromeAssertion', () => {
     ['isDeeply(a, b);', 'isDeeply()'],
     ['ok (x);', 'whitespace before paren'],
     ['if (x) { ok(y); }', 'nested in a block'],
-    // Qualified spellings of the bare globals are still the same assertions;
-    // blocking them flagged real-assertion tests as assertion-free.
+    // Qualified spellings of the bare globals are still the same
+    // assertions. Blocking them flagged real-assertion tests as
+    // assertion-free.
     ['window.ok(x);', 'window-qualified global'],
     ['win?.ok(x, "still asserts");', 'optional-chained call'],
   ])('accepts %s (%s)', (source) => {
@@ -2279,8 +2156,8 @@ describe('hasBrowserChromeAssertion', () => {
     ['info("just logging");', 'smoke-only test body'],
     ['await BrowserTestUtils.browserLoaded(tab);', 'harness call only'],
     // Broadening the namespace arm to `(?:Assert|SimpleTest)\.` matched the
-    // namespace and dot alone, so SimpleTest's HARNESS surface — the exact
-    // calls an assertion-free smoke test contains — cleared the floor.
+    // namespace and dot alone, so SimpleTest's harness surface (the exact
+    // calls an assertion-free smoke test contains) cleared the floor.
     ['SimpleTest.finish();', 'SimpleTest harness call, not an assertion'],
     ['SimpleTest.waitForExplicitFinish();', 'SimpleTest harness call'],
     ['SimpleTest.requestCompleteLog();', 'SimpleTest harness call'],

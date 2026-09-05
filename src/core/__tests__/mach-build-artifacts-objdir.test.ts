@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * The `obj-*` glob against a real filesystem: a second objdir makes it
- * ambiguous, and an active mozconfig that NAMES one settles it. Real dirs
- * rather than mocks, because the whole behaviour is a directory scan.
+ * ambiguous, and an active mozconfig that names one settles it. These use
+ * real directories rather than mocks, because the whole behaviour is a
+ * directory scan.
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -43,7 +44,7 @@ describe('objdir resolution', () => {
   });
 
   it('prefers the objdir the mozconfig declares when the glob is ambiguous', async () => {
-    // The mozconfig is what actually steers configure; refusing when it has
+    // The mozconfig is what actually steers configure. Refusing when it has
     // already answered the question sends the operator to rename a
     // directory to satisfy a scan.
     const engineDir = await makeEngine(

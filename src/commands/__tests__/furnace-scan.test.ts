@@ -75,7 +75,7 @@ vi.mock('../../core/furnace-scanner.js', () => ({
 // behavior is unchanged from the test's perspective.
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
+  // the pending-repair marker (the behaviour these suites assert), so it
   // comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
@@ -365,7 +365,7 @@ describe('furnaceScanCommand', () => {
 
     await furnaceScanCommand('/project', { track: true });
 
-    // Only untracked components are appended; existing entries are kept
+    // Only untracked components are appended. Existing entries are kept
     // and never duplicated.
     expect(writeFurnaceConfig).toHaveBeenCalledWith(
       '/project',

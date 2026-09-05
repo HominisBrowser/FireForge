@@ -4,7 +4,7 @@
  * custom-property references.
  *
  * Split out of `patch-lint.ts` so each rule family stays within the
- * per-file line budget; `patch-lint.ts` re-exports `lintPatchedCss` so
+ * per-file line budget. `patch-lint.ts` re-exports `lintPatchedCss` so
  * existing callers keep importing from the single module.
  */
 
@@ -27,7 +27,7 @@ interface CssTokenContext {
 }
 
 /**
- * Loads the furnace token-prefix lint inputs gracefully — returns
+ * Loads the furnace token-prefix lint inputs gracefully. Returns
  * undefined (skipping the token-prefix check) when furnace.json cannot
  * be loaded or no tokenPrefix is configured.
  */
@@ -52,7 +52,7 @@ async function loadCssTokenContext(repoDir: string): Promise<CssTokenContext | u
 
 /**
  * Masks CSS block comments with spaces, preserving newlines so line
- * numbers stay stable. An unclosed trailing `/*` is masked to EOF —
+ * numbers stay stable. An unclosed trailing `/*` is masked to EOF,
  * matching how a CSS parser treats it.
  */
 function maskCssComments(source: string): string {
@@ -77,7 +77,7 @@ const RAW_COLOR_IGNORE_MARKER = 'fireforge-ignore: raw-color-value';
  * comment spanning the context/added boundary suppresses its hex, then
  * only the patch's added line numbers are scanned. Returns undefined
  * when any added line number falls outside the on-disk file (patch not
- * applied / drifted) — the caller then falls back to the legacy
+ * applied / drifted). The caller then falls back to the legacy
  * joined-added-lines scan rather than misattributing lines.
  */
 function buildAddedLinesScanSource(
@@ -97,17 +97,26 @@ function buildAddedLinesScanSource(
  * Raw-color check for one patched CSS file, scoped to introduced lines
  * when diff context is available. Pushes onto `issues`.
  */
-function checkRawColorValues(
-  file: string,
-  rawCss: string,
-  addedLinesByFile: Map<string, string[]> | undefined,
-  addedLineNumbersByFile: Map<string, number[]> | undefined,
-  config: FireForgeConfig | undefined,
-  issues: PatchLintIssue[]
-): void {
+interface RawColorCheckInput {
+  /** Repo-relative path of the CSS file under check. */
+  file: string;
+  /** Full (uncommented-stripped) CSS source of that file. */
+  rawCss: string;
+  /** Added lines per file from the diff, when diff context is available. */
+  addedLinesByFile: Map<string, string[]> | undefined;
+  /** Added line numbers per file from the diff, aligned with `addedLinesByFile`. */
+  addedLineNumbersByFile: Map<string, number[]> | undefined;
+  /** Resolved config, for `patchLint.rawColorAllowlist`. */
+  config: FireForgeConfig | undefined;
+  /** Issue sink, appended to in place. */
+  issues: PatchLintIssue[];
+}
+
+function checkRawColorValues(input: RawColorCheckInput): void {
+  const { file, rawCss, addedLinesByFile, addedLineNumbersByFile, config, issues } = input;
   // Check only introduced raw color values when diff context is available.
   // Skip files on the raw-color allowlist (exact path or basename match) and
-  // auto-exempt files under `browser/branding/` — those are the fork's
+  // auto-exempt files under `browser/branding/`: those are the fork's
   // visual identity assets (app-about dialogs, installer pages, branded CSS
   // copied from Firefox's `unofficial` template) and belong to the
   // design-decision layer the design-token system does not govern. Without
@@ -248,7 +257,14 @@ export async function lintPatchedCss(
     // Strip block comments before scanning
     const cssContent = rawCss.replace(/\/\*[\s\S]*?\*\//g, '');
 
-    checkRawColorValues(file, rawCss, addedLinesByFile, addedLineNumbersByFile, config, issues);
+    checkRawColorValues({
+      file,
+      rawCss,
+      addedLinesByFile,
+      addedLineNumbersByFile,
+      config,
+      issues,
+    });
     checkTokenPrefixViolations(file, cssContent, addedLinesByFile, tokenContext, issues);
   }
 

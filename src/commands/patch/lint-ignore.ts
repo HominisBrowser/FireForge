@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge patch lint-ignore <name>` — adds, removes, or clears entries
+ * `fireforge patch lint-ignore <name>`: adds, removes, or clears entries
  * in `PatchMetadata.lintIgnore` without rewriting the `.patch` file body.
  *
  * Companion to `fireforge re-export <name> --lint-ignore <id>` (which is
- * append-only). Existence is justified by the cases re-export cannot
- * express:
+ * append-only). It exists for the cases re-export cannot express:
  * - Removing a single entry without dropping the rest of the list.
  * - Clearing the entire list when the operator wants the rule(s) to
  *   start firing again.
@@ -16,24 +15,25 @@
  * `--clear` must be supplied per invocation. The read-modify-write
  * happens inside the patch directory lock via {@link mutatePatchMetadata}
  * so a concurrent writer cannot interleave between the read and the
- * write — important when an operator scripts repeated invocations or
+ * write, which matters when an operator scripts repeated invocations or
  * runs `--add` and `--remove` back-to-back.
  */
 
 import { Command } from 'commander';
 
-import { appendHistory, confirmDestructive } from '../../core/destructive.js';
+import { confirmDestructive } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import { mutatePatchMetadata } from '../../core/patch-export.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchLintIgnoreOptions } from '../../types/commands/index.js';
-import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import {
   addWaitLockOption,
   resolveWaitLockSeconds,
   stringListOption,
 } from '../../utils/options.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 type LintIgnoreMode = 'add' | 'remove' | 'clear';
@@ -41,9 +41,9 @@ type LintIgnoreMode = 'add' | 'remove' | 'clear';
 /**
  * Printed whenever `--add` lands a new check id. The waiver this command
  * writes turns per-patch lint green immediately, but consumer projects
- * commonly audit lintIgnore lists against a reviewed allow-map — discovering
- * that the map also needs updating otherwise costs a full downstream gate
- * run.
+ * commonly audit lintIgnore lists against a reviewed allow-map, and
+ * discovering that the map also needs updating otherwise costs a full
+ * downstream gate run.
  */
 const LINT_IGNORE_REVIEW_WARNING =
   "This lint waiver is subject to the project's patch-policy review process. " +
@@ -84,7 +84,7 @@ function applyMode(
  * `info()` / dry-run / history args. Exported for unit-testing the
  * message format directly without mocking the logger transport.
  */
-export function describeChange(
+function describeChange(
   before: ReadonlyArray<string>,
   after: ReadonlyArray<string>,
   mode: LintIgnoreMode,
@@ -132,8 +132,8 @@ export async function patchLintIgnoreCommand(
   intro(isDryRun ? 'FireForge patch lint-ignore (dry run)' : 'FireForge patch lint-ignore');
 
   // Mode mutex: exactly one mode per invocation. Combinations like
-  // `--add foo --remove bar` are rejected — an operator who needs both
-  // runs the command twice (clearer audit trail) and `--clear` plus a
+  // `--add foo --remove bar` are rejected: an operator who needs both
+  // runs the command twice (clearer audit trail), and `--clear` plus a
   // mode is contradictory.
   const adding = (options.add?.length ?? 0) > 0;
   const removing = (options.remove?.length ?? 0) > 0;
@@ -162,8 +162,8 @@ export async function patchLintIgnoreCommand(
   // Destructive-operation contract (docs/lifecycle-invariants.md): manifest
   // metadata mutations get summary + dry-run + confirmation/--yes + history
   // uniformly. Accepting --yes without ever prompting makes the flag appear
-  // only in the history record — and suppressing lint findings is precisely
-  // the mutation an operator should consciously approve.
+  // only in the history record, and suppressing lint findings is the kind
+  // of mutation an operator should approve consciously.
   const currentList = target.lintIgnore ?? [];
   const projectedList = applyMode(currentList, mode, values) ?? [];
   const addsNewIds = mode === 'add' && projectedList.length > currentList.length;
@@ -175,17 +175,10 @@ export async function patchLintIgnoreCommand(
     yes: options.yes === true,
     dryRun: isDryRun,
   });
-  if (decision === 'dry-run') {
-    if (addsNewIds) {
-      warn(LINT_IGNORE_REVIEW_WARNING);
-    }
-    outro('Dry run complete — no changes made');
-    return;
+  if (decision === 'dry-run' && addsNewIds) {
+    warn(LINT_IGNORE_REVIEW_WARNING);
   }
-  if (decision === 'declined') {
-    outro('Cancelled — no changes made');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Cancelled — no changes made')) return;
 
   const result = await mutatePatchMetadata(
     paths.patches,
@@ -194,7 +187,7 @@ export async function patchLintIgnoreCommand(
       const next = applyMode(existing.lintIgnore ?? [], mode, values);
       // Either set the new list when non-empty or unset the field
       // entirely. The mutation API splits these to keep the
-      // exactOptionalPropertyTypes contract clean — only set values land
+      // exactOptionalPropertyTypes contract clean: only set values land
       // in the typed `Partial<PatchMetadata>`, and the unset list is
       // applied via `delete` after spread.
       return next !== undefined ? { set: { lintIgnore: next } } : { unset: ['lintIgnore'] };
@@ -204,8 +197,8 @@ export async function patchLintIgnoreCommand(
 
   if (!result) {
     // Race: target vanished between the manifest read above and the
-    // locked mutate. Surfacing as a hard error rather than a silent
-    // no-op — the operator's intent did not land.
+    // locked mutate. Surfaced as a hard error rather than a silent
+    // no-op, because the operator's intent did not land.
     throw new GeneralError(
       `Patch ${target.filename} disappeared from the manifest during the update. Re-run after investigating.`
     );
@@ -218,8 +211,9 @@ export async function patchLintIgnoreCommand(
     warn(LINT_IGNORE_REVIEW_WARNING);
   }
 
-  try {
-    await appendHistory(paths.patches, {
+  await appendHistoryBestEffort(
+    paths.patches,
+    {
       operation: 'patch-lint-ignore',
       args: {
         filename: target.filename,
@@ -230,12 +224,9 @@ export async function patchLintIgnoreCommand(
       },
       ...(options.yes === true ? { yes: true } : {}),
       result: 'ok',
-    });
-  } catch (historyError: unknown) {
-    warn(
-      `History log append failed after patch lint-ignore committed (${target.filename}): ${toError(historyError).message}`
-    );
-  }
+    },
+    `patch lint-ignore committed (${target.filename})`
+  );
 
   outro('Patch lint-ignore complete');
 }
@@ -281,7 +272,7 @@ export function registerPatchLintIgnore(parent: Command, context: CommandContext
       ) => {
         // Commander defaults `--add`/`--remove` to `[]` so they appear in
         // the options object even when unused. Strip empty arrays so
-        // `pickDefined` sees them as absent — otherwise the mode-count
+        // `pickDefined` sees them as absent. Otherwise the mode-count
         // mutex would treat zero-length arrays as a present mode.
         const normalized: PatchLintIgnoreOptions = {};
         if (options.add !== undefined && options.add.length > 0) normalized.add = options.add;

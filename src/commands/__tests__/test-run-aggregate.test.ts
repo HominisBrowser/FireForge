@@ -2,8 +2,8 @@
 /**
  * Unit tests for the sharded aggregate verdict: classification precedence
  * (crash > no-tests > test-failures) and `finalizeShardedOutcome`'s
- * emit-then-throw contract. The full command-level composition — including
- * the engine-generation ordering — is covered in `test.test.ts`.
+ * emit-then-throw contract. The full command-level composition (including
+ * the engine-generation ordering) is covered in `test.test.ts`.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 

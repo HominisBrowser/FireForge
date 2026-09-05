@@ -63,7 +63,7 @@ const next = 1;
     await removeCustomElementRegistration(engineDir, 'moz-banner');
 
     const after = await readFile(customElementsPath, 'utf8');
-    // The blank line that preceded the block should also be gone — i.e. the
+    // The blank line that preceded the block should also be gone: the
     // header line should be immediately followed by the const declaration
     // (with at most a single blank between them, not two).
     expect(after).not.toContain('moz-banner');
@@ -121,7 +121,7 @@ describe('removeCustomElementRegistration — strategy 3: multi-line array entry
     expect(after).toContain('moz-button');
     expect(after).toContain('moz-card');
     // Sanity check: the surviving entries should still contain their url
-    // strings — i.e. removal didn't accidentally chop into a sibling.
+    // strings, i.e. removal didn't accidentally chop into a sibling.
     expect(after).toContain('"chrome://global/content/elements/moz-button.mjs"');
     expect(after).toContain('"chrome://global/content/elements/moz-card.mjs"');
   });

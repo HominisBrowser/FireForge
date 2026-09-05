@@ -3,7 +3,7 @@ import { assert, expectDefined } from '../utils/assert.js';
 
 /**
  * An edit op produced by {@link computeLineDiff}. Indices are 0-based into the
- * source line arrays; `line` holds the verbatim text so callers do not have to
+ * source line arrays. `line` holds the verbatim text so callers do not have to
  * keep the input arrays around while rendering.
  */
 export interface LineDiffOp {
@@ -50,7 +50,7 @@ export interface RenderedDiffLine {
  * O(m·n) diff and falling back to the simpler single-region coalesce. Chosen
  * so the worst-case Int32Array allocation stays under ~16 MB. Typical
  * Firefox widget files are a few hundred lines, so the fast path handles the
- * everyday case; the fallback keeps the command usable on a very large file.
+ * everyday case. The fallback keeps the command usable on a very large file.
  */
 const LCS_LINE_LIMIT = 2000;
 
@@ -81,7 +81,7 @@ export function computeLineDiff(
   // The DP below indexes `dp`, `oldLines`, and `newLines` about 4·m·n times
   // for a worst-case pair, so its bounds are established once here rather
   // than re-checked per access. Callers gate on LCS_LINE_LIMIT before
-  // reaching this function; if that gate is ever moved or removed, this is
+  // reaching this function. If that gate is ever moved or removed, this is
   // where the resulting allocation blow-up surfaces as a named failure
   // instead of an out-of-memory crash.
   assert(
@@ -104,7 +104,7 @@ export function computeLineDiff(
    * above, so the non-null assertions encode a property already checked
    * once per call rather than one that is never checked at all. The
    * rendering loops further down, which run O(ops), use `expectDefined`
-   * instead — this exemption is for the quadratic block only.
+   * instead. This exemption is for the quadratic block only.
    */
   for (let i = 1; i <= m; i++) {
     const oldLine = oldLines[i - 1]!;
@@ -240,8 +240,8 @@ export function buildHunks(ops: readonly LineDiffOp[], context: number): DiffHun
  * Fallback for inputs that exceed {@link LCS_LINE_LIMIT}. Reproduces the
  * original single-region coalesce: match the common prefix and suffix, then
  * emit one hunk containing the middle region plus `context` lines on each
- * side. Intentionally dumb — the fast path handles normal files, and this
- * only keeps the command usable on pathologically large inputs without
+ * side. Kept simple on purpose: the fast path handles normal files, and
+ * this only keeps the command usable on pathologically large inputs without
  * allocating a huge DP table.
  */
 function coalescedHunk(
@@ -280,7 +280,7 @@ function coalescedHunk(
   for (let k = firstDiff; k <= lastNewDiff; k++) {
     hunkLines.push({ marker: '+', content: expectDefined(newLines[k], () => `new line ${k}`) });
   }
-  // Trailing context comes from the common suffix, which lives at DIFFERENT
+  // Trailing context comes from the common suffix, which lives at different
   // indices on each side (lastOldDiff+1… vs lastNewDiff+1…). Mixing the two
   // coordinate spaces emits wrong context on asymmetric edits and drops the
   // trailing lines from the @@ header lengths, so the rendered header
@@ -310,7 +310,7 @@ function coalescedHunk(
 /**
  * Computes a multi-hunk line diff between two strings. This is the public
  * entry point that {@link furnaceDiffCommand} uses. On normal inputs this
- * runs the exact LCS path and returns a proper multi-hunk diff; on inputs
+ * runs the exact LCS path and returns a proper multi-hunk diff. On inputs
  * that exceed {@link LCS_LINE_LIMIT} it falls back to a single coalesced
  * hunk so the command stays useful instead of OOMing.
  */

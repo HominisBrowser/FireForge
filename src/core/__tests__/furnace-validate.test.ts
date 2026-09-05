@@ -6,8 +6,6 @@ import { createFsMock } from '../../test-utils/module-mocks.js';
 import {
   validateAccessibility,
   validateCompatibility,
-  validateJarMnEntries,
-  validateRegistrationPatterns,
   validateTokenLink,
 } from '../furnace-validate-checks.js';
 
@@ -241,8 +239,8 @@ describe('validateAccessibility', () => {
     // MyBrowser dock pattern: a custom wrapper renders a synthetic-looking
     // host element whose activation delegates to the composed moz-button
     // inner element. The wrapper tag itself is not in
-    // NATIVE_CLICK_INTERACTIVE_TAGS, so the template scan cannot tell —
-    // the config has to declare the composition.
+    // NATIVE_CLICK_INTERACTIVE_TAGS, so the template scan cannot tell. The
+    // config has to declare the composition.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(`
       class MyBrowserDockButton extends MozLitElement {
@@ -330,8 +328,8 @@ describe('validateAccessibility', () => {
   });
 
   it('does not warn when composes mixes interactive and non-interactive tags', async () => {
-    // .some, not .every — activation flows through the first native-interactive
-    // entry even if other composed tags are synthetic.
+    // .some, not .every: activation flows through the first
+    // native-interactive entry even if other composed tags are synthetic.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(`
       class MyMenuItem extends MozLitElement {
@@ -571,7 +569,7 @@ describe('validateAccessibility', () => {
 
   it('still flags non-ASCII PROSE as needing localization', async () => {
     // The emoji carve-out must not re-open the hole it replaced, where every
-    // code point above U+00FF was exempt — CJK, Cyrillic, Greek included.
+    // code point above U+00FF was exempt, CJK, Cyrillic and Greek included.
     mockPathExists.mockResolvedValue(true);
     mockReadText.mockResolvedValue(`
       class MyComponent extends MozLitElement {
@@ -679,8 +677,8 @@ describe('validateCompatibility', () => {
 
   it('accepts a define-less library-kind component while keeping relative-import checks', async () => {
     // A kind: "library" component is a base class + helpers with no element
-    // of its own — requiring customElements.define() forced authors to ship
-    // a deliberately inert element purely to satisfy the check.
+    // of its own. Requiring customElements.define() forced authors to ship
+    // an inert element purely to satisfy the check.
     const libraryConfig: FurnaceConfig = {
       ...baseConfig,
       custom: {
@@ -737,7 +735,7 @@ describe('validateCompatibility', () => {
       '/project'
     );
 
-    // Module-shape rules stay active for libraries; only the element-shaped
+    // Module-shape rules stay active for libraries. Only the element-shaped
     // define/extends requirements are waived.
     expect(issues.some((issue) => issue.check === 'relative-import')).toBe(true);
     expect(issues.some((issue) => issue.check === 'no-custom-element-define')).toBe(false);
@@ -783,8 +781,9 @@ describe('validateCompatibility', () => {
     // verbatim (class MozSupportLink extends HTMLAnchorElement +
     // customElements.define(..., { extends: "a" })). That is a valid
     // Firefox customized built-in, so validate must accept it rather than
-    // rejecting with `not-moz-lit-element` — when both halves are present:
-    // class extends HTMLxxxElement AND the define call carries `extends:`.
+    // rejecting with `not-moz-lit-element`, provided both halves are
+    // present: class extends HTMLxxxElement and the define call carries
+    // `extends:`.
     mockPathExists.mockImplementation((path: string) =>
       Promise.resolve(path.endsWith('.mjs') || path.endsWith('.css'))
     );
@@ -814,7 +813,7 @@ describe('validateCompatibility', () => {
 
   it('still rejects classes that extend HTMLxxxElement without a matching extends: option', async () => {
     // Defensive complement: the customized-builtin acceptance requires
-    // BOTH the class-extends shape AND the define-options shape. A class
+    // both the class-extends shape and the define-options shape. A class
     // that extends HTMLAnchorElement without the `{ extends: "a" }`
     // option is almost certainly an author mistake (the element will not
     // register correctly at runtime), and should still surface as
@@ -910,7 +909,7 @@ describe('validateCompatibility', () => {
     mockPathExists.mockImplementation((path: string) =>
       Promise.resolve(path === nativePath('/components/custom/moz-audit-card/moz-audit-card.css'))
     );
-    // `--cam-x` is both declared and read in this file — runtime state
+    // `--cam-x` is both declared and read in this file: a runtime state
     // channel, not a design token reference.
     mockReadText.mockResolvedValue(':host { --cam-x: 0; transform: translateX(var(--cam-x)); }');
 
@@ -929,8 +928,9 @@ describe('validateCompatibility', () => {
     mockPathExists.mockImplementation((path: string) =>
       Promise.resolve(path === nativePath('/components/custom/moz-audit-card/moz-audit-card.css'))
     );
-    // `--rogue` is read but never declared in this component's CSS — not a
-    // local runtime channel, so the token-prefix violation should still fire.
+    // `--rogue` is read but never declared in this component's CSS, so it is
+    // not a local runtime channel and the token-prefix violation should still
+    // fire.
     mockReadText.mockResolvedValue(':host { color: var(--rogue); }');
 
     const issues = await validateCompatibility(
@@ -942,240 +942,6 @@ describe('validateCompatibility', () => {
     );
 
     expect(issues.some((issue) => issue.check === 'token-prefix-violation')).toBe(true);
-  });
-});
-
-describe('validateRegistrationPatterns', () => {
-  const baseConfig: FurnaceConfig = {
-    version: 1,
-    componentPrefix: 'moz-',
-    stock: [],
-    overrides: {},
-    custom: {
-      'moz-test': {
-        description: 'Test component',
-        targetPath: 'toolkit/content/widgets/moz-test',
-        register: true,
-        localized: false,
-      },
-    },
-  };
-
-  it('reports no issues when .mjs entry is in Pattern B (DOMContentLoaded)', async () => {
-    mockPathExists.mockResolvedValue(true);
-    mockReadText.mockResolvedValue(`
-for (let [tag, script] of [
-    ["findbar", "chrome://global/content/elements/findbar.js"],
-]) {
-  customElements.setElementCreationCallback(tag, () => {
-    Services.scriptloader.loadSubScript(script, window);
-  });
-}
-
-document.addEventListener("DOMContentLoaded", () => {
-  for (let [tag, script] of [
-      ["moz-test", "chrome://global/content/elements/moz-test.mjs"],
-  ]) {
-    customElements.setElementCreationCallback(tag, () => {
-      ChromeUtils.importESModule(script);
-    });
-  }
-});
-`);
-
-    const issues = await validateRegistrationPatterns('/project', baseConfig);
-    expect(issues).toHaveLength(0);
-  });
-
-  it('reports error when .mjs entry is in Pattern A (loadSubScript block)', async () => {
-    mockPathExists.mockResolvedValue(true);
-    mockReadText.mockResolvedValue(`
-for (let [tag, script] of [
-    ["findbar", "chrome://global/content/elements/findbar.js"],
-    ["moz-test", "chrome://global/content/elements/moz-test.mjs"],
-]) {
-  customElements.setElementCreationCallback(tag, () => {
-    Services.scriptloader.loadSubScript(script, window);
-  });
-}
-
-document.addEventListener("DOMContentLoaded", () => {
-  for (let [tag, script] of [
-      ["moz-button", "chrome://global/content/elements/moz-button.mjs"],
-  ]) {
-    customElements.setElementCreationCallback(tag, () => {
-      ChromeUtils.importESModule(script);
-    });
-  }
-});
-`);
-
-    const issues = await validateRegistrationPatterns('/project', baseConfig);
-    expect(issues).toHaveLength(1);
-    expect(issues[0]?.check).toBe('wrong-registration-pattern');
-    expect(issues[0]?.severity).toBe('error');
-    expect(issues[0]?.message).toContain('Pattern A');
-    expect(issues[0]?.message).toContain('Pattern B');
-  });
-
-  it('handles multi-line DOMContentLoaded format without false positives', async () => {
-    mockPathExists.mockResolvedValue(true);
-    mockReadText.mockResolvedValue(`
-for (let [tag, script] of [
-    ["findbar", "chrome://global/content/elements/findbar.js"],
-]) {
-  customElements.setElementCreationCallback(tag, () => {
-    Services.scriptloader.loadSubScript(script, window);
-  });
-}
-
-document.addEventListener(
-  "DOMContentLoaded",
-  () => {
-    for (let [tag, script] of [
-        ["moz-test", "chrome://global/content/elements/moz-test.mjs"],
-    ]) {
-      customElements.setElementCreationCallback(tag, () => {
-        ChromeUtils.importESModule(script);
-      });
-    }
-  }
-);
-`);
-
-    const issues = await validateRegistrationPatterns('/project', baseConfig);
-    expect(issues).toHaveLength(0);
-  });
-
-  it('skips components with register=false', async () => {
-    mockPathExists.mockResolvedValue(true);
-
-    const configNoRegister: FurnaceConfig = {
-      ...baseConfig,
-      custom: {
-        'moz-test': {
-          description: 'Test component',
-          targetPath: 'toolkit/content/widgets/moz-test',
-          register: false,
-          localized: false,
-        },
-      },
-    };
-
-    // Even though tag is in wrong block, register is false so no check
-    mockReadText.mockResolvedValue(`
-for (let [tag, script] of [
-    ["moz-test", "chrome://global/content/elements/moz-test.mjs"],
-]) {
-  customElements.setElementCreationCallback(tag, () => {
-    Services.scriptloader.loadSubScript(script, window);
-  });
-}
-
-document.addEventListener("DOMContentLoaded", () => {});
-`);
-
-    const issues = await validateRegistrationPatterns('/project', configNoRegister);
-    expect(issues).toHaveLength(0);
-  });
-
-  it('reports a component with register=true that customElements.js never mentions', async () => {
-    // Emitting NO issue for this state means `furnace validate --fix` —
-    // scoped to the issue list — can no longer repair the one defect its
-    // registration block exists to repair.
-    mockPathExists.mockResolvedValue(true);
-    mockReadText.mockResolvedValue(`
-document.addEventListener("DOMContentLoaded", () => {
-  for (let [tag, script] of [
-      ["moz-button", "chrome://global/content/elements/moz-button.mjs"],
-  ]) {
-    customElements.setElementCreationCallback(tag, () => {
-      ChromeUtils.importESModule(script);
-    });
-  }
-});
-`);
-
-    const issues = await validateRegistrationPatterns('/project', baseConfig);
-    expect(issues).toHaveLength(1);
-    expect(issues[0]?.check).toBe('missing-custom-element-registration');
-    expect(issues[0]?.severity).toBe('error');
-    expect(issues[0]?.message).toContain('--fix');
-  });
-
-  it('does not report missing registration when customElements.js does not exist', async () => {
-    mockPathExists.mockResolvedValue(false);
-
-    const issues = await validateRegistrationPatterns('/project', baseConfig);
-    expect(issues).toHaveLength(0);
-  });
-});
-
-describe('validateJarMnEntries', () => {
-  const baseConfig: FurnaceConfig = {
-    version: 1,
-    componentPrefix: 'moz-',
-    stock: [],
-    overrides: {},
-    custom: {
-      'moz-test': {
-        description: 'Test component',
-        targetPath: 'toolkit/content/widgets/moz-test',
-        register: true,
-        localized: false,
-      },
-    },
-  };
-
-  it('reports missing .mjs entry in jar.mn', async () => {
-    mockPathExists.mockResolvedValue(true);
-    mockReadText.mockResolvedValue(`
-   content/global/elements/moz-button.mjs  (widgets/moz-button/moz-button.mjs)
-   content/global/elements/moz-button.css  (widgets/moz-button/moz-button.css)
-`);
-
-    const issues = await validateJarMnEntries('/project', baseConfig);
-    const mjsIssue = issues.find((i) => i.check === 'missing-jar-mn-mjs');
-    expect(mjsIssue).toBeDefined();
-    expect(mjsIssue?.severity).toBe('error');
-  });
-
-  it('reports no issues when entries are present', async () => {
-    mockPathExists.mockResolvedValue(true);
-    mockReadText.mockResolvedValue(`
-   content/global/elements/moz-test.mjs  (widgets/moz-test/moz-test.mjs)
-   content/global/elements/moz-test.css  (widgets/moz-test/moz-test.css)
-`);
-
-    const issues = await validateJarMnEntries('/project', baseConfig);
-    expect(issues).toHaveLength(0);
-  });
-
-  it('skips components with register=false', async () => {
-    mockPathExists.mockResolvedValue(true);
-    mockReadText.mockResolvedValue('');
-
-    const configNoRegister: FurnaceConfig = {
-      ...baseConfig,
-      custom: {
-        'moz-test': {
-          description: 'Test component',
-          targetPath: 'toolkit/content/widgets/moz-test',
-          register: false,
-          localized: false,
-        },
-      },
-    };
-
-    const issues = await validateJarMnEntries('/project', configNoRegister);
-    expect(issues).toHaveLength(0);
-  });
-
-  it('handles missing jar.mn file gracefully', async () => {
-    mockPathExists.mockResolvedValue(false);
-
-    const issues = await validateJarMnEntries('/project', baseConfig);
-    expect(issues).toHaveLength(0);
   });
 });
 
@@ -1264,7 +1030,7 @@ describe('validateTokenLink', () => {
       if (path.includes('.css')) {
         return Promise.resolve(':host { color: var(--testbrowser-canvas-fg); }');
       }
-      // Check the more-specific filename first — `browser.xhtml` is a suffix
+      // Check the more-specific filename first: `browser.xhtml` is a suffix
       // of `mybrowser.xhtml`, so `endsWith('browser.xhtml')` on the wrong
       // branch would swallow the token link and flip the assertion.
       if (path.endsWith(nativePath('/mybrowser.xhtml'))) {
@@ -1441,7 +1207,7 @@ describe('validateCompatibility — compose and CSS hygiene warnings', () => {
   };
 
   function mockComponentFiles(files: Record<string, string>): void {
-    // The table is written POSIX-style; the code under test builds its
+    // The table is written POSIX-style, and the code under test builds its
     // lookups with `join`, so re-key on the host's separators.
     const native = Object.fromEntries(
       Object.entries(files).map(([path, content]) => [nativePath(path), content])

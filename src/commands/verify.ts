@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge verify` — read-only fsck for the patch queue.
+ * `fireforge verify`: read-only fsck for the patch queue.
  *
  * Combines the manifest consistency check (orphan files, missing entries,
  * files-affected mismatch, duplicate entries) with the cross-patch lint
  * rules (duplicate /dev/null creation, forward imports). Does not run
- * `planExport` per patch — that is intentionally out of scope because it
+ * `planExport` per patch. That is out of scope because it
  * would couple verify to engine state and make the command too slow to be
  * useful as a pre-flight gate. Engine-level patch application issues are
  * still covered by the existing `fireforge doctor` and `fireforge import`
@@ -44,7 +44,7 @@ import { pathExists, readText } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
 
 /**
- * Reports duplicate `filesAffected` entries across patches — the manifest
+ * Reports duplicate `filesAffected` entries across patches. The manifest
  * consistency check only flags per-patch duplicates and orphan files, not
  * the case where two different patches claim the same path. `verify`
  * surfaces that here so it can be caught before `export`, `re-export`, or
@@ -73,10 +73,10 @@ export interface PatchQueueHealth {
 /**
  * Walks each patch body in the manifest, extracts the set of
  * component-shaped registration references it adds (widget paths
- * implied by jar.mn + customElements.js; FTL paths implied by locale
+ * implied by jar.mn + customElements.js, and FTL paths implied by locale
  * jar.mn), and confirms every reference is either created by some
- * patch in the queue OR present as a tracked file in engine/. Any
- * unreachable reference is a dangling-registration error — the patch
+ * patch in the queue or present as a tracked file in engine/. Any
+ * unreachable reference is a dangling-registration error: the patch
  * registers a file that nothing in the world supplies, which fails at
  * install time.
  */
@@ -86,7 +86,7 @@ async function detectDanglingRegistrations(
   patches: ReadonlyArray<{ filename: string; filesAffected: string[] }>
 ): Promise<DanglingRegistrationIssue[]> {
   // Aggregate the set of all paths any patch in the queue is responsible for
-  // (per `filesAffected`). Individual patch bodies are deliberately NOT
+  // (per `filesAffected`). Individual patch bodies are deliberately not
   // parsed for new-file creations here: `filesAffected` is already the
   // contract manifest callers rely on, and
   // `validatePatchesManifestConsistency` has already ensured the two are in
@@ -108,7 +108,7 @@ async function detectDanglingRegistrations(
       body = await readText(patchPath);
     } catch {
       // Bad file read is surfaced by the manifest consistency check
-      // already — skipping here avoids double-reporting the same issue.
+      // already. Skipping here avoids double-reporting the same issue.
       continue;
     }
 
@@ -120,7 +120,7 @@ async function detectDanglingRegistrations(
       // Engine existence check: if the target file is already present in
       // engine/ (upstream Firefox ships it, or a separate baseline branch
       // has it), the registration is not dangling. "Is this tracked by git"
-      // cannot be probed without a git round-trip; existence on disk is a
+      // cannot be probed without a git round-trip. Existence on disk is a
       // close-enough proxy for verify's read-only context.
       if (await pathExists(join(engineDir, ref.targetPath))) continue;
       issues.push({
@@ -241,7 +241,7 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
 
     // Engine-aware module-resolution preflight. The queue-level
     // `unregistered-system-module` rule only sees modules a patch NEWLY
-    // CREATES; this asks the same question of the engine, so an import ADDED
+    // CREATES. This asks the same question of the engine, so an import ADDED
     // to an existing module is named as text instead of surfacing later as a
     // bare `xpcshell return code: -11` with zero output.
     if (await pathExists(paths.engine)) {
@@ -355,7 +355,7 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
 
 /**
  * Runs the `verify` command: manifest consistency + cross-patch lint.
- * Read-only; exits non-zero on any error-severity finding.
+ * Read-only. Exits non-zero on any error-severity finding.
  *
  * @param projectRoot - Project root directory
  */

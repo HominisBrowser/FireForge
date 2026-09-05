@@ -2,12 +2,12 @@
 /**
  * The doubled macOS bundle id must be closed for good.
  *
- * The two halves of the identity are written by two different modules —
- * `branding.ts` puts the LEAF in `MOZ_MACBUNDLE_ID`, `mach-mozconfig.ts`
- * puts the PREFIX in `--with-distribution-id` — and upstream
- * `toolkit/moz.configure` composes `CFBundleIdentifier` as
+ * The two halves of the identity are written by two different modules:
+ * `branding.ts` puts the leaf in `MOZ_MACBUNDLE_ID` and `mach-mozconfig.ts`
+ * puts the prefix in `--with-distribution-id`. Upstream
+ * `toolkit/moz.configure` then composes `CFBundleIdentifier` as
  * `<distribution-id>.<MOZ_MACBUNDLE_ID>`. Each half is unit-tested in its
- * own file; nothing pins the COMPOSITION, which is the property that
+ * own file. Nothing pins the composition, which is the property that
  * actually breaks.
  *
  * This test recomposes the two halves the way upstream does and asserts the
@@ -38,7 +38,7 @@ describe('composed macOS bundle identity', () => {
   it('never reproduces the doubled shape that shipped', () => {
     const appId = 'org.hominis.browser';
     expect(composeBundleId(appId)).not.toBe('org.hominis.org.hominis.browser');
-    // The concrete regression: MOZ_MACBUNDLE_ID must be the LEAF only, so
+    // The concrete regression: MOZ_MACBUNDLE_ID must be the leaf only, so
     // the prefix cannot appear twice in the composition.
     expect(splitAppId(appId).leaf).toBe('browser');
     expect(splitAppId(appId).leaf).not.toContain('.');

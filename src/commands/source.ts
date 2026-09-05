@@ -28,7 +28,7 @@ function cloneRawConfig(raw: JsonObject): JsonObject {
   if (!isObject(cloned)) {
     throw new GeneralError('Cannot update fireforge.json: config clone was not an object.');
   }
-  // A structured clone of a JSON document is itself a JSON document; the
+  // A structured clone of a JSON document is itself a JSON document. The
   // object check above is the only invariant left to establish.
   return cloned as JsonObject;
 }
@@ -127,7 +127,14 @@ export function registerSource(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  const source = program.command('source').description('Manage Firefox source configuration');
+  const source = program
+    .command('source')
+    .description('Manage Firefox source configuration')
+    // No-subcommand contract shared with `patch`/`token`/`furnace`: help on
+    // stdout, exit 0 (see `handleParseError` for the groups without an action).
+    .action(() => {
+      source.outputHelp();
+    });
 
   source
     .command('set')

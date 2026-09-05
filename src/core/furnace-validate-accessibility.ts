@@ -144,7 +144,7 @@ function hasPositiveTabindex(content: string): boolean {
  * Collects `[start, end)` spans of `<label>…</label>` elements whose content
  * includes actual label text. Labels cannot nest per HTML, so the non-greedy
  * inner match is sound. A span qualifies only when the inner content minus
- * tags still contains non-whitespace — an empty or tag-only wrapper provides
+ * tags still contains non-whitespace. An empty or tag-only wrapper provides
  * no accessible name. A `${…}` Lit binding counts as label text: dynamic
  * (usually localized) text is a legitimate accessible name.
  */
@@ -201,12 +201,12 @@ function hasTemplateKeyboardHandler(content: string): boolean {
 
 /**
  * Native HTML elements that dispatch `click` on Enter and Space via the
- * platform. Attaching `@click` to these is NOT a keyboard-a11y bug because
- * the browser already handles the keyboard activation path — a duplicate
+ * platform. Attaching `@click` to these is not a keyboard-a11y bug, because
+ * the browser already handles the keyboard activation path. A duplicate
  * `@keydown`/`@keypress` handler would usually double-fire the action.
  *
- * `<a>` is accepted only when an `href` attribute is present; bare `<a>` is
- * non-interactive and is treated as synthetic.
+ * `<a>` is accepted only when an `href` attribute is present. A bare `<a>`
+ * is non-interactive and is treated as synthetic.
  */
 const NATIVE_CLICK_INTERACTIVE_TAGS = new Set([
   'button',
@@ -247,7 +247,7 @@ function isKeyboardCoveredByComposition(customConfig: CustomComponentConfig | un
  * *synthetic* interactive element (e.g. `<div @click>`), which lacks native
  * keyboard activation and therefore needs an explicit key handler for
  * Enter/Space. Returns false when every `@click` handler sits on a native
- * interactive element — those already fire `click` on keyboard activation.
+ * interactive element. Those already fire `click` on keyboard activation.
  */
 function hasTemplateClickOnSyntheticInteractive(content: string): boolean {
   const pattern = /@click\s*=\s*\$\{/g;
@@ -289,7 +289,7 @@ function isClickOnSyntheticInteractive(content: string, clickIndex: number): boo
   const tagName = tagMatch[1].toLowerCase();
 
   if (tagName === 'a') {
-    // Bare <a> (no href) is non-interactive; require a keyboard handler.
+    // Bare <a> (no href) is non-interactive, so require a keyboard handler.
     // Look forward from the tag open for the closing `>` and scan the
     // attribute text in between for an href attribute.
     const tagEnd = content.indexOf('>', tagOpenIndex);
@@ -308,20 +308,20 @@ const SYMBOL_ONLY_ASCII = '+-*=<>|/\\^~@#&!?%';
  * Reports whether `text` is decoration (arrows, maths, emoji, bare
  * punctuation) rather than user-facing prose that needs localizing.
  *
- * The letter/number/mark test comes first and is script-agnostic — a rule
+ * The letter/number/mark test comes first and is script-agnostic. A rule
  * keyed on `code > 0xff` would classify every code point above U+00FF as a
  * symbol, exempting all CJK, Cyrillic, Greek, Arabic, Hebrew, Devanagari and
- * Thai text from a **localization** validator.
+ * Thai text from a localization validator.
  *
- * Combining marks are deliberately NOT counted as text: the check is an
+ * Combining marks are not counted as text: the check is an
  * `every()`, so a script's base letters already disqualify the string, and
  * treating marks as text would flag emoji carrying a variation selector
- * (U+FE0F is category Mn — `⚙️` is U+2699 + U+FE0F).
+ * (U+FE0F is category Mn, and `⚙️` is U+2699 + U+FE0F).
  *
- * High code points that are not letters — emoji, arrows, CJK punctuation —
+ * High code points that are not letters (emoji, arrows, CJK punctuation)
  * stay exempt, which is the rule's intent.
  *
- * A handful of emoji are ALSO Unicode letters, and the letter test alone
+ * A handful of emoji are also Unicode letters, and the letter test alone
  * gets them wrong: U+2139 (`ℹ`, the base of the common `ℹ️`) is category Ll,
  * so `\p{L}` would classify an info badge as prose needing localization.
  * Non-ASCII code points carrying `Emoji` are therefore read as symbols
@@ -408,7 +408,7 @@ function hasFlaggedTextInLitTemplates(content: string): boolean {
 }
 
 function hasFlaggedTextInDomAssignment(content: string): boolean {
-  // `<expr>.textContent = "abc"` and `<expr>.innerHTML = "abc"` — these are
+  // `<expr>.textContent = "abc"` and `<expr>.innerHTML = "abc"`: these are
   // user-visible render paths. Template-literal RHS is excluded (usually
   // dynamic), matching the `${` guard used elsewhere in this helper.
   const assignPattern = /\.(?:textContent|innerHTML)\s*=\s*(["'])((?:\\.|(?!\1).)*)\1/g;

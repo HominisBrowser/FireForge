@@ -9,16 +9,16 @@
  *  - startup crashes from the mozlog resource monitor on macOS
  *    (`AttributeError: 'SystemResourceMonitor' object has no attribute
  *    'poll_interval'`, `host_statistics64(HOST_VM_INFO64) syscall failed`,
- *    `(ipc/mig) array not large enough` — a psutil/macOS mismatch) which
- *    abort the run before any test executes;
+ *    `(ipc/mig) array not large enough`, a psutil/macOS mismatch) which
+ *    abort the run before any test executes.
  *  - hangs after browser startup that die at the no-output timeout yet still
- *    emit a `Passed: 0` summary;
+ *    emit a `Passed: 0` summary.
  *  - post-green shutdown re-entry, where a fully green run stalls on "must
  *    wait for focus" and records "Application shut down (without crashing)
  *    in the middle of a test!" as the only unexpected failure.
  *
- * Classification therefore keys on `TEST-START` presence — summary lines
- * never count as proof that tests ran — and recognizes the crash shapes
+ * Classification therefore keys on `TEST-START` presence, so summary lines
+ * never count as proof that tests ran, and recognizes the crash shapes
  * above so the command layer can retry them with a bounded budget instead of
  * reporting phantom test failures (or phantom passes).
  */
@@ -30,7 +30,7 @@ import {
   unmarkedFailureEvidenceNote,
 } from './test-harness-verdict-notes.js';
 // Defined in a leaf module so this file and `test-stall-triage.ts` can both
-// name it without forming an import cycle; re-exported here because the
+// name it without forming an import cycle. Re-exported here because the
 // command layer imports its harness diagnostics from this module.
 export type { HarnessCrashSignature } from './test-harness-signature.js';
 import type { HarnessCrashSignature } from './test-harness-signature.js';
@@ -70,14 +70,14 @@ export interface HarnessRunVerdict extends HarnessSummaryCounts {
   secondaryHarnessSignature?: HarnessCrashSignature;
   /**
    * Set when a non-zero mach exit code was overridden because the output
-   * embeds a completed green summary — the exit code followed harness
+   * embeds a completed green summary, so the exit code followed harness
    * noise, not a test result. Callers should surface a note.
    */
   greenSummaryOverride?: boolean;
   /**
-   * Set when the output embeds a green-LOOKING summary that was REJECTED:
+   * Set when the output embeds a green-looking summary that was rejected:
    * crash or truncation evidence proves the suite never completed, so the
-   * "green" counts only cover the files that ran before the run died — a
+   * "green" counts only cover the files that ran before the run died. A
    * SIGSEGV at the second of eight files leaves a `Passed: 2 / Failed: 0`
    * summary that reads as a pass. Callers must fail the run and surface the
    * evidence.
@@ -85,9 +85,9 @@ export interface HarnessRunVerdict extends HarnessSummaryCounts {
   greenSummaryRejected?: GreenSummaryRejection;
   /**
    * Short parenthetical appended to the `FIREFORGE-VERDICT:` line when the
-   * bare status would under-describe the run — currently "harness teardown
+   * bare status would under-describe the run: currently "harness teardown
    * noise ignored" and the headed display-asleep stall. Advisory text
-   * only; the status and reason keys are unaffected.
+   * only. The status and reason keys are unaffected.
    */
   note?: string;
 }
@@ -114,7 +114,7 @@ const GREEN_UNEXPECTED_SUMMARY_PATTERN = /\bUnexpected results:\s*0\b/;
 const NONZERO_UNEXPECTED_SUMMARY_PATTERN = /\bUnexpected results:\s*[1-9]/;
 /**
  * Execution signals emitted by the suite-specific xpcshell dispatch
- * (`mach xpcshell-test`), which does NOT print `TEST-START` lines the way
+ * (`mach xpcshell-test`), which does not print `TEST-START` lines the way
  * the generic `mach test` / browser-chrome dispatch does. A passing
  * single-file xpcshell run prints a result-summary block instead
  * (`TEST_END: Test PASS`, `Ran 16 checks`, `Unexpected results: 0`), so
@@ -123,16 +123,16 @@ const NONZERO_UNEXPECTED_SUMMARY_PATTERN = /\bUnexpected results:\s*[1-9]/;
  *
  * These markers are xpcshell-specific on purpose: the bare `Passed: 0` /
  * `Failed: 0` summary that the no-output hang shape prints is deliberately
- * NOT matched here — that case must still read as `no-tests`.
+ * not matched here, because that case must still read as `no-tests`.
  */
 const XPCSHELL_RESULT_SUMMARY_PATTERN = /\bTEST_END\b|\bRan \d+ checks?\b|\bResult summary:/i;
 const UNEXPECTED_LINE_PATTERN = /^.*\bTEST-UNEXPECTED-[A-Z-]+\b.*$/gm;
 /**
- * A `FAIL` token that is HARNESS-SHAPED. Deliberately not a bare `\bFAIL\b`
+ * A `FAIL` token that is harness-shaped. Not a bare `\bFAIL\b`
  * word match: that matched any output line containing the ordinary English
  * word, so a test's own passing diagnostic could manufacture a red run (see
- * {@link realUnexpectedFailureLines}). It also matched `TEST-KNOWN-FAIL` —
- * an EXPECTED failure — and counted it as a real one.
+ * {@link realUnexpectedFailureLines}). It also matched `TEST-KNOWN-FAIL`,
+ * an expected failure, and counted it as a real one.
  *
  * The `TEST-` prefix is what makes the token the harness's rather than
  * prose, and the negative lookahead is what keeps a known-fail annotation
@@ -141,11 +141,11 @@ const UNEXPECTED_LINE_PATTERN = /^.*\bTEST-UNEXPECTED-[A-Z-]+\b.*$/gm;
 const FAIL_LINE_PATTERN = /^.*\bTEST-(?!KNOWN-FAIL\b)[A-Z-]*FAIL\b.*$/gm;
 /**
  * The three concrete shapes Gecko prints for a real assertion failure.
- * Case-SENSITIVE and punctuation-anchored on purpose: the previous
+ * Case-sensitive and punctuation-anchored on purpose: the previous
  * `/\b(?:Assertion failure|MOZ_ASSERT|ASSERTION)\b/gim` was
  * case-insensitive, so the ordinary English word "assertion" in a passing
  * diagnostic ("If an assertion below times out, this is why") was read as
- * a failure — and the verdict then named that diagnostic as the first real
+ * a failure, and the verdict then named that diagnostic as the first real
  * test failure, pointing the reader at the wrong line.
  */
 const ASSERTION_LINE_PATTERN = /^.*(?:Assertion failure:|MOZ_ASSERT\(|###!!! ASSERTION).*$/gm;
@@ -157,7 +157,7 @@ const NO_OUTPUT_TIMEOUT_PATTERN = /timed out after \d+ seconds with no output/i;
 
 /**
  * Crash-marker lines mozcrash / the mochitest harness print when the browser
- * process itself died. Matched against the RAW output (never noise-stripped):
+ * process itself died. Matched against the raw output (never noise-stripped):
  * any of these proves the run was truncated by a crash, so an embedded green
  * summary is under-reporting, not a result. `Main app process: killed by
  * SIGSEGV` at the second of eight files with a `Passed: 2 / Failed: 0`
@@ -180,10 +180,10 @@ const CRASH_MARKER_PATTERNS: readonly RegExp[] = [
  */
 // A `_DegradedReading` fallback that is not a real namedtuple duck type
 // crashes mozsystemmonitor on the fallback itself (`_build_meta` subscripts
-// the reading; `_collect` unpacks it); a startup abort with zero TEST-START
+// the reading, `_collect` unpacks it). A startup abort with zero TEST-START
 // lines from this family is a crash, not a test failure. The `_collect
-// failed` variant is caught-and-logged, so it carries no Traceback header —
-// it gets its own zero-TEST-START check in `detectHarnessCrashSignature`
+// failed` variant is caught-and-logged, so it carries no Traceback header.
+// It gets its own zero-TEST-START check in `detectHarnessCrashSignature`
 // besides joining the traceback cluster.
 const DEGRADED_READING_CRASH_SIGNALS: readonly RegExp[] = [
   /'_DegradedReading' object is not subscriptable/,
@@ -201,7 +201,7 @@ const STARTUP_TRACEBACK_SIGNALS: readonly RegExp[] = [
   // On a degraded host every collector sample is rejected, aggregation has
   // nothing, and mozbuild's log_resource_usage dies on
   // usage["io"].read_bytes AFTER a fully successful compile ("Error running
-  // mach" with complete artifacts). Environmental, not a build regression —
+  // mach" with complete artifacts). Environmental, not a build regression:
   // the protected build retries it, since an incremental retry is cheap and
   // the guard keeps the retry green.
   /AttributeError: 'NoneType' object has no attribute 'read_bytes'/,
@@ -246,8 +246,8 @@ const BENIGN_TRACEBACK_CONTEXT = /telemetry|glean/i;
  * Strips non-signal noise from captured output before crash-signature
  * matching: resource-monitor degradation warnings, and traceback blocks
  * that mach caught itself (telemetry submission tracebacks are printed but
- * never abort the run). The stripped text is used ONLY as crash evidence —
- * classification of test results still reads the full output.
+ * never abort the run). The stripped text is used only as crash evidence.
+ * Classification of test results still reads the full output.
  */
 export function stripNonSignalNoise(output: string): string {
   const lines = output.split(/\r?\n/);
@@ -303,9 +303,9 @@ export function findCrashMarkerLine(output: string): string | undefined {
 /**
  * True when the summary lines LOOK green: execution signal, `Unexpected
  * results: 0` with no non-zero count, `SUITE_END`, no real
- * `TEST-UNEXPECTED-*` lines. Deliberately blind to crash/truncation
- * evidence — {@link hasCompletedGreenSummary} layers that on top, and
- * {@link classifyHarnessRun} needs the distinction to report WHY a
+ * `TEST-UNEXPECTED-*` lines. Blind to crash/truncation
+ * evidence: {@link hasCompletedGreenSummary} layers that on top, and
+ * {@link classifyHarnessRun} needs the distinction to report why a
  * green-shaped summary was rejected.
  */
 function hasGreenShapedSummary(output: string): boolean {
@@ -319,15 +319,15 @@ function hasGreenShapedSummary(output: string): boolean {
 }
 
 /**
- * True when the output embeds a COMPLETED, GREEN suite summary: an execution
+ * True when the output embeds a completed, green suite summary: an execution
  * signal, `Unexpected results: 0` (and no non-zero unexpected count), a
- * `SUITE_END` marker, no real `TEST-UNEXPECTED-*` lines — and NO crash
+ * `SUITE_END` marker, no real `TEST-UNEXPECTED-*` lines, and no crash
  * marker. Such a run finished its suite, so any startup-traceback-shaped
- * noise in the same output is by definition non-fatal and this vetoes
- * signature-based crash classification; without the veto, fully green
+ * noise in the same output is non-fatal and this vetoes
+ * signature-based crash classification. Without the veto, fully green
  * sharded runs report `CRASH (N attempts)` because degradation warnings
- * match the psutil signals. A summary printed after a crash marker is NOT
- * "completed" — it only covers the files that ran before the crash.
+ * match the psutil signals. A summary printed after a crash marker is not
+ * "completed": it only covers the files that ran before the crash.
  * Exported for direct unit testing.
  */
 export function hasCompletedGreenSummary(output: string): boolean {
@@ -341,7 +341,7 @@ const TEST_FILE_BASENAME_PATTERN = /^(?:browser|test)_.*\.m?js$/;
  * Start/end execution markers, both log dialects: the structured mozlog
  * `TEST_START`/`TEST_END` pair and the human browser-chrome
  * `TEST-START`/`TEST-OK` pair. `TEST-UNEXPECTED-*` end shapes are
- * irrelevant here — any such line already fails the green-summary check
+ * irrelevant here, since any such line already fails the green-summary check
  * before completeness is consulted.
  */
 const START_MARKER_PATTERN = /\bTEST[-_]START\b[:| ]*\s*(\S+)?/;
@@ -352,11 +352,11 @@ const END_MARKER_PATTERN = /\bTEST[-_]END\b|\bTEST-OK\b/;
  * requested file must produce a start marker, and every started test must
  * produce an end marker (the harness emits both even for failing files).
  *
- * Ends are paired with starts POSITIONALLY (last open start is closed by
- * the next end), not by filename — the xpcshell dialect's `TEST_END: Test
+ * Ends are paired with starts positionally (last open start is closed by
+ * the next end), not by filename: the xpcshell dialect's `TEST_END: Test
  * PASS` lines do not name the file. Requested paths that are not
  * test-file-shaped (directories, manifests) are skipped for the
- * never-started check; the start/end pairing scan covers them regardless.
+ * never-started check. The start/end pairing scan covers them regardless.
  * Exported for direct unit testing.
  */
 export function analyzeTestCompleteness(
@@ -398,7 +398,7 @@ function hasXpcshellResultSummary(output: string): boolean {
   return XPCSHELL_RESULT_SUMMARY_PATTERN.test(output);
 }
 
-/** Unexpected-failure lines that are NOT the shutdown re-entry artifact. */
+/** Unexpected-failure lines that are not the shutdown re-entry artifact. */
 function realUnexpectedFailureLines(output: string): string[] {
   const matches = [
     ...(output.match(UNEXPECTED_LINE_PATTERN) ?? []),
@@ -417,8 +417,8 @@ function realUnexpectedFailureLines(output: string): string[] {
 }
 
 /**
- * Non-global copies of the unexpected/assertion patterns for per-line use —
- * the `g`-flagged module patterns carry `lastIndex` state across `.test()`
+ * Non-global copies of the unexpected/assertion patterns for per-line use.
+ * The `g`-flagged module patterns carry `lastIndex` state across `.test()`
  * calls and must never be reused line-by-line.
  */
 const UNEXPECTED_LINE_SINGLE = /\bTEST-UNEXPECTED-[A-Z-]+\b/;
@@ -439,7 +439,7 @@ const FAILURE_BLOCK_CONTEXT_LIMIT = 6;
  * assertion/diff context, one string per block. The shutdown-reentry
  * artifact is excluded (it is harness noise, not a test result). When more
  * than `limit` blocks exist, a final `…(+N more …)` note is appended so the
- * operator knows the echo was truncated. Pure; exported for unit tests.
+ * operator knows the echo was truncated. Pure. Exported for unit tests.
  */
 export function collectUnexpectedFailureBlocks(output: string, limit = 5): string[] {
   const lines = output.split(/\r?\n/);
@@ -509,7 +509,7 @@ export function detectHarnessCrashSignature(output: string): HarnessCrashSignatu
   // A completed green embedded summary vetoes signature-based crash
   // classification outright: the suite finished, so any startup-shaped
   // noise in the same output was non-fatal. (The post-green shutdown
-  // re-entry shape below is exempt — it is deliberately a crash verdict on
+  // re-entry shape below is exempt: it is a crash verdict on
   // an otherwise-green log, keyed on its own explicit markers.)
   const greenSummaryVeto = hasCompletedGreenSummary(output);
 
@@ -551,7 +551,7 @@ export function detectHarnessCrashSignature(output: string): HarnessCrashSignatu
 
   // Post-green shutdown re-entry: every unexpected line is the
   // shutdown-mid-test artifact, the run stalled on focus, and at least one
-  // such artifact exists — an otherwise green log.
+  // such artifact exists, on an otherwise green log.
   const shutdownLine = findLine(output, [SHUTDOWN_REENTRY_PATTERN]);
   if (shutdownLine && realFailures.length === 0 && FOCUS_STALL_PATTERN.test(output)) {
     return { reason: 'post-green shutdown re-entry during harness teardown', line: shutdownLine };
@@ -564,20 +564,20 @@ export function detectHarnessCrashSignature(output: string): HarnessCrashSignatu
  * Classifies a completed harness run. The decision tree, in order:
  *
  * 1. A recognized crash signature wins regardless of exit code (the
- *    shutdown re-entry shape exits non-zero on an otherwise green run;
- *    the hang shape can even exit zero with a `Passed: 0` summary).
- * 2. No execution signal with explicit paths requested means no test ran —
+ *    shutdown re-entry shape exits non-zero on an otherwise green run,
+ *    and the hang shape can even exit zero with a `Passed: 0` summary).
+ * 2. No execution signal with explicit paths requested means no test ran:
  *    `no-tests`, even when the exit code is zero. The execution signal is
  *    a `TEST-START` line (generic `mach test` / browser-chrome dispatch)
- *    OR the suite-specific xpcshell result-summary block (the xpcshell
+ *    or the suite-specific xpcshell result-summary block (the xpcshell
  *    dispatch prints no `TEST-START`). Bare `Passed:`/`Failed:` summary
  *    lines are still not trusted as evidence of execution.
- * 3. Exit code zero with tests started is a pass; anything else is a
- *    test failure for the regular diagnosis chain — except a non-zero
- *    exit whose embedded summary completed green AND shows no crash
+ * 3. Exit code zero with tests started is a pass. Anything else is a
+ *    test failure for the regular diagnosis chain, except a non-zero
+ *    exit whose embedded summary completed green and shows no crash
  *    marker and no truncated/never-started requested file, which is a
  *    pass with a `greenSummaryOverride` note (harness noise owns the
- *    exit code). A green-shaped summary WITH such evidence is rejected
+ *    exit code). A green-shaped summary with such evidence is rejected
  *    (`greenSummaryRejected`) and fails.
  */
 export function classifyHarnessRun(
@@ -591,10 +591,10 @@ export function classifyHarnessRun(
   const failureBlocks = collectUnexpectedFailureBlocks(output);
   const secondaryHarnessSignature =
     firstRealFailure !== undefined ? detectSecondaryHarnessNoise(output) : undefined;
-  // Checked BEFORE signature detection: a suite that ran clean and then died
-  // in KNOWN upstream teardown noise is a PASS, not a crash. The teardown
+  // Checked before signature detection: a suite that ran clean and then died
+  // in known upstream teardown noise is a pass, not a crash. The teardown
   // traceback matches the startup-traceback cluster, and the green-summary
-  // veto over that cluster requires a `SUITE_END` marker — which this very
+  // veto over that cluster requires a `SUITE_END` marker, which this very
   // traceback is what prevents from printing. Without this check a
   // substantively green suite (`Ran N checks` / `Unexpected results: 0`, no
   // unexpected lines) reports CRASH, indistinguishable at the summary level
@@ -688,17 +688,17 @@ export function classifyHarnessRun(
  * unexplained residue is the recognized mozsystemmonitor teardown
  * traceback.
  *
- * Requires, all of them: tests actually executed; the summary printed
- * `Ran N checks` with an explicit `Unexpected results: 0`; no non-zero
- * unexpected count anywhere; no real `TEST-UNEXPECTED-*`/assertion line;
- * no crash marker; every requested test file both started and ended; and
+ * Requires, all of them: tests actually executed, the summary printed
+ * `Ran N checks` with an explicit `Unexpected results: 0`, no non-zero
+ * unexpected count anywhere, no real `TEST-UNEXPECTED-*`/assertion line,
+ * no crash marker, every requested test file both started and ended, and
  * the recognized teardown traceback is present. Anything short of that
- * falls through to the normal (failing) chain — with the failing condition
- * NAMED, so the next occurrence is a filed bug rather than another
+ * falls through to the normal (failing) chain, with the failing condition
+ * named, so the next occurrence is a filed bug rather than another
  * undiagnosable re-run.
  *
- * The conditions are evaluated in a fixed order and the FIRST failing one
- * is reported; a run can violate several, and reporting one deterministic
+ * The conditions are evaluated in a fixed order and the first failing one
+ * is reported. A run can violate several, and reporting one deterministic
  * condition beats an unordered list of everything that happened to be true.
  */
 function evaluateGreenTeardownOverride(
@@ -722,21 +722,21 @@ function evaluateGreenTeardownOverride(
     return reject('summary printed no "Unexpected results:" line');
   }
   if (counts.unexpected !== 0) {
-    return reject(`summary reported unexpected=${String(counts.unexpected)}`);
+    return reject(`summary reported unexpected=${counts.unexpected}`);
   }
   if (NONZERO_UNEXPECTED_SUMMARY_PATTERN.test(output)) {
     return reject('a non-zero "Unexpected results:" line is present somewhere in the output');
   }
   if (realFailures.length > 0) {
     return reject(
-      `${String(realFailures.length)} matched failure line(s), first: ${truncateEvidence(realFailures[0] ?? '')}`
+      `${realFailures.length} matched failure line(s), first: ${truncateEvidence(realFailures[0] ?? '')}`
     );
   }
   const crashLine = findCrashMarkerLine(output);
   if (crashLine !== undefined)
     return reject(`crash marker present: ${truncateEvidence(crashLine)}`);
   // The post-green shutdown re-entry shape is deliberately a crash verdict
-  // on an otherwise-green log; it must not be swept up here.
+  // on an otherwise-green log. It must not be swept up here.
   if (SHUTDOWN_REENTRY_PATTERN.test(output)) {
     return reject('post-green shutdown re-entry shape present');
   }
@@ -752,8 +752,8 @@ function evaluateGreenTeardownOverride(
 
 /**
  * Parses the numeric counts from the harness's embedded result summary
- * (`Ran N checks` / `Unexpected results: N`). The LAST occurrence of each
- * wins — a multi-suite run prints one summary per suite and the final one
+ * (`Ran N checks` / `Unexpected results: N`). The last occurrence of each
+ * wins: a multi-suite run prints one summary per suite and the final one
  * covers the aggregate the operator sees. Absent counts are omitted (the
  * `FIREFORGE-VERDICT:` contract: an absent key means "summary did not
  * print it", never zero).
@@ -780,9 +780,9 @@ function lastCapturedCount(output: string, pattern: RegExp): number | undefined 
 }
 
 /**
- * Formats the machine-readable `FIREFORGE-VERDICT:` line — the stable,
+ * Formats the machine-readable `FIREFORGE-VERDICT:` line: the stable,
  * greppable last line every `fireforge test` run prints so harness-verdict
- * consumers stop regexing mach internals. The status follows THIS
+ * consumers stop regexing mach internals. The status follows this
  * classifier, never the raw exit code: a crash-classified run says
  * `FAIL reason=crash` even at exit 0, and a green-summary-override pass
  * says `PASS` despite a non-zero mach exit. Count keys are omitted when
@@ -878,18 +878,18 @@ const SIGSEGV_EXIT_CODES = new Set([-11, 139]);
  * `xpcshell return code: -11` with zero output is the signature of an
  * `.sys.mjs` that a packaged module imports but whose `EXTRA_JS_MODULES`
  * registration never landed: the module loader faults before any logging
- * exists, so there is no import error, no stack, no test output — just a
+ * exists, so there is no import error, no stack, no test output, just a
  * dead process. It is indistinguishable from a genuine product crash
  * unless someone names the cause.
  *
- * "Produced no evidence" is deliberately semantic rather than a byte
+ * "Produced no evidence" is semantic rather than a byte
  * budget: no execution signal, no real failure line, and no mozcrash
  * marker. A run that got far enough to start a test, report a failure, or
  * leave a crash dump has evidence of its own, and the regular diagnosis
- * chain reads it — this branch is only for the case where there is
+ * chain reads it. This branch is only for the case where there is
  * nothing else to say.
  *
- * Pure; exported for direct unit testing.
+ * Pure. Exported for direct unit testing.
  *
  * @param exitCode - The harness process exit code
  * @param output - Combined stdout/stderr from the run
@@ -933,7 +933,7 @@ export function buildSilentSegfaultMessage(
 
 /**
  * Builds the message for a run that produced no `TEST-START` despite
- * requesting paths — including exit-code-zero runs whose `Passed: 0`
+ * requesting paths, including exit-code-zero runs whose `Passed: 0`
  * summary would otherwise read as a silent false green.
  */
 export function buildNoTestsRanMessage(

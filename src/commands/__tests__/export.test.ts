@@ -48,7 +48,7 @@ vi.mock('../../core/git-status.js', () => ({
 }));
 
 vi.mock('../../core/patch-manifest.js', () => ({
-  // Default: no patches.json yet — ownership auto-exclusion is a no-op.
+  // Default: no patches.json yet, so ownership auto-exclusion is a no-op.
   loadPatchesManifest: vi.fn().mockResolvedValue(null),
 }));
 
@@ -92,7 +92,7 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 // The stale-furnace gate's detection logic is covered by
-// src/core/__tests__/furnace-stale-export.test.ts; here it is mocked to a
+// src/core/__tests__/furnace-stale-export.test.ts. Here it is mocked to a
 // no-op so existing tests are unaffected, with dedicated wiring tests
 // asserting the call and the refusal propagation.
 vi.mock('../../core/furnace-stale-export.js', () => ({
@@ -322,7 +322,7 @@ describe('exportCommand - directory support', () => {
       description: 'test',
     });
 
-    // Only the unowned file is diffed; the owned one is excluded with a notice.
+    // Only the unowned file is diffed. The owned one is excluded with a notice.
     expect(generateFullFilePatch).toHaveBeenCalledTimes(1);
     expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/b.js');
     expect(info).toHaveBeenCalledWith(
@@ -482,7 +482,7 @@ describe('exportCommand - directory support', () => {
       description: 'test',
     });
 
-    // Should be called 3 times (a.js, b.js, c.js) — not 4
+    // Should be called 3 times (a.js, b.js, c.js), not 4
     expect(generateFullFilePatch).toHaveBeenCalledTimes(3);
   });
 });
@@ -734,7 +734,11 @@ describe('registerExport', () => {
     vi.mocked(extractAffectedFiles).mockReturnValue(['browser/base/content/browser.js']);
   });
 
-  it('routes parsed CLI arguments through the registered action', async () => {
+  it('maps parsed CLI flags onto the commitExportedPatch input', async () => {
+    // One pass over every flag the export command forwards, including a
+    // repeated --lint-ignore so the accumulator is exercised. The downstream
+    // meaning of tier/lintIgnore is covered in re-export.test.ts and
+    // end-to-end in patch-tier-and-lint-ignore.integration.test.ts.
     const program = createProgram();
 
     await program.parseAsync([
@@ -745,80 +749,12 @@ describe('registerExport', () => {
       '--name',
       'cli-export',
       '--category',
-      'ui',
+      'branding',
       '--description',
       'CLI description',
       '--supersede',
-    ]);
-
-    expect(commitExportedPatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'cli-export',
-        category: 'ui',
-        description: 'CLI description',
-        sourceEsrVersion: '140.9.0esr',
-      })
-    );
-  });
-
-  it('writes tier="branding" into commitExportedPatch input when --tier branding is passed', async () => {
-    const program = createProgram();
-
-    await program.parseAsync([
-      'node',
-      'test',
-      'export',
-      'browser/base/content/browser.js',
-      '--name',
-      'tier-export',
-      '--category',
-      'branding',
       '--tier',
       'branding',
-    ]);
-
-    expect(commitExportedPatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tier: 'branding',
-      })
-    );
-  });
-
-  it('writes lintIgnore array into commitExportedPatch input when --lint-ignore is passed', async () => {
-    const program = createProgram();
-
-    await program.parseAsync([
-      'node',
-      'test',
-      'export',
-      'browser/base/content/browser.js',
-      '--name',
-      'ignore-export',
-      '--category',
-      'ui',
-      '--lint-ignore',
-      'large-patch-files',
-    ]);
-
-    expect(commitExportedPatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        lintIgnore: ['large-patch-files'],
-      })
-    );
-  });
-
-  it('accumulates repeated --lint-ignore flags into the same array', async () => {
-    const program = createProgram();
-
-    await program.parseAsync([
-      'node',
-      'test',
-      'export',
-      'browser/base/content/browser.js',
-      '--name',
-      'multi-ignore',
-      '--category',
-      'ui',
       '--lint-ignore',
       'large-patch-files',
       '--lint-ignore',
@@ -827,6 +763,11 @@ describe('registerExport', () => {
 
     expect(commitExportedPatch).toHaveBeenCalledWith(
       expect.objectContaining({
+        name: 'cli-export',
+        category: 'branding',
+        description: 'CLI description',
+        sourceEsrVersion: '140.9.0esr',
+        tier: 'branding',
         lintIgnore: ['large-patch-files', 'large-patch-lines'],
       })
     );
@@ -856,29 +797,9 @@ describe('registerExport', () => {
       ])
     ).rejects.toThrow();
 
-    // The handler must NOT have run if the choices guard rejected the
+    // The handler must not have run if the choices guard rejected the
     // invocation up-front.
     expect(commitExportedPatch).not.toHaveBeenCalled();
-  });
-
-  it('omits tier and lintIgnore from the commit input when neither flag is passed', async () => {
-    const program = createProgram();
-
-    await program.parseAsync([
-      'node',
-      'test',
-      'export',
-      'browser/base/content/browser.js',
-      '--name',
-      'no-flags',
-      '--category',
-      'ui',
-    ]);
-
-    const callArgs = vi.mocked(commitExportedPatch).mock.calls[0]?.[0];
-    expect(callArgs).toBeDefined();
-    expect(callArgs).not.toHaveProperty('tier');
-    expect(callArgs).not.toHaveProperty('lintIgnore');
   });
 });
 
@@ -912,7 +833,7 @@ describe('exportCommand — engine/ prefix normalization', () => {
     });
 
     // Once the prefix is stripped, the diff generator must see the
-    // engine-relative form — exactly what git sees.
+    // engine-relative form, exactly what git sees.
     expect(generateFullFilePatch).toHaveBeenCalledWith(
       nativePath('/fake/engine'),
       'browser/base/content/fresh-extra-a.js'

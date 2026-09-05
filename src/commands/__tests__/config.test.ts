@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -9,7 +8,7 @@ import {
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
-import { configCommand, registerConfig } from '../config.js';
+import { configCommand } from '../config.js';
 
 /**
  * Per-test override for withConfigFileLock. Undefined → real locking.
@@ -71,7 +70,7 @@ describe('configCommand', () => {
   it('preserves --force-written keys when a known key is set afterwards', async () => {
     // Round-tripping the ordinary set branch through loadConfig →
     // validateConfig, whose typed clone contains only known schema fields,
-    // makes ANY normal `config <key> <value>` silently delete every
+    // makes any normal `config <key> <value>` silently delete every
     // previously --force-written key. Both branches mutate the raw document.
     await configCommand(projectRoot, 'myext.flag', 'true', { force: true });
     await configCommand(projectRoot, 'build.jobs', '8');
@@ -92,8 +91,8 @@ describe('configCommand', () => {
 
   it('does not mislabel non-validation failures as invalid values', async () => {
     // A concurrent writer holding the config lock must surface as a lock
-    // timeout, not as `Invalid value for "<key>"` — the old catch wrapped
-    // EVERYTHING from the locked round-trip in InvalidArgumentError,
+    // timeout, not as `Invalid value for "<key>"`. The old catch wrapped
+    // everything from the locked round-trip in InvalidArgumentError,
     // pointing diagnosis at the value and returning the wrong exit-code
     // class when the actual problem was lock contention.
     lockOverride = () => Promise.reject(new Error('Timed out waiting to update fireforge.json.'));
@@ -188,9 +187,9 @@ describe('configCommand', () => {
   });
 
   it('still rejects invalid values for known keys even with force', async () => {
-    // --force is intended as an escape hatch for *unknown* keys. It must
+    // --force is intended as an escape hatch for unknown keys. It must
     // not also let the user write a structurally invalid value for a
-    // known key — that bypass would silently corrupt fireforge.json so
+    // known key. That bypass would silently corrupt fireforge.json so
     // the next loadConfig fails with no breadcrumb back to this write.
     await expect(
       configCommand(projectRoot, 'build.jobs', '"oops"', { force: true })
@@ -219,7 +218,7 @@ describe('configCommand', () => {
 
   it('rejects prototype-pollution attempts even with --force', async () => {
     // `--force` must never be allowed to walk into `__proto__`,
-    // `constructor`, or `prototype` — those segments are filtered in
+    // `constructor`, or `prototype`. Those segments are filtered in
     // `mutateConfig` so the descent cannot rewrite Object.prototype
     // process-wide. The guard surfaces as a ConfigError, which the
     // command wraps into an InvalidArgumentError.
@@ -238,7 +237,7 @@ describe('configCommand', () => {
     ).rejects.toThrow(/reserved segment "prototype"/);
 
     expect(({} as Record<string, unknown>)[pollutionProbeKey]).toBeUndefined();
-    // Defensive cleanup via `Reflect.deleteProperty` — the guard should
+    // Defensive cleanup via `Reflect.deleteProperty`. The guard should
     // have rejected every attempt, but we strip the probe key regardless
     // so a future regression can't leak pollution into sibling tests.
     Reflect.deleteProperty(Object.prototype, pollutionProbeKey);
@@ -255,14 +254,14 @@ describe('configCommand', () => {
     await configCommand(projectRoot, 'firefox.version', '140.9.0esr');
     const beforeStat = await stat(`${projectRoot}/fireforge.json`);
     // Synthetic delay would matter only if mtime resolution masks the
-    // before-state; a real rewrite would still update mtime by at
+    // before-state. A real rewrite would still update mtime by at
     // least one millisecond on every supported filesystem.
 
     vi.mocked(info).mockClear();
     await configCommand(projectRoot, 'firefox.version', '140.9.0esr');
     const afterStat = await stat(`${projectRoot}/fireforge.json`);
 
-    // mtimeMs must be equal — the file was not rewritten.
+    // mtimeMs must be equal, showing the file was not rewritten.
     expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
     expect(info).toHaveBeenCalledWith('firefox.version = 140.9.0esr (unchanged)');
   });
@@ -297,37 +296,5 @@ describe('configCommand', () => {
     >;
     expect(config['firstUnknown']).toBe('one');
     expect(config['secondUnknown']).toBe('two');
-  });
-});
-
-describe('registerConfig', () => {
-  let projectRoot: string;
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    projectRoot = await createTempProject();
-    await writeFireForgeConfig(projectRoot);
-  });
-
-  afterEach(async () => {
-    await removeTempProject(projectRoot);
-  });
-
-  it('routes parsed CLI arguments through the registered action', async () => {
-    const program = new Command();
-
-    registerConfig(program, {
-      getProjectRoot: () => projectRoot,
-      withErrorHandling: <T extends unknown[]>(handler: (...args: T) => Promise<void>) => handler,
-    });
-
-    await program.parseAsync(['node', 'test', 'config', 'build.jobs', '12']);
-    await program.parseAsync(['node', 'test', 'config', 'build.jobs']);
-
-    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
-      build?: { jobs?: number };
-    };
-    expect(config.build?.jobs).toBe(12);
-    expect(info).toHaveBeenCalledWith('build.jobs = 12');
   });
 });

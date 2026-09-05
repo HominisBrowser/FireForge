@@ -52,7 +52,7 @@ vi.mock('../../core/git-status.js', () => ({
 
 vi.mock('../../core/branding.js', () => ({
   // Pass-through branding check that maps `browser/branding/<binary>/`
-  // to true; the aggregate-mode exclusion uses this to partition the
+  // to true. The aggregate-mode exclusion uses this to partition the
   // dirty tree into lintable vs tool-managed branding buckets.
   isBrandingManagedPath: vi.fn((path: string, binaryName: string) =>
     path.startsWith(`browser/branding/${binaryName}/`)
@@ -157,7 +157,7 @@ function fakeStats(overrides: Partial<Stats>): Stats {
   return { isDirectory: () => false, isFile: () => true, ...overrides } as Stats;
 }
 
-describe('lintCommand — branch coverage', () => {
+describe('lintCommand — ad-hoc input resolution and verdict', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(pathExists).mockResolvedValue(true);
@@ -311,7 +311,7 @@ describe('lintCommand — branch coverage', () => {
           tag: 'cumulative',
         },
       ]);
-      // tagLintIssues is normally what stamps the tag — mock it to be a
+      // tagLintIssues is normally what stamps the tag. Mock it to be a
       // no-op so the resolved value above flows through unchanged.
       vi.mocked(tagLintIssues).mockImplementation((issues) => issues);
       vi.mocked(collectDiffFilePaths).mockResolvedValue(new Set());
@@ -537,10 +537,10 @@ describe('lintCommand — branch coverage', () => {
         }
       );
       vi.mocked(setCachedPerPatchLintIssues).mockImplementation(
-        (cache, filename, key, issues, suppressed, lineCount, lintIgnore) => {
-          cache.entries[filename] = {
+        ({ cache, patchFilename, key, issues, suppressed, lineCount, lintIgnore }) => {
+          cache.entries[patchFilename] = {
             key,
-            patchFilename: filename,
+            patchFilename,
             issues: issues.map((issue) => ({ ...issue })),
             suppressed: suppressed.map((issue) => ({ ...issue })),
             lineCount,
@@ -609,9 +609,9 @@ describe('lintCommand — branch coverage', () => {
       expect(lintExportedPatch).toHaveBeenCalledTimes(2);
       const firstCall = vi.mocked(lintExportedPatch).mock.calls[0];
       const secondCall = vi.mocked(lintExportedPatch).mock.calls[1];
-      // First patch has no lintIgnore — the member is absent entirely
+      // First patch has no lintIgnore: the member is absent entirely
       expect(firstCall?.[4]?.ignoreChecks).toBeUndefined();
-      // Second patch has lintIgnore — Set containing its entry
+      // Second patch has lintIgnore: a Set containing its entry
       const ignore = secondCall?.[4]?.ignoreChecks;
       expect(ignore).toBeInstanceOf(Set);
       expect(ignore?.has('large-patch-lines')).toBe(true);
@@ -633,6 +633,24 @@ describe('lintCommand — branch coverage', () => {
       ).resolves.toBeUndefined();
 
       expect(lintExportedPatch).toHaveBeenCalledTimes(3);
+    });
+
+    it('accepts a bare order number in --patches, padded or not', async () => {
+      // The refusal message offers stems, and an operator reading
+      // `102-ui-canvas-tiles.patch` in a forward-registration finding
+      // reaches for `102` first. Refusing it while advertising stems was a
+      // message that contradicted itself.
+      const a = makePatch('002-ui-a.patch', ['a.ts']);
+      const b = makePatch('102-ui-b.patch', ['b.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a, b]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+      await expect(
+        lintCommand('/project', [], { perPatch: true, patches: ['102', '2'] })
+      ).resolves.toBeUndefined();
+
+      expect(lintExportedPatch).toHaveBeenCalledTimes(2);
     });
 
     it('forwards patch.tier to lintExportedPatch as the 7th arg', async () => {
@@ -679,15 +697,15 @@ describe('lintCommand — branch coverage', () => {
           engineHeadSha: 'test-head-sha',
         })
       );
-      expect(setCachedPerPatchLintIssues).toHaveBeenCalledWith(
-        memoryCache,
-        '001-ui-test.patch',
-        'key:001-ui-test.patch',
-        [],
-        [],
-        42,
-        []
-      );
+      expect(setCachedPerPatchLintIssues).toHaveBeenCalledWith({
+        cache: memoryCache,
+        patchFilename: '001-ui-test.patch',
+        key: 'key:001-ui-test.patch',
+        issues: [],
+        suppressed: [],
+        lineCount: 42,
+        lintIgnore: [],
+      });
       expect(savePerPatchLintCache).toHaveBeenCalledWith('/project', memoryCache);
     });
 
@@ -905,7 +923,7 @@ describe('lintCommand — branch coverage', () => {
 
     it('points at fireforge import when the entire queue is unapplied', async () => {
       // An unapplied queue otherwise produces `No lint issues found across 0
-      // patch(es).` with no hint that *nothing* was linted. The info banner
+      // patch(es).` with no hint that nothing was linted. The info banner
       // names the missing prerequisite (`fireforge import`) so the success
       // line reads as structurally meaningful rather than a clean bill of
       // health.
@@ -914,7 +932,7 @@ describe('lintCommand — branch coverage', () => {
       const c = makePatch('003-ui-c.patch', ['c.ts']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a, b, c]));
       vi.mocked(pathExists).mockImplementation((p: string) => {
-        // engine/ exists but none of the filesAffected do — every
+        // engine/ exists but none of the filesAffected do, so every
         // patch is filtered out of the lint pass.
         if (p === nativePath('/project/engine')) return Promise.resolve(true);
         if (p.endsWith('.ts')) return Promise.resolve(false);
@@ -1022,7 +1040,7 @@ describe('lintCommand — default-mode branding exclusion', () => {
   // Running `fireforge lint` on a fresh-setup workspace otherwise fails
   // `large-patch-lines`, `large-patch-files`, and `missing-license-header`
   // on the tool-managed branding tree. Status classifies that content as
-  // `branding`; default lint partitions the dirty tree the same way and
+  // `branding`. Default lint partitions the dirty tree the same way and
   // leaves branding out of the aggregate diff. Explicit
   // `fireforge lint <path>` still lints branding when the operator asks.
 
@@ -1112,7 +1130,7 @@ describe('lintCommand — default-mode branding exclusion', () => {
     await lintCommand('/project', []);
 
     // With nothing to lint after exclusion, the command surfaces a
-    // targeted "nothing to lint" banner and does NOT call
+    // targeted "nothing to lint" banner and does not call
     // lintExportedPatch. The wording covers both branding and Furnace
     // exclusions now that the aggregate-mode filter drops both buckets
     // (see lint.ts: "No non-branding, non-Furnace changes to lint.").
@@ -1124,7 +1142,7 @@ describe('lintCommand — default-mode branding exclusion', () => {
 
   it('does not filter branding when the caller supplies explicit paths', async () => {
     // Explicit-path mode is the operator's signal that they want to
-    // lint exactly these files; the aggregate branding exclusion does
+    // lint exactly these files. The aggregate branding exclusion does
     // not apply.
     vi.mocked(stat).mockRejectedValue(new Error('ENOENT'));
     vi.mocked(getStatusWithCodes).mockResolvedValue([
@@ -1147,7 +1165,7 @@ describe('lintCommand — default-mode branding exclusion', () => {
 });
 
 describe('applyAggregateLintIgnoreSuppression', () => {
-  // Use lightweight inline shapes; PatchQueueContext only exposes
+  // Use lightweight inline shapes. PatchQueueContext only exposes
   // `entries[*].metadata.{lintIgnore, filesAffected}` for this code
   // path, so we don't need the full PatchQueueEntry construction.
   function ctx(
@@ -1159,6 +1177,7 @@ describe('applyAggregateLintIgnoreSuppression', () => {
         order: i + 1,
         diff: '',
         newFiles: new Map<string, string>(),
+        createdFiles: new Set<string>(),
         modifiedFileAdditions: new Map<string, string>(),
         metadata: {
           filename: e.filename,
@@ -1245,10 +1264,10 @@ describe('applyAggregateLintIgnoreSuppression', () => {
   });
 
   it('drops when at least one of multiple owning patches waived the check', () => {
-    // The same file is touched by two patches; one waives the rule, one
-    // does not. Per the conservative contract, the issue is suppressed —
-    // mirrors per-patch mode where the waiving patch's slice would not
-    // produce the issue at all.
+    // The same file is touched by two patches. One waives the rule, one
+    // does not. Per the conservative contract, the issue is suppressed.
+    // That mirrors per-patch mode where the waiving patch's slice would
+    // not produce the issue at all.
     const issues = [
       {
         file: 'browser/shared.js',

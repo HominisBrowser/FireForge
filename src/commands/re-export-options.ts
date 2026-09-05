@@ -25,7 +25,7 @@ export interface NormalizedReExportArguments {
  * `re-export <patch> --files`. Commander's `--files <paths>` consumes one
  * comma-separated value, so `re-export 006-x --files a/b.js c/d.js` parks
  * `c/d.js` in the positional patches and fails with "--files operates on
- * exactly one target patch" — pointing at the wrong argument. When every
+ * exactly one target patch", pointing at the wrong argument. When every
  * positional beyond the first looks like a file path, fold them into the
  * file list.
  */

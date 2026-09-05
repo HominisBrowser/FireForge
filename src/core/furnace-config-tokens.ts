@@ -12,7 +12,7 @@ import { parseStringArray } from './furnace-config-array-utils.js';
 /**
  * Validates a `tokenHostDocuments` raw value. Each entry must be a non-empty
  * relative path contained in the engine tree. Throws `FurnaceError` on
- * violation; does nothing for `undefined` (field is optional).
+ * violation. Does nothing for `undefined` (field is optional).
  */
 export function validateTokenHostDocuments(raw: unknown): void {
   if (raw === undefined) return;
@@ -33,8 +33,8 @@ export function validateTokenHostDocuments(raw: unknown): void {
 
 /**
  * Validates a `runtimeVariables` raw value. Each entry must start with `--`
- * (it is a CSS custom property name). Throws `FurnaceError` on violation;
- * does nothing for `undefined` (field is optional).
+ * (it is a CSS custom property name). Throws `FurnaceError` on violation.
+ * Does nothing for `undefined` (field is optional).
  */
 export function validateRuntimeVariables(raw: unknown): void {
   if (raw === undefined) return;

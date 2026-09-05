@@ -3,7 +3,7 @@
 /**
  * Whitespace-error gate (trailing whitespace, space-before-tab, lone CR).
  *
- * Checks the WORKTREE locally and the COMMITS in CI. The worktree-only form
+ * Checks the worktree locally and the commits in CI. The worktree-only form
  * this replaced could not fail where it ran: `release:check` reaches it with
  * a clean tree in both CI workflows, so both `git diff --check` calls exited
  * 0 unconditionally and the gate never inspected anything that had actually

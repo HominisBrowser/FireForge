@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ensureDir, writeJson } from '../../utils/fs.js';
 
-// Real fs + real readdir — the validator walks the engine dir directly,
+// Real fs + real readdir: the validator walks the engine dir directly,
 // so a tmpdir fixture is the simplest way to cover the branch without
 // building a detailed mock of readdir.
 
@@ -86,8 +86,8 @@ describe('validateAllComponents — orphan xpcshell scaffolds', () => {
 
   it('does not flag a scaffold whose component is still declared in furnace.json', async () => {
     // A known custom component with a scaffold under its name should
-    // pass the orphan check — the validator is explicitly scoped to
-    // "no matching component in furnace.json".
+    // pass the orphan check. The validator is scoped to "no matching
+    // component in furnace.json".
     await writeJson(join(root, 'furnace.json'), {
       version: 1,
       componentPrefix: 'moz-',
@@ -130,7 +130,7 @@ describe('validateAllComponents — orphan xpcshell scaffolds', () => {
   });
 
   it('stays silent on a project that never used xpcshell scaffolding', async () => {
-    // No `.<binary>-xpcshell` directory at all — the check should return
+    // No `.<binary>-xpcshell` directory at all, so the check should return
     // cleanly without walking anywhere else.
     const results = await validateAllComponents(root);
     for (const issues of results.values()) {

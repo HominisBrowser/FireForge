@@ -17,22 +17,11 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { describeLocaleFtlJarMnRegistration, describeSharedFtlPrune } from './furnace-apply-ftl.js';
 import { describeFragmentExpansion } from './furnace-css-fragments.js';
+import { type DirectoryEntry, isRegularFile } from './furnace-dir-entry.js';
 import {
   validateCustomElementRegistration,
   validateJarMnInsertionForFiles,
 } from './furnace-registration.js';
-
-interface DirectoryEntry {
-  isFile(): boolean;
-  isSymbolicLink?(): boolean;
-  name: string;
-}
-
-function isRegularFile(entry: DirectoryEntry): boolean {
-  if (!entry.isFile()) return false;
-  if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) return false;
-  return true;
-}
 
 /** Computes the planned dry-run actions (and pre-flight step errors) for a custom component. */
 export async function buildCustomDryRunActions(
@@ -82,7 +71,7 @@ export async function buildCustomDryRunActions(
     }
   }
 
-  // A sharedFtl widget owns its strings via the shared bundle; surface the
+  // A sharedFtl widget owns its strings via the shared bundle. Surface the
   // removal of any dangling per-widget locale jar.mn entry so the dry-run
   // plan matches what apply will do (and explains the unblocked build).
   const pruneAction = await describeSharedFtlPrune(ctx, config);

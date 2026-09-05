@@ -5,10 +5,27 @@
  * command file stays under the per-file LOC budget.
  */
 
+export interface GenerateMjsContentOptions {
+  /** Custom element tag name. */
+  name: string;
+  /** Generated component class name. */
+  className: string;
+  /** Human-readable component description. */
+  description: string;
+  /** Whether to emit the Fluent wiring. */
+  localized: boolean;
+  /** License header prepended to the module. */
+  header: string;
+  /** chrome:// sub-path for the generated FTL reference, when localized. */
+  ftlChromeSubPath: string | undefined;
+  /** Explicit shared FTL path, used verbatim when supplied. */
+  sharedFtl: string | undefined;
+}
+
 /**
  * Generates the .mjs file content for a custom component.
  *
- * `MozLitElement` does NOT expose `insertFTLIfNeeded` — that method lives on
+ * `MozLitElement` does not expose `insertFTLIfNeeded`. That method lives on
  * `MozXULElement`. Calling it from `connectedCallback` on a Lit-based
  * component throws `TypeError: this.insertFTLIfNeeded is not a function` at
  * every connect. Upstream Firefox components (e.g. `moz-input-folder.mjs`)
@@ -17,23 +34,16 @@
  * that pattern here so `--localized` produces functional code.
  *
  * Path resolution precedence (when `localized` is true):
- *   1. `sharedFtl` — used verbatim. The caller has resolved it from
- *      `--shared-ftl` / `furnace.json`; this template does no rewriting.
+ *   1. `sharedFtl`: used verbatim. The caller has resolved it from
+ *      `--shared-ftl` / `furnace.json`. This template does no rewriting.
  *      Use this when the component participates in a feature-scoped
  *      bundle that another component owns.
- *   2. `<ftlChromeSubPath>/<name>.ftl` — the default per-component path,
+ *   2. `<ftlChromeSubPath>/<name>.ftl`: the default per-component path,
  *      matching the locale jar.mn entry that `furnace apply` writes.
- *   3. `<name>.ftl` — fallback when no chrome sub-path was resolvable.
+ *   3. `<name>.ftl`: fallback when no chrome sub-path was resolvable.
  */
-export function generateMjsContent(
-  name: string,
-  className: string,
-  description: string,
-  localized: boolean,
-  header: string,
-  ftlChromeSubPath: string | undefined,
-  sharedFtl: string | undefined
-): string {
+export function generateMjsContent(options: GenerateMjsContentOptions): string {
+  const { name, className, description, localized, header, ftlChromeSubPath, sharedFtl } = options;
   // A `*/` in the operator-supplied description would close the JSDoc block
   // early and leave the remainder as stray code. Escaped here rather than
   // rejected at input, because the same text is also rendered by
@@ -46,10 +56,10 @@ export function generateMjsContent(
       : ftlChromeSubPath !== undefined
         ? `${ftlChromeSubPath}/${name}.ftl`
         : `${name}.ftl`;
-  // Escape at the SINK, not at the validator. `ftlPath` reaches here from
-  // three sources — the `--shared-ftl` flag, the furnace.json `ftlBasePath`,
-  // and a derived `<name>.ftl` — and only the first passes through
-  // `validateSharedFtl`. `JSON.stringify` produces a correctly-escaped JS
+  // Escaping happens at the sink rather than at the validator. `ftlPath`
+  // reaches here from three sources (the `--shared-ftl` flag, the
+  // furnace.json `ftlBasePath`, and a derived `<name>.ftl`), and only the
+  // first passes through `validateSharedFtl`. `JSON.stringify` produces a correctly-escaped JS
   // string literal for all of them, including the `"` and raw-newline cases
   // that would otherwise break the generated module into a syntax error.
   const ftlModulePreamble = localized
@@ -134,7 +144,7 @@ export function xpcshellTestFileName(name: string): string {
  * Generates an xpcshell test file for a custom component.
  *
  * xpcshell cannot execute a component module that imports
- * `chrome://global/content/vendor/lit.all.mjs` — the Lit bundle touches
+ * `chrome://global/content/vendor/lit.all.mjs`: the Lit bundle touches
  * `window` at module-load time and the xpcshell harness has no `window`
  * global. A scaffold that calls `ChromeUtils.importESModule` on the
  * component's MJS therefore fails with `ReferenceError: window is not
@@ -145,9 +155,9 @@ export function xpcshellTestFileName(name: string): string {
  * This template mirrors the chrome-doc packaging test instead: XCurProcD is
  * probed at a pair of candidate layouts (dist/bin/browser and the macOS
  * .app-bundle / ESR layout) to confirm the `.mjs` and `.css` files landed
- * where jar.mn promised. That is the assertion xpcshell CAN make. Functional
+ * where jar.mn promised. That is the assertion xpcshell can make. Functional
  * tests that need DOM/shadow-root/keyboard behaviour belong in a
- * browser-chrome mochitest — scaffolded via
+ * browser-chrome mochitest, scaffolded via
  * `fireforge furnace create --test-style browser-chrome`.
  */
 export function generateXpcshellTestContent(name: string, header: string): string {
@@ -230,7 +240,7 @@ add_task(async function test_${taskSuffix}_files_packaged() {
 
 /**
  * Generates an `xpcshell.toml` manifest for a custom component's test
- * directory. Kept minimal — adding prefs, head.js, and support-files is
+ * directory. Kept minimal: adding prefs, head.js, and support-files is
  * left to the operator because those decisions depend on what the
  * component actually touches (Services.storage, observer topics, etc.).
  */
@@ -257,17 +267,17 @@ export function mochikitTestFileName(name: string): string {
  * They run on forks whose top-level chrome document lacks a `tabbrowser`
  * because they do not traverse `URILoadingHelper.openLinkIn`.
  *
- * The scaffold is a smoke test — the component is defined and the
+ * The scaffold is a smoke test: the component is defined and the
  * constructor is a function. Real UI assertions (render output, l10n wiring,
  * keyboard interactions) are left out because they depend on the
- * component's shape; operators can extend the test using the same SimpleTest
+ * component's shape. Operators can extend the test using the same SimpleTest
  * APIs upstream toolkit widgets rely on.
  *
- * The template deliberately omits `SimpleTest.waitForExplicitFinish()`.
+ * The template omits `SimpleTest.waitForExplicitFinish()` on purpose.
  * `add_task` owns the test lifecycle: when every queued task resolves, the
  * task harness calls `SimpleTest.finish()` itself. Combining
  * `waitForExplicitFinish()` with `add_task` and no explicit
- * `SimpleTest.finish()` in the task body makes the harness wait forever —
+ * `SimpleTest.finish()` in the task body makes the harness wait forever,
  * an indefinite hang on `fireforge test --headless`. Omitting it matches the
  * convention upstream toolkit widget tests use.
  */
@@ -301,7 +311,7 @@ export function generateMochikitTestContent(name: string): string {
 /**
  * Generates the `chrome.toml` entry block to append for a newly scaffolded
  * mochikit test. When the manifest already exists the caller appends this
- * snippet; when absent, the caller writes a file that starts with a
+ * snippet. When it is absent, the caller writes a file that starts with a
  * `[DEFAULT]` stanza followed by this block.
  */
 export function generateMochikitChromeTomlEntry(name: string): string {

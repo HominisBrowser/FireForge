@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge furnace chrome-doc create <name>` — scaffolds a top-level
+ * `fireforge furnace chrome-doc create <name>` scaffolds a top-level
  * chrome document (xhtml + js + css + ftl + jar.mn registrations).
  *
  * `furnace create` covers custom elements under `toolkit/content/widgets/`,
- * but top-level chrome documents — the `mybrowser.xhtml`-class entry points
- * a fork adds alongside or instead of `browser.xhtml` — are otherwise
+ * but top-level chrome documents (the `mybrowser.xhtml`-class entry points
+ * a fork adds alongside or instead of `browser.xhtml`) are otherwise
  * hand-authored with error-prone jar.mn + jar.inc.mn + locales/jar.mn glue.
  * The `*` preprocessor flag, the macOS titlebar-button carve-out, the
  * startup-topic observer, and the Fluent linkage each have silent-break
@@ -13,7 +13,7 @@
  *
  * This command writes the four source files and appends three jar.mn entries
  * under a rollback journal identical in shape to `furnace create`. A SIGINT
- * mid-scaffold restores every touched file; a successful run leaves the tree
+ * mid-scaffold restores every touched file. A successful run leaves the tree
  * ready for `fireforge build`.
  */
 
@@ -68,16 +68,16 @@ export interface FurnaceChromeDocCreateOptions {
    * Scaffold an xpcshell packaging-verification test alongside the chrome
    * document. The generated test probes `XCurProcD/chrome/browser/...` on
    * disk rather than going through `chrome://` URI resolution, which
-   * bypasses xpcshell's limited browser-chrome manifest set — where
+   * bypasses xpcshell's limited browser-chrome manifest set, where
    * `NetUtil.asyncFetch` returns `NS_ERROR_FILE_NOT_FOUND` against a file
-   * that IS packaged. Registration in `XPCSHELL_TESTS_MANIFESTS` is left to
+   * that is packaged. Registration in `XPCSHELL_TESTS_MANIFESTS` is left to
    * the operator because the owning moz.build depends on the fork's layout.
    */
   withTests?: boolean;
   /** Print the scaffold plan without writing files. */
   dryRun?: boolean;
   /**
-   * Emit the browser.xhtml-like MAIN-WINDOW skeleton (`<html
+   * Emit the browser.xhtml-like main-window skeleton (`<html
    * id="main-window">` with the `windowtype`/`chromehidden`/`persist`
    * root attributes platform C++ reads before scripts run) instead of
    * the generic dialog-shaped `<window>` document. Use for the document
@@ -93,7 +93,7 @@ const CHROME_DOC_NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 /**
  * Validates a chrome-doc name. Lowercase ASCII, optional hyphens, no
- * leading digit — the name is used verbatim in CSS selectors, jar.mn
+ * leading digit. The name is used verbatim in CSS selectors, jar.mn
  * entries, FTL keys, and file basenames, so anything outside that
  * character set would break at least one downstream consumer.
  * @param name Chrome-doc name (file basename without extension).
@@ -257,8 +257,8 @@ async function appendJarEntryIfAbsent(
   journal: Parameters<typeof snapshotFile>[0]
 ): Promise<void> {
   if (!(await pathExists(filePath))) {
-    // Target jar.mn doesn't exist in this tree layout. We do NOT create it
-    // — a fork that moved the jar file needs the operator to choose a
+    // Target jar.mn doesn't exist in this tree layout. We do not create it:
+    // a fork that moved the jar file needs the operator to choose a
     // placement. The command surfaces this as a FurnaceError so the user
     // can investigate rather than silently writing to a non-canonical path.
     throw new FurnaceError(
@@ -294,7 +294,7 @@ async function performChromeDocMutations(args: {
   args.operationContext.registerJournal(journal);
 
   // XHTML uses an inline XML comment since getLicenseHeader has no XML
-  // style — the SPDX convention is a single-line comment at the top.
+  // style. The SPDX convention is a single-line comment at the top.
   const jsHeader = getLicenseHeader(args.license, 'js');
   const cssHeader = getLicenseHeader(args.license, 'css');
   const ftlHeader = getLicenseHeader(args.license, 'hash');
@@ -343,7 +343,7 @@ async function performChromeDocMutations(args: {
     await writeText(ftlPath, generateChromeDocFtl(args.name, ftlHeader));
     written.push(`browser/locales/en-US/browser/${args.name}.ftl`);
 
-    // jar.mn registrations — XHTML + JS go through the `*` preprocessor
+    // jar.mn registrations: XHTML + JS go through the `*` preprocessor
     // for brand substitution, CSS goes through jar.inc.mn, FTL through
     // the locale jar.
     const jarMnPath = join(args.engineDir, 'browser/base/jar.mn');
@@ -358,12 +358,12 @@ async function performChromeDocMutations(args: {
 
     const localeJarMnPath = join(args.engineDir, 'browser/locales/jar.mn');
     // Forks that have migrated to a `[localization] (%browser/**/*.ftl)`
-    // wildcard already pick up the scaffolded FTL automatically — appending
-    // a per-file `locale/...` entry on top is at best dead weight and at
-    // worst a build error when the fork has dropped the `% locale browser`
-    // registration the per-file entry depends on. The wildcard predicate is
-    // intentionally narrow: only `%browser/`-rooted globs ending in `*.ftl`
-    // count as a capture.
+    // wildcard already pick up the scaffolded FTL automatically, so
+    // appending a per-file `locale/...` entry on top is at best dead weight
+    // and at worst a build error when the fork has dropped the
+    // `% locale browser` registration the per-file entry depends on. The
+    // wildcard predicate is narrow on purpose: only `%browser/`-rooted globs
+    // ending in `*.ftl` count as a capture.
     if (await pathExists(localeJarMnPath)) {
       const existingLocaleJar = await readText(localeJarMnPath);
       if (localesFtlWildcardCapturesScaffoldedName(existingLocaleJar)) {
@@ -451,13 +451,13 @@ export async function furnaceChromeDocCreateCommand(
 
   const browserWindow = options.browserWindow ?? false;
   // The browser-window skeleton always carries its own titlebar markup and
-  // chrome attributes; --no-titlebar only applies to the generic scaffold.
+  // chrome attributes. --no-titlebar only applies to the generic scaffold.
   const withTitlebar = browserWindow ? true : (options.titlebar ?? true);
   const withTests = options.withTests ?? false;
 
   // Hint: when the scaffolded document is the configured token-host document
   // (the fork's main browser window), the generic dialog-shaped scaffold is
-  // almost certainly wrong — correct jar.mn registrations, wrong document
+  // almost certainly wrong: correct jar.mn registrations, wrong document
   // body.
   if (!browserWindow && (await furnaceConfigExists(projectRoot))) {
     try {
@@ -472,7 +472,7 @@ export async function furnaceChromeDocCreateCommand(
         );
       }
     } catch {
-      // A broken furnace.json must not block chrome-doc scaffolding; the
+      // A broken furnace.json must not block chrome-doc scaffolding. The
       // hint is best-effort.
     }
   }

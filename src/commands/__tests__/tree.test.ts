@@ -44,7 +44,7 @@ vi.mock('../../core/engine-session-lock.js', () => ({
   withEngineSessionLock: vi.fn((_root: string, _cmd: string, op: () => Promise<unknown>) => op()),
 }));
 
-// `--with-objdir` probes the primary build and holds the build lock; the
+// `--with-objdir` probes the primary build and holds the build lock. The
 // probe result is driven per test, the lock is pass-through so its
 // acquisition (or absence) is observable. `runMach` backs the in-tree
 // reconfigure closure threaded into cloneTree.
@@ -54,7 +54,7 @@ vi.mock('../../core/mach.js', () => ({
   withBuildLock: vi.fn((_root: string, op: () => Promise<unknown>) => op()),
 }));
 
-// The post-configure relocation check reads real objdir metadata; these
+// The post-configure relocation check reads real objdir metadata. These
 // unit tests drive the reconfigure closure against fake paths, so it is
 // stubbed clean by default and per-test for the violation case. The real
 // checker is covered by mach-objdir-relocation.test.ts and the
@@ -68,7 +68,7 @@ vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(false)),
 }));
 
-// `tree exec` spawns a real child with `stdio: 'inherit'`; a fake emitter lets
+// `tree exec` spawns a real child with `stdio: 'inherit'`. A fake emitter lets
 // the tests drive its exit/error paths.
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 
@@ -100,7 +100,7 @@ import { registerTree, treeCreateCommand, treeListCommand, treeRemoveCommand } f
 
 // `tree create`, `tree remove` and `tree exec` refuse outright on Windows
 // (`assertPosix` in ../tree.ts) because copy-on-write cloning needs
-// clonefile/reflink. Their suites cannot run there; the refusal itself is
+// clonefile/reflink. Their suites cannot run there. The refusal itself is
 // pinned by the platform-stubbed suite at the end of this file, so skipping
 // costs no coverage. `treeListCommand` carries no such guard and still runs.
 const describePosix = process.platform === 'win32' ? describe.skip : describe;
@@ -114,7 +114,8 @@ describePosix('tree create CoW gating', () => {
     vi.mocked(getTreesDir).mockImplementation((primary: string) =>
       join(primary, '.fireforge', 'trees')
     );
-    // mockResolvedValue overrides outlive clearAllMocks — pin the defaults.
+    // mockResolvedValue overrides outlive clearAllMocks, so pin the
+    // defaults.
     vi.mocked(readTreeMarker).mockResolvedValue({ kind: 'absent' });
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-x86_64' });
     vi.mocked(cloneTree).mockResolvedValue({
@@ -162,8 +163,8 @@ describePosix('tree create CoW gating', () => {
   });
 
   it('refuses to nest under a marker that exists but cannot be parsed', async () => {
-    // An unparseable marker still means "something claims this is a tree";
-    // reading it as absent would clone a snapshot into itself.
+    // An unparseable marker still means "something claims this is a tree".
+    // Reading it as absent would clone a snapshot into itself.
     vi.mocked(detectCowSupport).mockResolvedValue('clonefile');
     vi.mocked(readTreeMarker).mockResolvedValue({
       kind: 'corrupt',
@@ -196,7 +197,7 @@ describePosix('tree create CoW gating', () => {
   });
 
   it('--with-objdir re-resolves the objdir UNDER the build lock, and that result wins', async () => {
-    // The pre-lock probe is a fast-fail courtesy; a build finishing between
+    // The pre-lock probe is a fast-fail courtesy. A build finishing between
     // it and the lock acquisition must not let a stale objdir be cloned.
     vi.mocked(detectCowSupport).mockResolvedValue('clonefile');
     const events: string[] = [];
@@ -266,7 +267,7 @@ describePosix('tree create CoW gating', () => {
       /mach configure failed in the cloned tree/
     );
 
-    // Exit 0 with a failed postcondition is NOT trusted.
+    // Exit 0 with a failed postcondition is not trusted.
     vi.mocked(findObjdirRelocationViolation).mockResolvedValueOnce(
       'obj-x86_64/config.status still contains the primary engine path /primary/engine'
     );
@@ -401,7 +402,7 @@ describePosix('tree create --wait-lock', () => {
 
   it('threads --wait-lock <seconds> into the engine session lock wait budget', async () => {
     // The lock refusal recommends --wait-lock, so the flag must be
-    // registered on tree create — otherwise commander throws
+    // registered on tree create, otherwise commander throws
     // `unknown option`.
     await createTree('--wait-lock', '120');
 
@@ -521,7 +522,7 @@ describePosix('tree exec', () => {
 
   it('names the corruption for a tree whose marker cannot be read', async () => {
     // Collapsing corrupt into "no such tree" pointed the operator at the
-    // wrong remediation: the directory IS there, claiming to be a tree.
+    // wrong remediation: the directory is there, claiming to be a tree.
     vi.mocked(readTreeMarker).mockResolvedValue({
       kind: 'corrupt',
       reason: 'its tree marker is not valid JSON',
@@ -594,7 +595,7 @@ describePosix('tree exec', () => {
   });
 
   it('seals stdout once the child settles, so a failure refusal cannot print after the verdict', async () => {
-    // The child owned stdout via `stdio: 'inherit'` — its FIREFORGE-VERDICT
+    // The child owned stdout via `stdio: 'inherit'`, so its FIREFORGE-VERDICT
     // line must stay the run's last stdout write. The parent seals before
     // its own GeneralError renders, routing the refusal to stderr.
     vi.mocked(spawn).mockImplementation(() => fakeChild({ code: 1 }) as never);
@@ -642,22 +643,22 @@ describe('POSIX-only refusals', () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
   };
 
-  it('refuses tree create on Windows, naming copy-on-write as the reason', async () => {
+  it.each([
+    // `create` additionally names copy-on-write as the reason. The other two
+    // only need to refuse before touching the filesystem.
+    [
+      'create',
+      () => treeCreateCommand('/primary', 'shard-a'),
+      /tree is POSIX-only.*clonefile\/reflink/s,
+    ],
+    ['remove', () => treeRemoveCommand('/primary', 'shard-a'), /tree is POSIX-only/],
+    [
+      'exec',
+      () => treeProgram('/p').parseAsync(['node', 'ff', 'tree', 'exec', 'shard-a', 'status']),
+      /tree is POSIX-only/,
+    ],
+  ])('refuses tree %s on Windows', async (_label, invoke, pattern) => {
     onWindows();
-    await expect(treeCreateCommand('/primary', 'shard-a')).rejects.toThrow(
-      /tree is POSIX-only.*clonefile\/reflink/s
-    );
-  });
-
-  it('refuses tree remove on Windows', async () => {
-    onWindows();
-    await expect(treeRemoveCommand('/primary', 'shard-a')).rejects.toThrow(/tree is POSIX-only/);
-  });
-
-  it('refuses tree exec on Windows', async () => {
-    onWindows();
-    await expect(
-      treeProgram('/p').parseAsync(['node', 'ff', 'tree', 'exec', 'shard-a', 'status'])
-    ).rejects.toThrow(/tree is POSIX-only/);
+    await expect(invoke()).rejects.toThrow(pattern);
   });
 });

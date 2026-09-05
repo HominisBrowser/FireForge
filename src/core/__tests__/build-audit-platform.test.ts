@@ -140,8 +140,8 @@ describe('detectPlatformGate', () => {
   });
 
   it('does not gate off when the expression contains a negation', async () => {
-    // Negations like `!= "WINNT"` are conservatively NOT treated as
-    // single-OS gates — the file may still ship on the current host.
+    // Negations like `!= "WINNT"` are conservatively not treated as
+    // single-OS gates, since the file may still ship on the current host.
     await ensureDir(join(engineDir, 'browser/components'));
     await writeText(
       join(engineDir, 'browser/components/moz.build'),
@@ -175,7 +175,7 @@ describe('detectPlatformGate', () => {
 
   it('gates a /stubinstaller/ asset on non-Windows hosts via path convention', async () => {
     // Stub-installer CSS is packaged through Makefile.in FILES lists and
-    // `nsis/stub.nsh` — there is no `if CONFIG[…]:` block in any ancestor
+    // `nsis/stub.nsh`. There is no `if CONFIG[…]:` block in any ancestor
     // moz.build to parse. The path-fragment gate catches the Windows-only
     // subtree so the audit does not warn on every non-Windows build.
     await ensureDir(join(engineDir, 'browser/branding/mybrowser/stubinstaller'));
@@ -228,7 +228,7 @@ describe('detectPlatformGate', () => {
   it('prefers an explicit moz.build gate expression over a conflicting path convention', async () => {
     // A file under /stubinstaller/ that is also wrapped in an explicit
     // `if CONFIG["OS_TARGET"] == "Darwin":` gate (hypothetical fork-specific
-    // arrangement) should surface the moz.build expression — moz.build is
+    // arrangement) should surface the moz.build expression. moz.build is
     // authoritative, path conventions are a safety net.
     await ensureDir(join(engineDir, 'browser/branding/mybrowser/stubinstaller'));
     await writeText(

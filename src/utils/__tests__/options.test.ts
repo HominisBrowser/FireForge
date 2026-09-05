@@ -66,7 +66,7 @@ describe(`resolveWaitLockSeconds and ${WAIT_LOCK_ENV_VAR}`, () => {
   });
 
   it('lets an explicit flag value win over the environment', () => {
-    // The environment states a default for a SESSION; an invocation that
+    // The environment states a default for a session. An invocation that
     // names a budget has said something more specific.
     process.env[WAIT_LOCK_ENV_VAR] = '900';
     expect(resolveWaitLockSeconds('30')).toBe(30);

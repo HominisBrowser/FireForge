@@ -9,7 +9,7 @@
  * holder PID.
  *
  * These tests pin the lock behaviour without touching the actual mach
- * process — the operation passed into `withBuildLock` is a trivial async
+ * process. The operation passed into `withBuildLock` is a trivial async
  * block that lets us observe lock acquisition order and timeouts.
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -74,7 +74,7 @@ describe('withBuildLock', () => {
       withBuildLock(root, () => Promise.reject(new Error('build blew up')))
     ).rejects.toThrow('build blew up');
 
-    // A follow-up build must not hang — the lock directory should be
+    // A follow-up build must not hang: the lock directory should be
     // gone from the `finally` branch inside `withFileLock`.
     const result = await withBuildLock(root, () => Promise.resolve(42));
     expect(result).toBe(42);
@@ -89,7 +89,7 @@ describe('withBuildLock', () => {
     const lockPath = join(root, '.fireforge-build.lock');
     await mkdir(lockPath);
     // Use the max-int PID sentinel that every platform rejects as
-    // out-of-range — `process.kill(pid, 0)` raises ESRCH and stale
+    // out-of-range. `process.kill(pid, 0)` raises ESRCH and stale
     // recovery removes the lock.
     await writeFile(join(lockPath, 'pid'), '2147483647', 'utf-8');
 

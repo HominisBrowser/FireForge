@@ -43,8 +43,8 @@ async function getHealthIndicator(
     return changed ? formatErrorText('modified') : formatSuccessText('clean');
   } catch {
     // A race with `furnace remove`, filesystem permission change, or a
-    // transient IO failure must not crash the entire `list -v` output —
-    // render a degraded state so the rest of the table still shows.
+    // transient IO failure must not crash the entire `list -v` output, so
+    // render a degraded state and the rest of the table still shows.
     return formatErrorText('unavailable');
   }
 }

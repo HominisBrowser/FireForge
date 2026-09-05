@@ -3,7 +3,7 @@
  * Unit tests for the dark-mode insertion helpers in
  * `src/core/token-dark-mode.ts`. `token add --mode override` must land the
  * dark declaration between the nested `:root {` and its matching `}` inside
- * the `@media (prefers-color-scheme: dark)` block — not between that `}` and
+ * the `@media (prefers-color-scheme: dark)` block, not between that `}` and
  * the outer `@media` close, which puts the declaration outside any rule.
  */
 import { describe, expect, it } from 'vitest';
@@ -58,9 +58,9 @@ describe('findDarkRootInsertionIndex', () => {
       '  }',
       '}',
     ];
-    // The inner `:root {` opens on line 3; its matching `}` is line 5.
+    // The inner `:root {` opens on line 3, and its matching `}` is line 5.
     // The outer `@media {` close is line 6. Inserting at line 5 means
-    // splicing the new line BEFORE the inner close — i.e. between the
+    // splicing the new line before the inner close, i.e. between the
     // last declaration and `  }`. Anything greater would land outside
     // the nested `:root { }`.
     const idx = findDarkRootInsertionIndex(lines);

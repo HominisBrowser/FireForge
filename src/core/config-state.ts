@@ -35,13 +35,7 @@ function sanitizeProjectState(data: unknown): StateValidationResult {
   const state: FireForgeState = {};
   const issues: string[] = [];
   const recoveredFields: string[] = [];
-  const stringFields = [
-    'brand',
-    'buildMode',
-    'lastBuild',
-    'downloadedVersion',
-    'baseCommit',
-  ] as const;
+  const stringFields = ['brand', 'buildMode', 'downloadedVersion', 'baseCommit'] as const;
 
   for (const key of stringFields) {
     const value = data[key];
@@ -55,9 +49,9 @@ function sanitizeProjectState(data: unknown): StateValidationResult {
     }
 
     if (key === 'buildMode') {
-      // Validate and assign in ONE block so the predicate's narrowing reaches
+      // Validate and assign in one block so the predicate's narrowing reaches
       // the assignment. Split across two `key === 'buildMode'` guards,
-      // TypeScript cannot correlate them and the assignment needed a cast —
+      // TypeScript cannot correlate them and the assignment needed a cast,
       // which is what let the untyped allowlist drift from the union.
       if (!isBuildMode(value)) {
         issues.push(`field "buildMode" must be one of: ${BUILD_MODES.join(', ')}`);
@@ -172,19 +166,6 @@ async function loadStateFromPath(
 export async function loadState(root: string): Promise<FireForgeState> {
   const paths = getProjectPaths(root);
   return loadStateFromPath(paths.state);
-}
-
-/**
- * Saves the fireforge state.
- * @param root - Root directory of the project
- * @param state - State to save
- */
-export async function saveState(root: string, state: FireForgeState): Promise<void> {
-  const paths = getProjectPaths(root);
-  const validatedState = validateFireForgeState(state);
-  await withStateFileLock(paths.state, async () => {
-    await writeJson(paths.state, validatedState);
-  });
 }
 
 /**

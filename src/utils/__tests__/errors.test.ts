@@ -40,7 +40,8 @@ describe('getNodeErrorCode', () => {
 
   it('extracts a string code from a plain object', () => {
     // The four copies in utils/fs.ts gated on `instanceof Error` and so
-    // misclassified this shape — exactly what toError exists to normalise.
+    // misclassified this shape, which is exactly what toError exists to
+    // normalise.
     expect(getNodeErrorCode({ code: 'EACCES' })).toBe('EACCES');
   });
 

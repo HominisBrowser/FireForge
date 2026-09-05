@@ -113,7 +113,7 @@ describe('furnace stale-lock doctor check', () => {
 
   it('parses the leading PID line of a multi-line pid file (file-lock format contract)', async () => {
     // file-lock.ts:131-133 documents that external readers parseInt the
-    // leading digits of the multi-line owner file; the token line must not
+    // leading digits of the multi-line owner file. The token line must not
     // break PID extraction.
     await plantLock(`${String(process.pid)}\nsome-uuid-token\nmetadata line\n`);
     const check = await runLockCheck(projectRoot, true);

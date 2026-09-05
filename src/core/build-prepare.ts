@@ -61,13 +61,13 @@ export interface PrepareBuildOptions {
    * Previous successful-build baseline, used to detect `moz.build` /
    * `moz.configure` / `Makefile.in` changes that require a fresh
    * `mach configure` before the build. When undefined, the auto-configure
-   * step is skipped — there's no reference point for what "changed since"
-   * means.
+   * step is skipped, since there's no reference point for what "changed
+   * since" means.
    */
   previousBaseline?: BuildBaseline | undefined;
   /**
    * Turn the unexported-drift warning into a hard refusal.
-   * Scripted gates want the stop; an interactive build wants the warning.
+   * Scripted gates want the stop. An interactive build wants the warning.
    */
   refuseUnexportedDrift?: boolean | undefined;
 }
@@ -76,18 +76,7 @@ export interface PrepareBuildOptions {
 const BACKEND_INVALIDATING_SUFFIXES = ['moz.build', 'moz.configure', 'Makefile.in'];
 
 /**
- * Packaging manifests whose graph/destination directories MAY need a full
- * build. Path-shape only: {@link evaluateJarManifestEscalation} decides
- * whether a given changed manifest actually forces one (a new manifest, or
- * one that redirects its install base directory), so an entry added to an
- * existing `dist/bin` manifest no longer costs a ~10-minute build.
- */
-export function requiresFullBuildForIncrementalTest(path: string): boolean {
-  return isJarManifestPath(path);
-}
-
-/**
- * Build-input manifests changed since the last SUCCESSFUL build — not
+ * Build-input manifests changed since the last successful build, not
  * merely dirty against HEAD. `collectChangedEnginePaths` unions the
  * baseline-to-HEAD diff with every worktree modification, and a fork's
  * worktree is permanently dirty (imported patches, Furnace-applied
@@ -95,8 +84,8 @@ export function requiresFullBuildForIncrementalTest(path: string): boolean {
  * `moz.build` as changed on every run: `mach configure` re-ran and the
  * pre-test build escalated to a full `mach build` after each full build
  * that had already consumed exactly this content. The baseline's
- * `buildInputFingerprints` say what the last successful build saw;
- * anything byte-identical to that is dropped here. A baseline without the
+ * `buildInputFingerprints` say what the last successful build saw.
+ * Anything byte-identical to that is dropped here. A baseline without the
  * field (written before it existed) keeps every dirty input, which is the
  * old behaviour.
  *
@@ -128,8 +117,9 @@ async function collectChangedBuildInputs(
  * Extracts the tail of captured `mach configure` output so the underlying
  * mozbuild failure (e.g. `mozbuild.util.UnsortedError: ... is not in sorted
  * order`) is carried into the thrown `BuildError` instead of being reduced to
- * a bare exit code. mozbuild writes the error and its traceback to stderr;
- * stdout is included as a fallback for shells that interleave the streams.
+ * a bare exit code. mozbuild writes the error and its traceback to stderr,
+ * and stdout is included as a fallback for shells that interleave the
+ * streams.
  * Returns an empty string when nothing useful was captured.
  */
 function extractMachConfigureError(result: MachCommandResult): string {
@@ -141,7 +131,7 @@ function extractMachConfigureError(result: MachCommandResult): string {
 /**
  * Describes an exit code in the shell's 128+N signal convention. Truncated
  * configure/build logs with a signal-shaped exit (e.g. 144 = 128+16, SIGURG
- * on macOS) are environmental interruptions, not compiler failures — naming
+ * on macOS) are environmental interruptions, not compiler failures. Naming
  * that in the failure text saves the operator a fruitless log hunt.
  * Returns undefined for codes <= 128 (regular failures) and
  * for codes past the conventional signal range, so callers append nothing.
@@ -165,7 +155,7 @@ export function describeSignalShapedExit(exitCode: number): string | undefined {
  * Builds the `BuildError` for a non-zero auto-configure exit: the output
  * tail (so the underlying mozbuild failure survives), any matched
  * mach-error hints (so e.g. a toolchain minimum that moved with a source
- * hop names `fireforge bootstrap` on this path too, exactly like the
+ * hop names `fireforge bootstrap` on this path too, just like the
  * protected build dispatch), and the stop rationale.
  */
 function buildConfigureFailureError(captured: MachCommandResult): BuildError {
@@ -198,14 +188,19 @@ async function decideJarEscalation(
   changed: readonly string[],
   baseline: BuildBaseline | undefined
 ): Promise<string | undefined> {
+  // Packaging manifests whose graph/destination directories may need a full
+  // build. Path-shape only: `evaluateJarManifestEscalation` decides whether a
+  // given changed manifest actually forces one (a new manifest, or one that
+  // redirects its install base directory), so an entry added to an existing
+  // `dist/bin` manifest no longer costs a ~10-minute build.
   const decision = await evaluateJarManifestEscalation(
     engineDir,
-    changed.filter(requiresFullBuildForIncrementalTest),
+    changed.filter(isJarManifestPath),
     baseline
   );
   if (decision.cleared.length > 0) {
     verbose(
-      `jar escalation: ${String(decision.cleared.length)} changed jar.mn add entries to an existing dist/bin manifest; not escalating for ${decision.cleared.join(', ')}.`
+      `jar escalation: ${decision.cleared.length} changed jar.mn add entries to an existing dist/bin manifest; not escalating for ${decision.cleared.join(', ')}.`
     );
   }
   return decision.escalate ? formatJarEscalationNotice(decision) : undefined;
@@ -223,10 +218,10 @@ export function isBackendInvalidatingFile(path: string): boolean {
 }
 
 /**
- * Loud before the overwrite, not silent after it.
+ * Warns before the overwrite rather than after it.
  *
- * Every write `prepareBuildEnvironment` performs — branding, Furnace
- * components, `mozconfig` — rewrites engine files from a FireForge-owned
+ * Every write `prepareBuildEnvironment` performs (branding, Furnace
+ * components, `mozconfig`) rewrites engine files from a FireForge-owned
  * source. Content recorded in neither a patch body nor the pristine baseline
  * is destroyed by that, and on a multi-session checkout the destruction is
  * what lets a later re-export capture a half-reverted hybrid that every gate
@@ -318,9 +313,9 @@ export async function prepareBuildEnvironment(
         const exitCode = captured.exitCode;
         if (exitCode !== 0) {
           configureSpinner.error(`mach configure failed with exit code ${exitCode}`);
-          // Surface the underlying mozbuild error (e.g. UnsortedError) instead
-          // of a bare exit code — the generic message hid the actual cause —
-          // plus any matched mach-error hints (see the helper).
+          // Surface the underlying mozbuild error (e.g. UnsortedError)
+          // instead of a bare exit code, since the generic message hid the
+          // actual cause, plus any matched mach-error hints (see the helper).
           throw buildConfigureFailureError(captured);
         } else {
           configureSpinner.stop('Backend regenerated successfully (mach configure exit code 0)');
@@ -348,7 +343,7 @@ export async function prepareBuildEnvironment(
   // Set up custom branding directory and patch moz.configure. Thread the
   // project license through so `buildConfigureScriptContent` /
   // `buildBrandPropertiesContent` / `buildBrandFtlContent` stamp the
-  // generated files with a matching SPDX header — otherwise `patch-lint`
+  // generated files with a matching SPDX header. Otherwise `patch-lint`
   // flags them with `missing-license-header` on every subsequent export when
   // the project is not MPL-2.0.
   const brandingConfig = {

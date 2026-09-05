@@ -40,6 +40,7 @@ describe('resolvePatchOwnedSysMjs', () => {
             '@@ -0,0 +1 @@\n' +
             '+export function init() {}\n',
           newFiles: new Map([['browser/modules/Sidebar.sys.mjs', 'export function init() {}']]),
+          createdFiles: new Set<string>(),
           modifiedFileAdditions: new Map(),
         },
       ],
@@ -65,6 +66,7 @@ describe('resolvePatchOwnedSysMjs', () => {
             '@@ -0,0 +1 @@\n' +
             '+export const X = 1;\n',
           newFiles: new Map([['browser/modules/Existing.sys.mjs', 'export const X = 1;']]),
+          createdFiles: new Set<string>(),
           modifiedFileAdditions: new Map(),
         },
       ],
@@ -92,6 +94,7 @@ describe('resolvePatchOwnedSysMjs', () => {
             '@@ -0,0 +1 @@\n' +
             '+const x = 1;\n',
           newFiles: new Map([['browser/script.js', 'const x = 1;']]),
+          createdFiles: new Set<string>(),
           modifiedFileAdditions: new Map(),
         },
       ],
@@ -139,6 +142,7 @@ describe('resolvePatchOwnedChromeScripts', () => {
           newFiles: new Map([
             ['browser/base/content/mybrowserChromeShell.js', 'class MyBrowserChromeShell {}'],
           ]),
+          createdFiles: new Set<string>(),
           modifiedFileAdditions: new Map(),
         },
       ],
@@ -164,6 +168,7 @@ describe('resolvePatchOwnedChromeScripts', () => {
             '@@ -0,0 +1 @@\n' +
             '+export const X = 1;\n',
           newFiles: new Map([['browser/modules/Mod.sys.mjs', 'export const X = 1;']]),
+          createdFiles: new Set<string>(),
           modifiedFileAdditions: new Map(),
         },
       ],

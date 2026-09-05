@@ -2,7 +2,7 @@
 /**
  * `lint --per-patch` builds the checkJs program once per run and attributes
  * each finding to its owning patch, instead of rebuilding the queue-wide
- * program for every patch — which duplicates a single type regression once
+ * program for every patch, which duplicates a single type regression once
  * per patch in the queue.
  */
 
@@ -57,7 +57,7 @@ const GOOD_SOURCE = [
   '}',
   '',
 ].join('\n');
-// Bad declares a number return but yields a string — a checkJs type error.
+// Bad declares a number return but yields a string, a checkJs type error.
 const BAD_SOURCE = [
   HEADER,
   '/** @returns {number} bad */',
@@ -132,12 +132,12 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
   it('reports the type error exactly once, attributed to its owning patch, with one program build', async () => {
     const groupedSpy = vi.spyOn(checkjs, 'invokePatchLintCheckJsGrouped');
 
-    // Per-patch lint throws because Bad has a real error; the findings are
+    // Per-patch lint throws because Bad has a real error. The findings are
     // still emitted via warn() before the throw.
     await lintCommand(projectRoot, [], { perPatch: true, noCache: true }).catch(() => undefined);
 
     const lines = checkJsLines();
-    // Exactly one checkJs finding — not duplicated once per patch in the queue.
+    // Exactly one checkJs finding, not duplicated once per patch in the queue.
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('Bad.sys.mjs');
     expect(lines[0]).toContain('002-bad.patch');
@@ -164,7 +164,7 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
 
     vi.mocked(warn).mockClear();
 
-    // Subset run over the clean patch: the bad patch's finding must NOT
+    // Subset run over the clean patch: the bad patch's finding must not
     // surface (its file is resolvable but not a root).
     await lintCommand(projectRoot, [], {
       perPatch: true,
@@ -184,7 +184,7 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
     groupedSpy.mockClear();
     vi.mocked(warn).mockClear();
 
-    // Warm run: every patch hits the cache; run-level globals come from the
+    // Warm run: every patch hits the cache. Run-level globals come from the
     // cheap probe, so the ~37 s program build never happens.
     await lintCommand(projectRoot, [], { perPatch: true }).catch(() => undefined);
 
@@ -196,7 +196,7 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
   });
 
   it('a warm (all-cache-hit) run still surfaces run-level checkJs errors', async () => {
-    // A broken extra shim produces a GLOBAL checkJs error (no owning file).
+    // A broken extra shim produces a global checkJs error (no owning file).
     // Global findings are never cached, so an all-cache-hit run that drops
     // them reports fewer errors than a cold run.
     const { writeFireForgeConfig: rewriteConfig } = await import('../../test-utils/index.js');
@@ -217,7 +217,7 @@ describe('lint --per-patch checkJs program is built once and attributed per patc
 
     vi.mocked(warn).mockClear();
 
-    // Warm run — every patch is a cache hit, the global error must persist.
+    // Warm run: every patch is a cache hit, the global error must persist.
     await lintCommand(projectRoot, [], { perPatch: true }).catch(() => undefined);
     const warmLines = globalErrorLines();
     expect(warmLines.length).toBe(coldLines.length);
@@ -245,7 +245,7 @@ describe('lint --per-patch checkJs over patch-owned test files', () => {
     '',
   ].join('\n');
   // Consumer-typed harness shim: TestUtils exists but declares only
-  // waitForTick — the waitForCondition call must fail as a type error.
+  // waitForTick, so the waitForCondition call must fail as a type error.
   const TYPED_TEST_SHIM = [
     'interface TypedTestUtils {',
     '  waitForTick(): Promise<void>;',

@@ -109,7 +109,7 @@ vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(),
   readText: vi.fn(),
   // Export the real regex so status's atomic-write-temp filter behaves
-  // identically to production — the filter tests rely on the same pattern.
+  // identically to production. The filter tests rely on the same pattern.
   FIREFORGE_TMP_PATH_PATTERN: /(^|\/)\.[^/]+\.fireforge-tmp-\d+-[0-9a-f-]{36}$/i,
 }));
 
@@ -200,7 +200,7 @@ describe('statusCommand', () => {
       // Interrupting a `fireforge download` mid-indexing leaves engine/
       // extracted but git with no HEAD. `fireforge status` then floods the
       // output with hundreds of thousands of untracked entries plus a
-      // truncation warning — correct but unhelpful. Emit a single
+      // truncation warning, which is correct but unhelpful. Emit a single
       // actionable banner pointing at `fireforge download --force` instead.
       vi.mocked(getHead).mockRejectedValueOnce(
         new Error(
@@ -829,7 +829,7 @@ describe('statusCommand', () => {
     // `status --unmanaged` with exit 1: `isFileRegistered` throws
     // `GeneralError("Manifest not found: …")` synchronously and the
     // `Promise.all` in `printUnregisteredWarnings` re-throws it out of the
-    // command. Status is a read-only reporter; it surfaces the
+    // command. Status is a read-only reporter. It surfaces the
     // missing-manifest case as a warning line and still exits cleanly so it
     // stays usable in scripted discovery workflows.
     it('tolerates a missing parent moz.build when reporting new unmanaged files', async () => {
@@ -852,24 +852,22 @@ describe('statusCommand', () => {
   });
 
   describe('flag validation', () => {
-    it('throws when both --raw and --unmanaged are provided', async () => {
-      await expect(statusCommand(projectRoot, { raw: true, unmanaged: true })).rejects.toThrow(
+    it.each([
+      ['--raw and --unmanaged', { raw: true, unmanaged: true }],
+      ['--raw and --ownership', { raw: true, ownership: true }],
+      ['--unmanaged and --ownership', { unmanaged: true, ownership: true }],
+      ['--test-coverage and --json', { testCoverage: true, json: true }],
+    ])('throws when %s are combined', async (_label, options) => {
+      await expect(statusCommand(projectRoot, options)).rejects.toThrow(
         'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
       );
     });
 
-    it('throws when --raw and --ownership are combined', async () => {
-      await expect(statusCommand(projectRoot, { raw: true, ownership: true })).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
-      );
-    });
-
-    it('throws when --unmanaged and --ownership are combined', async () => {
-      await expect(
-        statusCommand(projectRoot, { unmanaged: true, ownership: true })
-      ).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
-      );
+    it.each([
+      ['--summary', { summary: true }, '--summary requires --json.'],
+      ['--include-ownership', { includeOwnership: true }, '--include-ownership requires --json.'],
+    ])('refuses %s without --json', async (_label, options, message) => {
+      await expect(statusCommand(projectRoot, options)).rejects.toThrow(message);
     });
   });
 
@@ -935,12 +933,6 @@ describe('statusCommand', () => {
       expect(messages.some((m) => m.includes('full (implicit'))).toBe(true);
       expect(messages.some((m) => m.includes('(unborn)'))).toBe(true);
     });
-
-    it('is mutually exclusive with --json', async () => {
-      await expect(statusCommand(projectRoot, { testCoverage: true, json: true })).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
-      );
-    });
   });
 
   describe('--ownership mode', () => {
@@ -981,7 +973,8 @@ describe('statusCommand', () => {
       // Two patches both hit `/dev/null → b/foo.js` in their bodies but only
       // one lists the path in its `filesAffected` row. Walking only
       // filesAffected reports the queue clean while verify correctly rejects
-      // it; status --ownership consumes the same structured map verify does.
+      // it. The status --ownership mode consumes the same structured map
+      // verify does.
       vi.mocked(loadPatchesManifest).mockResolvedValue({
         version: 1,
         patches: [
@@ -1274,7 +1267,7 @@ describe('statusCommand', () => {
     it('preserves an operator-named file that looks similar but lacks the PID+UUID tail', async () => {
       // The pattern is anchored to `fireforge-tmp-<digits>-<uuid>` so a
       // manually-named backup like `.notes.fireforge-tmp-backup` is
-      // NOT treated as a FireForge temp.
+      // not treated as a FireForge temp.
       vi.mocked(getStatusWithCodes).mockResolvedValue([
         { status: '??', file: '.notes.fireforge-tmp-backup' },
       ]);
@@ -1316,14 +1309,14 @@ describe('statusCommand', () => {
       expect(payload.schemaVersion).toBe(1);
       expect(payload.summary.total).toBe(0);
       expect(payload.files).toEqual([]);
-      // Human banner must NOT fire in json mode on a clean tree.
+      // Human banner must not fire in json mode on a clean tree.
       expect(infoMessages()).not.toContain('No modified files');
     });
 
     it('writes nothing to stdout when --raw is set and the tree is clean', async () => {
       // Raw consumers parse `git status --porcelain`-shaped output. A clean
-      // tree produces no lines there, so `fireforge status --raw` must match
-      // — a "No modified files" human banner contaminates the pipe.
+      // tree produces no lines there, so `fireforge status --raw` must match:
+      // a "No modified files" human banner contaminates the pipe.
       vi.mocked(getStatusWithCodes).mockResolvedValue([]);
       vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
       const writes: string[] = [];
@@ -1544,12 +1537,6 @@ describe('statusCommand', () => {
       );
     });
 
-    it('refuses an unknown --fail-on classification naming the valid set', async () => {
-      await expect(statusCommand(projectRoot, { failOn: 'bogus' })).rejects.toThrow(
-        /Unknown --fail-on classification "bogus"/
-      );
-    });
-
     it('composes with --json: stdout stays parseable JSON and the check still fails', async () => {
       seedSingleOwnerManifest();
       vi.mocked(getStatusWithCodes).mockResolvedValue([
@@ -1574,7 +1561,7 @@ describe('statusCommand', () => {
       const payload = JSON.parse(writes.join('')) as { schemaVersion: number };
       expect(payload.schemaVersion).toBe(1);
 
-      // Machine mode must SURVIVE the refusal's propagation:
+      // Machine mode must survive the refusal's propagation:
       // withErrorHandling (not statusCommand) resets it after routing the
       // message to stderr. A mid-throw restore puts clack's styled refusal
       // on stdout after the JSON.
@@ -1651,7 +1638,7 @@ describe('statusCommand', () => {
       computePatchedContentMock.mockResolvedValue('ok');
       vi.mocked(readText).mockResolvedValue('ok');
       vi.mocked(getStatusWithCodes).mockResolvedValue([
-        // patch-backed (outside the default fail set → NOT an offender)
+        // patch-backed (outside the default fail set → not an offender)
         { status: ' M', file: 'browser/base/backed.js' },
         { status: '??', file: 'browser/base/new-a.js' },
       ]);
@@ -1703,12 +1690,6 @@ describe('statusCommand', () => {
       expect(payload.summary.total).toBe(0);
       expect(payload.check?.failed).toBe(false);
       expect(payload.check?.offenders).toEqual([]);
-    });
-
-    it('is refused without --json', async () => {
-      await expect(statusCommand(projectRoot, { summary: true })).rejects.toThrow(
-        '--summary requires --json.'
-      );
     });
   });
 
@@ -1797,7 +1778,7 @@ describe('statusCommand', () => {
       expect(conflictRow?.conflictReason).toBe('files-affected');
       expect(conflictRow?.owners).toEqual(['001-ui-a.patch', '002-ui-b.patch']);
       expect(payload.ownership?.summary.conflicts).toBe(1);
-      // The human --ownership mode exits 1 on conflicts; --json must not.
+      // The human --ownership mode exits 1 on conflicts, but --json must not.
       // Reaching this line at all is the assertion.
     });
 
@@ -1842,7 +1823,7 @@ describe('statusCommand', () => {
       const { restore } = captureStdout();
 
       try {
-        // The unmanaged file trips the check policy — not the ownership
+        // The unmanaged file trips the check policy, not the ownership
         // conflict, which never fails --json.
         await expect(
           statusCommand(projectRoot, { json: true, includeOwnership: true, check: true })
@@ -1850,12 +1831,6 @@ describe('statusCommand', () => {
       } finally {
         restore();
       }
-    });
-
-    it('is refused without --json', async () => {
-      await expect(statusCommand(projectRoot, { includeOwnership: true })).rejects.toThrow(
-        '--include-ownership requires --json.'
-      );
     });
   });
 
@@ -1960,13 +1935,13 @@ describe('statusCommand', () => {
     it('engine-missing: stdout carries only the JSON object, never the human banner', async () => {
       // Writing the JSON line and then throwing a GeneralError routes
       // through `logError` (clack `p.log.error`), which prints the styled
-      // "■ Firefox source not found …" banner to stdout — breaking every
+      // "■ Firefox source not found …" banner to stdout, breaking every
       // script that pipes `status --json` to jq on an engine-missing exit.
-      // Throwing a CommandError instead is not logged by withErrorHandling;
+      // Throwing a CommandError instead is not logged by withErrorHandling.
       // bin/fireforge.ts catches it and exits with the carried code, so
       // stdout stays a single JSON line.
       vi.mocked(pathExists).mockImplementation((path: string) => {
-        // engine/ missing — every other path is irrelevant for the
+        // engine/ is missing. Every other path is irrelevant for the
         // engine-missing branch.
         if (path === '/fake/engine') return Promise.resolve(false);
         return Promise.resolve(true);

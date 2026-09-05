@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Patch-owned overwrite detection for `furnace apply`: a
- * deployed engine file whose bytes differ from the component source AND
- * whose path is patch-owned produces a loud warning naming file + owner;
- * unclaimed drift and clean deployments stay silent.
+ * deployed engine file whose bytes differ from the component source and
+ * whose path is patch-owned produces a loud warning naming file + owner.
+ * Unclaimed drift and clean deployments stay silent.
  */
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';

@@ -3,7 +3,7 @@
  * Structural rules for the `sharedFtl` field on a custom component.
  *
  * Both the `--shared-ftl` CLI flag path (`furnace create`) and the
- * furnace.json parser apply the same rules — extracting them here
+ * furnace.json parser apply the same rules. Extracting them here
  * avoids drift between the two entry points and lets the `.mjs`
  * template generator assume the value is safe to interpolate verbatim.
  */
@@ -11,11 +11,11 @@
 /**
  * Characters that must not appear in `sharedFtl`.
  *
- * A POLICY rule about what a sensible FTL path looks like, not the safety
- * boundary for the generated `.mjs`: the scaffold escapes the value at its
- * sink with `JSON.stringify` (`commands/furnace/create-templates.ts`), which
- * is what actually makes interpolation safe and what covers the two inputs
- * this rule never catches — a `"` and a raw newline.
+ * This is a policy rule about what a sensible FTL path looks like, not the
+ * safety boundary for the generated `.mjs`. The scaffold escapes the value at
+ * its sink with `JSON.stringify` (`commands/furnace/create-templates.ts`),
+ * which is what actually makes interpolation safe, and what covers the two
+ * inputs this rule never catches: a `"` and a raw newline.
  *
  * Kept because each remains a real sign of a malformed path:
  *  - `\` is a path-escape we do not want to interpret.
@@ -27,7 +27,7 @@ const UNSAFE_CHARS = /[`\\]|\$\{/;
 
 /**
  * Outcome of {@link validateSharedFtl}. `ok: true` carries the trimmed
- * (operator-safe) value; `ok: false` carries a human-readable message
+ * (operator-safe) value. `ok: false` carries a human-readable message
  * suitable for throwing as a `FurnaceError` or `InvalidArgumentError`.
  */
 export type SharedFtlValidation = { ok: true; value: string } | { ok: false; reason: string };

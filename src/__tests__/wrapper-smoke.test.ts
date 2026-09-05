@@ -26,11 +26,11 @@ const npmInvocation =
  * These tests spawn npm (pack/init/install). When the invocation falls back
  * to the bare `npm` command, a runner without npm on PATH (e.g. a container
  * with only node + node_modules) would fail every test with an opaque
- * `spawn npm ENOENT` — detect that up front and skip with a clear message.
+ * `spawn npm ENOENT`, so detect that up front and skip with a clear message.
  */
 function isNpmInvocationAvailable(): boolean {
   if (npmInvocation.file === process.execPath) {
-    return true; // resolved via npm_execpath — runs through the node binary
+    return true; // resolved via npm_execpath, runs through the node binary
   }
   return (process.env['PATH'] ?? '')
     .split(delimiter)
@@ -91,7 +91,7 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
     expect(packedFiles.some((path) => path.startsWith('templates/configs/'))).toBe(true);
     // The README's Documentation section links `docs/…` relatively, so a
     // package without the tree dead-ends every one of those links exactly
-    // where the self-serve doctrine says to look — the installed package.
+    // where the self-serve doctrine says to look: the installed package.
     expect(packedFiles.some((path) => path.startsWith('docs/'))).toBe(true);
     expect(packedFiles.some((path) => path.startsWith('configs/'))).toBe(false);
     expect(packedFiles.some((path) => path.startsWith('src/'))).toBe(false);
@@ -100,7 +100,7 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
   }, 30_000);
 
   it('npm pack produces a working installable tarball and installed CLI entrypoint', async () => {
-    // Pack the repo — prepack will run tsc
+    // Pack the repo. Prepack will run tsc
     const { stdout: packOut } = await execNpm(['pack', '--json', '--silent'], {
       cwd: repoRoot,
     });
@@ -176,7 +176,7 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
     expect(stdout).toContain('Usage: fireforge');
 
     // The packing repo is a git checkout, so the installed CLI reports the
-    // stamped build identity. Shape only — the dirty flag
+    // stamped build identity. Shape only, because the dirty flag
     // varies with the packing tree, and a dirty pack additionally carries
     // the content hash that distinguishes it from another pack at the same
     // HEAD. A release packs clean, so CI sees the bare form.

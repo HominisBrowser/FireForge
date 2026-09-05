@@ -135,8 +135,8 @@ async function refreshSingleOverride(
     return { results: [], currentVersion };
   }
 
-  // Prefer the per-override baseCommit (survives download --force); fall back
-  // to the project-wide value for overrides created before this field existed.
+  // Prefer the per-override baseCommit (survives download --force). Fall
+  // back to the project-wide value for overrides created before this field existed.
   const baseCommit = overrideConfig.baseCommit ?? state.baseCommit;
   if (!baseCommit) {
     throw new FurnaceError(
@@ -192,15 +192,15 @@ async function refreshSingleOverride(
             ftlDir
           ).slice(paths.engine.length + 1);
 
-          const result = await refreshOverrideFile(
-            paths.engine,
+          const result = await refreshOverrideFile({
+            engineDir: paths.engine,
             overridePath,
             engineRelPath,
             baseCommit,
-            entry.name,
+            fileName: entry.name,
             dryRun,
-            strategy
-          );
+            strategy,
+          });
           fileResults.push(result);
         }
 
@@ -220,7 +220,7 @@ async function refreshSingleOverride(
 
         return fileResults;
       } catch (error: unknown) {
-        // A dry run wrote nothing, so there is no journal to restore — it
+        // A dry run wrote nothing, so there is no journal to restore. It
         // rethrows without touching the lifecycle wrapper.
         if (!dryRun) {
           return await completeJournalRollback(ctx, journal, error, {
@@ -252,7 +252,7 @@ interface BatchRefreshTally {
 /**
  * Refreshes every override sequentially, tallying merged/conflict/
  * unchanged file counts. Per-override errors are expected (warned and
- * recorded as failures) and do not abort the batch; only an error that
+ * recorded as failures) and do not abort the batch. Only an error that
  * escapes this function entirely warrants the caller's journal rollback.
  */
 async function runBatchRefresh(
@@ -322,7 +322,7 @@ export async function furnaceRefreshCommand(
     throw new FurnaceError('Cannot specify both a component name and --all. Use one or the other.');
   }
 
-  // Verify engine exists — refresh reads engine files for three-way merge
+  // Verify engine exists: refresh reads engine files for three-way merge
   // and --reset-base reads engine HEAD. Without this check, the user gets
   // an obscure git error instead of a clear precondition message.
   await assertFurnaceEngineReady(projectRoot);
@@ -360,7 +360,7 @@ export async function furnaceRefreshCommand(
 
   // Snapshot furnace.json before the batch loop so an unexpected failure
   // (process crash, unhandled error) can be recovered from. Per-component
-  // errors caught below are expected and do not trigger a restore — only
+  // errors caught below are expected and do not trigger a restore. Only
   // an error that escapes the loop entirely warrants rolling back.
   const batchJournal = dryRun ? undefined : createRollbackJournal();
   if (batchJournal) {

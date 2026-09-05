@@ -16,6 +16,7 @@ import {
 } from '../core/discard-baseline.js';
 import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
+import type { GitStatusEntry } from '../core/git-base.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { GitError } from '../errors/git.js';
@@ -91,7 +92,7 @@ async function discardDirectoryEntries(
   engineDir: string,
   patchesDir: string,
   dirPath: string,
-  entries: ReadonlyArray<Awaited<ReturnType<typeof expandUntrackedDirectoryEntries>>[number]>,
+  entries: ReadonlyArray<GitStatusEntry>,
   options: DiscardOptions
 ): Promise<void> {
   const proceed = await confirmDiscard(
@@ -149,7 +150,7 @@ async function discardDirectoryEntries(
         );
       }
     } catch {
-      // Furnace config may not exist — skip silently
+      // Furnace config may not exist, so skip silently.
     }
 
     if (failures.length > 0) {
@@ -194,7 +195,7 @@ export async function discardCommand(
   );
 
   // Directory recursion fallback: when the explicit path does not match a
-  // single status entry but DOES correspond to one or more entries below it,
+  // single status entry but does correspond to one or more entries below it,
   // treat the input as a directory and discard everything inside. Otherwise
   // `discard <dir> --yes` fails with "no changes to discard" even though
   // `status --unmanaged` lists files under that directory, forcing the
@@ -237,8 +238,8 @@ export async function discardCommand(
   }
 
   if (options.dryRun) {
-    // Show the rename pair regardless of which side the operator passed —
-    // passing the NEW path of a rename used to hide that discarding also
+    // Show the rename pair regardless of which side the operator passed.
+    // Passing the new path of a rename used to hide that discarding also
     // resurrects the old path, exactly when the full picture matters most.
     info(`Would discard changes to: ${dryRunLabel(plan)}`);
     outro('Dry run complete — no changes made');
@@ -263,7 +264,7 @@ export async function discardCommand(
         warn('This file is managed by Furnace. Run "fireforge furnace apply" to restore it.');
       }
     } catch {
-      // Furnace config may not exist — skip silently
+      // Furnace config may not exist, so skip silently.
     }
 
     outro(describeDiscardOutcome(plan, options.toUpstream === true));

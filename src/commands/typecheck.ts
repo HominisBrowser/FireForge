@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge typecheck` — whole-project TypeScript type checking driven by
+ * `fireforge typecheck`: whole-project TypeScript type checking driven by
  * user-supplied jsconfig.json paths.
  *
  * Distinct from `patchLint.checkJs`: that pass is patch-hygiene (scoped to
- * patch-owned `.sys.mjs`, run automatically by `fireforge lint`); this
- * command is CI-grade — it runs whole projects with the user's own compiler
+ * patch-owned `.sys.mjs`, run automatically by `fireforge lint`). This
+ * command is CI-grade: it runs whole projects with the user's own compiler
  * options. The two share their Firefox-globals shim and the same
  * suppressed-diagnostic set so a file that lints clean cannot fail typecheck
  * for a reason the operator could not have inferred from the docs.
@@ -35,8 +35,8 @@ import { buildPerRunCheckJs } from './lint-per-run-checkjs.js';
 export interface TypecheckCommandOptions {
   /**
    * Override `typecheck.projects` with a single jsconfig.json path
-   * for one-off verification. Replaces (does not augment) the config
-   * — useful to re-run a single project after fixing one of its
+   * for one-off verification. Replaces (does not augment) the config,
+   * which is useful to re-run a single project after fixing one of its
    * issues without waiting for the full set.
    */
   project?: string;
@@ -44,7 +44,7 @@ export interface TypecheckCommandOptions {
 
 /**
  * Resolves the project list to type-check. `--project` wins over
- * config; if neither is set, throws a clear error pointing at both
+ * config. If neither is set, throws a clear error pointing at both
  * paths to a fix (add the config field or pass --project).
  */
 export function resolveTypecheckProjects(
@@ -81,8 +81,8 @@ export function resolveTypecheckProjects(
  */
 function formatIssue(projectRoot: string, issue: TypecheckIssue): string {
   const file = relativeForDisplay(projectRoot, issue.file);
-  const codeLabel = issue.code > 0 ? ` TS${String(issue.code)}` : '';
-  return `[${issue.project}] ${file}:${String(issue.line)}:${String(issue.column)}${codeLabel} ${issue.message}`;
+  const codeLabel = issue.code > 0 ? ` TS${issue.code}` : '';
+  return `[${issue.project}] ${file}:${issue.line}:${issue.column}${codeLabel} ${issue.message}`;
 }
 
 /**
@@ -110,7 +110,7 @@ async function runTypecheckCommandBody(
   options: TypecheckCommandOptions
 ): Promise<void> {
   // Validate project is initialised. `loadConfig` throws on missing
-  // fireforge.json — withErrorHandling at the CLI layer renders the
+  // fireforge.json, and withErrorHandling at the CLI layer renders the
   // resulting `ConfigNotFoundError` cleanly, so we don't need to
   // re-wrap.
   getProjectPaths(projectRoot);
@@ -125,9 +125,7 @@ async function runTypecheckCommandBody(
   // use so typecheck checks against the current workspace.
   await regenerateStaleGeneratedJsconfig(projectRoot);
 
-  info(
-    `Running typecheck across ${String(cfg.projects.length)} project(s): ${cfg.projects.join(', ')}`
-  );
+  info(`Running typecheck across ${cfg.projects.length} project(s): ${cfg.projects.join(', ')}`);
 
   const results = await runTypecheck(projectRoot, cfg);
   // Fold the EXPORT-TIME authority into this pass. Per-patch lint runs
@@ -143,8 +141,8 @@ async function runTypecheckCommandBody(
 }
 
 /**
- * Runs the per-patch-lint checkJs pass — the same program `export` and
- * `lint --per-patch` use — and returns its findings.
+ * Runs the per-patch-lint checkJs pass (the same program `export` and
+ * `lint --per-patch` use) and returns its findings.
  *
  * Returns an empty list when `patchLint.checkJs` is off or the project has
  * no patch queue: there is no second authority to reconcile then.
@@ -181,8 +179,8 @@ async function regenerateStaleGeneratedJsconfig(projectRoot: string): Promise<vo
 
   info(
     `Regenerating stale generated jsconfig ${furnaceConfig.typecheckJsconfig} before typecheck ` +
-      `(+${String(drift.added.length)} added, ~${String(drift.updated.length)} updated, ` +
-      `-${String(drift.pruned.length)} pruned).`
+      `(+${drift.added.length} added, ~${drift.updated.length} updated, ` +
+      `-${drift.pruned.length} pruned).`
   );
   await syncFurnaceJsconfigPaths(projectRoot, furnaceConfig);
 }
@@ -218,10 +216,10 @@ export function reportResults(
   }
 
   const summary =
-    `Typecheck: ${String(totalErrors)} error(s), ${String(totalWarnings)} warning(s) across ` +
-    `${String(results.length)} project(s)` +
+    `Typecheck: ${totalErrors} error(s), ${totalWarnings} warning(s) across ` +
+    `${results.length} project(s)` +
     (patchLintIssues.length > 0
-      ? ` (including ${String(patchLintIssues.length)} per-patch checkJs finding(s))`
+      ? ` (including ${patchLintIssues.length} per-patch checkJs finding(s))`
       : '');
   if (totalErrors === 0) {
     success(summary);
@@ -232,7 +230,7 @@ export function reportResults(
   info(summary);
   outro('Typecheck failed');
   throw new GeneralError(
-    `Typecheck found ${String(totalErrors)} error(s) across ${String(results.length)} project(s).`
+    `Typecheck found ${totalErrors} error(s) across ${results.length} project(s).`
   );
 }
 

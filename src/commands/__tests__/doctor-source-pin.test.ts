@@ -4,9 +4,9 @@
  *
  * `fireforge source set` writes the pin into fireforge.json beside
  * hand-maintained sections, so a routine `git checkout -- fireforge.json`
- * silently reverts an uncommitted pin. Nothing reported the divergence; the
+ * silently reverts an uncommitted pin. Nothing reported the divergence. The
  * field tell was a gate flipping green with no change that should have made
- * it green. This makes a mismatched tree visible — a report, never a lock.
+ * it green. This makes a mismatched tree visible as a report, never a lock.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -93,7 +93,7 @@ describe('source pin doctor check', () => {
   });
 
   it('stays quiet when the config could not be loaded', async () => {
-    // Its own check already reported that; a second complaint helps nobody.
+    // Its own check already reported that. A second complaint helps nobody.
     expect(await run(makeCtx({}))).toMatchObject({ severity: 'ok' });
   });
 

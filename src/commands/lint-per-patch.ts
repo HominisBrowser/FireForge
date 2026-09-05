@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join } from 'node:path';
 
-import { getProjectPaths, loadConfig } from '../core/config.js';
+import { loadConfig } from '../core/config.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { withPrivateGitIndex } from '../core/git-readonly-index.js';
 import {
@@ -13,6 +13,7 @@ import {
   lintPatchQueue,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
+import type { PerPatchLintCacheFile } from '../core/patch-lint-cache.js';
 import {
   buildPerPatchLintCacheKey,
   getCachedPerPatchLintIssues,
@@ -21,11 +22,13 @@ import {
   savePerPatchLintCache,
   setCachedPerPatchLintIssues,
 } from '../core/patch-lint-cache.js';
+import type { PatchQueueContext } from '../core/patch-lint-cross.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError } from '../errors/base.js';
-import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
+import type { PatchesManifest, PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
 import type { LintCommandOptions } from '../types/commands/index.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { pathExists } from '../utils/fs.js';
 import { info, outro, success, warn } from '../utils/logger.js';
@@ -56,12 +59,12 @@ function emitTierNotice(filename: string, files: string[], tier: PatchMetadata['
 /** Shared inputs threaded into every per-patch lint invocation. */
 interface QueuedPatchLintContext {
   projectRoot: string;
-  paths: ReturnType<typeof getProjectPaths>;
-  config: Awaited<ReturnType<typeof loadConfig>>;
-  ctx: Awaited<ReturnType<typeof buildPatchQueueContext>>;
-  cache: Awaited<ReturnType<typeof loadPerPatchLintCache>> | undefined;
+  paths: ProjectPaths;
+  config: FireForgeConfig;
+  ctx: PatchQueueContext;
+  cache: PerPatchLintCacheFile | undefined;
   engineHeadSha: string | undefined;
-  /** Queue-wide checkJs program + per-patch attribution; undefined when
+  /** Queue-wide checkJs program + per-patch attribution. Undefined when
    *  `patchLint.checkJs` is off. */
   checkJs: PerRunCheckJs | undefined;
 }
@@ -69,18 +72,18 @@ interface QueuedPatchLintContext {
 /**
  * Per-patch lint outcome carried back from a worker so the orchestrator can
  * apply every side effect (tier notice, issue/cache pushes) deterministically
- * in patch order after the bounded pool drains — concurrency must not reorder
+ * in patch order after the bounded pool drains, so concurrency cannot reorder
  * the issue rows or the saved cache.
  */
 interface QueuedPatchResult {
   status: 'skipped' | 'cached' | 'linted';
-  /** Files present on disk; drives the tier notice. Empty when skipped. */
+  /** Files present on disk. Drives the tier notice. Empty when skipped. */
   existingFiles: string[];
-  /** Unprefixed issues (from cache or a fresh lint); empty when skipped. */
+  /** Unprefixed issues (from cache or a fresh lint). Empty when skipped. */
   rawIssues: PatchLintIssue[];
   /** Issues dropped by the patch's lintIgnore waivers. */
   suppressedIssues: PatchLintIssue[];
-  /** Non-binary diff line count; 0 when skipped. */
+  /** Non-binary diff line count, 0 when skipped. */
   lineCount: number;
   /** Present only on a fresh lint with the cache enabled. */
   cacheWrite?: { key: string; lintIgnore: string[] };
@@ -92,7 +95,7 @@ interface QueuedPatchResult {
 /**
  * Lints one queued patch against its own isolated diff, reusing the cache entry
  * when the cache key matches. Returns the outcome and the patch's (unprefixed)
- * issues without touching shared state — the orchestrator applies the tier
+ * issues without touching shared state. The orchestrator applies the tier
  * notice, issue prefixing, and cache write in patch order after the pool
  * drains, so the bounded concurrency cannot reorder output. Returns `skipped`
  * (no files present / empty diff), `cached`, or `linted`.
@@ -218,15 +221,15 @@ const SUPPRESSED_SIZE_CHECKS = new Set([
  * Applies the per-patch results in patch order so the bounded concurrency
  * cannot reorder output: emits each tier notice, the once-only run-level
  * checkJs errors (before the first freshly linted patch's issues), the
- * filename-prefixed issue rows, and the cache writes — all in the same sequence
- * a serial run produced. Returns the run tallies.
+ * filename-prefixed issue rows, and the cache writes, all in the same
+ * sequence a serial run produced. Returns the run tallies.
  */
 async function applyPerPatchResults(
   subset: PatchMetadata[],
   results: QueuedPatchResult[],
   issues: PatchLintIssue[],
   checkJs: PerRunCheckJs | undefined,
-  cache: Awaited<ReturnType<typeof loadPerPatchLintCache>> | undefined
+  cache: PerPatchLintCacheFile | undefined
 ): Promise<PerPatchTotals> {
   const totals: PerPatchTotals = {
     linted: 0,
@@ -248,8 +251,8 @@ async function applyPerPatchResults(
     emitTierNotice(patch.filename, result.existingFiles, patch.tier);
 
     // Run-level checkJs errors are emitted once, before the first
-    // non-skipped patch's own issues — matching the serial emit point.
-    // Deliberately NOT gated on `result.usedCheckJs`: global findings are
+    // non-skipped patch's own issues, matching the serial emit point.
+    // Not gated on `result.usedCheckJs`: global findings are
     // run-level and never cached, so gating drops them entirely on an
     // all-cache-hit run and lets a warm run report fewer errors than a cold
     // one. PerRunCheckJs builds its program lazily, so the cost only
@@ -260,15 +263,15 @@ async function applyPerPatchResults(
     }
 
     if (result.cacheWrite && cache) {
-      setCachedPerPatchLintIssues(
+      setCachedPerPatchLintIssues({
         cache,
-        patch.filename,
-        result.cacheWrite.key,
-        result.rawIssues,
-        result.suppressedIssues,
-        result.lineCount,
-        result.cacheWrite.lintIgnore
-      );
+        patchFilename: patch.filename,
+        key: result.cacheWrite.key,
+        issues: result.rawIssues,
+        suppressed: result.suppressedIssues,
+        lineCount: result.lineCount,
+        lintIgnore: result.cacheWrite.lintIgnore,
+      });
       totals.cacheDirty = true;
     }
 
@@ -276,7 +279,7 @@ async function applyPerPatchResults(
       issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
     }
 
-    // A waived size finding still reports its MEASUREMENT: the finding stays
+    // A waived size finding still reports its measurement: the finding stays
     // suppressed (no exit-code / --max-warnings effect) but the current count
     // is readable from the tool that enforces it, so a waiver's cited size
     // can be calibrated without hand-measuring.
@@ -391,12 +394,12 @@ function reportPerPatchOutcome(
 /**
  * Resolves the `--patches <name…>` subset filter against the manifest,
  * matching each requested name tolerantly (exact filename, filename ±
- * `.patch`, or the manifest `name` field). Throws listing the available
+ * `.patch`, the bare order number, or the manifest `name` field). Throws listing the available
  * patches when a requested name matches none, so a typo fails loud rather
  * than silently linting nothing.
  */
 function selectPatchSubset(
-  manifest: NonNullable<Awaited<ReturnType<typeof loadPatchesManifest>>>,
+  manifest: PatchesManifest,
   requested: readonly string[]
 ): PatchMetadata[] {
   const normalizedRequests = requested
@@ -406,7 +409,13 @@ function selectPatchSubset(
 
   const patchAliases = (p: PatchMetadata): Set<string> => {
     const aliases = new Set<string>([p.filename, p.filename.replace(/\.patch$/, ''), p.name]);
+    // The bare order number, both as the manifest records it and as the
+    // filename spells it (`2` and `002`). The refusal message offers stems,
+    // and an operator reading `102-ui-canvas-tiles.patch` in a lint finding
+    // reaches for `102` first.
+    aliases.add(String(p.order));
     const match = /^(\d+)-([a-z]+)-(.+)\.patch$/.exec(p.filename);
+    if (match?.[1]) aliases.add(match[1]);
     if (match?.[2] && match[3]) {
       aliases.add(`${match[2]}-${match[3]}`);
       aliases.add(match[3]);
@@ -429,7 +438,7 @@ function selectPatchSubset(
       const available = manifest.patches.map((p) => p.filename).join(', ');
       throw new GeneralError(
         `No patch in the queue matches "${name}". In --per-patch mode, positional arguments ` +
-          `and --patches select patches (filename, stem, manifest name, or slug) — not engine ` +
+          `and --patches select patches (filename, stem, order number, manifest name, or slug) — not engine ` +
           `files; drop --per-patch to lint engine paths. Available patches: ${available}`
       );
     }
@@ -452,10 +461,10 @@ function selectPatchSubset(
  */
 export async function lintPerPatch(
   projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   options: LintCommandOptions = {}
 ): Promise<void> {
-  // Read-only to the operator, an index WRITER to git: the per-patch diffs
+  // Read-only to the operator, but an index writer to git: the per-patch diffs
   // run `git diff HEAD` (and, for untracked binaries, a real stage/unstage
   // pair) against the primary checkout. A private index absorbs all of it
   // so a concurrent `fireforge test` still gets an evidential verdict.
@@ -464,7 +473,7 @@ export async function lintPerPatch(
 
 async function lintPerPatchInner(
   projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   options: LintCommandOptions = {}
 ): Promise<void> {
   const manifest = await loadPatchesManifest(paths.patches);
@@ -510,7 +519,7 @@ async function lintPerPatchInner(
   }
 
   // With `--patches`, the checkJs program roots at only the subset's owned
-  // files — the full queue stays resolvable, so a cold subset run costs the
+  // files. The full queue stays resolvable, so a cold subset run costs the
   // subset's import closure instead of the whole queue.
   const checkJs = buildPerRunCheckJs(
     projectRoot,

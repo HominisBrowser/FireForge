@@ -3,7 +3,7 @@
  * Verdict-note helpers for the harness classifier.
  *
  * Split out of `test-harness-crash.ts` (at its per-file line budget). These
- * decide the ADVISORY parenthetical on the `FIREFORGE-VERDICT:` line; none
+ * decide the advisory parenthetical on the `FIREFORGE-VERDICT:` line. None
  * of them changes a status or a reason key, which the verdict contract's
  * consumers parse.
  */
@@ -31,12 +31,12 @@ const UNEXPECTED_MARKER = /TEST-UNEXPECTED-\w+/;
  * `Unexpected results: 0`, yet the run is still classified `test-failures`
  * on evidence lines that carry NO `TEST-UNEXPECTED-*` marker.
  *
- * `unexpected=0` printed beside `reason=test-failures` is the tell that the
- * verdict rests on pattern matching rather than on a harness result, and a
+ * `unexpected=0` printed beside `reason=test-failures` means the verdict
+ * rests on pattern matching rather than on a harness result, and a
  * reader who cannot see that spends hours attributing a red run to the
  * change under test. The note says so on the verdict line itself.
  *
- * Deliberately a NOTE and not a reclassification: a non-zero exit with no
+ * This is a note and not a reclassification: a non-zero exit with no
  * green-shaped summary is still a failing run, and inventing a new `reason`
  * would break the `FIREFORGE-VERDICT:` contract its consumers parse.
  */
@@ -64,16 +64,15 @@ const GREEN_TEARDOWN_EVIDENCE_LIMIT = 80;
 /**
  * Outcome of the green-teardown belt.
  *
- * `accepted` is the pass. A rejection carries `rejectedBy` ONLY when the
- * recognized teardown noise was present — i.e. when the belt was the thing
- * that could have applied and did not. That distinction is the whole point
- * of the field: a run with no teardown traceback was never a candidate and
- * naming a "rejecting condition" for it would be noise, whereas a run that
- * DOES carry the traceback and still fails is the shape an operator
- * otherwise cannot diagnose from outside — every condition is
- * all-or-nothing, so the failing verdict looks identical whichever one
- * rejected it, and a downstream report spent a re-run and a filed-bug's
- * worth of effort guessing between them.
+ * `accepted` is the pass. A rejection carries `rejectedBy` only when the
+ * recognized teardown noise was present, i.e. when the belt was the thing
+ * that could have applied and did not. That is what the field is for: a run
+ * with no teardown traceback was never a candidate and naming a "rejecting
+ * condition" for it would be noise, whereas a run that does carry the
+ * traceback and still fails is the shape an operator otherwise cannot
+ * diagnose from outside. Every condition is all-or-nothing, so the failing
+ * verdict looks identical whichever one rejected it, and a downstream report
+ * spent a re-run and a filed-bug's worth of effort guessing between them.
  */
 export interface GreenTeardownOverride {
   accepted: boolean;

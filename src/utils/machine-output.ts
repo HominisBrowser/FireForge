@@ -11,8 +11,8 @@
  *   1. Success writes exactly one JSON document to stdout.
  *   2. Failure writes exactly one `{ schemaVersion, error, code }` document
  *      to stdout, then exits non-zero.
- *   3. Machine mode is engaged BEFORE any output, so every diagnostic —
- *      including one rendered later by `withErrorHandling` — routes to
+ *   3. Machine mode is engaged before any output, so every diagnostic,
+ *      including one rendered later by `withErrorHandling`, routes to
  *      stderr and cannot corrupt the payload.
  */
 import { CommandError } from '../errors/base.js';

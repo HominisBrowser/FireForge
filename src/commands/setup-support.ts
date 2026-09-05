@@ -48,9 +48,16 @@ function renderLicenseTemplate(
   return template.replace(/\[year\]/g, String(now.getFullYear())).replace(/\[fullname\]/g, vendor);
 }
 
-function resolveFirefoxProduct(value: unknown, field: string): FirefoxProduct {
+/**
+ * Narrows a raw CLI or prompt value to a supported Firefox product.
+ * @param value - Raw value from `--product` or the setup prompt.
+ * @param field - Field name quoted in the refusal (e.g. `--product`).
+ * @returns The validated product.
+ * @throws {@link InvalidArgumentError} when the value names no supported product.
+ */
+export function resolveFirefoxProduct(value: unknown, field: string): FirefoxProduct {
   // Matches the sibling `resolveProjectLicense`, which already delegates to
-  // its guard. The `||` chain this replaced spelled the member list twice —
+  // its guard. The `||` chain this replaced spelled the member list twice,
   // once as the predicate and once in the message.
   if (typeof value === 'string' && isValidFirefoxProduct(value)) {
     return value;
@@ -59,7 +66,14 @@ function resolveFirefoxProduct(value: unknown, field: string): FirefoxProduct {
   throw new InvalidArgumentError(`Invalid product (use: ${FIREFOX_PRODUCTS.join(', ')})`, field);
 }
 
-function resolveProjectLicense(value: unknown, field: string): ProjectLicense {
+/**
+ * Narrows a raw CLI or prompt value to a supported SPDX licence identifier.
+ * @param value - Raw value from `--license` or the setup prompt.
+ * @param field - Field name quoted in the refusal (e.g. `--license`).
+ * @returns The validated licence identifier.
+ * @throws {@link InvalidArgumentError} when the value names no supported licence.
+ */
+export function resolveProjectLicense(value: unknown, field: string): ProjectLicense {
   if (typeof value === 'string' && isValidProjectLicense(value)) {
     return value;
   }
@@ -68,24 +82,6 @@ function resolveProjectLicense(value: unknown, field: string): ProjectLicense {
     'Invalid license (use: EUPL-1.2, MPL-2.0, 0BSD, GPL-2.0-or-later)',
     field
   );
-}
-
-/** Parses an optional Firefox product flag into a typed product value. */
-export function parseFirefoxProductOption(product: string | undefined): FirefoxProduct | undefined {
-  if (product === undefined) {
-    return undefined;
-  }
-
-  return resolveFirefoxProduct(product, '--product');
-}
-
-/** Parses an optional license flag into a validated SPDX identifier. */
-export function parseProjectLicenseOption(license: string | undefined): ProjectLicense | undefined {
-  if (license === undefined) {
-    return undefined;
-  }
-
-  return resolveProjectLicense(license, '--license');
 }
 
 /** Validates non-interactive setup options before project scaffolding begins. */
@@ -255,7 +251,7 @@ async function promptSetupInputs(options: SetupOptions): Promise<ResolvedSetupIn
 /**
  * Shape of the raw object returned by `@clack/prompts`'s group helper for
  * setup. Every field is `unknown` because `text()` and `select()` return
- * `string | symbol`; `finalizePromptedSetupInputs` narrows each one before
+ * `string | symbol`. `finalizePromptedSetupInputs` narrows each one before
  * use.
  */
 interface PromptedSetupValues {
@@ -278,7 +274,7 @@ function finalizePromptedSetupInputs(project: PromptedSetupValues): ResolvedSetu
   // Project names that contain no ASCII alphanumerics (e.g. "----", "漢字",
   // emoji-only) collapse to an empty sanitised slug, which would silently
   // produce an invalid `appId` ("org..browser") and an empty `binaryName`.
-  // Refuse to derive defaults from such names — the user must supply
+  // Refuse to derive defaults from such names. The user must supply
   // explicit appId / binaryName values instead.
   const explicitAppId = typeof project.appId === 'string' ? project.appId.trim() : '';
   const explicitBinaryName =
@@ -380,7 +376,7 @@ export function buildSetupConfig(inputs: ResolvedSetupInputs): FireForgeConfig {
 /**
  * Creates or updates the root `package.json` so its `license` field matches
  * the project license selected during setup. When the file already exists
- * ONLY the `license` field is touched — preserving `name`, `description`,
+ * only the `license` field is touched, preserving `name`, `description`,
  * `dependencies`, `scripts`, and every other author-editorial field. Without
  * this sync, a `fireforge setup --force` that picks a new license leaves the
  * old one in `package.json`, so the two files describe different projects.
@@ -406,7 +402,7 @@ async function syncRootPackageJson(projectRoot: string, license: ProjectLicense)
     parsed = JSON.parse(raw);
   } catch {
     // Malformed package.json is the operator's editorial responsibility to
-    // repair; rewriting it would risk clobbering hand-authored content that
+    // repair. Rewriting it would risk clobbering hand-authored content that
     // the parser happens to reject. Leave the file alone and rely on the
     // doctor / lint paths that already surface invalid JSON.
     return;

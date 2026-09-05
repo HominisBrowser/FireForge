@@ -66,8 +66,8 @@ import { cancel } from '../../utils/logger.js';
 import { inferProductFromVersion } from '../../utils/validation.js';
 import {
   buildSetupConfig,
-  parseFirefoxProductOption,
-  parseProjectLicenseOption,
+  resolveFirefoxProduct,
+  resolveProjectLicense,
   resolveSetupInputs,
   validateSetupOptions,
   writeSetupProjectFiles,
@@ -112,15 +112,13 @@ describe('setup-support', () => {
     promptMocks.group.mockReset();
   });
 
-  it('parses optional CLI product and license values', () => {
-    expect(parseFirefoxProductOption(undefined)).toBeUndefined();
-    expect(parseFirefoxProductOption('firefox-beta')).toBe('firefox-beta');
-    expect(parseFirefoxProductOption('firefox-devedition')).toBe('firefox-devedition');
-    expect(() => parseFirefoxProductOption('waterfox')).toThrow('Invalid product');
+  it('resolves CLI product and license values, rejecting unknown ones', () => {
+    expect(resolveFirefoxProduct('firefox-beta', '--product')).toBe('firefox-beta');
+    expect(resolveFirefoxProduct('firefox-devedition', '--product')).toBe('firefox-devedition');
+    expect(() => resolveFirefoxProduct('waterfox', '--product')).toThrow('Invalid product');
 
-    expect(parseProjectLicenseOption(undefined)).toBeUndefined();
-    expect(parseProjectLicenseOption('0BSD')).toBe('0BSD');
-    expect(() => parseProjectLicenseOption('MIT')).toThrow('Invalid license');
+    expect(resolveProjectLicense('0BSD', '--license')).toBe('0BSD');
+    expect(() => resolveProjectLicense('MIT', '--license')).toThrow('Invalid license');
   });
 
   it('validates setup option shapes strictly', () => {
@@ -232,7 +230,7 @@ describe('setup-support', () => {
   it('rejects names that sanitise to empty when neither appId nor binaryName is supplied', async () => {
     // Names made entirely of non-alphanumeric characters collapse to an
     // empty slug. Without explicit appId / binaryName values the derived
-    // defaults would be "org..browser" and "" respectively — both
+    // defaults would be "org..browser" and "" respectively, both
     // invalid downstream. The new precondition catches this up-front.
     promptMocks.group.mockResolvedValue({
       name: '!!!',
@@ -271,8 +269,8 @@ describe('setup-support', () => {
 
   it('rejects empty-slug names with only binaryName supplied — the empty-slug precondition fires before isValidAppId', async () => {
     // The new empty-slug check requires both appId and binaryName to be
-    // explicit; supplying just one is not enough. The previous behaviour
-    // would have hit the downstream "Derived appId" check instead — but
+    // explicit. Supplying just one is not enough. The previous behaviour
+    // would have hit the downstream "Derived appId" check instead, but
     // the new precondition gives a more actionable message earlier.
     promptMocks.group.mockResolvedValue({
       name: '!!!',
@@ -472,9 +470,9 @@ describe('setup-support', () => {
 
   it('updates only the license field on an existing root package.json and preserves deps', async () => {
     // A `fireforge setup --force` that picks a new license must not rewrite
-    // fireforge.json while leaving the root package.json untouched — the two
-    // files then disagree about the project license. The sync updates the
-    // package.json `license` field while preserving every other
+    // fireforge.json while leaving the root package.json untouched, because
+    // the two files then disagree about the project license. The sync
+    // updates the package.json `license` field while preserving every other
     // author-editorial field (dependencies, scripts, name, description, …).
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
       Promise.resolve(filePath === nativePath('/project/package.json'))

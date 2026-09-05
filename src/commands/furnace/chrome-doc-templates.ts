@@ -13,7 +13,7 @@
  * Sentinel attribute emitted on every `furnace chrome-doc create`-scaffolded
  * root element. Platform modules (`DevToolsStartup`, `PageActions`,
  * `SessionStore`, `DownloadsButton`, …) that observe
- * `browser-delayed-startup-finished` and walk INTO the window assume the
+ * `browser-delayed-startup-finished` and walk into the window assume the
  * `browser.xhtml` DOM and throw on anything else. A fork-authored patch
  * to such a module can use `hasAttribute(...)` against this sentinel as
  * a cheap, fork-neutral guard to skip the walk on a custom chrome doc.
@@ -60,8 +60,8 @@ export function generateChromeDocXhtml(
   withTitlebar: boolean,
   license: string
 ): string {
-  // navigator:browser minimum set. Carrying every attribute together —
-  // not just `windowtype` — lets a fork that uses the scaffold output
+  // navigator:browser minimum set. Carrying every attribute together, not
+  // just `windowtype`, lets a fork that uses the scaffold output
   // verbatim launch as a real main window: `customtitlebar` opts into the
   // platform-native title bar handling that pairs with the buttonbox
   // markup below, the explicit width/height avoid the OS-minimum first
@@ -107,21 +107,21 @@ export function generateChromeDocXhtml(
 }
 
 /**
- * browser.xhtml-like scaffold for the document that ships as the fork's MAIN
- * BROWSER WINDOW.
+ * browser.xhtml-like scaffold for the document that ships as the fork's main
+ * browser window.
  *
  * The generic dialog-shaped `<window>` scaffold is wrong for the
  * `tokenHostDocuments[0]` / BROWSER_CHROME_URL target: platform C++ reads
- * the root element BEFORE any script runs, and expects the `browser.xhtml`
+ * the root element before any script runs, and expects the `browser.xhtml`
  * shape:
  *
- * - `<html id="main-window">` root (not `<window id="<name>-window">`) —
+ * - `<html id="main-window">` root (not `<window id="<name>-window">`):
  *   upstream code from nsXULWindow sizing to session restore looks up
- *   `main-window` by id;
+ *   `main-window` by id.
  * - `windowtype="navigator:browser"`, `chromehidden=""` and the geometry
- *   `persist` allowlist declared as ROOT ATTRIBUTES so the platform's
+ *   `persist` allowlist declared as root attributes so the platform's
  *   pre-script pass (window tracking, XULStore geometry, chrome flags) sees
- *   them;
+ *   them.
  * - the same head/bootstrap wiring (customElements.js, per-doc subscript,
  *   CSS + Fluent links) and `data-furnace-chrome-doc` sentinel as the
  *   generic scaffold, so jar.mn registration and the platform-module guard
@@ -268,7 +268,7 @@ export function generateChromeDocCss(
 `;
 }
 
-/** Fluent stub — one placeholder message keyed to the window title. */
+/** Fluent stub with one placeholder message keyed to the window title. */
 export function generateChromeDocFtl(name: string, licenseHeader: string): string {
   return `${licenseHeader}
 
@@ -301,7 +301,7 @@ export function jarMnEntriesForChromeDoc(name: string): string[] {
  * The source path is `../shared/<name>-chrome.css` because `jar.inc.mn` is
  * included from each theme-specific manifest (`browser/themes/osx/jar.mn`,
  * `.../linux/`, `.../windows/`), and every existing entry in those manifests
- * resolves paths relative to the INCLUDING manifest's directory. A bare
+ * resolves paths relative to the including manifest's directory. A bare
  * `(shared/…)` path resolves to
  * `obj-.../browser/themes/osx/shared/<name>-chrome.css`, which does not
  * exist.
@@ -314,7 +314,7 @@ export function jarIncMnEntryForChromeDoc(name: string): string {
  * locales/jar.mn entry that registers the `.ftl` under the browser locale
  * bundle. The source path is resolved by mach-locale-jar relative to the
  * per-locale root (e.g. `engine/browser/locales/en-US/`), and the FTL file
- * is scaffolded at `browser/${name}.ftl` under that root — the `%` prefix
+ * is scaffolded at `browser/${name}.ftl` under that root. The `%` prefix
  * means "per-locale content" and the `browser/` subdirectory matches where
  * the scaffolder writes. A bare `(%${name}.ftl)` points at
  * `en-US/${name}.ftl` and breaks the first post-scaffold build with
@@ -329,11 +329,11 @@ export function localeJarMnEntryForChromeDoc(name: string): string {
  * wildcard rooted at `%browser/` whose pattern would already pick up a
  * scaffolded `browser/<name>.ftl` file. Recognises:
  *
- *   - `(%browser/**\/*.ftl)` — recursive (the upstream shape).
- *   - `(%browser/*.ftl)` — flat.
+ *   - `(%browser/**\/*.ftl)`: recursive (the upstream shape).
+ *   - `(%browser/*.ftl)`: flat.
  *
  * Forks that have migrated entirely to `[localization]` wildcards typically
- * keep no per-file `locale/...` entries for FTL at all; appending one
+ * keep no per-file `locale/...` entries for FTL at all. Appending one
  * there is dead weight at best, and an outright build break when the fork
  * has also dropped the `% locale browser …` registration. The chrome-doc
  * scaffolder consults this predicate before its locales/jar.mn append and
@@ -343,7 +343,7 @@ export function localeJarMnEntryForChromeDoc(name: string): string {
  * Conservative by design: only wildcards rooted at `%browser/` count, and
  * a `(%browser/foo.ftl)`-style explicit reference (no `*`) is not treated
  * as a capture. A fork with a narrower wildcard (e.g. `(%browser/about/*.ftl)`)
- * is correctly NOT captured by this predicate, because that wildcard would
+ * is correctly not captured by this predicate, because that wildcard would
  * not pick up the top-level `browser/<name>.ftl` the scaffold writes.
  */
 export function localesFtlWildcardCapturesScaffoldedName(jarMnContents: string): boolean {

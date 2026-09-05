@@ -4,14 +4,14 @@
  * `furnace.json` exists.
  *
  * Kept separate from the `GeneralError` ladder in `engine-precondition.ts`
- * because the error CLASS is load-bearing here, not cosmetic: `FurnaceError`
- * carries its own `userMessage` and exit code 9, so a helper raising
- * `GeneralError` would silently change both.
+ * because the error class matters here and is not merely cosmetic:
+ * `FurnaceError` carries its own `userMessage` and exit code 9, so a helper
+ * raising `GeneralError` would silently change both.
  *
- * Deliberately NOT routed through this helper — each informs rather than
- * refuses, and each says so at its own site: `furnace list`,
- * `furnace status`, `furnace init`, and `verify`. `furnace validate`
- * refusing is the intended line between inspecting and validating.
+ * Four sites are not routed through this helper: `furnace list`,
+ * `furnace status`, `furnace init`, and `verify`. Each informs rather than
+ * refuses, and each says so at its own site. `furnace validate` refusing is
+ * the intended line between inspecting and validating.
  */
 
 import { FurnaceError } from '../errors/furnace.js';
@@ -25,8 +25,8 @@ import { furnaceConfigExists, loadFurnaceConfig } from './furnace-config.js';
 export interface FurnacePreconditionOptions {
   /**
    * Appended to the engine-missing refusal, e.g.
-   * `' to scaffold a chrome-doc.'`. The base message ends WITHOUT
-   * punctuation so the suffix reads as one sentence; callers passing nothing
+   * `' to scaffold a chrome-doc.'`. The base message ends without
+   * punctuation so the suffix reads as one sentence. Callers passing nothing
    * get a plain full stop.
    */
   engineMissingSuffix?: string;
@@ -72,7 +72,7 @@ export async function assertFurnaceEngineReady(
 }
 
 /**
- * Asserts the full Furnace ladder — engine checkout, then `furnace.json` —
+ * Asserts the full Furnace ladder (engine checkout, then `furnace.json`)
  * and returns the loaded config so callers do not read it a second time.
  *
  * @param projectRoot - Project root directory

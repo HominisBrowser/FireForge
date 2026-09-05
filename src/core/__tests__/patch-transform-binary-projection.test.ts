@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * The new-file TEXT projection must skip binary sections.
+ * The new-file text projection must skip binary sections.
  *
  * Vendoring a brand-new binary file (a WOFF2 font face, say) was impossible
  * before 0.45.0: every cross-patch-lint projection fed each detected new file
@@ -102,7 +102,7 @@ describe('buildNewFileTextProjection', () => {
 
 describe('extractNewFileContentFromDiff', () => {
   it('still refuses a binary section named explicitly', () => {
-    // The single-file contract is unchanged: a caller that asked for THIS
+    // The single-file contract is unchanged: a caller that asked for this
     // file's text by name must be refused, not silently handed nothing.
     expect(() =>
       extractNewFileContentFromDiff(

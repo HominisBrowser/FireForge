@@ -9,7 +9,7 @@
  * so word-boundary occurrences of the old tag / underscored name map to the
  * new ones.
  *
- * Extracted to keep `rename.ts` under the per-file LOC budget — it already
+ * Extracted to keep `rename.ts` under the per-file LOC budget. It already
  * carries mochikit + browser-mochitest + FTL handling.
  */
 
@@ -42,7 +42,7 @@ import { escapeRegex } from '../../utils/regex.js';
  * old tag / old underscored name inside the test body.
  *
  * Best-effort: any failure logs a warning through the shared logger
- * but never throws — the component rename itself has already succeeded
+ * but never throws. The component rename itself has already succeeded
  * at this point, and blocking on a test rewrite would leave the
  * operator with a half-renamed component.
  *
@@ -80,7 +80,7 @@ export async function renameXpcshellTestFiles(
 
   try {
     // Journal the new scaffold dir + files so rollback (including the
-    // SIGINT path) removes them; only the old-name files were journaled
+    // SIGINT path) removes them. Only the old-name files were journaled
     // before, so a failed rename stranded the new-name scaffold.
     recordCreatedDir(journal, newScaffoldDir);
     await ensureDir(newScaffoldDir);

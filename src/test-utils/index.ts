@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import type { GitStatusEntry } from '../core/git-base.js';
@@ -28,10 +29,10 @@ export const DEFAULT_CONFIG: FireForgeConfig = {
  * Renders a POSIX-written fixture path in the host's native separator form.
  *
  * Assertions compare against values the code built with `join`/`resolve`, so a
- * literal `'/project/engine'` only matches on POSIX — on Windows the code
+ * literal `'/project/engine'` only matches on POSIX. On Windows the code
  * produces `\project\engine` and the expectation is the only thing that is
  * wrong. Wrapping the literal keeps it readable while making the comparison
- * separator-correct on every platform. Only ever wrap the EXPECTED side: a
+ * separator-correct on every platform. Only ever wrap the expected side: a
  * value derived from the code under test must never be laundered through this.
  */
 export function nativePath(posixPath: string): string {
@@ -46,8 +47,8 @@ export function nativePath(posixPath: string): string {
  * the code passed through `resolve`: on Windows `resolve('/project/x')` also
  * prefixes the current drive, so the expectation has to be `D:\\project\\x`
  * rather than `\\project\\x`. Use this wrapper whenever the asserted value
- * came out of `resolve`; {@link nativePath} stays correct for values built with
- * plain `join`. Only ever wrap the EXPECTED side.
+ * came out of `resolve`. {@link nativePath} stays correct for values built
+ * with plain `join`. Only ever wrap the expected side.
  */
 export function nativeAbsPath(posixPath: string): string {
   return resolve(posixPath);
@@ -98,10 +99,10 @@ export async function writeFireForgeConfig(
  * Writes a synthetic mach objdir (`<engineDir>/<objDirName>`) with the
  * artifacts the tree/with-objdir machinery consumes: a `dist/`
  * completeness sentinel, a `mozinfo.json` carrying absolute
- * topsrcdir/topobjdir/mozconfig paths (defaulting to the engine's own —
+ * topsrcdir/topobjdir/mozconfig paths (defaulting to the engine's own,
  * i.e. a consistent primary build), a `_virtualenvs` entry standing in
  * for mach's venvs, and `config.status`/`backend.mk` embedding the
- * topsrcdir path the way real configure output does — the state the
+ * topsrcdir path the way real configure output does. That is the state the
  * post-configure relocation check exists to catch when a clone's
  * reconfigure did not actually regenerate them.
  */
@@ -263,4 +264,62 @@ export function setInteractiveMode(isInteractive: boolean): () => void {
       Object.defineProperty(process.stdout, 'isTTY', stdoutDescriptor);
     }
   };
+}
+
+/** Absolute path to the tsx CLI shim the spawned-CLI tests run `bin/` through. */
+export const TSX_CLI = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../node_modules/tsx/dist/cli.mjs'
+);
+
+/** Absolute path to the real CLI entrypoint (`bin/fireforge.ts`). */
+export const FIREFORGE_BIN_ENTRY = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../bin/fireforge.ts'
+);
+
+/** Captured result of a spawned `fireforge` invocation. */
+export interface SpawnedCliResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Runs the real CLI in a child process and captures its streams.
+ *
+ * The exit code and the stdout/stderr split are only observable across a real
+ * process boundary, which is why these tests spawn instead of calling the
+ * command function. `env` extends (never replaces) the parent environment
+ * for cases that must inject a loader.
+ */
+export function runFireforgeCli(
+  cwd: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv
+): Promise<SpawnedCliResult> {
+  const child = spawn(process.execPath, [TSX_CLI, FIREFORGE_BIN_ENTRY, ...args], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
+  child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+  return new Promise<SpawnedCliResult>((resolve, reject) => {
+    // A spawn failure (tsx shim missing, EACCES) must fail the test with a
+    // message rather than leave the promise pending until vitest's timeout.
+    child.on('error', reject);
+    // 'close', not 'exit': the stdio pipes may still hold the final chunk
+    // when 'exit' fires, and the verdict-line assertions read the last line.
+    child.on('close', (code, signal) => {
+      const signalNumber = signal ? osConstants.signals[signal] : undefined;
+      resolve({
+        exitCode: code ?? (signalNumber === undefined ? -1 : 128 + signalNumber),
+        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+        stderr: Buffer.concat(stderrChunks).toString('utf8'),
+      });
+    });
+  });
 }

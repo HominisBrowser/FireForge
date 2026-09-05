@@ -7,6 +7,7 @@ import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { insertMozBuildListEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 import { scaffoldModuleMozBuild } from './register-scaffold.js';
@@ -60,7 +61,7 @@ export async function registerFireForgeModule(
     );
   }
 
-  const entry = `    "${fileName}",`.replace(/\\/g, '/');
+  const entry = normalizePathSlashes(`    "${fileName}",`);
 
   const content = await readText(manifestPath);
 

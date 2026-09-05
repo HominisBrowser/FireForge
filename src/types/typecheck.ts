@@ -25,9 +25,9 @@ export interface TypecheckIssue {
   /** Raw TypeScript diagnostic code (e.g. 2322 for a type mismatch). */
   code: number;
   /**
-   * Severity bucket — TS reports `Suggestion` and `Message` categories
-   * too, but `runTypecheck` collapses both into `'warning'` so the CLI
-   * has only two visible levels.
+   * Severity bucket. TS also reports `Suggestion` and `Message`
+   * categories, but `runTypecheck` collapses both into `'warning'` so
+   * the CLI has only two visible levels.
    */
   category: 'error' | 'warning';
   /** Human-readable message text (already flattened from chains). */

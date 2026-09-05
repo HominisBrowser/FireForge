@@ -31,19 +31,6 @@ export async function countPatches(patchesDir: string): Promise<number> {
   return patches.length;
 }
 
-/** Checks whether a patch creates a new file rather than modifying an existing one. */
-export async function isNewFilePatch(patchPath: string): Promise<boolean> {
-  const content = await readText(patchPath);
-  return content.includes('new file mode') && content.includes('--- /dev/null');
-}
-
-/** Returns the first target file path referenced by a patch, if any. */
-export async function getTargetFileFromPatch(patchPath: string): Promise<string | null> {
-  const content = await readText(patchPath);
-  const match = /^\+\+\+ b\/(.+)$/m.exec(content);
-  return match?.[1] ?? null;
-}
-
 /**
  * Returns all target file paths referenced by a multi-file patch.
  *

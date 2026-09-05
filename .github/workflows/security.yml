@@ -30,7 +30,7 @@ jobs:
       security-events: write
     steps:
       # CodeQL runs unconditionally. This job previously probed
-      # `/code-scanning/alerts` and skipped itself on 403/404 — but that
+      # `/code-scanning/alerts` and skipped itself on 403/404, but that
       # endpoint 404s until an analysis exists, and the probe prevented the
       # analysis, so the guard could never open and CodeQL never ran once.
       # The ruleset (scripts/setup-rulesets.sh) lists `codeql` as a required

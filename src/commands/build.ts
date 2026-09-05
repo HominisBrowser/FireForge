@@ -35,6 +35,7 @@ import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { BuildOptions } from '../types/commands/index.js';
+import { elapsedSince } from '../utils/elapsed.js';
 import { toError } from '../utils/errors.js';
 import { checkDiskSpace } from '../utils/fs.js';
 import { error, info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
@@ -54,9 +55,9 @@ function parseJobCount(value: string): number {
  * Patches `mozinfo.json` under the active obj-* directory so its recorded
  * paths match the current engine checkout, then runs `mach configure` to
  * regenerate every other generated path alongside it. Throws with the
- * original mismatch guidance when the rewriter refuses to proceed — that
- * always covers the unsafe cases, so the operator still gets the correct
- * fallback recovery instruction.
+ * original mismatch guidance when the rewriter refuses to proceed. That
+ * covers the unsafe cases, so the operator still gets the correct fallback
+ * recovery instruction.
  */
 async function rewriteAndReconfigure(
   engineDir: string,
@@ -259,7 +260,7 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
   // and fail fast naming `fireforge bootstrap` instead of dying ~8s into
   // configure with mach's "./mach bootstrap" remediation text. Fail-soft by
   // design: only a definitively parsed minimum vs a definitively probed host
-  // version can fail here; anything uncertain proceeds to mach, where the
+  // version can fail here. Anything uncertain proceeds to mach, where the
   // mach-error-hints translator still names the right remedy.
   const toolchainMismatches = await runToolchainPreflight(paths.engine);
   if (toolchainMismatches.length > 0) {
@@ -279,7 +280,7 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
       // Safe-relocation rewrite path: patch mozinfo.json paths in place so
       // `mach configure` can regenerate the backend without scrubbing the
       // whole obj tree. The rewriter refuses anything that is not a pure
-      // prefix-move; on refusal we surface the refusal reason alongside
+      // prefix-move. On refusal we surface the refusal reason alongside
       // the original mismatch guidance and abort.
       await rewriteAndReconfigure(paths.engine, buildCheck.objDir, mismatchMessage);
     } else {
@@ -347,7 +348,7 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
     // overlapping `fireforge build` / `fireforge build --ui` commands
     // against the same engine tree serialise instead of racing through the
     // same obj-*. A `build --ui` launched during an in-progress full build
-    // otherwise hits `No rule to make target 'XUL'` in mach — the
+    // otherwise hits `No rule to make target 'XUL'` in mach, the
     // downstream consequence of an incomplete backend, with no clue that a
     // concurrent build caused it. The lock turns the second invocation's
     // failure into an explicit refusal naming the holder PID.
@@ -365,10 +366,7 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
     );
   }
 
-  const duration = Date.now() - startTime;
-  const minutes = Math.floor(duration / 60000);
-  const seconds = Math.floor((duration % 60000) / 1000);
-  const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+  const timeStr = elapsedSince(startTime);
 
   if (result.exitCode !== 0) {
     error(`Build failed after ${timeStr}`);
@@ -397,9 +395,10 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
   // Matching only (1) leaves operators on the (2) path seeing mach's own
   // "Configure complete!" and "run |mach build|" lines unexplained between
   // mach's "Your build was successful!" and FireForge's "Build completed in
-  // Xm Ys" outro — a contradictory tail. Both shapes route through the same
-  // annotation, emitted BEFORE FireForge's outro so the operator's last
-  // terminal line is the explanation, not the confusing mach guard text.
+  // Xm Ys" outro, a contradictory tail. Both shapes route through the same
+  // annotation, emitted before FireForge's outro so the operator's last
+  // terminal line is the explanation instead of the confusing mach guard
+  // text.
   const staleConfigurePatterns: RegExp[] = [
     /config\.status is out of date/i,
     /Config object not found by mach\.[\s\S]*Configure complete!/i,
@@ -416,10 +415,12 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
 
   // Warn-only post-build audit: surfaces silent packaging drops (files
   // edited in engine/ but never registered for packaging) against the
-  // previous-build baseline. Never fails the build; the worst case is a
+  // previous-build baseline. Never fails the build. The worst case is a
   // warning an operator chooses to investigate.
   try {
-    await auditBuildArtifacts(projectRoot, paths.engine, previousBaseline);
+    await auditBuildArtifacts(projectRoot, paths.engine, previousBaseline, {
+      ...(config.buildAudit?.unpackaged ? { unpackaged: config.buildAudit.unpackaged } : {}),
+    });
   } catch (auditError: unknown) {
     verbose(`Audit skipped: ${toError(auditError).message}`);
   }
@@ -439,7 +440,7 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
 }
 
 /**
- * Persists the full-coverage baseline; a failed write never fails the build.
+ * Persists the full-coverage baseline. A failed write never fails the build.
  * `--ui` is a `mach build faster`, so it is recorded as such: its `jar.mn`
  * fingerprints are carried forward from the previous baseline rather than
  * refreshed, which is why that baseline is threaded through.
@@ -452,16 +453,16 @@ async function recordFullBuildBaseline(
   previousBaseline: BuildBaseline | undefined
 ): Promise<void> {
   try {
-    await writeBuildBaseline(
+    await writeBuildBaseline({
       projectRoot,
       engineDir,
       binaryName,
-      'full',
+      testPackagingCoverage: 'full',
       previousBaseline,
-      ui ? 'fireforge build --ui' : 'fireforge build',
-      'auto',
-      ui ? 'faster' : 'full'
-    );
+      recordedBy: ui ? 'fireforge build --ui' : 'fireforge build',
+      staticComponentsHandling: 'auto',
+      buildKind: ui ? 'faster' : 'full',
+    });
   } catch (baselineError: unknown) {
     verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
   }

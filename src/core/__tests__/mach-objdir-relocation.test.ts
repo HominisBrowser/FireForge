@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Unit tests for the post-`mach configure` relocation check: every violation
- * class the pure checker reports, and the clean shapes it must accept —
+ * class the pure checker reports, and the clean shapes it must accept,
  * including the substring non-collision property that makes the primary-path
  * search safe against the tree's own nested path.
  */
@@ -63,8 +63,9 @@ describe('findObjdirRelocationViolation', () => {
   });
 
   it('the tree path containing the primary root does not false-positive the substring search', async () => {
-    // `<root>/.fireforge/trees/shard-a/engine` does NOT contain the
-    // substring `<root>/engine` — the property the checker relies on.
+    // `<root>/.fireforge/trees/shard-a/engine` does not contain the
+    // substring `<root>/engine`, which is the property the checker relies
+    // on.
     await writeRelocatedObjdir();
     expect(treeEngine.startsWith(join(primaryEngine, '..'))).toBe(true);
     await expect(check()).resolves.toBeUndefined();
@@ -147,7 +148,7 @@ describe('findObjdirRelocationViolation', () => {
   });
 
   it('accepts a relocated objdir with no Makefile or config/autoconf.mk (not every configure writes them)', async () => {
-    // The default fixture writes neither — their absence must stay clean.
+    // The default fixture writes neither. Their absence must stay clean.
     await writeRelocatedObjdir();
     await expect(check()).resolves.toBeUndefined();
   });

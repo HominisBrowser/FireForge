@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge patch move-files <from> <to> --create --order <n>` — creates
+ * `fireforge patch move-files <from> <to> --create --order <n>` creates
  * the target patch at the requested sparse order and moves the files into it
  * as one transaction. This is the transactional bootstrap of a split:
  * without it, moving files into a not-yet-existing patch requires a manual
  * shrink-then-export dance with hand-repointed staged-dependency owners.
  *
  * Mirrors `patch split` end-to-end (same planning, projection lint, policy
- * enforcement, and locked commit); the `<to>` argument becomes the new
+ * enforcement, and locked commit). The `<to>` argument becomes the new
  * patch's name/slug the way `split --name` does.
  */
 
@@ -16,11 +16,13 @@ import { assertConfirmationAvailable, confirmDestructive } from '../../core/dest
 import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import { buildPatchQueueContext } from '../../core/patch-lint.js';
 import { loadPatchesManifest, resolvePatchIdentifier } from '../../core/patch-manifest.js';
+import { formatPatchOrder } from '../../core/patch-parse.js';
 import { enforcePatchPolicy } from '../../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { PatchMoveFilesOptions } from '../../types/commands/index.js';
 import { info, intro, outro, success } from '../../utils/logger.js';
 import { normalizePatchDisplayName } from '../../utils/validation.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
 import { resolvePlacementPlan } from '../export-flow.js';
 import { runPatchLint } from '../export-shared.js';
 import { commitPatchSplit } from './split.js';
@@ -51,7 +53,7 @@ export async function patchMoveFilesCreateCommand(
       : 'FireForge patch move-files --create'
   );
 
-  // Refuse a prompt-less run BEFORE the diff/lint work, not after it.
+  // Refuse a prompt-less run before the diff/lint work, not after it.
   assertConfirmationAvailable('patch move-files --create', options);
 
   const paths = getProjectPaths(projectRoot);
@@ -110,7 +112,7 @@ export async function patchMoveFilesCreateCommand(
   );
 
   // The filename slug pipeline (resolvePlacementPlan above) strips redundant
-  // category prefixes; the manifest display name must agree with the bare-slug
+  // category prefixes. The manifest display name must agree with the bare-slug
   // naming policy, exactly as `export --name` already does.
   const displayName = normalizePatchDisplayName(newPatchName, category);
   if (displayName !== newPatchName) {
@@ -140,30 +142,30 @@ export async function patchMoveFilesCreateCommand(
   // The whole-queue context (built once, with the config so it carries the
   // same patch-policy shape as the committed `lint --per-patch` gate) makes
   // cross-patch `resource:///` imports and sibling head.js harness roots
-  // resolve exactly as they will after the move lands — without it the
+  // resolve exactly as they will after the move lands. Without it the
   // projection lint is blind.
   const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
   const ignoreChecks = source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined;
-  await runPatchLint(
-    paths.engine,
-    remainingFiles,
-    remainingDiff,
+  await runPatchLint({
+    engineDir: paths.engine,
+    filesAffected: remainingFiles,
+    diffContent: remainingDiff,
     config,
-    options.skipLint,
+    skipLint: options.skipLint,
     patchQueueCtx,
     ignoreChecks,
-    source.tier
-  );
-  await runPatchLint(
-    paths.engine,
-    movedFiles,
-    movedDiff,
+    patchTier: source.tier,
+  });
+  await runPatchLint({
+    engineDir: paths.engine,
+    filesAffected: movedFiles,
+    diffContent: movedDiff,
     config,
-    options.skipLint,
+    skipLint: options.skipLint,
     patchQueueCtx,
     ignoreChecks,
-    source.tier
-  );
+    patchTier: source.tier,
+  });
 
   const { conflicts, stagedDependencyAdditions } = runProjectedSplitLint(plan, patchQueueCtx);
   plan.stagedDependencyAdditions = stagedDependencyAdditions;
@@ -188,19 +190,12 @@ export async function patchMoveFilesCreateCommand(
     unsafeOverride: options.forceUnsafe === true,
     conflicts,
   });
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Move cancelled');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Move cancelled')) return;
 
   await commitPatchSplit(paths.patches, plan, newMetadata, options, config);
 
   success(
-    `Created ${placement.newFilename} (order ${String(placement.insertionOrder).padStart(3, '0')}) ` +
+    `Created ${placement.newFilename} (order ${formatPatchOrder(placement.insertionOrder)}) ` +
       `and moved ${plan.movedFiles.length} file(s) out of ${source.filename}`
   );
   if (plan.ownerRewrites.length > 0) {

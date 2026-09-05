@@ -10,7 +10,7 @@
  *   - xpcshell's `chrome://browser/*` URI registration lags what the real
  *     browser loads even with `firefox-appdir = "browser"` set, so
  *     `NetUtil.asyncFetch("chrome://browser/content/<name>.xhtml")` can fail
- *     with `NS_ERROR_FILE_NOT_FOUND` against a file that IS correctly
+ *     with `NS_ERROR_FILE_NOT_FOUND` against a file that is correctly
  *     packaged.
  *   - Browser-chrome mochitests require a `tabbrowser`, which a
  *     fork-authored chrome doc that replaces `browser.xhtml` deliberately
@@ -23,14 +23,14 @@
  * is stable across platforms at
  * `<AppDir>/chrome/browser/content/browser/<name>.xhtml` on an unpacked tree
  * (the default for `mach build` without `MOZ_CHROME_MULTILOCALE` / omnijar).
- * A tree that packs omni.ja would need a different probe; the scaffold notes
+ * A tree that packs omni.ja would need a different probe. The scaffold notes
  * that out-of-scope case explicitly rather than silently producing a test
  * that fails on packed builds.
  */
 
 /**
  * Returns the canonical xpcshell test basename for a chrome doc packaging
- * check (`test_<name>_packaging.js`). Hyphens in `<name>` are preserved —
+ * check (`test_<name>_packaging.js`). Hyphens in `<name>` are preserved:
  * xpcshell permits them in file basenames even though the derived task
  * function names replace them with underscores.
  */
@@ -135,7 +135,7 @@ add_task(async function test_${taskSuffix}_files_packaged() {
 /**
  * Emits the `xpcshell.toml` manifest for the packaging test directory.
  * Sets `firefox-appdir = "browser"` so XCurProcD resolves to the browser
- * subdir rather than the generic gecko runtime dir — without that, the
+ * subdir rather than the generic gecko runtime dir. Without that, the
  * path probe walks the wrong tree on every fork whose app directory is
  * not the default.
  */

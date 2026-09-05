@@ -20,7 +20,7 @@ async function readEngineText(engineDir: string, relativePath: string): Promise<
  * Reports unreadable directories separately from "none found": the consumer
  * turns an empty result into the issue "no browser.toml files found", which is
  * the opposite diagnosis from "the tree could not be read". A swallowed
- * mid-walk EACCES also silently *shrank* the result set, so one unreadable
+ * mid-walk EACCES also silently shrank the result set, so one unreadable
  * subdirectory produced a false clean for that subtree.
  */
 async function collectBrowserTomlFiles(
@@ -61,7 +61,7 @@ async function runPostRebaseAudit(ctx: DoctorCheckContext): Promise<DoctorCheck>
   // The four probes below are upstream-Firefox shape markers: each names a
   // file and a token that a healthy post-rebase tree must still contain. A
   // rebase that dropped a fork patch, or an upstream reorganisation, shows up
-  // as one of these going missing. The tokens are deliberately coarse — this
+  // as one of these going missing. The tokens are coarse on purpose: this
   // is a smoke check that runs warn-only behind an opt-in flag, not a
   // structural validator.
   const mozConfigure = await readEngineText(engineDir, 'browser/moz.configure');
@@ -98,7 +98,7 @@ async function runPostRebaseAudit(ctx: DoctorCheckContext): Promise<DoctorCheck>
   const browserTomls = await collectBrowserTomlFiles(engineDir);
   if (browserTomls.unreadable.length > 0) {
     issues.push(
-      `could not read ${String(browserTomls.unreadable.length)} ` +
+      `could not read ${browserTomls.unreadable.length} ` +
         `${browserTomls.unreadable.length === 1 ? 'directory' : 'directories'} under ` +
         `browser/base/content/test: ${browserTomls.unreadable.join(', ')}`
     );

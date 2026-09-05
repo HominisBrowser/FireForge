@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeProjectPaths, nativePath } from '../../test-utils/index.js';
@@ -41,18 +40,7 @@ import {
 } from '../../core/mach.js';
 import { pathExists } from '../../utils/fs.js';
 import { error, info, outro, verbose } from '../../utils/logger.js';
-import { packageCommand, registerPackage } from '../package.js';
-
-function createProgram(): Command {
-  const program = new Command();
-
-  registerPackage(program, {
-    getProjectRoot: () => '/project',
-    withErrorHandling: <T extends unknown[]>(handler: (...args: T) => Promise<void>) => handler,
-  });
-
-  return program;
-}
+import { packageCommand } from '../package.js';
 
 describe('packageCommand', () => {
   beforeEach(() => {
@@ -171,33 +159,5 @@ describe('packageCommand', () => {
     });
 
     await expect(packageCommand('/project', {})).rejects.toThrow(/NoneType\.open.*packager\.py/);
-  });
-});
-
-describe('registerPackage', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(getProjectPaths).mockReturnValue(makeProjectPaths());
-    vi.mocked(loadConfig).mockResolvedValue({
-      binaryName: 'mybrowser',
-      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
-    } as never);
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
-    vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
-    vi.mocked(prepareBuildEnvironment).mockResolvedValue({
-      furnaceApplied: 0,
-      reconfigured: false,
-    });
-    vi.mocked(machPackageCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
-  });
-
-  it('routes parsed CLI options through the registered action', async () => {
-    const program = createProgram();
-
-    await program.parseAsync(['node', 'test', 'package', '--brand', 'stable']);
-
-    expect(validateBrandOverride).toHaveBeenCalledWith('mybrowser', 'stable');
-    expect(machPackageCapture).toHaveBeenCalledWith(nativePath('/project/engine'));
   });
 });

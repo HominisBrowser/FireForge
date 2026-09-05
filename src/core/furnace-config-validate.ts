@@ -135,8 +135,8 @@ export function applyOptionalFurnaceFields(migrated: JsonObject, config: Furnace
     config.ftlBasePath = migrated['ftlBasePath'];
   }
 
-  // Validate optional typecheckJsconfig — consumer-owned jsconfig whose
-  // chrome-elements `paths` entries Furnace maintains on deploy.
+  // Validate optional typecheckJsconfig. This is a consumer-owned jsconfig
+  // whose chrome-elements `paths` entries Furnace maintains on deploy.
   if (migrated['typecheckJsconfig'] !== undefined) {
     const jsconfigPath = migrated['typecheckJsconfig'];
     if (!isString(jsconfigPath) || jsconfigPath.includes('..')) {

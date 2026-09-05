@@ -116,9 +116,9 @@ export async function validatePatchIntegrity(
   const patches = await discoverPatches(patchesDir);
 
   // Collect every modification target first, then resolve HEAD existence in
-  // ONE batched ls-tree pass (chunked for ARG_MAX). The per-file
+  // one batched ls-tree pass (chunked for ARG_MAX). The per-file
   // fileExistsInHead fan-out spawned one git process per (patch × target) on
-  // every import — a 56-file branding patch alone cost ~56 spawns before a
+  // every import: a 56-file branding patch alone cost ~56 spawns before a
   // single patch was applied.
   const modificationTargets: Array<{ filename: string; targetFile: string }> = [];
   for (const patch of patches) {
@@ -127,7 +127,7 @@ export async function validatePatchIntegrity(
     const targetFiles = await getAllTargetFilesFromPatch(patch.path);
 
     for (const targetFile of targetFiles) {
-      // Skip new-file sections — they don't need to exist in HEAD
+      // Skip new-file sections. They don't need to exist in HEAD
       if (isNewFileInPatch(patchContent, targetFile)) continue;
       modificationTargets.push({ filename: patch.filename, targetFile });
     }
@@ -156,7 +156,7 @@ export async function validatePatchIntegrity(
  *
  * Acquires the shared patch-directory lock for the read-modify-write, so a
  * concurrent export/reorder/metadata update cannot interleave with the stamp.
- * The lock is not reentrant — callers must NOT invoke this while already
+ * The lock is not reentrant: callers must not invoke this while already
  * holding {@link withPatchDirectoryLock} on the same patches directory.
  *
  * @param patchesDir - Path to the patches directory

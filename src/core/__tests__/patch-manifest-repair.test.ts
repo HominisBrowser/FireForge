@@ -134,7 +134,7 @@ describe('patch manifest repairs', () => {
       });
 
       // An unparseable manifest loads as `null`, which the merge cannot tell
-      // apart from "no manifest" — so every entry would be reinvented. The
+      // apart from "no manifest", so every entry would be reinvented. The
       // write is what makes that unrecoverable, so it must not happen.
       await expect(rebuildPatchesManifest(patchesDir, '142.0esr')).rejects.toThrow(
         '--allow-metadata-loss'
@@ -187,7 +187,7 @@ describe('patch manifest repairs', () => {
       ]);
 
       const after = await readFile(join(patchesDir, 'patches.json'), 'utf-8');
-      // The untouched row's serialization must not move at all — a repair
+      // The untouched row's serialization must not move at all. A repair
       // that reformats rows it had no reason to touch is what made the
       // original incident's diff unreviewable.
       const healthyBlock = JSON.stringify(healthyRow(), null, 2)

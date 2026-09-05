@@ -35,10 +35,10 @@ export function prefixChecksums(
 }
 
 /**
- * Returns the filenames present in `previous` that are absent from `current`
- * — i.e. files we know we deployed last time but the workspace has since
- * deleted. The order of returned names is intentionally stable
- * (sorted alphabetically) so test snapshots and CLI output are deterministic.
+ * Returns the filenames present in `previous` that are absent from
+ * `current`, i.e. files we know we deployed last time but the workspace has
+ * since deleted. The order of returned names is stable (sorted
+ * alphabetically) so test snapshots and CLI output are deterministic.
  */
 export function diffDeletedFiles(
   previous: Record<string, string>,
@@ -59,7 +59,7 @@ export function diffDeletedFiles(
  * Strips a leading BOM and folds CRLF to LF, so a file that differs from its
  * deployed copy only by line endings or a byte-order mark is not reported as
  * drift. Every comparison that decides "has this component changed?" must
- * use it — otherwise `furnace status` and `furnace validate` can disagree
+ * use it. Otherwise `furnace status` and `furnace validate` can disagree
  * with `apply`'s skip fast-path about the same pair of files on a CRLF
  * checkout.
  *

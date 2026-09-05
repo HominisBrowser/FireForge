@@ -2,7 +2,7 @@
 /**
  * Parser for the `custom` entries in furnace.json. Extracted from
  * `furnace-config.ts` so the main config module stays under the
- * per-file LOC budget — the custom-component schema has grown to
+ * per-file LOC budget. The custom-component schema has grown to
  * carry opt-in fields (`composes`, `keyboardCovered`, `sharedFtl`) that
  * each add their own validation branch.
  */
@@ -80,7 +80,7 @@ export function parseCustomConfig(data: JsonObject, name: string): CustomCompone
       ? { composes: parseStringArray(data['composes'], `${name}.composes`) }
       : {}),
     ...(data['keyboardCovered'] === true ? { keyboardCovered: true } : {}),
-    // Explicit `kind: "element"` is the default; normalize it away so the
+    // Explicit `kind: "element"` is the default. Normalize it away so the
     // stored config carries the field only when it changes behavior.
     ...(data['kind'] === 'library' ? { kind: 'library' as const } : {}),
     ...(sharedFtl !== undefined ? { sharedFtl } : {}),

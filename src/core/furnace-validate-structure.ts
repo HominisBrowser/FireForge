@@ -8,7 +8,7 @@ import { pathExists, readText } from '../utils/fs.js';
 /**
  * Returns true when file content carries unresolved three-way-merge
  * conflict markers (as left behind by `furnace refresh`). Shared between
- * the structure validator and `furnace sync`'s pre-apply gate — both must
+ * the structure validator and `furnace sync`'s pre-apply gate. Both must
  * agree on what "conflicted" means so a file that validate flags can never
  * slip through sync into the engine.
  */
@@ -48,7 +48,7 @@ export async function validateStructure(
     });
   }
 
-  // .css should exist — except for library components (base class + helpers,
+  // .css should exist, except for library components (base class + helpers,
   // no element of their own), which render nothing and need no stylesheet.
   if (!(await pathExists(cssPath)) && customConfig?.kind !== 'library') {
     issues.push({
@@ -64,8 +64,8 @@ export async function validateStructure(
   // localization payload is empty, which is hard to spot in review.
   //
   // Components that declare `sharedFtl` participate in a pre-existing
-  // feature-scoped bundle, so there is no per-component .ftl to require —
-  // the shared file is owned by whoever authored the feature bundle.
+  // feature-scoped bundle, so there is no per-component .ftl to require.
+  // The shared file is owned by whoever authored the feature bundle.
   if (type === 'custom' && customConfig?.localized && !customConfig.sharedFtl) {
     const ftlPath = join(componentDir, `${tagName}.ftl`);
     if (!(await pathExists(ftlPath))) {

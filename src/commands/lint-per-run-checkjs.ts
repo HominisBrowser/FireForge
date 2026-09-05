@@ -4,25 +4,23 @@
  * `re-export`.
  *
  * The dominant fixed cost of patch lint is one `ts.createProgram` over the
- * queue's patch-owned `.sys.mjs` files — tens of seconds on a large queue.
- * This controller builds that program at most ONCE per command invocation
+ * queue's patch-owned `.sys.mjs` files, tens of seconds on a large queue.
+ * This controller builds that program at most once per command invocation
  * (lazily, promise-memoised) and lets callers slice per-patch findings out of
  * the grouped result. Three levers keep the cost paid only when it buys
  * something:
  *
- * - **Lazy build**: nothing is built until the first cache miss asks.
- * - **Root scoping** (`rootScopePatches`): with `--patches <subset>` the
- *   program's roots are only the subset's owned files; the full queue stays
+ * - Lazy build: nothing is built until the first cache miss asks.
+ * - Root scoping (`rootScopePatches`): with `--patches <subset>` the
+ *   program's roots are only the subset's owned files. The full queue stays
  *   resolvable, so cross-patch imports type-check identically while
  *   unrelated files are never parsed.
- * - **Warm-run probe**: run-level ("global") checkJs findings come only from
- *   a missing `typescript` package or an unreadable shim — never from the
- *   built program — so an all-cache-hit run satisfies "warm never reports
- *   less than cold" via `probeCheckJsGlobalIssues` instead of building
- *   anything.
+ * - Warm-run probe: run-level ("global") checkJs findings come only from a
+ *   missing `typescript` package or an unreadable shim, never from the built
+ *   program, so an all-cache-hit run satisfies "warm never reports less than
+ *   cold" via `probeCheckJsGlobalIssues` instead of building anything.
  */
 
-import type { getProjectPaths, loadConfig } from '../core/config.js';
 import {
   type GroupedCheckJsResult,
   invokePatchLintCheckJsGrouped,
@@ -36,6 +34,7 @@ import {
   resolvePatchOwnedTestScripts,
 } from '../core/patch-lint-ownership.js';
 import type { PatchLintIssue } from '../types/commands/index.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 
 /**
  * Queue-wide checkJs program built once per run and sliced per patch, so a
@@ -45,7 +44,7 @@ import type { PatchLintIssue } from '../types/commands/index.js';
 export interface PerRunCheckJs {
   /** Patch filename → the checkJs-relevant files that patch creates. */
   ownedByPatch: Map<string, Set<string>>;
-  /** Every checkJs-relevant file in the queue (sys + test scripts) — the
+  /** Every checkJs-relevant file in the queue (sys + test scripts), the
    *  resolution universe the program can see. Callers use it to detect
    *  files the hoisted program has never heard of (fresh `--scan`
    *  adoptions) and fall back to a per-patch build. */
@@ -56,10 +55,10 @@ export interface PerRunCheckJs {
   getGrouped: () => Promise<GroupedCheckJsResult>;
   /** Run-level checkJs errors (e.g. TypeScript missing). When the program
    *  was never built (all-warm run) this probes the two global failure
-   * sources directly instead of building it holds because the
+   *  sources directly instead of building it, which is safe because the
    *  built program never contributes globals of its own. */
   getGlobal: () => Promise<PatchLintIssue[]>;
-  /** The byFile slices for `files` (globals deliberately EXCLUDED — they
+  /** The byFile slices for `files` (globals are excluded because they
    *  are run-level, never cached, and emitted once per invocation via
    *  `getGlobal`). Feed to `LintExportedPatchOptions.precomputedCheckJs`. */
   sliceFor: (files: ReadonlySet<string>) => Promise<PatchLintIssue[]>;
@@ -77,8 +76,8 @@ export interface PerRunCheckJs {
  */
 export function buildPerRunCheckJs(
   projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  config: Awaited<ReturnType<typeof loadConfig>>,
+  paths: ProjectPaths,
+  config: FireForgeConfig,
   ctx: PatchQueueContext,
   rootScopePatches?: ReadonlySet<string>
 ): PerRunCheckJs | undefined {
@@ -101,7 +100,7 @@ export function buildPerRunCheckJs(
     for (const f of files) resolutionSet.add(f);
   }
 
-  // The subset's owned files, split by program kind; undefined = full queue.
+  // The subset's owned files, split by program kind. Undefined = full queue.
   let scopedRoots: Set<string> | undefined;
   if (rootScopePatches !== undefined) {
     scopedRoots = new Set();
@@ -111,9 +110,9 @@ export function buildPerRunCheckJs(
     }
   }
 
-  // One build for the whole run: the queue-wide `.sys.mjs` program plus —
-  // when `patchLint.checkJsTestFiles` is on — one small
-  // script-scope program per patch-owned test file, merged by file.
+  // One build for the whole run: the queue-wide `.sys.mjs` program, plus
+  // (when `patchLint.checkJsTestFiles` is on) one small script-scope
+  // program per patch-owned test file, merged by file.
   const buildAll = async (): Promise<GroupedCheckJsResult> => {
     const sys = await invokePatchLintCheckJsGrouped(
       paths.engine,
@@ -137,7 +136,7 @@ export function buildPerRunCheckJs(
     return { byFile, global: [...sys.global, ...tests.global] };
   };
 
-  // Memoise the *promise*, not the resolved value: under the bounded pool
+  // Memoise the promise rather than the resolved value: under the bounded pool
   // several patches can reach `getGrouped` before the first build resolves, and
   // `??=` on the promise (a synchronous expression) guarantees a single build.
   let groupedPromise: Promise<GroupedCheckJsResult> | undefined;

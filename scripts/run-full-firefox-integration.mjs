@@ -469,7 +469,7 @@ async function writeNotesTemplate() {
 
 /**
  * Opt-in tree scenario (FIREFORGE_FULL_TREE=1): the direct real-Firefox proof
- * that a `tree create --with-objdir` clone is fully relocated — regenerated
+ * that a `tree create --with-objdir` clone is fully relocated: regenerated
  * configure output contains no primary paths, mach anchored in-tree (venvs
  * rebuilt there), and nothing in the primary objdir's metadata changed.
  */
@@ -496,7 +496,7 @@ async function runTreeScenario(primaryObjDir) {
   try {
     await runFireforge('tree-create', ['tree', 'create', treeName, '--with-objdir']);
 
-    // The regenerated configure output must name the TREE, never the primary.
+    // The regenerated configure output must name the tree, never the primary.
     for (const name of ['config.status', 'backend.mk']) {
       const filePath = join(treeRoot, 'engine', primaryObjDir, name);
       const content = await readFile(filePath, 'utf8').catch(() => null);
@@ -509,7 +509,7 @@ async function runTreeScenario(primaryObjDir) {
         );
       }
     }
-    // mach anchored in-tree: configure re-bootstrapped the venvs INSIDE the tree.
+    // mach anchored in-tree: configure re-bootstrapped the venvs inside the tree.
     const treeVenvs = join(treeRoot, 'engine', primaryObjDir, '_virtualenvs');
     if (!(await pathExists(treeVenvs))) {
       throw new Error(
@@ -635,9 +635,10 @@ async function main() {
   await runFireforge('bootstrap', ['bootstrap']);
   await runFireforge('build', buildMode === 'full' ? ['build'] : ['build', '--ui']);
 
-  // readdir + prefix filter, NOT `ls obj-*`: spawn without a shell never
+  // readdir + prefix filter, not `ls obj-*`: spawn without a shell never
   // glob-expands, so the ls form always exited non-zero and allowFailure
-  // swallowed it — this masked-build-failure detection could never fire.
+  // swallowed it, meaning this masked-build-failure detection could never
+  // fire.
   const engineEntries = await readdir(engineDir).catch(() => []);
   const firstObjDir = engineEntries.filter((name) => name.startsWith('obj-')).sort()[0];
   if (firstObjDir) {

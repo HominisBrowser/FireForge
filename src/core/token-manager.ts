@@ -53,7 +53,7 @@ export interface AddTokenOptions {
   value: string;
   /**
    * Token category matching section headers in the CSS file. Required for a
-   * base declaration; ignored — and no longer required — under
+   * base declaration. Ignored, and no longer required, under
    * {@link AddTokenOptions.variant}, which routes into a `:root<selector>`
    * block and never touches a category section.
    */
@@ -73,7 +73,7 @@ export interface AddTokenOptions {
    * `[data-private]`) that routes the declaration into a top-level
    * `:root<variant>` block instead of the base `:root` / category section.
    * The block is created if absent and appended to if present. Variant
-   * overrides are CSS-only — the base token already owns its docs row.
+   * overrides are CSS-only. The base token already owns its docs row.
    */
   variant?: string | undefined;
 }
@@ -95,7 +95,7 @@ export interface AddTokenResult {
   /** Whether a new category banner was declared by this add. */
   categoryCreated?: boolean;
   /**
-   * When the add skipped because the token already lives in the TARGET
+   * When the add skipped because the token already lives in the target
    * category, names where the existing base-`:root` declaration sits so
    * the skip message can point at it.
    */
@@ -147,7 +147,7 @@ async function validateTokenPrefix(root: string, options: AddTokenOptions): Prom
     }
   } catch (error: unknown) {
     if (error instanceof InvalidArgumentError) throw error;
-    // FurnaceError means furnace.json doesn't exist yet — skip silently.
+    // FurnaceError means furnace.json doesn't exist yet, so skip silently.
     // Other errors (parse errors, permission errors) deserve a warning.
     if (!(error instanceof FurnaceError)) {
       const message = toError(error).message;
@@ -208,12 +208,12 @@ function normalizeVariantOption(options: AddTokenOptions): string | undefined {
  * Narrows {@link AddTokenOptions.category} for the base-declaration path,
  * which cannot proceed without one.
  *
- * `--category` used to be unconditionally required, INCLUDING under
+ * `--category` used to be unconditionally required, including under
  * `--variant`, where the declaration is routed into a `:root<selector>`
  * block and the category names nothing about where the token lands. The
- * requirement existed so the argument would not be silently discarded —
+ * requirement existed so the argument would not be silently discarded,
  * a fair goal that produced a mandatory argument describing nothing. Under
- * a variant it is now optional; everywhere else this states the reason
+ * a variant it is now optional. Everywhere else this states the reason
  * rather than leaving commander to print a bare "required option not
  * specified".
  *
@@ -240,14 +240,14 @@ async function assertTokensCssExists(engineDir: string, tokensCssPath: string): 
 }
 
 /**
- * Routes a declaration into the top-level `:root<variant>` block — creating
+ * Routes a declaration into the top-level `:root<variant>` block, creating
  * the block after the base `:root` block if absent, or appending to it if
  * present. Idempotent within the block.
  *
- * A skip carries the LOCATION of the existing declaration, mirroring
+ * A skip carries the location of the existing declaration, mirroring
  * {@link evaluateBaseTokenIdempotency}. The bare `{ added: false }` it used
- * to return told the caller nothing, so a re-run intending to CHANGE a
- * value exited 0 having changed nothing and said only "already exists" —
+ * to return told the caller nothing, so a re-run intending to change a
+ * value exited 0 having changed nothing and said only "already exists",
  * while the base path had reported the category and line for the same
  * situation all along.
  */
@@ -275,9 +275,9 @@ async function addVariantTokenToCSS(
 
 /**
  * Evaluates base-`:root` idempotency for one add: a token already declared
- * in the TARGET category skips; a token declared anywhere else in the base
- * block refuses loud. A whole-file substring check instead skips silently —
- * discarding `--create-category` — and exits 0.
+ * in the target category skips. A token declared anywhere else in the base
+ * block refuses loud. A whole-file substring check instead skips silently,
+ * discarding `--create-category`, and exits 0.
  */
 function evaluateBaseTokenIdempotency(
   lines: string[],
@@ -296,7 +296,7 @@ function evaluateBaseTokenIdempotency(
       : `pass --category "${existing.category}" to target the existing declaration, or remove it first`;
   throw new GeneralError(
     `Token "${options.tokenName}" is already declared outside category "${options.category}" ` +
-      `(${tokensCssPath}:${String(existing.line)}${sectionSuffix}). ` +
+      `(${tokensCssPath}:${existing.line}${sectionSuffix}). ` +
       `A token belongs to exactly one category — ${remedy}.`
   );
 }
@@ -313,7 +313,7 @@ export async function validateTokenAdd(root: string, options: AddTokenOptions): 
   await validateTokenPrefix(root, options);
   validateDarkValue(options);
   // Variant mode targets a `:root<attr>` block, not a category section, so
-  // no category is consulted — and none is required. When one IS passed it
+  // no category is consulted, and none is required. When one is passed it
   // is still checked, so a typo'd category is not silently accepted just
   // because the flag happens to be inert here.
   if (normalizeVariantOption(options) !== undefined) {
@@ -425,7 +425,7 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
 
   // --- Documentation ---
   // Only the base path reaches here (variant declarations returned above),
-  // so a category is guaranteed — `requireCategory` already ran inside
+  // so a category is guaranteed. `requireCategory` already ran inside
   // `addTokenToCSS`. Re-narrowing rather than asserting keeps the docs
   // input's required `category` honest.
   const docsResult = await addTokenToDocs(
@@ -460,8 +460,8 @@ const THEME_ATTRIBUTE_VARIANTS = [
 /**
  * Mirrors an override's light/dark values into existing top-level
  * `:root[data-theme="dark"]` / `:root[data-theme="light"]` blocks. Blocks
- * that do not exist are left alone (scaffolded files have none; behavior is
- * unchanged there). Idempotent per block. Returns the selectors written.
+ * that do not exist are left alone (scaffolded files have none, so behavior
+ * is unchanged there). Idempotent per block. Returns the selectors written.
  */
 function insertThemeAttributeOverrides(lines: string[], options: AddTokenOptions): string[] {
   if (options.mode !== 'override' || !options.darkValue) return [];
@@ -474,8 +474,8 @@ function insertThemeAttributeOverrides(lines: string[], options: AddTokenOptions
     insertVariantDeclaration(lines, variant, `  ${options.tokenName}: ${value};`);
     written.push(`:root${variant}`);
 
-    // A qualified block is matched — skipping it is the worse failure, and
-    // the one that shipped — but the qualifier narrows where the token
+    // A qualified block is matched. Skipping it is the worse failure, and
+    // the one that shipped, but the qualifier narrows where the token
     // applies, so say which selector was written through rather than
     // letting the operator meet the narrowing as a theme bug later.
     const qualifier = variantBlockQualifier(lines, variant);
@@ -499,7 +499,7 @@ function insertDarkModeOverride(lines: string[], options: AddTokenOptions): void
   const darkEntry = `    ${options.tokenName}: ${options.darkValue};`;
 
   if (insertionIndex === -1) {
-    // @media block exists but has no nested :root { } — the scaffold
+    // @media block exists but has no nested :root { }, so the scaffold
     // drifted. Warn and fall back to appending a fresh nested :root
     // block right before the @media block's closing brace so the
     // generated CSS still parses, rather than dropping the dark value
@@ -536,8 +536,8 @@ async function addTokenToCSS(
   const content = await readText(filePath);
   const lines = content.split('\n');
 
-  // Per-category idempotency: a declaration in the TARGET
-  // category skips; a declaration elsewhere in the base :root block
+  // Per-category idempotency: a declaration in the target
+  // category skips. A declaration elsewhere in the base :root block
   // throws instead of silently skipping (and silently discarding
   // --create-category).
   const idempotency = evaluateBaseTokenIdempotency(lines, options, tokensCssPath);
@@ -551,7 +551,7 @@ async function addTokenToCSS(
   const annotation = getModeAnnotation(options.mode, options.value);
 
   // Declare a missing category banner in the same in-memory edit as the
-  // token insertion — the file is written exactly once, so a failure
+  // token insertion. The file is written exactly once, so a failure
   // between "banner declared" and "token inserted" cannot occur.
   let categoryCreated = false;
   if (options.createCategory === true && !categoryHeaderExists(lines, category)) {

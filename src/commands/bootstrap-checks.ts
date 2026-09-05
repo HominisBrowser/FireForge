@@ -22,7 +22,8 @@ export function detectBootstrapIssues(output: string): BootstrapIssue[] {
     /\bhttp(?:\s+error)?\s*403\b/i.test(normalized) || /\b403\b.*forbidden/i.test(normalized);
 
   if (has403) {
-    // The traceback is just the stack trace from the HTTP error — report once.
+    // The traceback is just the stack trace from the HTTP error, so report
+    // it once.
     issues.push('sdk-fetch-403');
   } else if (hasTraceback) {
     issues.push('python-traceback');

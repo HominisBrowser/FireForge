@@ -6,7 +6,7 @@
  * Factored out of `patch-lint.ts` so the per-patch lint body and
  * cross-patch lint body (in `patch-lint-cross.ts`) can both depend on
  * the same diff walkers without inducing a circular import. Callers
- * should keep importing these through `patch-lint.ts` — this file is
+ * should keep importing these through `patch-lint.ts`. This file is
  * an implementation detail. The actual line-walking lives in
  * `parseDiffSections` (patch-parse.ts), the codebase's single diff walker.
  */
@@ -52,8 +52,8 @@ export function extractAddedLinesPerFile(diffContent: string): Map<string, strin
  * Extracts 1-based post-patch line numbers of added lines per file from a
  * unified diff. Walking each hunk with a new-file line counter (`+` and
  * context lines advance it, `-` lines do not) lets rules that need
- * full-file context — e.g. comment masking across the context/added
- * boundary — map the patch's additions onto the applied file.
+ * full-file context (e.g. comment masking across the context/added
+ * boundary) map the patch's additions onto the applied file.
  */
 export function extractAddedLineNumbersPerFile(diffContent: string): Map<string, number[]> {
   const result = new Map<string, number[]>();
@@ -86,7 +86,7 @@ export function extractAddedLineNumbersPerFile(diffContent: string): Map<string,
  * `buildPatchQueueContext`.
  *
  * Matches buildPatchQueueContext's algorithm exactly: skip paths that are
- * created by the diff — those are already covered by the `newFiles` map,
+ * created by the diff, since those are already covered by the `newFiles` map,
  * which carries full content rather than only the added lines.
  *
  * @param diff - Unified diff content

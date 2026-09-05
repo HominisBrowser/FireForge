@@ -32,16 +32,16 @@ export function hasRawCssColors(content: string): boolean {
 /**
  * Strips JS single-line and multi-line comments from source code, replacing
  * comment bytes with spaces (newlines inside block comments are kept) so
- * both character offsets AND line numbers are preserved. String literals are
+ * both character offsets and line numbers are preserved. String literals are
  * preserved intact.
  *
- * Uses acorn's tokenizer, which understands regex literals — a pure-regex
+ * Uses acorn's tokenizer, which understands regex literals. A pure-regex
  * implementation does not model them, so two adjacent slashes inside a regex
  * (the tail of `/https?:\/\//`) read as a `//` line comment and the rest of
  * the line is blanked, corrupting whatever lint pass consumes the stripped
  * text. Firefox chrome sources contain preprocessor directives (`#ifdef`)
- * and other constructs acorn cannot tokenize; those fall back to the legacy
- * regex strip, which handles strings but NOT regex literals.
+ * and other constructs acorn cannot tokenize. Those fall back to the legacy
+ * regex strip, which handles strings but not regex literals.
  */
 export function stripJsComments(source: string): string {
   const comments: Array<{ start: number; end: number }> = [];
@@ -54,7 +54,7 @@ export function stripJsComments(source: string): string {
         comments.push({ start, end });
       },
     });
-    // Drive the tokenizer to EOF; we only care about onComment callbacks.
+    // Drive the tokenizer to EOF. We only care about onComment callbacks.
     for (;;) {
       const token = t.getToken();
       if (token.type === acornTokTypes.eof) break;
@@ -77,8 +77,8 @@ export function stripJsComments(source: string): string {
 
 /**
  * Legacy pure-regex comment strip, used only when acorn cannot tokenize
- * the source (preprocessor directives, syntax errors). Strings survive;
- * regex literals are NOT modeled, so `//` inside a regex blanks the rest
+ * the source (preprocessor directives, syntax errors). Strings survive.
+ * Regex literals are not modeled, so `//` inside a regex blanks the rest
  * of the line.
  */
 function stripJsCommentsLegacy(source: string): string {

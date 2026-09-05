@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Pins the lock-inspection race in `removeTree`: a lock cleanly released
- * between the existence probe and the owner-record read is a RELEASE, not an
+ * between the existence probe and the owner-record read is a release, not an
  * unreadable owner. Classifying it `unknown` made `tree remove` refuse and
- * demand `--force` for a lock that no longer exists — a spurious refusal the
- * real-filesystem integration suite cannot reproduce deterministically, hence
- * the mocked interleaving here.
+ * demand `--force` for a lock that no longer exists. That is a spurious
+ * refusal the real-filesystem integration suite cannot reproduce
+ * deterministically, hence the mocked interleaving here.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -68,8 +68,8 @@ describe('removeTree lock-release race', () => {
   });
 
   // The containment guard compares a prefix built with `join` against a root
-  // built with `resolve`. Any input where the two forms differ — a relative
-  // primary root here, a drive-less path on Windows — made the guard reject
+  // built with `resolve`. Any input where the two forms differ (a relative
+  // primary root here, a drive-less path on Windows) made the guard reject
   // every tree as an escape. Both sides are resolved now.
   it('does not mistake a resolvable primary root for a containment escape', async () => {
     existsSyncMock.mockReturnValue(false);

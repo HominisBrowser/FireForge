@@ -1,107 +1,69 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
-import { createFsMock } from '../../test-utils/module-mocks.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-vi.mock('../../utils/fs.js', () => createFsMock());
-
-vi.mock('../file-lock.js', () => ({
-  createSiblingLockPath: vi.fn((statePath: string, suffix: string) => `${statePath}.dir/${suffix}`),
-  withFileLock: vi.fn(),
-}));
-
-vi.mock('node:fs/promises', () => ({
-  rename: vi.fn(),
-}));
-
-import { rename } from 'node:fs/promises';
-
+import { createTempProject, removeTempProject } from '../../test-utils/index.js';
 import { pathExists } from '../../utils/fs.js';
-import { createSiblingLockPath, withFileLock } from '../file-lock.js';
 import { quarantineStateFile, withStateFileLock } from '../state-file.js';
 
-const mockPathExists = vi.mocked(pathExists);
-const mockWithFileLock = vi.mocked(withFileLock);
-const mockRename = vi.mocked(rename);
+let root: string;
+let statePath: string;
 
-beforeEach(() => {
-  vi.clearAllMocks();
+beforeEach(async () => {
+  root = await createTempProject('fireforge-state-file-');
+  statePath = join(root, '.fireforge', 'state.json');
+  await mkdir(dirname(statePath), { recursive: true });
+});
+
+afterEach(async () => {
+  await removeTempProject(root);
 });
 
 describe('withStateFileLock', () => {
-  it('delegates to withFileLock with correct lock path', async () => {
-    mockWithFileLock.mockImplementation((_lockPath, operation) =>
-      (operation as () => Promise<string>)()
-    );
+  it('holds a sidecar lock beside the state file while the operation runs and releases it after', async () => {
+    let lockedDuringOperation: string[] = [];
 
-    const result = await withStateFileLock('/project/.fireforge/state.json', () =>
-      Promise.resolve('done')
-    );
+    const result = await withStateFileLock(statePath, async () => {
+      lockedDuringOperation = (await readdir(dirname(statePath))).filter((entry) =>
+        entry.includes('.fireforge-state.lock')
+      );
+      return 'done';
+    });
 
-    expect(createSiblingLockPath).toHaveBeenCalledWith(
-      '/project/.fireforge/state.json',
-      '.fireforge-state.lock'
-    );
     expect(result).toBe('done');
-  });
-
-  it('passes onTimeoutMessage containing the state path', async () => {
-    mockWithFileLock.mockImplementation((_lockPath, operation) =>
-      (operation as () => Promise<string>)()
+    expect(lockedDuringOperation).toHaveLength(1);
+    // The lock is a sidecar of the state file, not the state file itself.
+    expect(await pathExists(statePath)).toBe(false);
+    // Released once the operation resolves, so the next writer is not blocked.
+    const afterRelease = (await readdir(dirname(statePath))).filter((entry) =>
+      entry.includes('.fireforge-state.lock')
     );
-
-    await withStateFileLock('/project/.fireforge/state.json', () => Promise.resolve('ok'));
-
-    const options = mockWithFileLock.mock.calls[0]?.[2] as { onTimeoutMessage: string } | undefined;
-    expect(options?.onTimeoutMessage).toContain('/project/.fireforge/state.json');
-    expect(options?.onTimeoutMessage).toContain('stale lock directory');
-  });
-
-  it('onStaleLockMessage callback formats age correctly', async () => {
-    mockWithFileLock.mockImplementation((_lockPath, operation) =>
-      (operation as () => Promise<string>)()
-    );
-
-    await withStateFileLock('/project/.fireforge/state.json', () => Promise.resolve('ok'));
-
-    const options = mockWithFileLock.mock.calls[0]?.[2] as
-      { onStaleLockMessage: (ageMs: number) => string } | undefined;
-    const message = options?.onStaleLockMessage(60000);
-    expect(message).toContain('Removing stale FireForge state lock');
-    expect(message).toContain('state.json');
-    expect(message).toContain('60s');
+    expect(afterRelease).toEqual([]);
   });
 });
 
 describe('quarantineStateFile', () => {
   it('returns undefined when file does not exist', async () => {
-    mockPathExists.mockResolvedValue(false);
-
-    const result = await quarantineStateFile('/project/.fireforge/state.json');
-
-    expect(result).toBeUndefined();
-    expect(mockRename).not.toHaveBeenCalled();
+    await expect(quarantineStateFile(statePath)).resolves.toBeUndefined();
   });
 
   it('renames file with corrupt-timestamp suffix and returns basename', async () => {
-    mockPathExists.mockResolvedValue(true);
-    mockRename.mockResolvedValue(undefined);
+    await writeFile(statePath, '{ broken');
 
-    const result = await quarantineStateFile('/project/.fireforge/state.json');
+    const result = await quarantineStateFile(statePath);
 
-    expect(mockRename).toHaveBeenCalledTimes(1);
-    const renamedPath = mockRename.mock.calls[0]?.[1] as string | undefined;
-    expect(renamedPath).toMatch(/state\.json\.corrupt-\d{4}-\d{2}-\d{2}T/);
-    expect(result).toBe(renamedPath?.split('/').pop());
+    expect(result).toMatch(/^state\.json\.corrupt-\d{4}-\d{2}-\d{2}T/);
+    expect(await pathExists(statePath)).toBe(false);
+    expect(await readFile(join(dirname(statePath), result ?? ''), 'utf8')).toBe('{ broken');
   });
 
   it('uses custom reason in quarantined filename', async () => {
-    mockPathExists.mockResolvedValue(true);
-    mockRename.mockResolvedValue(undefined);
+    await writeFile(statePath, '{}');
 
-    await quarantineStateFile('/project/.fireforge/state.json', 'migration-failed');
+    const result = await quarantineStateFile(statePath, 'migration-failed');
 
-    const renamedPath = mockRename.mock.calls[0]?.[1] as string | undefined;
-    expect(renamedPath).toContain('migration-failed');
+    expect(result).toContain('migration-failed');
   });
 });

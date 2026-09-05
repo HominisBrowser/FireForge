@@ -9,7 +9,6 @@ import type { PatchInfo } from '../../types/commands/index.js';
 const {
   loadConfigMock,
   loadStateMock,
-  saveStateMock,
   updateStateMock,
   getProjectPathsMock,
   getHeadMock,
@@ -40,7 +39,6 @@ const {
 } = vi.hoisted(() => ({
   loadConfigMock: vi.fn(),
   loadStateMock: vi.fn(() => Promise.resolve({})),
-  saveStateMock: vi.fn(() => Promise.resolve()),
   updateStateMock: vi.fn<
     (
       root: string,
@@ -94,7 +92,6 @@ const {
 vi.mock('../../core/config.js', () => ({
   loadConfig: loadConfigMock,
   loadState: loadStateMock,
-  saveState: saveStateMock,
   updateState: updateStateMock,
   getProjectPaths: getProjectPathsMock,
 }));
@@ -164,7 +161,7 @@ vi.mock('../../core/rebase-session.js', () => ({
   getRebaseSessionPath: (root: string) => `${root}/.fireforge/rebase-session.json`,
   // Derived from the two mocks the existing tests already drive, so the
   // present/valid split stays consistent with them. Tests that need the
-  // corrupt case override this directly; the real absent-vs-corrupt
+  // corrupt case override this directly. The real absent-vs-corrupt
   // behaviour is covered against real files in `rebase-session.test.ts`
   // and `rebase.integration.test.ts`.
   readRebaseSession: readRebaseSessionMock,
@@ -210,7 +207,7 @@ import { Command } from 'commander';
 
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import { NoRebaseSessionError, RebaseSessionExistsError } from '../../errors/rebase.js';
-import { rebaseCommand, registerRebase } from '../rebase.js';
+import { rebaseCommand, registerRebase } from '../rebase/index.js';
 
 const defaultPaths = {
   root: '/project',
@@ -237,11 +234,11 @@ function setupDefaults(): void {
   // here rather than inheriting whatever the previous describe left behind.
   hasActiveRebaseSessionMock.mockResolvedValue(false);
   loadRebaseSessionMock.mockResolvedValue(null);
-  // Default: mirror whatever the two legacy mocks are set to — a loaded
+  // Default: mirror whatever the two legacy mocks are set to. A loaded
   // session wins, else liveness comes from `hasActiveRebaseSessionMock`. The
   // legacy mocks have no notion of "corrupt", so a present session is reported
-  // valid; the real absent/valid/corrupt split is covered against actual files
-  // in `rebase-session.test.ts` and `rebase.integration.test.ts`.
+  // valid. The real absent/valid/corrupt split is covered against actual
+  // files in `rebase-session.test.ts` and `rebase.integration.test.ts`.
   readRebaseSessionMock.mockImplementation(async (root: string) => {
     const session = await loadRebaseSessionMock(root);
     if (session) return { present: true, valid: true, session };
@@ -311,7 +308,7 @@ describe('fireforge rebase', () => {
       ],
     });
 
-    // Should not throw — just a no-op
+    // Should not throw. Just a no-op
     await rebaseCommand('/project');
     expect(resetChangesMock).not.toHaveBeenCalled();
   });
@@ -378,8 +375,8 @@ describe('fireforge rebase', () => {
 
   // After an aborted `download --force`, the engine's `.git/` exists but has
   // no valid HEAD. Without mirroring the real-run baseline check,
-  // `rebase --dry-run` prints "Dry run complete" — suggesting the rebase is
-  // ready — and the real `rebase --yes` then fails immediately with
+  // `rebase --dry-run` prints "Dry run complete" (suggesting the rebase is
+  // ready) and the real `rebase --yes` then fails immediately with
   // `fatal: ambiguous argument 'HEAD'`.
   it('dry-run refuses when engine HEAD is unborn (post-aborted-download baseline)', async () => {
     hasActiveRebaseSessionMock.mockResolvedValue(false);
@@ -792,12 +789,12 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
 
     await rebaseCommand('/project', { continue: true });
 
-    expect(updatePatchAndMetadataMock).toHaveBeenCalledWith(
-      '/project/patches',
-      '001-branding.patch',
-      'diff --git a/browser/file.txt b/browser/file.txt\n',
-      { sourceEsrVersion: '140.9.0esr', sourceVersion: '140.9.0esr' }
-    );
+    expect(updatePatchAndMetadataMock).toHaveBeenCalledWith({
+      patchesDir: '/project/patches',
+      filename: '001-branding.patch',
+      newContent: 'diff --git a/browser/file.txt b/browser/file.txt\n',
+      updates: { sourceEsrVersion: '140.9.0esr', sourceVersion: '140.9.0esr' },
+    });
     expect(applyPatchWithFuzzMock).toHaveBeenCalledWith(
       '/project/patches/002-ui.patch',
       '/project/engine',
@@ -815,7 +812,7 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
   });
 
   it('refuses to claim success when a per-patch re-export fails after a clean apply loop', async () => {
-    // Apply succeeds for every patch; the post-apply re-export then fails
+    // Apply succeeds for every patch. The post-apply re-export then fails
     // for the only patch that was applied. The previous behaviour silently
     // warn-and-continued through this, leaving the queue stamped with an
     // honest version but a stale .patch file. The new contract is to
@@ -1010,7 +1007,7 @@ describe('fireforge rebase — CLI registration', () => {
     loadRebaseSessionMock.mockResolvedValue(null);
 
     // --continue with no active session reaches the action and fails with the
-    // domain error — proving the flag survived parsing as a real number.
+    // domain error, proving the flag survived parsing as a real number.
     await expect(
       program.parseAsync(['node', 'fireforge', 'rebase', '--continue', '--max-fuzz', '5'])
     ).rejects.toBeInstanceOf(NoRebaseSessionError);

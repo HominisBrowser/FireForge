@@ -69,7 +69,7 @@ describe('applyPatchIdempotent integration', () => {
     const content1 = await readFile(join(repoDir, 'file.txt'), 'utf8');
     expect(content1).toBe('line 1\nline 2 modified\nline 3\n');
 
-    // Second apply — should succeed via reverse→forward
+    // Second apply: should succeed via reverse then forward
     await applyPatchIdempotent(patchPath, repoDir);
     const content2 = await readFile(join(repoDir, 'file.txt'), 'utf8');
     expect(content2).toBe('line 1\nline 2 modified\nline 3\n');
@@ -96,7 +96,7 @@ describe('applyPatchIdempotent integration', () => {
     // Dirty an unrelated file
     await writeFile(join(repoDir, 'other.txt'), 'local edits\n');
 
-    // Re-apply — should succeed and preserve other.txt edits
+    // Re-apply: should succeed and preserve other.txt edits
     await applyPatchIdempotent(patchPath, repoDir);
 
     expect(await readFile(join(repoDir, 'target.txt'), 'utf8')).toBe('modified\n');
@@ -122,7 +122,7 @@ describe('applyPatchIdempotent integration', () => {
     // Corrupt the file so reverse will fail
     await writeFile(join(repoDir, 'file.txt'), 'totally different content\n');
 
-    // Re-apply — reverse fails, checkout HEAD restores baseline, forward apply succeeds
+    // Re-apply: reverse fails, checkout HEAD restores baseline, forward apply succeeds
     await applyPatchIdempotent(patchPath, repoDir);
     expect(await readFile(join(repoDir, 'file.txt'), 'utf8')).toBe(
       'line 1\nline 2 patched\nline 3\n'
@@ -145,11 +145,11 @@ describe('applyPatchIdempotent integration', () => {
 
     const patchPath = await writePatch(tempDir, 'delete', diff);
 
-    // First apply — file is deleted
+    // First apply: file is deleted
     await applyPatchIdempotent(patchPath, repoDir);
     expect(await fileExists(join(repoDir, 'doomed.txt'))).toBe(false);
 
-    // Second apply — idempotent (reverse restores file, forward deletes again)
+    // Second apply: idempotent (reverse restores file, forward deletes again)
     await applyPatchIdempotent(patchPath, repoDir);
     expect(await fileExists(join(repoDir, 'doomed.txt'))).toBe(false);
   }, 30_000);
@@ -172,11 +172,11 @@ describe('applyPatchIdempotent integration', () => {
 
     const patchPath = await writePatch(tempDir, 'newfile', diff);
 
-    // First apply — file is created
+    // First apply: file is created
     await applyPatchIdempotent(patchPath, repoDir);
     expect(await readFile(join(repoDir, 'brand-new.txt'), 'utf8')).toBe('fresh content\n');
 
-    // Second apply — reverse removes it, forward creates it again
+    // Second apply: reverse removes it, forward creates it again
     await applyPatchIdempotent(patchPath, repoDir);
     expect(await readFile(join(repoDir, 'brand-new.txt'), 'utf8')).toBe('fresh content\n');
   }, 30_000);
@@ -195,10 +195,10 @@ describe('applyPatchIdempotent integration', () => {
 
     const patchPath = await writePatch(tempDir, 'mod', diff);
 
-    // Manually dirty the same file with DIFFERENT content (not applying the patch)
+    // Manually dirty the same file with different content (not applying the patch)
     await writeFile(join(repoDir, 'shared.txt'), 'my local edits\n');
 
-    // Apply — reverse fails (never applied), checkout HEAD restores baseline,
+    // Apply: reverse fails (never applied), checkout HEAD restores baseline,
     // forward apply succeeds. Local edits are gone.
     await applyPatchIdempotent(patchPath, repoDir);
     expect(await readFile(join(repoDir, 'shared.txt'), 'utf8')).toBe(

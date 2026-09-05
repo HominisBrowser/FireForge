@@ -6,21 +6,19 @@
  * only tested in isolation meet here:
  *
  * - `tree exec` hands stdout to the child with `stdio: 'inherit'`, so the
- *   child's verdict reaches the caller's stdout byte-for-byte;
- * - on a non-zero child exit the parent wraps it in a `GeneralError`. If
- *   that refusal renders on the PARENT's stdout — after the child's verdict
- *   — it breaks the "verdict is the run's last stdout write" guarantee
+ *   child's verdict reaches the caller's stdout byte-for-byte.
+ * - On a non-zero child exit the parent wraps it in a `GeneralError`. If
+ *   that refusal renders on the parent's stdout, after the child's verdict,
+ *   it breaks the "verdict is the run's last stdout write" guarantee
  *   exactly where a gate reads it. The parent seals stdout once the child
  *   settles, so its refusal goes to stderr.
  *
  * The child is `node <cliEntry>` with no loader of its own, so the spawn
- * carries tsx through `NODE_OPTIONS` for the TypeScript sources; a packed
+ * carries tsx through `NODE_OPTIONS` for the TypeScript sources. A packed
  * install runs plain JavaScript and needs nothing.
  */
-import { spawn } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -28,49 +26,19 @@ import {
   createTempProject,
   initCommittedRepo,
   removeTempProject,
+  runFireforgeCli,
   writeFiles,
   writeFireForgeConfig,
 } from '../test-utils/index.js';
-
-const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
-const tsxCli = join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const binEntry = join(repoRoot, 'bin', 'fireforge.ts');
 /**
  * Absolute URL, not the bare `tsx` specifier: the grandchild resolves
- * `NODE_OPTIONS` against ITS cwd (the temp tree), where no node_modules
+ * `NODE_OPTIONS` against its own cwd (the temp tree), where no node_modules
  * exists.
  */
 const tsxLoader = new URL('../../node_modules/tsx/dist/loader.mjs', import.meta.url).href;
 
 const TREE_NAME = 'shard-a';
 const VERDICT_PREFIX = 'FIREFORGE-VERDICT:';
-
-interface CliResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}
-
-function runFireforge(cwd: string, args: string[]): Promise<CliResult> {
-  const child = spawn(process.execPath, [tsxCli, binEntry, ...args], {
-    cwd,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, NODE_OPTIONS: `--import ${tsxLoader}` },
-  });
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
-  child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-  child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-  return new Promise<CliResult>((resolve) => {
-    child.on('exit', (code) => {
-      resolve({
-        exitCode: code ?? -1,
-        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-        stderr: Buffer.concat(stderrChunks).toString('utf8'),
-      });
-    });
-  });
-}
 
 function verdictLines(stdout: string): string[] {
   return stdout.split('\n').filter((line) => line.includes(VERDICT_PREFIX));
@@ -81,8 +49,8 @@ function lastNonEmptyLine(stdout: string): string {
   return lines.at(-1) ?? '';
 }
 
-// The whole contract runs THROUGH `tree exec`, which refuses on Windows
-// (`assertPosix` in ../commands/tree.ts) — there is no child to inherit
+// The whole contract runs through `tree exec`, which refuses on Windows
+// (`assertPosix` in ../commands/tree.ts), so there is no child to inherit
 // stdout from there. The refusal itself is pinned in tree.test.ts.
 const describePosix = process.platform === 'win32' ? describe.skip : describe;
 
@@ -131,25 +99,31 @@ describePosix('FIREFORGE-VERDICT through tree exec', () => {
     await removeTempProject(projectRoot);
   });
 
-  it('emits exactly one verdict line, and it is the last stdout line even when the child fails', async () => {
-    const result = await runFireforge(projectRoot, ['tree', 'exec', TREE_NAME, '--', 'test']);
+  it('emits one verdict line last on stdout while the parent refusal goes to stderr', async () => {
+    const result = await runFireforgeCli(projectRoot, ['tree', 'exec', TREE_NAME, '--', 'test'], {
+      NODE_OPTIONS: `--import ${tsxLoader}`,
+    });
 
     // The in-tree run cannot reach a real harness (no built binary), so it
-    // ends at the preflight verdict — the shape a gate step sees on failure.
+    // ends at the preflight verdict, which is the shape a gate step sees on
+    // failure.
     expect(verdictLines(result.stdout)).toHaveLength(1);
     expect(lastNonEmptyLine(result.stdout)).toContain(VERDICT_PREFIX);
     expect(result.exitCode).not.toBe(0);
-  }, 120_000);
 
-  it("routes tree exec's own refusal to stderr so it cannot displace the verdict", async () => {
-    const result = await runFireforge(projectRoot, ['tree', 'exec', TREE_NAME, '--', 'test']);
-
+    // Same run, second half of the contract: the parent's own refusal must
+    // land on stderr, or it would displace the verdict as the last stdout
+    // line a gate reads. Asserting it here saves a second ~2 s spawn.
     expect(result.stderr).toContain('tree exec: fireforge test exited with code');
     expect(result.stdout).not.toContain('tree exec: fireforge test exited with code');
   }, 120_000);
 
   it('emits no verdict at all for a pre-spawn refusal (no child ever ran)', async () => {
-    const result = await runFireforge(projectRoot, ['tree', 'exec', 'no-such-tree', '--', 'test']);
+    const result = await runFireforgeCli(
+      projectRoot,
+      ['tree', 'exec', 'no-such-tree', '--', 'test'],
+      { NODE_OPTIONS: `--import ${tsxLoader}` }
+    );
 
     expect(verdictLines(result.stdout)).toHaveLength(0);
     expect(result.exitCode).not.toBe(0);

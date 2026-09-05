@@ -7,6 +7,7 @@ import { basename, join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { insertJarMnEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 
@@ -45,7 +46,7 @@ const MIN_SOURCE_GAP = 4;
  * freshly registered file at the wrong column and produces avoidable
  * formatting churn, since adjacent Firefox entries are typically padded to a
  * wider column. Returns `undefined` when no existing entries provide an
- * alignment signal — callers fall back to the four-space default.
+ * alignment signal. Callers fall back to the four-space default.
  */
 export function measureSourceColumn(content: string): number | undefined {
   const lines = content.split('\n');
@@ -80,7 +81,7 @@ export function buildEntry(name: string, sourceColumn: number | undefined): stri
   const minColumn = target.length + MIN_SOURCE_GAP;
   const column = sourceColumn !== undefined && sourceColumn >= minColumn ? sourceColumn : minColumn;
   const padding = ' '.repeat(column - target.length);
-  return `${target}${padding}(../shared/${name}.css)`.replace(/\\/g, '/');
+  return normalizePathSlashes(`${target}${padding}(../shared/${name}.css)`);
 }
 
 /**
@@ -90,8 +91,8 @@ export function buildEntry(name: string, sourceColumn: number | undefined): stri
  *   skin/classic/browser/{name}.css    (../shared/{name}.css)
  *
  * The gap between target and source is sized to align with adjacent
- * entries when the manifest already uses a wider column; falls back to
- * a four-space minimum otherwise.
+ * entries when the manifest already uses a wider column. It falls back
+ * to a four-space minimum otherwise.
  */
 export async function registerSharedCSS(
   engineDir: string,
@@ -113,7 +114,7 @@ export async function registerSharedCSS(
 
   // Idempotency check. `furnace chrome-doc create` writes its CSS as a
   // `content/browser/<name>.css` entry rather than the canonical
-  // `skin/classic/browser/<name>.css` form `register` produces; recognise
+  // `skin/classic/browser/<name>.css` form `register` produces. Recognise
   // both shapes so a follow-up `register` invocation against an
   // already-chrome-doc-registered file reports `skipped` instead of
   // appending a duplicate `skin/classic/browser/...` row.

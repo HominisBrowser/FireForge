@@ -5,8 +5,8 @@
  * command.
  *
  * Distinct from `patch-lint-checkjs.ts` (patch-hygiene): patchLint is
- * scoped, fireforge-controlled, and runs as part of `fireforge lint`;
- * this command runs whole projects with user-controlled compiler
+ * scoped, fireforge-controlled, and runs as part of `fireforge lint`.
+ * This command runs whole projects with user-controlled compiler
  * options and is intended as a CI gate. The two share the Firefox
  * globals shim and suppressed-code list (via `typecheck-shim.ts`) so
  * a file that lints clean cannot fail typecheck for a reason the
@@ -14,7 +14,7 @@
  *
  * Loads the TypeScript compiler API via dynamic import so it is only
  * required when `typecheck.projects` is configured. TypeScript
- * remains a dev-dependency — if a user invokes `fireforge typecheck`
+ * remains a dev-dependency. If a user invokes `fireforge typecheck`
  * without installing it, the function returns a clear error pointing
  * at `npm install typescript`.
  */
@@ -38,7 +38,7 @@ import {
 /**
  * Sentinel string surfaced as a `TypecheckIssue.message` when the
  * project's jsconfig sets `checkJs: false`. Exported so tests can
- * pin the contract — operators rely on it to spot opted-out projects
+ * pin the contract, since operators rely on it to spot opted-out projects
  * in CI logs.
  */
 export const CHECK_JS_DISABLED_NOTICE =
@@ -49,20 +49,20 @@ export const CHECK_JS_DISABLED_NOTICE =
  *
  * Per-project flow:
  *   1. Read the jsconfig via the TS API. JSON parse / config-spec
- *      errors are surfaced as issues, not thrown — a single broken
- *      project must not abort the rest of the run.
+ *      errors are surfaced as issues rather than thrown, because a single
+ *      broken project must not abort the rest of the run.
  *   2. Compute final compiler options from the user's options. We
- *      only force `noEmit: true` (this is a typecheck, not a build);
- *      we honour `strict`, `target`, `lib`, `module`, `paths`,
+ *      only force `noEmit: true` (this is a typecheck, not a build).
+ *      We honour `strict`, `target`, `lib`, `module`, `paths`,
  *      `include`, `exclude`. `allowJs` and `checkJs` default to
- *      `true` only when the user has not set them — if the user set
+ *      `true` only when the user has not set them. If the user set
  *      `checkJs: false` we treat that as an explicit opt-out and
  *      skip the project with a single notice (see {@link CHECK_JS_DISABLED_NOTICE}).
  *   3. Inject the synthetic shim (built-in + optional extraShim) as
  *      a virtual root file that the custom CompilerHost serves.
- *   4. Build the program; collect semantic, syntactic, options, and
- *      global diagnostics. The patchLint flow only reads semantic +
- *      syntactic — fine for hygiene, but a CI gate needs the full
+ *   4. Build the program and collect semantic, syntactic, options,
+ *      and global diagnostics. The patchLint flow only reads semantic +
+ *      syntactic, which is fine for hygiene, but a CI gate needs the full
  *      set so misconfigured `lib`/`paths` entries fail loudly.
  *   5. Drop diagnostics whose code is in `SUPPRESSED_DIAGNOSTIC_CODES`
  *      and any diagnostic originating in the synthetic shim itself.
@@ -77,8 +77,8 @@ export async function runTypecheck(
   projectRoot: string,
   cfg: TypecheckConfig
 ): Promise<TypecheckProjectResult[]> {
-  // Dynamic import — typescript stays a dev dependency. Same pattern
-  // as `patch-lint-checkjs.ts`; the empty-projects-array case is
+  // Dynamic import, so typescript stays a dev dependency. Same pattern
+  // as `patch-lint-checkjs.ts`. The empty-projects-array case is
   // already rejected by config-validate, so we don't gate the import
   // on `cfg.projects.length`.
   let ts: typeof import('typescript');
@@ -103,7 +103,7 @@ export async function runTypecheck(
     }));
   }
 
-  // Compose the shim PER project: the effective extraShim is the per-project
+  // Compose the shim per project: the effective extraShim is the per-project
   // override (a path, or `null` to opt out) when present, else the shared
   // top-level extraShim. A project that narrows `lib`/`types` can opt out of
   // a Gecko-lib shim hub that another project needs, so the composed shim is
@@ -130,7 +130,7 @@ export async function runTypecheck(
       shimSource = await composeForProject(extraShim);
     } catch (err) {
       // A missing or unreadable shim fails only the project(s) that use it,
-      // not the whole run — projects with a different (or no) shim still run.
+      // not the whole run. Projects with a different (or no) shim still run.
       const message = toError(err).message;
       results.push({
         project: projectPath,
@@ -164,12 +164,12 @@ export async function runTypecheck(
 
 /**
  * Resolves the effective extra shim for a single project: a `projectOverrides`
- * entry wins (a string path overrides; `null` opts out → `undefined`), else
+ * entry wins (a string path overrides, `null` opts out → `undefined`), else
  * the shared top-level `extraShim` applies.
  */
 function resolveProjectExtraShim(cfg: TypecheckConfig, projectPath: string): string | undefined {
   const overrides = cfg.projectOverrides;
-  if (overrides && Object.prototype.hasOwnProperty.call(overrides, projectPath)) {
+  if (overrides && Object.hasOwn(overrides, projectPath)) {
     const value = overrides[projectPath];
     return value === null ? undefined : value;
   }
@@ -204,7 +204,7 @@ async function runTypecheckForProject(
   }
 
   // 1) Read the JSON config. ts.readConfigFile reports JSON-shape
-  // errors via the returned diagnostic; missing files fall back to
+  // errors via the returned diagnostic. Missing files fall back to
   // pathExists above, which gives a more directly actionable message.
   const readResult = ts.readConfigFile(absConfig, (path) => ts.sys.readFile(path));
   if (readResult.error) {
@@ -217,7 +217,7 @@ async function runTypecheckForProject(
 
   // 2) Parse the config content. This is what surfaces config-spec
   // errors (unknown options, mismatched types in `compilerOptions`,
-  // bad `include` patterns, etc.) — TS5xxx codes. We surface them
+  // bad `include` patterns, etc.), the TS5xxx codes. We surface them
   // alongside semantic diagnostics so the operator sees the same
   // output `tsc -p` would have produced.
   const parsed = ts.parseJsonConfigFileContent(
@@ -235,7 +235,7 @@ async function runTypecheckForProject(
 
   // 3) Honour explicit `checkJs: false`. The user has opted out for
   // an IDE reason (likely "checkJs floods my workflow with non-actionable
-  // notes"); flipping it on here would surface ~hundreds of issues that
+  // notes"). Flipping it on here would surface ~hundreds of issues that
   // the operator already evaluated and rejected. Surface a single
   // notice so it is visible in CI logs rather than silently passing.
   const rawConfig = readResult.config as { compilerOptions?: Record<string, unknown> } | undefined;
@@ -252,10 +252,10 @@ async function runTypecheckForProject(
     return { project: projectPath, issues, filesChecked: parsed.fileNames.length };
   }
 
-  // 4) Compute final compiler options. `noEmit: true` is forced — we
+  // 4) Compute final compiler options. `noEmit: true` is forced, so we
   // never write artifacts. `allowJs` / `checkJs` default to true
   // *only* when unset (so a user can flip them off without us
-  // overriding); if the user set `allowJs: false` they're saying
+  // overriding). If the user set `allowJs: false` they're saying
   // "don't even include JS in this typecheck", which is rare but
   // legitimate (e.g. an isolated `.d.ts`-only project).
   const options: import('typescript').CompilerOptions = {
@@ -265,12 +265,12 @@ async function runTypecheckForProject(
     checkJs: parsed.options.checkJs ?? true,
     // No incremental sidecar, ever. A user jsconfig under `engine/` that sets
     // `incremental` (or names a `tsBuildInfoFile`) would have this command
-    // drop a `.tsbuildinfo` inside the primary engine checkout — a second
+    // drop a `.tsbuildinfo` inside the primary engine checkout: a second
     // writer that invalidates a concurrent `fireforge test`'s engine
     // fingerprint. This command emits nothing, so the sidecar buys nothing
     // either.
     incremental: false,
-    // skipLibCheck is not forced; the user owns it via their jsconfig.
+    // skipLibCheck is not forced. The user owns it via their jsconfig.
   };
   // `exactOptionalPropertyTypes` forbids assigning `undefined` to an
   // optional `string`, so the sidecar path is dropped rather than unset.
@@ -278,14 +278,14 @@ async function runTypecheckForProject(
 
   // 5) The synthetic shim file. Use a project-rooted path with a
   // hidden-style prefix so it is unlikely to collide with any real
-  // file — and never write it to disk. The CompilerHost below serves
+  // file, and never write it to disk. The CompilerHost below serves
   // it from `shimSource` for `fileExists`/`readFile`/`getSourceFile`.
   const projectDir = dirname(absConfig);
-  // Forward slashes deliberately: TypeScript normalizes every `fileName` it
+  // Forward slashes on purpose: TypeScript normalizes every `fileName` it
   // hands a CompilerHost, on every platform. A shim path carrying Windows
   // separators never matches those callbacks, so the shim is not served (its
   // globals report as undefined identifiers) and its own diagnostics are not
-  // filtered out below — the pass reports failures that do not exist.
+  // filtered out below, so the pass reports failures that do not exist.
   const shimPath = normalizePathSlashes(resolve(projectDir, `.fireforge-${SHIM_FILENAME}`));
 
   const rootFiles = [...parsed.fileNames, shimPath];
@@ -311,7 +311,7 @@ async function runTypecheckForProject(
   const program = ts.createProgram(rootFiles, options, host);
 
   // Collect the full diagnostic set. patchLint reads only semantic +
-  // syntactic — fine for hygiene, wrong for CI: a misconfigured
+  // syntactic, which is fine for hygiene but wrong for CI: a misconfigured
   // `lib: ["es2015"]` or a missing `paths` target should fail
   // typecheck loudly via getOptionsDiagnostics / getGlobalDiagnostics.
   const allDiagnostics = [
@@ -323,7 +323,7 @@ async function runTypecheckForProject(
 
   for (const diag of allDiagnostics) {
     if (SUPPRESSED_DIAGNOSTIC_CODES.has(diag.code)) continue;
-    // Drop diagnostics that originate in the synthetic shim — operators
+    // Drop diagnostics that originate in the synthetic shim. Operators
     // can't act on them and they would clutter CI logs.
     if (diag.file?.fileName === shimPath) continue;
     if (UNDEFINED_IDENTIFIER_CODES.has(diag.code)) {
@@ -340,7 +340,7 @@ async function runTypecheckForProject(
   }
 
   verbose(
-    `typecheck: ${projectPath} — analyzed ${String(parsed.fileNames.length)} file(s), found ${String(issues.length)} issue(s)`
+    `typecheck: ${projectPath} — analyzed ${parsed.fileNames.length} file(s), found ${issues.length} issue(s)`
   );
 
   return {
@@ -353,7 +353,7 @@ async function runTypecheckForProject(
 /**
  * Converts a TS Diagnostic to a TypecheckIssue. The `fallbackFile`
  * is used when the diagnostic carries no source file (typical for
- * options diagnostics) — typically the absolute jsconfig path or
+ * options diagnostics). It is typically the absolute jsconfig path or
  * the project-relative form for surface-level errors. `project` is
  * threaded through so the CLI can group issues by project without
  * a second pass.
@@ -380,7 +380,7 @@ function diagnosticToIssue(
       ? diag.messageText
       : ts.flattenDiagnosticMessageText(diag.messageText, '\n');
 
-  // Suggestion + Message categories collapse to 'warning'; only
+  // Suggestion + Message categories collapse to 'warning'. Only
   // Error stays an error. This matches what the CLI then displays.
   const category: TypecheckIssue['category'] =
     diag.category === ts.DiagnosticCategory.Error ? 'error' : 'warning';

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Narrow repair for `filesAffected` — the one manifest field a `.patch` body
+ * Narrow repair for `filesAffected`, the one manifest field a `.patch` body
  * can actually yield.
  *
  * A `files-affected-mismatch` is pure derived-value drift: the manifest's list
@@ -100,7 +100,7 @@ async function repairPatchesFilesAffectedUnderLock(
     const row = rowByFilename.get(filename);
     if (patchPath === undefined || !row) {
       // A missing patch file or a missing row is a different consistency
-      // issue with a different remedy; this repair reports it rather than
+      // issue with a different remedy. This repair reports it rather than
       // inventing a row or deleting one.
       skippedFilenames.push(filename);
       continue;
@@ -119,7 +119,7 @@ async function repairPatchesFilesAffectedUnderLock(
   }
 
   const correctedByFilename = new Map(repairs.map((repair) => [repair.filename, repair.after]));
-  // Row-scoped mutation, so every untouched entry keeps its exact JSON shape —
+  // Row-scoped mutation, so every untouched entry keeps its exact JSON shape:
   // no re-sorted `filesAffected` lists and no reader-only fallback fields
   // serialized into rows this repair has no business touching.
   await mutatePatchRowsInManifest(patchesDir, [...correctedByFilename.keys()], (existing) => {

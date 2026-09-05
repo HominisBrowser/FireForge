@@ -68,7 +68,7 @@ vi.mock('../../core/furnace-scanner.js', () => ({
 
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
+  // the pending-repair marker (the behaviour these suites assert), so it
   // comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
@@ -242,8 +242,8 @@ describe('furnace batch override', () => {
       furnaceBatchOverrideCommand('/project', ['moz-button', 'moz-card'], { type: 'full' })
     ).resolves.toBeUndefined();
 
-    // The last writeFurnaceConfig call records the final config state; both
-    // names must have left the stock bucket AND appear under overrides.
+    // The last writeFurnaceConfig call records the final config state. Both
+    // names must have left the stock bucket and appear under overrides.
     const writeCalls = vi.mocked(writeFurnaceConfig).mock.calls;
     const finalConfig = writeCalls.at(-1)?.[1];
     expect(finalConfig?.stock).toEqual([]);
@@ -294,7 +294,7 @@ describe('furnace batch override', () => {
       return Promise.resolve(false);
     });
 
-    // Both names resolve to the same component — should only process once
+    // Both names resolve to the same component and should only process once,
     // but 'moz-missing' is returned as null by scanner
     await expect(
       furnaceBatchOverrideCommand('/project', ['moz-missing', 'moz-missing'], { type: 'full' })

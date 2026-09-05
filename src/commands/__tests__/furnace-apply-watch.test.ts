@@ -38,7 +38,7 @@ vi.mock('../../core/furnace-apply-output.js', () => ({
 
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
+  // the pending-repair marker (the behaviour these suites assert), so it
   // comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
@@ -154,7 +154,7 @@ describe('furnaceApplyCommand — watch mode', () => {
   });
 
   it('applies components and starts watching directories', async () => {
-    // Start the command with watch: true in the background — runWatchLoop
+    // Start the command with watch: true in the background. runWatchLoop
     // blocks indefinitely, so we don't await it to completion.
     const commandPromise = furnaceApplyCommand('/project', undefined, { watch: true });
 
@@ -241,7 +241,7 @@ describe('furnaceApplyCommand — watch mode', () => {
 
     // No fs.watch should be installed while neither candidate dir exists.
     expect(mockWatchers).toHaveLength(0);
-    // The loop stays running and logs the retry hint rather than exiting —
+    // The loop stays running and logs the retry hint rather than exiting,
     // so a later `furnace create` / `furnace override` in another terminal
     // is picked up on the next 30 s poll tick.
     expect(info).toHaveBeenCalledWith(
@@ -282,7 +282,7 @@ describe('furnaceApplyCommand — watch mode', () => {
     const commandPromise = furnaceApplyCommand('/project', undefined, { watch: true });
     await vi.advanceTimersByTimeAsync(0);
 
-    // No watcher at startup — the dir does not exist yet.
+    // No watcher at startup. The dir does not exist yet.
     expect(mockWatchers).toHaveLength(0);
 
     // Simulate the override dir being created.

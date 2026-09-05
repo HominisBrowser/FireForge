@@ -28,8 +28,8 @@ describe('expectedChromeSuffix', () => {
   });
 
   it.each([
-    // Sources outside the known transform prefixes do not get rewritten;
-    // the scorer falls back to similarity ranking for these.
+    // Sources outside the known transform prefixes do not get rewritten.
+    // The scorer falls back to similarity ranking for these.
     ['browser/components/preferences/foo.js'],
     ['browser/app/profile/prefs.js'],
     ['browser/defaults/preferences/mybrowser.js'],
@@ -39,7 +39,7 @@ describe('expectedChromeSuffix', () => {
   });
 
   it('prefers the more-specific toolkit/content/widgets rule over toolkit/content', () => {
-    // The rule order matters — if toolkit/content/ won the first-match race,
+    // The rule order matters. If toolkit/content/ won the first-match race,
     // the widget would end up at chrome/toolkit/content/global/widgets/... rather
     // than the correct /elements/... path.
     expect(expectedChromeSuffix('toolkit/content/widgets/moz-preview.mjs')).toBe(
@@ -81,7 +81,7 @@ describe('resolveArtifactByKnownTransform', () => {
   });
 
   it('returns undefined when the chrome artifact is absent even if an unrelated basename match exists', async () => {
-    // No file exists at the chrome suffix, so the transform does NOT match
+    // No file exists at the chrome suffix, so the transform does not match
     // the unrelated pref file. The caller falls back to the similarity
     // heuristic which will still report the real packaging drop as missing.
     const wrong = join(root, 'bin/browser/defaults/preferences/mybrowser.js');
@@ -95,7 +95,7 @@ describe('resolveArtifactByKnownTransform', () => {
   });
 
   it('returns undefined for sources outside the known transforms', async () => {
-    // Out-of-scope sources must not trigger any probe — the heuristic
+    // Out-of-scope sources must not trigger any probe. The heuristic
     // fallback continues to own these cases.
     await ensureDir(join(root, 'chrome/browser/content/browser'));
     await writeText(join(root, 'chrome/browser/content/browser/foo.js'), 'x');

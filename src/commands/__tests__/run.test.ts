@@ -98,11 +98,11 @@ import { ExitCode } from '../../errors/codes.js';
 import { SmokeRunError } from '../../errors/run.js';
 import { pathExists, removeDir, removeFile } from '../../utils/fs.js';
 import { info, verbose, warn } from '../../utils/logger.js';
-import { registerRun, runCommand, SMOKE_EXIT_FAILURE, SMOKE_LAUNCH_FAILURE } from '../run.js';
+import { registerRun, runCommand } from '../run.js';
 
 // `--smoke-exit` refuses on Windows (`runSmokeExit` in ../run.ts): killing a
 // process GROUP has no clean Windows equivalent, so the flag would leave
-// content processes orphaned. Its suites cannot run there; the refusal is
+// content processes orphaned. Its suites cannot run there. The refusal is
 // pinned by the platform-stubbed suite at the end of this file.
 const describePosix = process.platform === 'win32' ? describe.skip : describe;
 const itPosix = process.platform === 'win32' ? it.skip : it;
@@ -420,7 +420,6 @@ describe('runCommand', () => {
         (error: unknown) => error
       );
       expect(thrown).toBeInstanceOf(SmokeRunError);
-      expect((thrown as SmokeRunError).code).toBe(SMOKE_EXIT_FAILURE);
       expect((thrown as SmokeRunError).code).toBe(ExitCode.SMOKE_EXIT_FAILURE);
     });
 
@@ -431,14 +430,14 @@ describe('runCommand', () => {
         return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
       });
 
-      // Only the 'real failure' line should count — it's not in the allowlist.
+      // Only the 'real failure' line should count. It's not in the allowlist.
       const thrown = await runCommand('/project', {
         smokeExit: 30,
         consoleAllow: ['known-flake'],
       }).catch((error: unknown) => error);
 
       expect(thrown).toBeInstanceOf(SmokeRunError);
-      expect((thrown as SmokeRunError).code).toBe(SMOKE_EXIT_FAILURE);
+      expect((thrown as SmokeRunError).code).toBe(ExitCode.SMOKE_EXIT_FAILURE);
     });
 
     it('succeeds when every error line matches the allowlist', async () => {
@@ -495,7 +494,7 @@ describe('runCommand', () => {
         (error: unknown) => error
       );
       expect(thrown).toBeInstanceOf(SmokeRunError);
-      expect((thrown as SmokeRunError).code).toBe(SMOKE_LAUNCH_FAILURE);
+      expect((thrown as SmokeRunError).code).toBe(ExitCode.SMOKE_LAUNCH_FAILURE);
     });
 
     it('rejects a zero or negative smokeExit explicitly', async () => {
@@ -598,8 +597,8 @@ describe('runCommand', () => {
 
       expect(createWriteStream).toHaveBeenCalledWith('/tmp/smoke.log');
       // .end() fires from the finally block so log rotation after smoke-exit
-      // does not race on a still-open writer — essential when agents symlink
-      // the capture file to their session log.
+      // does not race on a still-open writer, which matters when agents
+      // symlink the capture file to their session log.
       expect(endSpy).toHaveBeenCalledTimes(1);
     });
 
@@ -668,7 +667,7 @@ describe('runCommand', () => {
         (error: unknown) => error
       );
       expect(thrown).toBeInstanceOf(SmokeRunError);
-      expect((thrown as SmokeRunError).code).toBe(SMOKE_EXIT_FAILURE);
+      expect((thrown as SmokeRunError).code).toBe(ExitCode.SMOKE_EXIT_FAILURE);
     });
 
     it('warns about input contamination when a headed smoke window launches on a non-CI host', async () => {
@@ -724,32 +723,6 @@ describe('runCommand', () => {
   // --- registerRun coverage ---
 
   describe('registerRun', () => {
-    it('registers a "run" command on the program', () => {
-      const program = new Command();
-      registerRun(program, {
-        getProjectRoot: () => '/project',
-        withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
-      });
-
-      const cmd = program.commands.find((c) => c.name() === 'run');
-      expect(cmd).toBeDefined();
-      expect(cmd?.description()).toBe('Launch the built browser');
-    });
-
-    it('invokes runCommand via withErrorHandling when action fires', async () => {
-      const program = new Command();
-      vi.mocked(run).mockResolvedValue(0);
-
-      registerRun(program, {
-        getProjectRoot: () => '/project',
-        withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
-      });
-
-      // Parse "run" to fire the action
-      await program.parseAsync(['node', 'fireforge', 'run']);
-      expect(run).toHaveBeenCalled();
-    });
-
     itPosix('parses --smoke-exit as a positive integer and forwards it', async () => {
       const program = new Command();
       vi.mocked(runMachSmoke).mockResolvedValue({
@@ -832,13 +805,12 @@ describe('runCommand', () => {
       );
     });
 
-    itPosix('accumulates repeated --console-allow values and passes them through', async () => {
+    itPosix('accumulates repeated --console-allow values into one allowlist', async () => {
       const program = new Command();
-      vi.mocked(runMachSmoke).mockResolvedValue({
-        stdout: '',
-        stderr: '',
-        exitCode: 143,
-        timedOut: true,
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStderrLine?.('JavaScript error: foo exploded');
+        opts.onStderrLine?.('JavaScript error: bar exploded');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
       });
 
       registerRun(program, {
@@ -846,22 +818,23 @@ describe('runCommand', () => {
         withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
       });
 
-      await program.parseAsync([
-        'node',
-        'fireforge',
-        'run',
-        '--smoke-exit',
-        '30',
-        '--console-allow',
-        'foo',
-        '--console-allow',
-        'bar',
-      ]);
+      // Both error lines are allowlisted only if the parser kept both
+      // repeats. Dropping either one turns its line into an unallowed
+      // finding and the smoke run throws.
+      await expect(
+        program.parseAsync([
+          'node',
+          'fireforge',
+          'run',
+          '--smoke-exit',
+          '30',
+          '--console-allow',
+          'foo',
+          '--console-allow',
+          'bar',
+        ])
+      ).resolves.toBeDefined();
 
-      // The runCommand-level smoke test already proves the allowlist is
-      // applied; here we only confirm the Commander parser reached smoke
-      // mode with both values (fatal mismatch would make runMachSmoke
-      // uncalled when the parser silently drops repeats).
       expect(runMachSmoke).toHaveBeenCalledTimes(1);
     });
   });

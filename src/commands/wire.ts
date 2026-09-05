@@ -3,7 +3,11 @@ import { join, relative } from 'node:path';
 
 import { Command } from 'commander';
 
-import { DEFAULT_BROWSER_SUBSCRIPT_DIR, wireSubscript } from '../core/browser-wire.js';
+import {
+  DEFAULT_BROWSER_SUBSCRIPT_DIR,
+  type WireResult,
+  wireSubscript,
+} from '../core/browser-wire.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import {
   furnaceConfigExists as checkFurnaceConfigExists,
@@ -26,6 +30,7 @@ import {
   stripEnginePrefix,
   toRootRelativePath,
 } from '../utils/paths.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 
 const BROWSER_BASE_DIR = 'browser/base';
 
@@ -41,8 +46,8 @@ function printWireDryRun(
   info(`  source: ${subscriptDir}/${name}.js`);
   info(`  browser-main.js: loadSubScript("chrome://browser/content/${name}.js")`);
   if (options.init) {
-    // Show the coerced form so the preview matches the emitted block —
-    // echoing the raw input ("X.init") does not reflect that the real run
+    // Show the coerced form so the preview matches the emitted block.
+    // Echoing the raw input ("X.init") does not reflect that the real run
     // writes `X.init();` to browser-init.js.
     info(`  browser-init.js: ${coerceToCall(options.init)}`);
   }
@@ -50,16 +55,14 @@ function printWireDryRun(
     info(`  browser-init.js onUnload(): ${coerceToCall(options.destroy)}`);
   }
   if (domFilePath) {
-    const includePath = relative(
-      join(engineDir, subscriptDir),
-      join(engineDir, domFilePath)
-    ).replace(/\\/g, '/');
+    const includePath = normalizePathSlashes(
+      relative(join(engineDir, subscriptDir), join(engineDir, domFilePath))
+    );
     info(`  ${domTargetPath}: #include ${includePath}`);
   }
-  const relPath = relative(
-    join(engineDir, BROWSER_BASE_DIR),
-    join(engineDir, subscriptDir)
-  ).replace(/\\/g, '/');
+  const relPath = normalizePathSlashes(
+    relative(join(engineDir, BROWSER_BASE_DIR), join(engineDir, subscriptDir))
+  );
   info(`  jar.mn: content/browser/${name}.js (${relPath}/${name}.js)`);
   outro('Dry run complete');
 }
@@ -70,11 +73,11 @@ function printWireDryRun(
  * Preference order:
  *   1. `--target <path>` CLI flag (explicit caller intent)
  *   2. First entry of `furnace.json.tokenHostDocuments` (fork-configured
- *      chrome doc list; already consumed by the missing-token-link
+ *      chrome doc list, already consumed by the missing-token-link
  *      validator and the doctor check)
  *   3. `browser/base/content/browser.xhtml` (upstream default)
  *
- * Step 2 is silent — a missing / invalid furnace.json falls through to the
+ * Step 2 is silent: a missing or invalid furnace.json falls through to the
  * upstream default rather than surfacing a warning, because forks that don't
  * use furnace shouldn't have to configure anything.
  */
@@ -93,7 +96,7 @@ async function resolveDomTargetPath(
         return first;
       }
     } catch {
-      // Fall through to default — a broken furnace.json should not block
+      // Fall through to the default. A broken furnace.json should not block
       // the wire command. The doctor surfaces that issue separately.
     }
   }
@@ -120,7 +123,7 @@ function validateWireName(name: string): void {
 }
 
 /**
- * Asserts that the resolved chrome document both exists on disk AND exposes
+ * Asserts that the resolved chrome document both exists on disk and exposes
  * an insertion anchor (`#include browser-sets.inc` or `<html:body>`) that
  * `addDomFragment` can splice into. Fires in dry-run and real-run mode
  * alike, so the preview and execution agree on whether the target is
@@ -206,7 +209,7 @@ async function ensureSubscriptSourceExists(
 /**
  * Validates the `--dom` fragment argument and computes its engine-root-
  * relative path. Accepts absolute, repo-root-relative (`engine/...`), and
- * engine-relative inputs; rejects missing files and paths escaping
+ * engine-relative inputs. Rejects missing files and paths escaping
  * engine/. Returns undefined when `--dom` was not supplied.
  */
 async function resolveDomFragmentPath(
@@ -296,7 +299,7 @@ function reportParserFallbacks(): void {
  * wire invocation.
  */
 function reportWireResult(
-  result: Awaited<ReturnType<typeof wireSubscript>>,
+  result: WireResult,
   name: string,
   options: WireOptions,
   domFilePath: string | undefined,
@@ -361,10 +364,10 @@ export async function wireCommand(
     validateWireName(options.after);
   }
 
-  // Validate init/destroy expressions BEFORE the dry-run/real fork so both
+  // Validate init/destroy expressions before the dry-run/real fork so both
   // paths enforce the same contract. Validating only inside
-  // `addInitToBrowserInit`/`addDestroyToBrowserInit` — the real-execution
-  // path — lets `--dry-run --init 'void 0'` succeed and render a plausible
+  // `addInitToBrowserInit`/`addDestroyToBrowserInit` (the real-execution
+  // path) lets `--dry-run --init 'void 0'` succeed and render a plausible
   // preview even though the real run rejects the same arguments.
   if (options.init !== undefined) {
     validateWireExpression(options.init, 'init expression');
@@ -380,8 +383,8 @@ export async function wireCommand(
   const domFilePath = await resolveDomFragmentPath(projectRoot, options.dom);
 
   // Resolve the chrome document the `#include` directive will land in. Only
-  // consulted when `--dom` is supplied — resolved here anyway so the dry-run
-  // plan can print the target accurately.
+  // consulted when `--dom` is supplied, but resolved here anyway so the
+  // dry-run plan can print the target accurately.
   //
   // `stripEnginePrefix` is applied so
   // `--target engine/browser/base/browser.xhtml` and
@@ -409,7 +412,7 @@ export async function wireCommand(
   // setup scripts rely on.
   //
   // The check stays advisory rather than fatal in dry-run because
-  // "wire first, create file after" is a legitimate use of preview — but a
+  // "wire first, create file after" is a legitimate use of preview. But a
   // dry-run over a typo would otherwise produce a plausible plan and the
   // real command then refuse with `Subscript file not found`. The info line
   // surfaces the mismatch in preview mode.

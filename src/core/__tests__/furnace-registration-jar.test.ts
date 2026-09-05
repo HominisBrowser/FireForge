@@ -266,7 +266,7 @@ describe('stale jar.mn registrations', () => {
   it('finds lines whose workspace source file no longer exists', async () => {
     mockReadText.mockResolvedValue(JAR_WITH_STALE);
     mockPathExists.mockImplementation((p: string) =>
-      // jar.mn exists; moz-panel.mjs exists in the workspace; old-helper.mjs does not.
+      // jar.mn exists. moz-panel.mjs exists in the workspace, old-helper.mjs does not.
       Promise.resolve(!p.endsWith('old-helper.mjs'))
     );
 

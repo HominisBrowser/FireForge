@@ -1,486 +1,72 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`CLI help output > documents kebab-case setup flags and configurable categories > lint --help 1`] = `
-"Usage: fireforge lint [options] [command] [paths...]
-
-Lint engine changes against patch quality rules. Default: aggregate diff against
-HEAD (every applied patch summed). Use --per-patch for per-patch scope, or pass
-explicit file paths to narrow to those.
-
-Options:
-  --since <git-rev>      Tag issues as [introduced] or [cumulative] based on
-                         whether the file changed since <git-rev> (e.g. HEAD, a
-                         branch, a SHA)
-  --only-introduced      Fail only on issues tagged [introduced] (requires
-                         --since). Cumulative errors still print but do not set
-                         a non-zero exit.
-  --per-patch            Lint each patch in the queue as its own isolated diff.
-                         Rescopes patch-size rules so they fire against
-                         individual patches rather than the aggregate. Honours
-                         each patch's \`lintIgnore\` entries.
-  --patches <names...>   With --per-patch, lint only the named patches. Accepts
-                         repeated flags, comma lists, full filenames/stems,
-                         manifest names, category-prefixed slugs, or bare slugs.
-                         Positional arguments after --per-patch are treated the
-                         same way.
-  --max-warnings <n>     Fail when lint reports more than <n> warning(s); use 0
-                         for warning-clean release gates.
-  --no-cache             Bypass per-patch lint result cache reads and writes.
-  --report <path>        With --per-patch, write a machine-readable JSON report
-                         (per-patch size metrics, tier, thresholds, issues, and
-                         lintIgnore-suppressed issues) to <path>.
-  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
-                         command takes no FireForge lock
-  -h, --help             display help for command
-
-Commands:
-  cache [options]        Manage the per-patch lint result cache
-"
-`;
-
-exports[`CLI help output > documents kebab-case setup flags and configurable categories > lint cache clear --help 1`] = `
-"Usage: fireforge lint cache clear [options]
-
-Clear cached per-patch lint results
-
-Options:
-  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
-                         command takes no FireForge lock
-  -h, --help             display help for command
-"
-`;
-
-exports[`CLI help output > documents kebab-case setup flags and configurable categories 1`] = `
-"Usage: fireforge [options] [command]
-
-A build tool for customizing Firefox
-
-Options:
-  -V, --version                     output the version number
-  -v, --verbose                     Enable debug output
-  --ignore-corrupt-tree-marker      Run even when .fireforge/tree.json exists
-                                    but cannot be parsed. Without this the tree
-                                    guard refuses, because an unreadable marker
-                                    leaves it unknown whether this is a snapshot
-                                    or the primary tree.
-  -h, --help                        display help for command
-
-Project:
-  setup [options]                   Initialize a new FireForge project
-  source [options]                  Manage Firefox source configuration
-  config [options] <key> [value]    Get or set configuration values
-
-Engine:
-  download [options]                Download Firefox source
-  bootstrap [options]               Install Firefox build dependencies
-
-Workflow:
-  import [options]                  Apply patches from the patches directory
-  resolve [options]                 Update a broken patch with manual fixes
-                                    (then run "fireforge import" to resume the
-                                    queue)
-  build [options]                   Build the browser (auto-applies Furnace
-                                    components first)
-  run [options]                     Launch the built browser
-  status [options]                  Show modified files in engine/
-  reset [options]                   Reset engine/ to clean state
-  discard [options] <file>          Discard changes to a specific file,
-                                    restoring patch-claimed paths to their
-                                    patch-applied baseline (unmanaged untracked
-                                    files are deleted). Pass a directory path to
-                                    discard every modified or untracked file
-                                    beneath it; the operation walks the status
-                                    output and reverts each match individually.
-  export [options] <paths...>       Export new changes as a patch (use re-export
-                                    to update existing patches)
-  export-all [options]              Export all changes as a patch
-  re-export [options] [patches...]  Refresh existing patch bodies (and
-                                    filesAffected with --scan) from the current
-                                    engine state. Does NOT change
-                                    sourceVersion/sourceProduct by default — use
-                                    --stamp or run rebase for source metadata
-                                    stamping.
-  patch [options]                   Manage individual patches in the queue
-                                    (compact, delete, lint-ignore, move-files,
-                                    rename, reorder, staged-dependency, tier)
-  rebase [options]                  Semi-automated Firefox source version
-                                    upgrade — apply patches with drift tolerance
-                                    and re-export
-  package [options]                 Create distribution package
-  watch [options]                   Watch for changes and auto-rebuild
-  test [options] [paths...]         Run tests via mach test
-  tree [options]                    Manage copy-on-write verification clones of
-                                    this project for concurrent read-mostly work
-                                    (lint, typecheck, status, verify,
-                                    export/re-export --dry-run; build-less test
-                                    with create --with-objdir). Mutation
-                                    commands are refused inside a tree.
-  register [options] <path>         Register a file in the appropriate build
-                                    manifest
-  wire [options] <name>             Wire a chrome subscript into the browser
-
-Components:
-  token [options]                   Design token management
-  furnace [options]                 Component management — create, override,
-                                    apply, deploy, diff, validate, sync (run
-                                    furnace --help for all subcommands)
-
-Diagnostics:
-  doctor [options]                  Diagnose project issues
-  lint [options] [paths...]         Lint engine changes against patch quality
-                                    rules. Default: aggregate diff against HEAD
-                                    (every applied patch summed). Use
-                                    --per-patch for per-patch scope, or pass
-                                    explicit file paths to narrow to those.
-  typecheck [options]               Run TypeScript type checking against
-                                    project-owned jsconfig.json files (CI-grade,
-                                    whole-project)
-  verify [options]                  Read-only fsck for the patch queue (manifest
-                                    + cross-patch lint)
-
-  help [command]                    display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace apply --help 1`] = `
-"Usage: fireforge furnace apply [options] [name]
-
-Apply components to the engine (optionally a single component)
-
-Options:
-  --dry-run              Show what would be changed without writing (reads may
-                         overlap concurrent mutations)
-  --force                Proceed despite baseVersion drift (stale overrides)
-  -w, --watch            Watch component directories and re-apply on changes
-  --wait-lock [seconds]  Wait up to this many seconds (default 60) for another
-                         FireForge command to release EVERY lock this command
-                         takes, instead of failing on the default budget. Set
-                         FIREFORGE_WAIT_LOCK to apply a budget to every command
-                         in a session
-  -h, --help             display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace chrome-doc --help 1`] = `
-"Usage: fireforge furnace chrome-doc [options] [command]
-
-Scaffold top-level chrome documents (xhtml + js + css + ftl + jar.mn)
-
-Options:
-  --wait-lock [seconds]    Accepted for scripting uniformity and ignored: this
-                           command takes no FireForge lock
-  -h, --help               display help for command
-
-Commands:
-  create [options] <name>  Scaffold a new top-level chrome document
-  remove [options] <name>  Remove a scaffolded top-level chrome document
-  help [command]           display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace create --help 1`] = `
-"Usage: fireforge furnace create [options] [name]
-
-Create a new custom component
-
-Options:
-  -d, --description <desc>  Component description
-  --localized               Include Fluent l10n support
-  --no-register             Skip customElements.js registration
-  --with-tests              Scaffold a test harness (defaults to browser-chrome;
-                            use --test-style=mochikit for tabbrowser-less chrome
-                            — may be flaky on macOS)
-  --xpcshell                Scaffold an xpcshell test harness (for storage-layer
-                            code on forks without tabbrowser); equivalent to
-                            --test-style=xpcshell. Note: xpcshell resolves
-                            chrome://global/* URIs but not chrome://browser/* —
-                            use --test-style=browser-chrome for
-                            browser-chrome-dependent tests.
-  --test-style <style>      Override the harness written by --with-tests:
-                            browser-chrome (default, needs tabbrowser), mochikit
-                            (toolkit/widgets, non-tabbrowser chrome), or
-                            xpcshell (headless)
-  --test-dir <dir>          Redirect the --with-tests scaffold to this
-                            engine-relative directory under
-                            browser/base/content/test/ (browser-chrome and
-                            xpcshell styles) instead of the default
-                            <binaryName>-derived directory; existing manifests
-                            are appended to, never overwritten
-  --compose <tags>          Record stock tags composed internally (metadata
-                            only, comma-separated)
-  --shared-ftl <path>       Participate in an existing feature-scoped .ftl at
-                            this path (e.g. "browser/mybrowser-dock.ftl"); skips
-                            the per-component .ftl scaffold (implies
-                            --localized)
-  --dry-run                 Show the planned file set and furnace.json changes
-                            without writing
-  --allow-prefix-mismatch   Create the component even when its name does not
-                            start with the configured \`componentPrefix\` in
-                            furnace.json. Without this flag the command refuses
-                            to write anything on a prefix mismatch.
-  --wait-lock [seconds]     Accepted for scripting uniformity and ignored: this
-                            command takes no FireForge lock
-  -h, --help                display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace deploy --help 1`] = `
-"Usage: fireforge furnace deploy [options] [name]
-
-Apply components and validate in one step
-
-Options:
-  --dry-run              Show what would be changed without writing (reads may
-                         overlap concurrent mutations)
-  --force                Proceed despite baseVersion drift (stale overrides)
-  --skip-validate        Skip the validation step (apply only)
-  --wait-lock [seconds]  Wait up to this many seconds (default 60) for another
-                         FireForge command to release EVERY lock this command
-                         takes, instead of failing on the default budget. Set
-                         FIREFORGE_WAIT_LOCK to apply a budget to every command
-                         in a session
-  -h, --help             display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace diff --help 1`] = `
-"Usage: fireforge furnace diff [options] [name]
-
-Show changes vs baseline (overrides: vs Firefox original, custom: vs engine).
-Shows all components when name is omitted.
-
-Options:
-  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
-                         command takes no FireForge lock
-  -h, --help             display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace init --help 1`] = `
-"Usage: fireforge furnace init [options]
-
-Initialize furnace.json with project settings
-
-Options:
-  -p, --prefix <prefix>   Component prefix (e.g. "moz-", "ff-")
-  --ftl-base-path <path>  Fluent l10n base path
-  --force                 Overwrite existing furnace.json
-  --wait-lock [seconds]   Accepted for scripting uniformity and ignored: this
-                          command takes no FireForge lock
-  -h, --help              display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace list --help 1`] = `
-"Usage: fireforge furnace list [options]
-
-List all registered components
-
-Options:
-  -v, --verbose          Show per-component health indicators
-                         (clean/modified/not applied)
-  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
-                         command takes no FireForge lock
-  -h, --help             display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace override --help 1`] = `
-"Usage: fireforge furnace override [options] [names...]
-
-Fork one or more existing components for modification
-
-Options:
-  -t, --type <type>         Override type (choices: "css-only", "full")
-  -d, --description <desc>  Description
-  --wait-lock [seconds]     Accepted for scripting uniformity and ignored: this
-                            command takes no FireForge lock
-  -h, --help                display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace preview --help 1`] = `
-"Usage: fireforge furnace preview [options]
-
-Start component preview (Storybook)
-
-Options:
-  --install              Force reinstall Storybook dependencies
-  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
-                         command takes no FireForge lock
-  -h, --help             display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace refresh --help 1`] = `
-"Usage: fireforge furnace refresh [options] [name]
-
-Merge upstream Firefox changes into overrides (three-way merge)
-
-Options:
-  --dry-run                  Show what would change without modifying files
-  -a, --all                  Refresh all overrides in a single batch
-  -s, --strategy <strategy>  Auto-resolve conflicts (ours = keep local, theirs =
-                             accept upstream) (choices: "ours", "theirs")
-  --reset-base               Reset baseline to current engine HEAD (skips
-                             three-way merge, recovers from missing baseCommit)
-  --wait-lock [seconds]      Accepted for scripting uniformity and ignored: this
-                             command takes no FireForge lock
-  -h, --help                 display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace remove --help 1`] = `
-"Usage: fireforge furnace remove [options] <name>
-
-Remove a component from the workspace
-
-Options:
-  -y, --yes              Skip confirmation
-  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
-                         command takes no FireForge lock
-  -h, --help             display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace rename --help 1`] = `
-"Usage: fireforge furnace rename [options] <old-name> <new-name>
-
-Rename a component (updates files, config, and registrations)
-
-Options:
-  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
-                         command takes no FireForge lock
-  -h, --help             display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace scan --help 1`] = `
-"Usage: fireforge furnace scan [options]
-
-Scan engine for available components. Report-only by default: persist the
-discovered inventory into the stock section of furnace.json with --track (or the
-interactive prompt); deploy/validate consume the inventory from there.
-
-Options:
-  --deep                 Search additional Firefox directories beyond the
-                         default widgets path
-  --track                Persist every discovered untracked component into the
-                         stock section of furnace.json (non-interactive)
-  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
-                         command takes no FireForge lock
-  -h, --help             display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace status --help 1`] = `
-"Usage: fireforge furnace status [options] [name]
-
-Show component status and registration details
-
-Options:
-  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
-                         command takes no FireForge lock
-  -h, --help             display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace sync --help 1`] = `
-"Usage: fireforge furnace sync [options]
-
-Refresh drifted overrides and re-apply all components (recommended after
-fireforge download)
-
-Options:
-  --dry-run                  Show what would change without modifying files
-                             (reads may overlap concurrent mutations)
-  -s, --strategy <strategy>  Auto-resolve merge conflicts (ours = keep local,
-                             theirs = accept upstream) (choices: "ours",
-                             "theirs")
-  --wait-lock [seconds]      Wait up to this many seconds (default 60) for
-                             another FireForge command to release EVERY lock
-                             this command takes, instead of failing on the
-                             default budget. Set FIREFORGE_WAIT_LOCK to apply a
-                             budget to every command in a session
-  -h, --help                 display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for every furnace subcommand > furnace validate --help 1`] = `
-"Usage: fireforge furnace validate [options] [name]
-
-Run accessibility and compatibility checks
-
-Options:
-  --fix                  Auto-fix registration issues (missing jar.mn entries,
-                         customElements.js)
-  --wait-lock [seconds]  Accepted for scripting uniformity and ignored: this
-                         command takes no FireForge lock
-  -h, --help             display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for patch staged-dependency > patch move-files --help 1`] = `
-"Usage: fireforge patch move-files [options] <from> <to>
-
-Preview the re-export commands needed to move file ownership between patches, or
-create the target patch and move the files in one transaction with --create
---order <n>.
-
-Options:
-  --file <path>             File path relative to engine/ to move (repeatable)
-                            (default: [])
-  --create                  Create <to> as a new patch and move the files into
-                            it (requires --order)
-  --order <n>               Exact sparse order for the created patch (only valid
-                            with --create)
-  --category <category>     Category for the created patch (default: the source
-                            patch's)
-  -d, --description <desc>  Description for the created patch
-  --dry-run                 Show what would happen without writing
-  -y, --yes                 Skip confirmation prompt (required for non-TTY)
-  --force-unsafe            Bypass projected-lint refusals
-  --skip-lint               Skip per-patch lint of the projected bodies
-  --wait-lock [seconds]     Wait up to this many seconds (default 60) for
-                            another FireForge command to release EVERY lock this
-                            command takes, instead of failing on the default
-                            budget. Set FIREFORGE_WAIT_LOCK to apply a budget to
-                            every command in a session
-  -h, --help                display help for command
-"
-`;
-
-exports[`CLI help output > exposes stable help text for patch staged-dependency > patch staged-dependency --help 1`] = `
-"Usage: fireforge patch staged-dependency [options] <name>
-
-Edit PatchMetadata.stagedDependencies on a single patch (no .patch body
-rewrite).
-
-Options:
-  --add                    Add a staged dependency declaration
-  --remove                 Remove matching staged dependency declaration(s)
-  --clear                  Drop the stagedDependencies field entirely
-  --kind <kind>            Declaration shape: "import" (forward import, the
-                           default) or "registration" (jar.mn packaging line,
-                           customElements or actor registration)
-  --file <path>            Declaring file path relative to engine/
-  --specifier <specifier>  Exact import specifier as it appears in source
-                           (--kind import)
-  --line <text>            Registration/packaging line as the patch adds it,
-                           compared whitespace-trimmed (--kind registration)
-  --creates <path>         Later-created file path relative to engine/
-  --owner <patch>          Exact later patch filename expected to create
-                           --creates
-  --reason <text>          Human-readable rationale stored with the declaration
-  --dry-run                Show what would change without writing
-  -y, --yes                Record scripted consent in the destructive-operation
-                           history log. This command never prompts; the flag
-                           exists for workflow uniformity with commands that do.
-  --wait-lock [seconds]    Wait up to this many seconds (default 60) for another
-                           FireForge command to release EVERY lock this command
-                           takes, instead of failing on the default budget. Set
-                           FIREFORGE_WAIT_LOCK to apply a budget to every
-                           command in a session
-  -h, --help               display help for command
-"
+exports[`CLI help output > pins the CLI option inventory for every command > cli option inventory 1`] = `
+"fireforge: --ignore-corrupt-tree-marker | -v, --verbose
+fireforge bootstrap: --wait-lock
+fireforge build: --brand | --refuse-unexported-drift | --rewrite-mozinfo | --ui | --wait-lock | -j, --jobs
+fireforge config: --wait-lock | -f, --force
+fireforge discard: --dry-run | --to-upstream | --wait-lock | -y, --yes
+fireforge doctor: --allow-metadata-loss | --clear-resolution | --dry-run | --post-rebase-audit | --repair-files-affected | --repair-furnace | --repair-patches-manifest | --wait-lock
+fireforge download: --wait-lock | -f, --force
+fireforge export: --after | --allow-overlap | --allow-stale-furnace | --before | --dry-run | --exclude-furnace | --force-unsafe | --lint-ignore | --order | --skip-lint | --supersede | --tier | --wait-lock | -c, --category | -d, --description | -n, --name | -y, --yes
+fireforge export-all: --allow-overlap | --dry-run | --exclude-furnace | --force-unsafe | --name | --skip-lint | --supersede | --wait-lock | -c, --category | -d, --description
+fireforge furnace: --wait-lock
+fireforge furnace apply: --dry-run | --force | --wait-lock | -w, --watch
+fireforge furnace chrome-doc: --wait-lock
+fireforge furnace chrome-doc create: --browser-window | --dry-run | --no-titlebar | --wait-lock | --with-tests
+fireforge furnace chrome-doc remove: --dry-run | --wait-lock | -y, --yes
+fireforge furnace create: --allow-prefix-mismatch | --compose | --dry-run | --localized | --no-register | --shared-ftl | --test-dir | --test-style | --wait-lock | --with-tests | --xpcshell | -d, --description
+fireforge furnace deploy: --dry-run | --force | --skip-validate | --wait-lock
+fireforge furnace diff: --wait-lock
+fireforge furnace init: --force | --ftl-base-path | --wait-lock | -p, --prefix
+fireforge furnace list: --wait-lock | -v, --verbose
+fireforge furnace override: --wait-lock | -d, --description | -t, --type
+fireforge furnace preview: --install | --wait-lock
+fireforge furnace refresh: --dry-run | --reset-base | --wait-lock | -a, --all | -s, --strategy
+fireforge furnace remove: --wait-lock | -y, --yes
+fireforge furnace rename: --wait-lock
+fireforge furnace scan: --deep | --track | --wait-lock
+fireforge furnace status: --wait-lock
+fireforge furnace sync: --dry-run | --wait-lock | -s, --strategy
+fireforge furnace validate: --fix | --wait-lock
+fireforge import: --continue | --dry-run | --until | --wait-lock | -f, --force | -y, --yes
+fireforge lint: --max-warnings | --no-cache | --only-introduced | --patches | --per-patch | --report | --since | --wait-lock
+fireforge lint cache: --wait-lock
+fireforge lint cache clear: --wait-lock
+fireforge package: --brand | --wait-lock
+fireforge patch: --wait-lock
+fireforge patch compact: --dry-run | --force-unsafe | --wait-lock | -y, --yes
+fireforge patch delete: --dry-run | --force-unsafe | --wait-lock | -y, --yes
+fireforge patch lint-ignore: --add | --clear | --dry-run | --remove | --wait-lock | -y, --yes
+fireforge patch move-files: --category | --create | --dry-run | --file | --force-unsafe | --order | --skip-lint | --wait-lock | -d, --description | -y, --yes
+fireforge patch rename: --category | --dry-run | --force-unsafe | --order | --to | --wait-lock | -d, --description | -y, --yes
+fireforge patch reorder: --after | --before | --dry-run | --force-unsafe | --to | --wait-lock | -y, --yes
+fireforge patch split: --after | --before | --category | --description | --dry-run | --files | --force-unsafe | --name | --order | --skip-lint | --wait-lock | -y, --yes
+fireforge patch staged-dependency: --add | --clear | --creates | --dry-run | --file | --kind | --line | --owner | --reason | --remove | --specifier | --wait-lock | -y, --yes
+fireforge patch tier: --clear | --dry-run | --tier | --wait-lock | -y, --yes
+fireforge re-export: --allow-shrink | --allow-stale-furnace | --dry-run | --expect | --expect-unmanaged | --files | --force-unsafe | --lint-ignore | --no-cache | --refuse-adjacent-unmanaged | --refuse-foreign-drift | --scan-file | --scan-files | --skip-lint | --stamp | --tier | --wait-lock | -a, --all | -s, --scan | -y, --yes
+fireforge rebase: --abort | --continue | --dry-run | --max-fuzz | --wait-lock | -y, --yes
+fireforge register: --after | --create-manifest | --dry-run | --wait-lock
+fireforge reset: --dry-run | --wait-lock | -y, --yes
+fireforge resolve: --wait-lock | -y, --yes
+fireforge run: --capture-console | --console-allow | --console-allow-file | --headless | --smoke-exit | --wait-lock
+fireforge setup: --app-id | --binary-name | --firefox-version | --license | --name | --product | --vendor | --wait-lock | -f, --force | -y, --yes
+fireforge source: --wait-lock
+fireforge source set: --candidate | --clear-candidate | --clear-sha256 | --product | --sha256 | --version | --wait-lock
+fireforge status: --check | --fail-on | --include-ownership | --json | --lock | --ownership | --raw | --summary | --test-coverage | --unmanaged | --wait-lock
+fireforge test: --allow-stale-build | --allow-stale-components | --auto | --build | --build-only | --canary | --doctor | --extend-coverage | --full-output | --generic-mach-test | --harness-retries | --headless | --kill-stale-marionette | --mach-arg | --marionette-port | --no-shard | --perf-samples | --reap-orphans | --refuse-unexported-drift | --wait-lock
+fireforge token: --wait-lock
+fireforge token add: --category | --create-category | --dark-value | --description | --dry-run | --mode | --variant | --wait-lock
+fireforge token coverage: --wait-lock
+fireforge token list: --category | --json | --wait-lock
+fireforge token show: --json | --wait-lock
+fireforge tree: --wait-lock
+fireforge tree create: --force-copy | --wait-lock | --with-objdir
+fireforge tree exec: --wait-lock
+fireforge tree list: --json | --wait-lock
+fireforge tree remove: --all | --force | --wait-lock
+fireforge typecheck: --project | --wait-lock
+fireforge verify: --wait-lock
+fireforge watch: --wait-lock
+fireforge wire: --after | --destroy | --dom | --dry-run | --init | --subscript-dir | --target | --wait-lock"
 `;

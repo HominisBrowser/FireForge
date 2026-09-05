@@ -44,7 +44,7 @@ describe('lintObserverTopics', () => {
   });
 
   it('does not mis-capture a string inside a complex subject argument', () => {
-    // The historical regex took the *first* string literal after "(",
+    // The historical regex took the first string literal after "(",
     // which here lives inside the subject expression.
     const source =
       'Services.obs.notifyObservers(wrap({ msg: "mybrowser oops" }), "mybrowser-cache-cleared");';

@@ -13,7 +13,7 @@
  *     (git-tracked diff + workdir modifications).
  *   - For each file whose path pattern implies packaging, it resolves
  *     the expected dist artifact under obj-star/dist/binary-name-star.
- *   - A warning fires when the expected artifact is missing OR when its
+ *   - A warning fires when the expected artifact is missing or when its
  *     mtime is older than the engine source (the build was reported
  *     successful but that file's path never flowed through packaging).
  *   - False positives are acceptable at this stage: fork-specific packaging
@@ -22,9 +22,9 @@
  *
  * Routing rules:
  *   - Build inputs (jar.mn, moz.build, Makefile.in, moz.configure) are
- *     skipped; they are consumed, not packaged.
+ *     skipped. They are consumed, not packaged.
  *   - Test sources (anything under /test(s)/, browser_*.js, test_*.js)
- *     are looked up under _tests/, not dist/ — that's where mach copies
+ *     are looked up under _tests/, not dist/, which is where mach copies
  *     them.
  *   - Files inside an `if CONFIG[...]:` block in moz.build that gates
  *     off on the current host are skipped (Windows stubinstaller CSS on
@@ -41,7 +41,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, verbose, warn } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
-import { detectPlatformGate } from './build-audit-platform.js';
+import { detectAncestorDirsGate, detectPlatformGate } from './build-audit-platform.js';
 import {
   collectSameBasenameCandidates,
   findRegisteredTarget,
@@ -53,6 +53,15 @@ import {
   isTestPath,
   resolveBestArtifact,
 } from './build-audit-resolve.js';
+import {
+  AUDIT_SKIP_REASONS,
+  type AuditSkipReason,
+  isStorybookStoryPath,
+  isUnselectedBrandingPath,
+  matchUnpackagedDeclaration,
+  resolveSelectedBranding,
+  type UnpackagedDeclaration,
+} from './build-audit-skip.js';
 import { resolveArtifactByKnownTransform } from './build-audit-transforms.js';
 import type { BuildBaseline } from './build-baseline-types.js';
 import { collectChangedEnginePaths } from './engine-changes.js';
@@ -75,13 +84,13 @@ const PACKAGEABLE_EXTENSIONS = [
 /** Path fragments whose contents are packaged regardless of extension. */
 const PACKAGEABLE_PATH_FRAGMENTS = ['/app/profile/', '/chrome/', '/locales/'];
 
-/** Directories that are build artifacts, not source — never audited. */
+/** Directories that are build artifacts, not source. Never audited. */
 const IGNORE_PATH_FRAGMENTS = ['obj-', 'node_modules/', '.git/', '.cargo/', '.mozbuild/'];
 
 /**
  * Basenames that are build-system inputs, not packaged artifacts. `jar.mn`
- * is consumed to produce chrome registrations; `moz.build` / `moz.configure`
- * / `Makefile.in` feed the build backend; none ship in the bundle. Auditing
+ * is consumed to produce chrome registrations. `moz.build` / `moz.configure`
+ * / `Makefile.in` feed the build backend. None ship in the bundle. Auditing
  * them guarantees a false positive on every edit, and worse, an unrelated
  * upstream `moz.build` sitting at e.g. `MyBrowser.app/Contents/moz.build`
  * gets matched as a "stale artifact" of an entirely different file.
@@ -97,8 +106,8 @@ const BUILD_INPUT_BASENAMES = new Set([
 /**
  * True for the build-input manifests the build consumes but never packages
  * (`jar.mn`, `moz.build`, `moz.configure`, `Makefile.in`, `mozbuild.in`).
- * Excluded from the packaging audit and from `packageableFingerprints`;
- * fingerprinted separately as `buildInputFingerprints` so `build-prepare`
+ * Excluded from the packaging audit and from `packageableFingerprints`.
+ * Fingerprinted separately as `buildInputFingerprints` so `build-prepare`
  * can tell "dirty against HEAD" from "changed since the last successful
  * build".
  *
@@ -135,9 +144,17 @@ export interface AuditEntry {
    * updated: an artifact exists and is at least as new as the source.
    * stale:   artifact exists but is older than the source (probable packaging drop).
    * missing: no artifact with a matching basename was found anywhere under dist/.
-   * skipped: the file extension / path does not imply packaging; not counted.
+   * skipped: the file was not audited. `skipReason` says why.
    */
   status: 'updated' | 'stale' | 'missing' | 'skipped';
+  /**
+   * Why a `skipped` entry was skipped. Present only for `skipped`. The
+   * reasons used to exist only as verbose log strings, so the summary line
+   * could report `4 missing` on a run with zero real misses and nothing in
+   * the counts distinguished a structural non-input from an unregistered
+   * file an operator must act on.
+   */
+  skipReason?: AuditSkipReason;
 }
 
 /** Summary counts for the "Packaged:" end-of-build line. */
@@ -146,7 +163,17 @@ export interface AuditSummary {
   stale: number;
   missing: number;
   skipped: number;
+  /** Per-class skip counts, so the summary can name what it dismissed. */
+  skippedByReason: Record<AuditSkipReason, number>;
   entries: AuditEntry[];
+}
+
+/** Zeroed per-class skip counters. */
+function emptySkipCounts(): Record<AuditSkipReason, number> {
+  return Object.fromEntries(AUDIT_SKIP_REASONS.map((reason) => [reason, 0])) as Record<
+    AuditSkipReason,
+    number
+  >;
 }
 
 /**
@@ -164,7 +191,7 @@ export function isPackageablePath(sourcePath: string): boolean {
   }
   if (isBuildInputPath(sourcePath)) return false;
   // `.inc.xhtml` fragments are consumed via `#include` from a registered
-  // chrome document and resolved at packaging time — they never ship as a
+  // chrome document and resolved at packaging time. They never ship as a
   // standalone packaged artifact, so auditing them flags a wired
   // `*.inc.xhtml` as "missing packaged artifact" even though `register`
   // correctly refuses to register it. Mirror the carve-out the register
@@ -180,18 +207,18 @@ export function isPackageablePath(sourcePath: string): boolean {
 }
 
 /**
- * Decides whether a source path is an XPCOM static-component manifest —
+ * Decides whether a source path is an XPCOM static-component manifest,
  * i.e. a file whose registrations are baked into the compiled
- * StaticComponents table at FULL-build time rather than packaged into
+ * StaticComponents table at full-build time rather than packaged into
  * `dist/`. This basename check is the single extension point for that
- * classification; parsing `moz.build` `XPCOM_MANIFESTS` entries to follow
+ * classification. Parsing `moz.build` `XPCOM_MANIFESTS` entries to follow
  * renamed manifests is out of scope.
  *
  * @param sourcePath Engine-relative POSIX path.
  * @returns True when the path is a `components.conf` manifest.
  */
 export function isXpcomManifestPath(sourcePath: string): boolean {
-  return basename(sourcePath.replace(/\\/g, '/')) === 'components.conf';
+  return basename(normalizePathSlashes(sourcePath)) === 'components.conf';
 }
 
 /*
@@ -244,8 +271,8 @@ async function resolveTestsRoot(engineDir: string): Promise<string | undefined> 
 /**
  * Marker file the `package-tests` make target writes after copying the
  * full test-source tree under `_tests/`. Its presence is the most reliable
- * signal that test packaging has actually run for the current obj-dir —
- * plain `mach build` populates a partial `_tests/` subtree and then stops,
+ * signal that test packaging has actually run for the current obj-dir.
+ * Plain `mach build` populates a partial `_tests/` subtree and then stops,
  * so registered tests are absent even when registration is correct.
  */
 const PACKAGED_TESTS_MARKER = 'all-tests.json';
@@ -265,7 +292,7 @@ async function hasPackagedTestsMarker(testsRoot: string | undefined): Promise<bo
 
 /**
  * Resolves the search roots an individual source path should be looked
- * up under. Test-shaped paths get `_tests/`; everything else gets `dist/`.
+ * up under. Test-shaped paths get `_tests/`. Everything else gets `dist/`.
  */
 function searchRootsFor(source: string, distRoot: string, testsRoot: string | undefined): string[] {
   if (isTestPath(source)) {
@@ -280,6 +307,15 @@ interface AuditEvalContext {
   testsRoot: string | undefined;
   /** True when `_tests/all-tests.json` exists for the active obj dir. */
   testsPackaged: boolean;
+  /**
+   * Engine-relative branding path this objdir was configured with, or
+   * undefined when the generated mozconfig could not be read. Undefined
+   * keeps the pre-0.46.0 behaviour: a skip that cannot name
+   * its evidence is a masked warning.
+   */
+  selectedBranding: string | undefined;
+  /** `buildAudit.unpackaged` carve-outs from fireforge.json. */
+  unpackaged: readonly UnpackagedDeclaration[];
 }
 
 /**
@@ -287,7 +323,7 @@ interface AuditEvalContext {
  * candidate to count as "the packaged artifact" of a source. The basename
  * always trail-matches (count 1), so a threshold of 2 requires the immediate
  * parent directory to agree too. Candidates sharing only the basename are
- * classified as missing — warning the operator to check registration —
+ * classified as missing (warning the operator to check registration)
  * rather than emitting a misleading stale comparison against an unrelated
  * file of the same name.
  *
@@ -300,21 +336,21 @@ const MIN_TRAILING_SEGMENT_OVERLAP = 2;
 
 /**
  * Returns true when the chosen artifact is structurally related to the
- * source path — either its immediate parent directory trail-matches, or
+ * source path: either its immediate parent directory trail-matches, or
  * a non-generic intermediate source segment appears in the candidate
  * path (the branding-re-root signal already used by the scorer).
  *
  * Used to avoid emitting `stale` warnings that point at an unrelated
- * same-basename file picked up by the basename walker — a class of
- * warning that is worse than `missing` because it reads as "your build
- * dropped this file" when in fact the match is spurious.
+ * same-basename file picked up by the basename walker. That class of
+ * warning is worse than `missing` because it reads as "your build
+ * dropped this file" when the match is spurious.
  */
 function isConfidentMatch(source: string, candidate: string): boolean {
   if (countTrailingSegmentMatches(source, candidate) >= MIN_TRAILING_SEGMENT_OVERLAP) {
     return true;
   }
   // The candidate is an absolute path built by `join` over a dist/ walk, so on
-  // Windows it arrives backslash-separated; a `/`-only split collapses it into
+  // Windows it arrives backslash-separated. A `/`-only split collapses it into
   // one segment and the non-generic-segment bonus can never fire.
   const sourceSegs = normalizePathSlashes(source).split('/').filter(Boolean);
   const candSegs = normalizePathSlashes(candidate).split('/').filter(Boolean);
@@ -329,22 +365,105 @@ function isConfidentMatch(source: string, candidate: string): boolean {
 }
 
 /**
+ * A classified entry plus the operator-facing line it produces, if any.
+ * `warning` names something to act on. `notice` records something the audit
+ * dismissed on the operator's own instructions, which must be visible
+ * rather than silent.
+ */
+type AuditResult = AuditEntry & { warning?: string; notice?: string };
+
+/**
+ * Applies a `buildAudit.unpackaged` carve-out to a classified result.
+ *
+ * Two behaviours, both mirroring the `--expect-unmanaged` model:
+ *
+ *  - An admitted path is listed, not silenced. A carve-out nobody can see
+ *    is how one quietly widens, so the run says which paths it admitted and
+ *    on what stated reason.
+ *  - An admitted path that does resolve to a packaged artifact is a stale
+ *    carve-out: the declaration asserts a fact about the tree that is no
+ *    longer true, and suppressing on it would hide a real packaging change.
+ *    That is reported as a warning, not accepted.
+ *
+ * A declaration matching nothing that changed this run says nothing,
+ * unlike `--expect-unmanaged`, whose unseen entries are reported. The
+ * difference is intended: `--expect-unmanaged` is a per-invocation flag
+ * list, where an unmet entry is probably a typo in the command just typed.
+ * This is a
+ * standing config list checked against only the files that happened to
+ * change, so "not met" is the normal case and reporting it would put a
+ * warning on every build.
+ */
+function applyUnpackagedCarveOut(result: AuditResult, ctx: AuditEvalContext): AuditResult {
+  // Already skipped for a more specific structural reason. The carve-out
+  // is redundant there and reporting it would be noise.
+  if (result.status === 'skipped') return result;
+  const declaration = matchUnpackagedDeclaration(result.source, ctx.unpackaged);
+  if (declaration === undefined) return result;
+
+  if (result.artifact !== undefined) {
+    return {
+      source: result.source,
+      artifact: result.artifact,
+      status: 'skipped',
+      skipReason: 'declared-unpackaged',
+      warning:
+        `Audit: engine/${result.source} is declared unpackaged in fireforge.json ` +
+        `("${declaration.reason}") but a packaged artifact exists at ${result.artifact}. ` +
+        'The declaration is stale — remove it, or correct its path.',
+    };
+  }
+
+  return {
+    source: result.source,
+    artifact: undefined,
+    status: 'skipped',
+    skipReason: 'declared-unpackaged',
+    notice:
+      `Audit: engine/${result.source} admitted as unpackaged by ` +
+      `buildAudit.unpackaged "${declaration.path}" — ${declaration.reason}`,
+  };
+}
+
+/**
  * Audits one engine source path and returns its entry. Pure orchestration
  * helper kept separate so `auditBuildArtifacts` stays under the per-function
  * line budget.
  */
-async function auditSinglePath(
-  source: string,
-  ctx: AuditEvalContext
-): Promise<AuditEntry & { warning?: string }> {
+async function auditSinglePath(source: string, ctx: AuditEvalContext): Promise<AuditResult> {
   if (!isPackageablePath(source)) {
-    return { source, artifact: undefined, status: 'skipped' };
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'not-packageable' };
+  }
+
+  if (isStorybookStoryPath(source)) {
+    verbose(`Audit: skipping engine/${source} — Storybook story, never packaged.`);
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'storybook-story' };
+  }
+
+  if (isUnselectedBrandingPath(source, ctx.selectedBranding)) {
+    verbose(
+      `Audit: skipping engine/${source} — branding tree is not the selected ${ctx.selectedBranding ?? '?'}, so it is not an input to this objdir.`
+    );
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'branding-not-selected' };
   }
 
   const gate = await detectPlatformGate(ctx.engineDir, source);
   if (gate.gatedOff) {
     verbose(`Audit: skipping engine/${source} — gated off by "${gate.gateExpression ?? '?'}".`);
-    return { source, artifact: undefined, status: 'skipped' };
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'platform-gated' };
+  }
+
+  const ancestorGate = await detectAncestorDirsGate(ctx.engineDir, source);
+  if (ancestorGate.gatedOff) {
+    verbose(
+      `Audit: skipping engine/${source} — its directory is reached through a DIRS entry in engine/${ancestorGate.gateFile ?? '?'} gated by "${ancestorGate.gateExpression ?? '?'}".`
+    );
+    return {
+      source,
+      artifact: undefined,
+      status: 'skipped',
+      skipReason: 'platform-gated-ancestor',
+    };
   }
 
   // Tests only end up under `_tests/` after `mach package-tests` (or a
@@ -356,7 +475,7 @@ async function auditSinglePath(
     verbose(
       `Audit: skipping engine/${source} — _tests/${PACKAGED_TESTS_MARKER} not present; full test packaging has not run for this build.`
     );
-    return { source, artifact: undefined, status: 'skipped' };
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'tests-not-packaged' };
   }
 
   const sourcePath = join(ctx.engineDir, source);
@@ -365,8 +484,8 @@ async function auditSinglePath(
     const sourceStat = await stat(sourcePath);
     sourceMtime = sourceStat.mtimeMs;
   } catch {
-    // Deletion that didn't propagate — distinct class of bug, not audited yet.
-    return { source, artifact: undefined, status: 'skipped' };
+    // Deletion that didn't propagate. Distinct class of bug, not audited yet.
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'source-unreadable' };
   }
 
   const roots = searchRootsFor(source, ctx.distRoot, ctx.testsRoot);
@@ -418,13 +537,13 @@ async function auditSinglePath(
  * Short-circuits the audit for sources that are registered in a jar.mn
  * but whose target path is absent from every search root. Returns the
  * miss entry when the registration lookup saw a `(source)` claim but
- * no dist candidate endswith the target; undefined otherwise.
+ * no dist candidate endswith the target. Undefined otherwise.
  */
 async function reportRegistrationMiss(
   engineDir: string,
   source: string,
   roots: readonly string[]
-): Promise<(AuditEntry & { warning?: string }) | undefined> {
+): Promise<AuditResult | undefined> {
   const hit = await findRegisteredTarget(engineDir, source);
   if (!hit) return undefined;
   const where = isTestPath(source) ? '_tests/' : 'dist/';
@@ -448,7 +567,7 @@ async function reportRegistrationMiss(
 /**
  * Renders packaged-artifact mtime classification (updated / stale / missing-
  * via-disappearance) for a resolved candidate. Shared by the registration-
- * anchored path (confident by construction) and the heuristic fallback
+ * anchored path (already confident) and the heuristic fallback
  * (which still applies the structural-relatedness check before claiming
  * `stale`).
  */
@@ -457,7 +576,7 @@ async function evaluateArtifactMtime(
   artifact: string,
   sourceMtime: number,
   mode: { registered: true } | { registered: false; roots: readonly string[] }
-): Promise<AuditEntry & { warning?: string }> {
+): Promise<AuditResult> {
   let artifactMtime: number;
   try {
     const artifactStat = await stat(artifact);
@@ -547,8 +666,9 @@ async function resolveAuditOwnership(projectRoot: string): Promise<Map<string, s
 /**
  * Renders the ownership suffix for one audit notice: the owning patch, or
  * an explicit `unmanaged` mark. An empty map (no queue, unreadable
- * manifest) renders nothing rather than claiming everything is unmanaged —
- * "unmanaged" must mean "checked and unowned", never "could not check".
+ * manifest) renders nothing rather than claiming everything is unmanaged,
+ * since "unmanaged" must mean "checked and unowned", never "could not
+ * check".
  */
 function describeOwnership(ownersByPath: ReadonlyMap<string, string[]>, source: string): string {
   if (ownersByPath.size === 0) return '';
@@ -562,7 +682,7 @@ function describeOwnership(ownersByPath: ReadonlyMap<string, string[]>, source: 
 /**
  * Runs the post-build audit. Emits per-file warnings for missing or
  * stale artifacts and a summary info line at the end. Always returns
- * the summary; never throws on audit failure (the audit itself must
+ * the summary. Never throws on audit failure (the audit itself must
  * never fail a successful build).
  * @param projectRoot Root of the project (reserved for future fork-specific rules).
  * @param engineDir Path to the engine directory.
@@ -572,13 +692,15 @@ function describeOwnership(ownersByPath: ReadonlyMap<string, string[]>, source: 
 export async function auditBuildArtifacts(
   projectRoot: string,
   engineDir: string,
-  baseline: BuildBaseline | undefined
+  baseline: BuildBaseline | undefined,
+  options: { unpackaged?: readonly UnpackagedDeclaration[] } = {}
 ): Promise<AuditSummary> {
   const summary: AuditSummary = {
     updated: 0,
     stale: 0,
     missing: 0,
     skipped: 0,
+    skippedByReason: emptySkipCounts(),
     entries: [],
   };
 
@@ -597,27 +719,56 @@ export async function auditBuildArtifacts(
 
   // Ownership, resolved once for the whole audit. The notices key on "was
   // touched", which on a shared checkout means any concurrent session's
-  // dirty files — so an operator gets a registration-shaped warning about a
+  // dirty files, so an operator gets a registration-shaped warning about a
   // file they never edited and has to census ownership by hand to dismiss
-  // it. FireForge already resolves this for `status --ownership`; carrying
-  // it here turns a three-line mystery into three dismissible lines.
+  // it. FireForge already resolves this for `status --ownership`. Carrying
+  // it here lets the operator dismiss those lines directly.
   const ownersByPath = await resolveAuditOwnership(projectRoot);
 
-  const ctx: AuditEvalContext = { engineDir, distRoot, testsRoot, testsPackaged };
+  const ctx: AuditEvalContext = {
+    engineDir,
+    distRoot,
+    testsRoot,
+    testsPackaged,
+    selectedBranding: await resolveSelectedBranding(engineDir),
+    unpackaged: options.unpackaged ?? [],
+  };
   for (const source of changed) {
-    const result = await auditSinglePath(source, ctx);
+    const result = applyUnpackagedCarveOut(await auditSinglePath(source, ctx), ctx);
     summary[result.status] += 1;
+    if (result.status === 'skipped' && result.skipReason !== undefined) {
+      summary.skippedByReason[result.skipReason] += 1;
+    }
     summary.entries.push({
       source: result.source,
       artifact: result.artifact,
       status: result.status,
+      ...(result.skipReason === undefined ? {} : { skipReason: result.skipReason }),
     });
     if (result.warning) warn(`${result.warning}${describeOwnership(ownersByPath, result.source)}`);
+    if (result.notice) info(result.notice);
   }
 
   info(
-    `Packaged: ${summary.updated} updated, ${summary.stale} stale, ${summary.missing} missing, ${summary.skipped} skipped`
+    `Packaged: ${summary.updated} updated, ${summary.stale} stale, ${summary.missing} missing, ` +
+      `${summary.skipped} skipped${describeSkipBreakdown(summary)}`
   );
 
   return summary;
+}
+
+/**
+ * Renders the per-class skip breakdown appended to the `Packaged:` line.
+ *
+ * Without it the summary reported one undifferentiated `skipped` count, so
+ * a run that dismissed four unselected-branding files and one
+ * ancestor-gated directory looked identical to one that dismissed five
+ * unregistered sources, and the four false `missing` entries downstream
+ * reported had no counterpart in the counts an operator could check.
+ */
+function describeSkipBreakdown(summary: AuditSummary): string {
+  const parts = AUDIT_SKIP_REASONS.filter((reason) => summary.skippedByReason[reason] > 0).map(
+    (reason) => `${reason} ${String(summary.skippedByReason[reason])}`
+  );
+  return parts.length === 0 ? '' : ` (${parts.join(', ')})`;
 }

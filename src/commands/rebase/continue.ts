@@ -5,7 +5,7 @@
 
 import { join } from 'node:path';
 
-import { getProjectPaths, updateState } from '../../core/config.js';
+import { getProjectPaths } from '../../core/config.js';
 import { getStagedDiffForFiles } from '../../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../../core/git-file-ops.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
@@ -24,6 +24,7 @@ import {
 } from '../../errors/rebase.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, success, warn } from '../../utils/logger.js';
+import { clearPendingResolution } from '../pending-resolution.js';
 import { runPatchLoop } from './patch-loop.js';
 
 /**
@@ -36,7 +37,7 @@ export async function handleContinue(
 ): Promise<void> {
   intro('FireForge Rebase — Continue');
 
-  // A present-but-unreadable session is NOT "no session in progress" — that
+  // A present-but-unreadable session is not "no session in progress". That
   // conflation is what made a corrupt file unrecoverable. Name the file and
   // point at --abort, which can now clear it.
   const read = await readRebaseSession(projectRoot);
@@ -50,10 +51,10 @@ export async function handleContinue(
 
   // Special case: every patch has already applied but a previous run failed
   // somewhere in the post-apply work (re-export, version stamping). In that
-  // state currentIndex is past the end of the queue; jumping straight back
+  // state currentIndex is past the end of the queue. Jumping straight back
   // into runPatchLoop replays the no-op apply loop and re-attempts the
-  // post-apply pipeline. Without this branch the user would be stuck —
-  // there is no failed patch to resolve, but the session is still active.
+  // post-apply pipeline. Without this branch the user would be stuck: there
+  // is no failed patch to resolve, but the session is still active.
   if (session.currentIndex >= session.patches.length) {
     info('All patches already applied; retrying post-apply re-export and version stamping.');
     await runPatchLoop(projectRoot, session, paths, maxFuzz, waitLockSeconds);
@@ -104,10 +105,15 @@ export async function handleContinue(
     // updatePatchMetadata sequence can interleave with a concurrent export /
     // re-export / patch reorder / patch compact and leave the manifest
     // disagreeing with the freshly-written patch body. Mirrors resolve.ts.
-    await updatePatchAndMetadata(paths.patches, currentPatch.filename, diffContent, {
-      sourceEsrVersion: session.toVersion,
-      sourceVersion: session.toVersion,
-      ...(session.toProduct !== undefined ? { sourceProduct: session.toProduct } : {}),
+    await updatePatchAndMetadata({
+      patchesDir: paths.patches,
+      filename: currentPatch.filename,
+      newContent: diffContent,
+      updates: {
+        sourceEsrVersion: session.toVersion,
+        sourceVersion: session.toVersion,
+        ...(session.toProduct !== undefined ? { sourceProduct: session.toProduct } : {}),
+      },
     });
   } finally {
     if (staged) {
@@ -120,9 +126,10 @@ export async function handleContinue(
   // clear is held until both writes land, matching the guarantee the apply
   // loop in patch-loop.ts provides.
   await runInSignalCriticalSection(`rebase-continue:${currentPatch.filename}`, async () => {
-    // Replaced, not mutated: flipping `status` in place leaves the
-    // failure's `error` and `conflictingFiles` on a now-resolved entry, and
-    // persist that to the session file. The union makes it impossible.
+    // The entry is replaced rather than mutated. Flipping `status` in place
+    // would leave the failure's `error` and `conflictingFiles` on a
+    // now-resolved entry and persist that to the session file. The union
+    // type rules that out.
     session.patches[session.currentIndex] = {
       filename: currentPatch.filename,
       status: 'resolved',
@@ -132,12 +139,7 @@ export async function handleContinue(
 
     // Clear pending resolution transactionally so concurrent state-file
     // writes to unrelated keys are not clobbered by a stale reload.
-    await updateState(projectRoot, (current) => {
-      if (!current.pendingResolution) return current;
-      const next = { ...current };
-      delete next.pendingResolution;
-      return next;
-    });
+    await clearPendingResolution(projectRoot);
   });
 
   success(`Resolved ${currentPatch.filename}`);

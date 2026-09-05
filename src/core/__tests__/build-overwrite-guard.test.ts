@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * A build-prepare overwrite that destroys unexported engine drift must be
- * LOUD. Silence is what lets a later re-export capture a half-reverted
+ * loud. Silence is what lets a later re-export capture a half-reverted
  * hybrid that every gate then passes.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../git-status.js', () => ({
   getWorkingTreeStatus: vi.fn(),
-  // The guard expands collapsed `?? dir/` entries before classifying;
-  // the default double is a pass-through so per-file fixtures are
+  // The guard expands collapsed `?? dir/` entries before classifying.
+  // The default double is a pass-through so per-file fixtures are
   // unaffected, and the collapsing itself is covered for real in
   // build-overwrite-guard-untracked-dir.integration.test.ts.
   expandUntrackedDirectoryEntries: vi.fn((_repoDir: string, entries: GitStatusEntry[]) =>
@@ -153,8 +153,8 @@ describe('findUnexportedDriftAtRisk', () => {
     vi.mocked(classifyFiles).mockResolvedValue([]);
 
     await expect(findUnexportedDriftAtRisk('/project', config)).resolves.toEqual([]);
-    // Only the owned branding prefix is walked — not the whole
-    // `browser/branding/` tree, and not the unrelated furnace prefix.
+    // Only the owned branding prefix is walked, not the whole
+    // `browser/branding/` tree and not the unrelated furnace prefix.
     expect(
       vi.mocked(expandUntrackedDirectoryEntries).mock.calls[0]?.[1].map((entry) => entry.file)
     ).toEqual(['browser/branding/testbrowser/']);

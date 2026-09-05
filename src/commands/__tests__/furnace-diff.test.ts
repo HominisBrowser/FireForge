@@ -275,7 +275,7 @@ describe('furnaceDiffCommand', () => {
 
   it('diffs against baseCommit even when the engine worktree matches the override', async () => {
     // After an override has been applied, the engine working tree equals
-    // the override — so an implementation reading from the worktree silently
+    // the override, so an implementation reading from the worktree silently
     // reports no differences. Reading from baseCommit via `git show` detects
     // the real difference against pristine Firefox even then.
     vi.mocked(readdir).mockResolvedValue([
@@ -283,9 +283,9 @@ describe('furnaceDiffCommand', () => {
     ] as unknown as Awaited<ReturnType<typeof readdir>>);
     vi.mocked(getFileContentAtRef).mockResolvedValue('.root {\n  color: blue;\n}\n');
     // readText (for the override) returns the modified content, and a
-    // hypothetical pathExists-based engine read would ALSO return the
+    // hypothetical pathExists-based engine read would also return the
     // override content (which is how the bug manifested). We simulate that
-    // by having readText return the override content for both reads —
+    // by having readText return the override content for both reads.
     // getFileContentAtRef is the only pristine-aware channel.
     vi.mocked(readText).mockResolvedValue('.root {\n  color: red;\n}\n');
 
@@ -346,7 +346,7 @@ describe('furnaceDiffCommand', () => {
 
   it('checks the locale tree for a custom component .ftl instead of targetPath', async () => {
     // `diff` must probe `engine/<ftlDir>/<name>.ftl`, where
-    // `furnace apply` actually writes the `.ftl` — not
+    // `furnace apply` actually writes the `.ftl`, not
     // `engine/<customConfig.targetPath>/<name>.ftl`. Probing the wrong
     // directory reports "not yet deployed to engine (new file)" after a
     // clean apply, while the deployed file sits in the locale tree with
@@ -381,7 +381,7 @@ describe('furnaceDiffCommand', () => {
 
     // The FTL deployment probe must hit the locale tree (the default
     // `ftlDir` resolves to `toolkit/locales/en-US/toolkit/global/` for
-    // a project without an override in `ftlBasePath`), NOT the component
+    // a project without an override in `ftlBasePath`), not the component
     // targetPath.
     expect(
       probedPaths.some(

@@ -3,8 +3,8 @@
  * xpcshell test-file registration. Without it, xpcshell test files (e.g.
  * `<module-dir>/test/unit/test_*.js`) are rejected by `fireforge register`
  * as "Unknown file pattern". This writer inserts the `["test_*.js"]` section
- * into the directory's `xpcshell.toml` (alphabetically, idempotently) and —
- * with `--create-manifest` — creates the manifest and wires
+ * into the directory's `xpcshell.toml` (alphabetically, idempotently). With
+ * `--create-manifest` it also creates the manifest and wires
  * `XPCSHELL_TESTS_MANIFESTS` into the nearest moz.build.
  */
 

@@ -90,7 +90,7 @@ export function tokenizeMozBuildList(
       if (listPattern.test(raw)) {
         // Single-line empty-list handling: a fresh scaffold sometimes
         // writes `EXTRA_JS_MODULES += []` on one line, which a tokenizer
-        // looking for a line starting with `]` never closes — leaving
+        // looking for a line starting with `]` never closes, leaving
         // `register` with a "Could not find module list section" error
         // against the documented browser/modules/<fork>/ scaffold.
         //

@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Recognizer for the one mochitest failure shape that is a function of run
- * LENGTH rather than of the code under test: the time-driven
+ * length rather than of the code under test: the time-driven
  * changed-preference checks.
  *
  * Separate from `test-harness-crash.ts` because it is not a crash
- * classification — the run failed, and the classifier's verdict is correct.
- * What this adds is which KIND of failure it was, which is a different
+ * classification. The run failed, and the classifier's verdict is correct.
+ * What this adds is which kind of failure it was, which is a different
  * question and one that only grows as more such shapes are recorded.
  */
 
 import { collectUnexpectedFailureBlocks } from './test-harness-crash.js';
 
 /**
- * Preferences that move on their own as a function of how LONG a run takes,
+ * Preferences that move on their own as a function of how long a run takes,
  * not of what it tested.
  *
  * Both are time-driven: a long run crosses the cold-startup check interval
  * and the pref moves under the harness. The observable consequence is that
  * chunk length, not the change under test, decides whether the suite is
- * red — the same work at a smaller `--chunk` passes. FireForge cannot
+ * red. The same work at a smaller `--chunk` passes. FireForge cannot
  * suppress the check (it is the harness's, not ours) but it can stop the
  * pair being indistinguishable from two real assertion failures, which is
  * the whole cost of the shape.
@@ -33,34 +33,25 @@ const TIME_DRIVEN_PREF_NAMES = ['lastColdStartupCheck', 'globalprivacycontrol'] 
 const CHANGED_PREF_BLOCK_PATTERN = /pref(?:erence)?s?\b/i;
 
 /**
- * Describes a failure set that consists ENTIRELY of changed-preference
+ * Describes a failure set that consists entirely of changed-preference
  * checks on {@link TIME_DRIVEN_PREF_NAMES}.
  *
- * Deliberately keyed on the pref NAMES rather than on the harness's phrasing
- * of its changed-preference report: the phrasing is upstream copy that has
- * no stable contract with us, and the names are the part that identifies the
- * shape. A single block that names anything else — a real assertion, a
- * different pref — disqualifies the whole set, because the point is to
- * describe a run whose every failure is this noise, never to explain away
- * one real failure sitting beside it.
+ * Keyed on the pref names rather than on the harness's phrasing of its
+ * changed-preference report: the phrasing is upstream copy that has no
+ * stable contract with us, and the names are the part that identifies the
+ * shape. A single block that names anything else (a real assertion, a
+ * different pref) disqualifies the whole set, so that this describes a run
+ * whose every failure is this noise, and never explains away one real
+ * failure sitting beside it.
  *
- * Pure; returns undefined when the shape does not apply.
+ * Pure. Returns undefined when the shape does not apply.
  *
  * @param output - Combined harness stdout+stderr
  * @returns Operator-facing explanation, or undefined
  */
 export function describeChangedPrefNoise(output: string): string | undefined {
-  const blocks = collectUnexpectedFailureBlocks(output, CHANGED_PREF_BLOCK_LIMIT).filter(
-    (block) => !block.startsWith('…')
-  );
-  if (blocks.length === 0) return undefined;
-  const namesSeen = new Set<string>();
-  for (const block of blocks) {
-    if (!CHANGED_PREF_BLOCK_PATTERN.test(block)) return undefined;
-    const matched = TIME_DRIVEN_PREF_NAMES.filter((name) => block.includes(name));
-    if (matched.length === 0) return undefined;
-    for (const name of matched) namesSeen.add(name);
-  }
+  const namesSeen = matchedTimeDrivenPrefNames(output);
+  if (namesSeen === undefined) return undefined;
   return (
     `Every unexpected result in this run is a changed-preference check on ${[...namesSeen].join(' / ')}. ` +
     'Those preferences are TIME-DRIVEN: they move once a run is long enough to cross the ' +
@@ -76,9 +67,33 @@ export function describeChangedPrefNoise(output: string): string | undefined {
 /** Failure blocks inspected before the changed-pref shape is abandoned. */
 const CHANGED_PREF_BLOCK_LIMIT = 20;
 
+/**
+ * The recognizer half of the shape, split from the formatting so a caller
+ * that only needs the yes/no answer does not build the ~500-character
+ * explanation to throw it away.
+ *
+ * @param output - Combined harness stdout+stderr
+ * @returns The time-driven pref names seen, or undefined when the shape does
+ *   not apply
+ */
+function matchedTimeDrivenPrefNames(output: string): Set<string> | undefined {
+  const blocks = collectUnexpectedFailureBlocks(output, CHANGED_PREF_BLOCK_LIMIT).filter(
+    (block) => !block.startsWith('…')
+  );
+  if (blocks.length === 0) return undefined;
+  const namesSeen = new Set<string>();
+  for (const block of blocks) {
+    if (!CHANGED_PREF_BLOCK_PATTERN.test(block)) return undefined;
+    const matched = TIME_DRIVEN_PREF_NAMES.filter((name) => block.includes(name));
+    if (matched.length === 0) return undefined;
+    for (const name of matched) namesSeen.add(name);
+  }
+  return namesSeen;
+}
+
 /** Short verdict-line note for the changed-preference-noise shape. */
 export function changedPrefNoiseVerdictNote(output: string): string | undefined {
-  return describeChangedPrefNoise(output) === undefined
+  return matchedTimeDrivenPrefNames(output) === undefined
     ? undefined
     : 'all unexpected results are time-driven changed-pref checks';
 }

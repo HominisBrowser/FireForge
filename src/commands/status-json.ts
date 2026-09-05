@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * `status --json` payload rendering (schemaVersion 1). Helper module
- * consumed by status.ts (which sits at the max-lines budget); no top-level
+ * consumed by status.ts (which sits at the max-lines budget). No top-level
  * registrar is exported and none is wanted.
  *
  * Two shapes share one counting pass:
- * - the full payload (`renderJsonStatus`) with the per-file `files[]` list;
+ * - the full payload (`renderJsonStatus`) with the per-file `files[]` list,
  * - the `--summary` gate payload (`renderJsonSummaryStatus`), which omits
- *   `files[]` entirely — engine-clean gates need the verdict, per-class
- *   counts, and offender names, not a payload that grows with the queue
- *   (175 KB+ on a large one).
+ *   `files[]` entirely, because engine-clean gates need the verdict,
+ *   per-class counts, and offender names, not a payload that grows with
+ *   the queue (175 KB+ on a large one).
  */
 import type { ClassifiedFile, FileClassification } from '../core/status-classify.js';
 import { setStdoutSealed } from '../utils/logger.js';
@@ -39,8 +39,8 @@ function countByClassification(
 }
 
 /**
- * Full `--json` payload: summary plus the per-file `files[]` list, and —
- * under `--include-ownership` — the additive `ownership` block.
+ * Full `--json` payload: summary plus the per-file `files[]` list, and,
+ * under `--include-ownership`, the additive `ownership` block.
  * Additive within schemaVersion 1: a consumer that does not ask for the
  * block never sees the key.
  */
@@ -53,7 +53,7 @@ export function renderJsonStatus(
       file: string;
       status: string;
       classification: FileClassification;
-      /** Owning patch filename; null when unowned (additive to schemaVersion 1). */
+      /** Owning patch filename. Null when unowned (additive to schemaVersion 1). */
       patch: string | null;
       claimedBy?: string[];
     } = {
@@ -82,12 +82,13 @@ export function renderJsonStatus(
 }
 
 /**
- * Summary-only `--json --summary` payload: counts always; when the
- * `--check`/`--fail-on` policy is active, a `check` block with the active
- * fail set, the verdict, and the offending files per fail-set
- * classification (sourced from the same collector as the human `--check`
- * message, so the two views can never disagree). The absent `files[]` is
- * the mode signal within schemaVersion 1 — consumers opt in via the flag.
+ * Summary-only `--json --summary` payload. Counts are always present. When
+ * the `--check`/`--fail-on` policy is active, the payload adds a `check`
+ * block with the active fail set, the verdict, and the offending files per
+ * fail-set classification (sourced from the same collector as the human
+ * `--check` message, so the two views can never disagree). The absent
+ * `files[]` is the mode signal within schemaVersion 1. Consumers opt in via
+ * the flag.
  */
 export function renderJsonSummaryStatus(
   classified: readonly ClassifiedFile[],

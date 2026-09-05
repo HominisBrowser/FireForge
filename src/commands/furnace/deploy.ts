@@ -2,7 +2,7 @@
 import { loadConfig } from '../../core/config.js';
 import { applyAllComponents, type ApplyAllComponentsResult } from '../../core/furnace-apply.js';
 import { logApplyResult } from '../../core/furnace-apply-output.js';
-import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
+import { getFurnacePaths } from '../../core/furnace-config.js';
 import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
 import {
   type FurnaceOperationContext,
@@ -17,6 +17,7 @@ import {
   shouldPersistSingleComponentState,
 } from '../../core/furnace-state-persist.js';
 import { hasBlockingStepErrors } from '../../core/furnace-step-errors.js';
+import type { OverrideVersionDrift } from '../../core/furnace-version-drift.js';
 import {
   findOverrideBaseVersionDrift,
   formatOverrideBaseVersionDriftError,
@@ -24,6 +25,7 @@ import {
 } from '../../core/furnace-version-drift.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceDeployOptions } from '../../types/commands/index.js';
+import type { FurnaceConfig } from '../../types/furnace.js';
 import { info, intro, note, outro, spinner, warn } from '../../utils/logger.js';
 import { runDeployValidation } from './validation-output.js';
 
@@ -69,18 +71,18 @@ function getFailedComponentNames(result: ApplyAllComponentsResult): Set<string> 
  * mode.
  *
  * Delegates to {@link applyAllComponents} with a `componentName` filter so
- * targeted deploys run the exact same pipeline as deploy-all — including
+ * targeted deploys run the exact same pipeline as deploy-all, including
  * workspace-deletion detection, engine orphan undeploy, and jar.mn /
  * customElements.js re-sync. Calling the per-component apply helpers
  * directly never prunes: renaming a helper file in the workspace then leaves
  * the old deployed file and its stale jar.mn line in the engine.
  *
- * `persistState: false` is load-bearing: the batch persist path *replaces*
+ * `persistState: false` matters here: the batch persist path replaces
  * `appliedChecksums` wholesale with only this run's entries, which for a
  * named deploy would wipe every other component's state. Named deploy keeps
  * its per-component state merge ({@link persistSingleComponentState}) and
  * its atomicity gate ({@link shouldPersistSingleComponentState}) at the call
- * site. Rollback on failure happens inside `applyAllComponents`; the journal
+ * site. Rollback on failure happens inside `applyAllComponents`. The journal
  * returned on success is ignored (the deploy keeps its files).
  *
  * @param name - Component name to apply
@@ -91,7 +93,7 @@ function getFailedComponentNames(result: ApplyAllComponentsResult): Set<string> 
  */
 async function applyNamedComponent(
   name: string,
-  config: Awaited<ReturnType<typeof loadFurnaceConfig>>,
+  config: FurnaceConfig,
   isDryRun: boolean,
   projectRoot: string,
   operationContext?: FurnaceOperationContext
@@ -167,7 +169,7 @@ function printDeploymentSummary(
 }
 
 function enforceScopedOverrideVersionDriftPreflight(
-  scopedDrift: ReturnType<typeof findOverrideBaseVersionDrift>,
+  scopedDrift: OverrideVersionDrift[],
   force: boolean
 ): void {
   for (const entry of scopedDrift) {
@@ -281,7 +283,7 @@ export async function furnaceDeployCommand(
   logApplyResult(result, isDryRun);
 
   // Keep the consumer jsconfig's chrome-module `paths` in step with the
-  // deployed module set. Only after a clean apply — a rolled-back deploy
+  // deployed module set. Only after a clean apply: a rolled-back deploy
   // must not advance the typecheck mapping either.
   if (result.errors.length === 0 && getStepFailureCount(result) === 0) {
     await reportJsconfigPathsSync(projectRoot, config, isDryRun);
@@ -300,7 +302,7 @@ export async function furnaceDeployCommand(
 
   const validateSpinner = spinner(isDryRun ? 'Validating (read-only)...' : 'Validating...');
   const failedComponents = getFailedComponentNames(result);
-  const validation = await runDeployValidation(
+  const validation = await runDeployValidation({
     validateSpinner,
     name,
     config,
@@ -308,8 +310,8 @@ export async function furnaceDeployCommand(
     failedComponents,
     isDryRun,
     projectRoot,
-    result.actions
-  );
+    dryRunActions: result.actions,
+  });
   if (validation.done) return;
   const { totalErrors, totalWarnings, componentCount, skippedValidationCount } = validation;
 

@@ -3,21 +3,21 @@
  * Binary-aware drift classification for patch-owned files.
  *
  * The text classifier compares utf-8 decoded content against
- * `computePatchedContent`, which cannot apply `GIT binary patch` bodies — so
+ * `computePatchedContent`, which cannot apply `GIT binary patch` bodies, so
  * a binary file exported into a patch classifies as `patch-owned-drift`
  * forever, keeping the engine-clean gate permanently red with nothing
- * actually un-durable. A `GIT binary patch` section DOES carry the ground
+ * actually un-durable. A `GIT binary patch` section does carry the ground
  * truth: `git diff --binary` always records full blob hashes on the section's
  * `index <old>..<new>` line. Comparing the live file's `git hash-object`
  * against the last owning section's new-side hash settles the classification
  * exactly. Bodies without a usable hash (hand-written diffs) classify as
- * `binary-unsupported` — an honest "cannot compare" instead of a false "not
+ * `binary-unsupported`: an honest "cannot compare" instead of a false "not
  * durable".
  *
- * That hash is trusted ONLY when the section carries a replayable payload
+ * That hash is trusted only when the section carries a replayable payload
  * (`hasBinaryDelta`). A `Binary files … differ` stub carries a correct index
  * line too, so hashing against it reports `patch-backed` for a body that
- * cannot rebuild the file at all — precisely the dishonesty this module
+ * cannot rebuild the file at all, which is the dishonesty this module
  * exists to avoid. Such a body is `binary-unsupported` here, and an error
  * from the `binary-body-not-reconstructable` queue lint.
  *
@@ -62,7 +62,7 @@ async function findLastAffectingSection(
   lookup?: AffectingPatchLookup
 ): Promise<DiffSection | undefined> {
   // The lookup shares one manifest load + memoized body reads across the
-  // whole classification batch; the fallback keeps single-file callers
+  // whole classification batch. The fallback keeps single-file callers
   // (and existing direct tests) working without a context.
   const patches =
     lookup !== undefined
@@ -83,8 +83,8 @@ async function findLastAffectingSection(
 
 /**
  * Classifies a single-owner file whose comparison is binary. Returns
- * `null` when the comparison is NOT binary — the live file is text and
- * (for deletions) the owning section is text — so the caller falls
+ * `null` when the comparison is not binary (the live file is text and,
+ * for deletions, the owning section is text), so the caller falls
  * through to the existing utf-8 content comparison unchanged.
  *
  * @param args.fileMissing - True when the porcelain status reports the
@@ -97,7 +97,7 @@ export async function classifyBinaryOwnedFile(args: {
   matchClassification: 'patch-backed' | 'furnace';
   owner: string;
   fileMissing?: boolean;
-  /** Batched lookup; when absent, falls back to per-file manifest queries. */
+  /** Batched lookup. When absent, falls back to per-file manifest queries. */
   lookup?: AffectingPatchLookup;
 }): Promise<BinaryClassifiedFile | null> {
   const { entry, engineDir, patchesDir, matchClassification, owner } = args;
@@ -108,8 +108,8 @@ export async function classifyBinaryOwnedFile(args: {
     owner,
   });
 
-  // Until the comparison is KNOWN to be binary, every failure defers to
-  // the existing text path (`return null`) — classifying a text file as
+  // Until the comparison is known to be binary, every failure defers to
+  // the existing text path (`return null`). Classifying a text file as
   // `binary-unsupported` because a probe failed would hide real drift.
   let section: DiffSection | undefined;
   try {
@@ -129,13 +129,13 @@ export async function classifyBinaryOwnedFile(args: {
   try {
     if (section === undefined) {
       // Claimed in filesAffected but no diff section touches the file.
-      // A missing file keeps the existing deletion logic; a live binary
+      // A missing file keeps the existing deletion logic. A live binary
       // has nothing recorded to compare against.
       return fileMissing ? null : unsupported();
     }
 
     if (!section.isBinary) {
-      // Text section: deletions settle fine through the text path; a
+      // Text section: deletions settle fine through the text path. A
       // live binary against a text body has no comparable recording.
       return fileMissing ? null : unsupported();
     }

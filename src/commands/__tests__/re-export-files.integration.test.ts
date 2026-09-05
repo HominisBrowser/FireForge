@@ -225,7 +225,7 @@ describe('re-export --files integration', () => {
     });
 
     expect(stdout).toContain('retained files (2)');
-    // browser.css is DELETED, not dropped: it is tracked in engine HEAD, so
+    // browser.css is deleted, not dropped: it is tracked in engine HEAD, so
     // the diff carries a `deleted file mode` section for it and the path
     // stays in the projected scope alongside the two live files.
     expect(stdout).toContain('projected files (3)');
@@ -294,12 +294,13 @@ describe('re-export --files integration', () => {
     // Regression, in two layers. The command first wrote filesAffected:
     // requested while omitting the missing path from the body, desyncing
     // patches.json from the patch. The fix for that dropped the path from
-    // BOTH — correct as bookkeeping, fatal as a capability: a deletion then
-    // had nowhere to go. `rm` on an upstream file left status "D" with
-    // classification "unmanaged", which `check-engine-clean` refuses, while
-    // a re-export naming the path reported success and wrote a patch that
-    // silently CLAIMED a file it did not restore. On a fresh clone that
-    // patch applies cleanly and resurrects exactly what the change removed.
+    // both, which was correct as bookkeeping but fatal as a capability: a
+    // deletion then had nowhere to go. `rm` on an upstream file left status
+    // "D" with classification "unmanaged", which `check-engine-clean`
+    // refuses, while a re-export naming the path reported success and wrote
+    // a patch that silently claimed a file it did not restore. On a fresh
+    // clone that patch applies cleanly and resurrects exactly what the
+    // change removed.
     //
     // A path absent from disk but tracked in HEAD is a deletion, and
     // `git diff HEAD` renders it. Only a never-tracked path is undiffable.
@@ -312,7 +313,7 @@ describe('re-export --files integration', () => {
         body: '',
       },
     ]);
-    // Modify one file; delete the other so --files catches a missing path.
+    // Modify one file and delete the other so --files catches a missing path.
     await writeFile(join(engineDir, 'browser/base/content/browser.js'), 'present and modified;\n');
     const { rm } = await import('node:fs/promises');
     await rm(join(engineDir, 'browser/base/content/browser.css'));
@@ -325,7 +326,7 @@ describe('re-export --files integration', () => {
     const manifest = JSON.parse(
       await readFile(join(patchesDir, 'patches.json'), 'utf-8')
     ) as PatchesManifest;
-    // The deleted path KEEPS its ownership — the patch is what performs the
+    // The deleted path keeps its ownership. The patch is what performs the
     // deletion, so dropping it would leave the body deleting a file the
     // manifest says the patch has nothing to do with.
     expect(manifest.patches[0]?.filesAffected).toEqual([
@@ -335,7 +336,7 @@ describe('re-export --files integration', () => {
 
     const newBody = await readFile(join(patchesDir, '001-infra-a.patch'), 'utf-8');
     expect(newBody).toContain('browser/base/content/browser.js');
-    // The whole point: a real deletion hunk, not a claim without a body.
+    // The patch must carry a real deletion hunk, not a claim without a body.
     expect(newBody).toContain('browser/base/content/browser.css');
     expect(newBody).toContain('deleted file mode');
 
@@ -383,15 +384,15 @@ describe('re-export --files integration', () => {
 
   it('--files --force does NOT block on a pre-existing issue in an unrelated patch', async () => {
     // Fix 2: a dirty queue with a cross-patch forward-import error
-    // between two *other* patches must not prevent shrinking a third,
+    // between two other patches must not prevent shrinking a third,
     // unrelated patch. Before the fix, `reExportFilesInPlace` treated
     // any error anywhere in the projected queue as a conflict, so users
-    // could not reach for `re-export --files` to repair a broken queue
-    // — which is one of the main reasons the command exists.
+    // could not reach for `re-export --files` to repair a broken queue,
+    // which is one of the main reasons the command exists.
     //
     // Queue shape:
     //   001 creates foo/Helper.sys.mjs with `import ... Target.sys.mjs`
-    //   002 creates foo/Target.sys.mjs (creator lives AFTER the importer
+    //   002 creates foo/Target.sys.mjs (creator lives after the importer
     //       → pre-existing forward-import error between 001 and 002)
     //   003 claims browser.js, entirely unrelated
     //
@@ -432,7 +433,7 @@ describe('re-export --files integration', () => {
     ]);
     await writeFile(join(engineDir, 'browser/base/content/browser.js'), 'clean;\n');
 
-    // Should not throw — the 001/002 error is pre-existing and unrelated.
+    // Should not throw. The 001/002 error is pre-existing and unrelated.
     await reExportCommand(projectRoot, ['003-infra-unrelated.patch'], {
       files: ['browser/base/content/browser.js'],
       yes: true,
@@ -455,7 +456,7 @@ describe('re-export --files integration', () => {
     // introduces an error, or one class of miss is traded for another.
     //
     // Construction:
-    //   001 claims browser.js with an EMPTY body (baseline has no added
+    //   001 claims browser.js with an empty body (baseline has no added
     //       lines → no forward-import from 001)
     //   002 creates foo/Helper.sys.mjs (order 2)
     // On disk: modify browser.js to add `import "./Helper.sys.mjs"`.
@@ -546,7 +547,7 @@ describe('re-export --files integration', () => {
     try {
       await runGit(engineDir, ['reset', '--hard', 'HEAD']);
     } catch {
-      // Ignore — the temp project may already be gone.
+      // Ignore: the temp project may already be gone.
     }
   });
 });

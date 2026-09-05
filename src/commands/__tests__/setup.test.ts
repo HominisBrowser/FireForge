@@ -183,7 +183,7 @@ describe('setupCommand non-interactive', () => {
       license: 'EUPL-1.2',
     });
 
-    // Should still complete — the overwrite prompt is part of the group
+    // Should still complete. The overwrite prompt is part of the group
     await expect(setupCommand('/project')).resolves.toBeUndefined();
   });
 
@@ -272,7 +272,7 @@ describe('setupCommand non-interactive', () => {
 
   it('accepts --yes as an alias for --force', async () => {
     // `setup`'s only bypass is the overwrite prompt, so the two flags mean the
-    // same thing here. Seventeen other commands spell this bypass `--yes`;
+    // same thing here. Seventeen other commands spell this bypass `--yes`, so
     // accepting it lets a scripted sequence use one spelling throughout.
     const program = new Command();
     const withErrorHandling = <T extends unknown[]>(

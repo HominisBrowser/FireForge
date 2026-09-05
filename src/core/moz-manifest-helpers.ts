@@ -6,7 +6,7 @@ import { tokenizeJarMn, tokenizeMozBuildList } from './moz-manifest-tokenizers.j
 
 /**
  * Ordering comparator matching mozbuild's `StrictOrderingOnAppendList`
- * (`mozbuild.util.UnsortedError`): entries are compared **case-insensitively**,
+ * (`mozbuild.util.UnsortedError`): entries are compared case-insensitively,
  * so `HominisAppearanceController` (`appe`) sorts before
  * `HominisAppMenuIntegration` (`appm`) even though a raw byte comparison
  * places the uppercase `M` (0x4D) before the lowercase `e` (0x65).
@@ -111,11 +111,11 @@ export function findAlphabeticalMozBuildPosition(
  *
  * Shared by the two jar.mn registrars (browser content, shared CSS), which
  * differ only in the sort pattern, the sort key and the "could not find the
- * section" message, so the anchor-fallback semantics — silently falling back
- * rather than refusing, and reporting `afterFallback` so the caller can say
- * so — are defined once.
+ * section" message, so the anchor-fallback semantics are defined once:
+ * silently fall back rather than refuse, and report `afterFallback` so the
+ * caller can say so.
  *
- * Deliberately jar.mn-specific: the moz.build list form has no `after` anchor
+ * This helper is jar.mn-specific: the moz.build list form has no `after` anchor
  * and no section concept, so a single generic helper over both families
  * would carry parameters that are meaningless on one side. See
  * {@link insertMozBuildListEntry} for its twin.
@@ -179,11 +179,11 @@ export function insertJarMnEntry(
  * manifests), which differ only in the list pattern, the sort key and the
  * refusal message.
  *
- * `tokenizeMozBuildList` **mutates `lines` in place** when it normalizes the
+ * `tokenizeMozBuildList` mutates `lines` in place when it normalizes the
  * single-line `FOO += []` form into the multi-line shape, and that rewrite is
  * what makes the caller's `splice` land inside the list body. The splice
  * below therefore has to run against the same array the tokenizer was
- * handed; a wrapper that tokenized a copy would silently break it.
+ * handed. A wrapper that tokenized a copy would silently break it.
  *
  * @param content - Full moz.build text
  * @param entry - The already-formatted line to insert

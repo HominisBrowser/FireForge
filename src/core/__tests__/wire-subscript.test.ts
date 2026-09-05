@@ -27,7 +27,7 @@ const parserFallbackMock = vi.hoisted(() =>
 vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../parser-fallback.js', async (importOriginal) => ({
-  // Pure logic with no side effects; only `withParserFallback` needs
+  // Pure logic with no side effects. Only `withParserFallback` needs
   // controlling here.
   ...(await importOriginal<typeof import('../parser-fallback.js')>()),
   withParserFallback: parserFallbackMock,

@@ -14,7 +14,7 @@ import { describe, it } from 'vitest';
 
 import plugin from './index.js';
 
-// `RuleTester` drives mocha-style globals; vitest supplies compatible ones.
+// `RuleTester` drives mocha-style globals. Vitest supplies compatible ones.
 RuleTester.describe = describe;
 RuleTester.it = it;
 RuleTester.itOnly = it.only;
@@ -32,8 +32,8 @@ const { rules } = plugin;
 ts.run('no-open-coded-to-error', rules['no-open-coded-to-error'], {
   valid: [
     'const m = toError(error).message;',
-    // The fallback names a DIFFERENT value, so this is not the idiom the rule
-    // replaces — reporting it told the author to write `toError(e).message`,
+    // The fallback names a different value, so this is not the idiom the rule
+    // replaces. Reporting it told the author to write `toError(e).message`,
     // which would silently change behaviour.
     'const m = e instanceof Error ? e.message : String(other);',
     'const m = e instanceof Error ? e.message : String();',
@@ -72,12 +72,12 @@ ts.run('no-errno-cast', rules['no-errno-cast'], {
       errors: [{ messageId: 'errnoCast' }],
     },
     // The errno type buried later in a union: `.find`-based matching only saw
-    // the FIRST type reference, so this cast went unreported.
+    // the first type reference, so this cast went unreported.
     {
       code: 'const code = (error as Error | NodeJS.ErrnoException).code;',
       errors: [{ messageId: 'errnoCast' }],
     },
-    // Bare `ErrnoException` pulled in via import — the same unchecked cast.
+    // Bare `ErrnoException` pulled in via import. The same unchecked cast.
     {
       code: 'const code = (error as ErrnoException).code;',
       errors: [{ messageId: 'errnoCast' }],
@@ -88,17 +88,17 @@ ts.run('no-errno-cast', rules['no-errno-cast'], {
 js.run('prefer-shared-regex-escape', rules['prefer-shared-regex-escape'], {
   valid: [
     'const escaped = escapeRegex(value);',
-    // A metacharacter-looking character class that is NOT a regex escape. The
+    // A metacharacter-looking character class that is not a regex escape. The
     // rule used to report every one of these purely on the literal's shape.
     'const parts = value.split(/[.*+?^${}()|[\\]\\\\]/);',
     'const hasMeta = /[.*+?^${}()|[\\]\\\\]/.test(value);',
     "const stripped = value.replace(/[.*+?^${}()|[\\]\\\\]/g, '');",
     "const stripped = value.replace(/[.*+?^${}()|[\\]\\\\]/g, '_');",
-    // A real escape, but of a different class — one or two metacharacters is
+    // A real escape, but of a different class: one or two metacharacters is
     // not the shared helper's job.
     "const escaped = value.replace(/[.*]/g, '\\\\$&');",
-    // `escapeForX` helpers escape for OTHER targets; telling them to import a
-    // regex escaper is wrong.
+    // `escapeForX` helpers escape for other targets. Telling them to import
+    // a regex escaper is wrong.
     'function escapeForHtml(value) { return value; }',
     'function escapeForShell(value) { return value; }',
     'function escapeForJson(value) { return value; }',
@@ -118,7 +118,7 @@ js.run('prefer-shared-regex-escape', rules['prefer-shared-regex-escape'], {
       code: 'function escapeRegExp(value) { return value; }',
       errors: [{ messageId: 'localHelper' }],
     },
-    // Arrow and function-expression spellings of the same local helper — a
+    // Arrow and function-expression spellings of the same local helper. A
     // declaration-only selector let these through.
     {
       code: 'const escapeRegex = (value) => value;',
@@ -137,7 +137,7 @@ ts.run('no-untyped-json-document', rules['no-untyped-json-document'], {
     'export function f(doc: JsonObject): JsonValue | undefined { return doc["x"]; }',
     // Non-exported helpers may narrow however they like.
     'function local(data: Record<string, unknown>): void { void data; }',
-    // A generic bound constrains a caller-supplied shape; it is not a
+    // A generic bound constrains a caller-supplied shape. It is not a
     // dictionary contract handed to callers.
     'export function pick<T extends Record<string, unknown>>(obj: T): T { return obj; }',
     // Annotations inside the body are local code, not exported surface.
@@ -160,7 +160,7 @@ ts.run('no-untyped-json-document', rules['no-untyped-json-document'], {
       code: 'export function g(): Record<string, unknown> { return {}; }',
       errors: [{ messageId: 'untypedDocument' }],
     },
-    // Wrapped in a generic — the dictionary still reaches the caller.
+    // Wrapped in a generic. The dictionary still reaches the caller.
     {
       code: 'export async function h(): Promise<Record<string, unknown>> { return {}; }',
       errors: [{ messageId: 'untypedDocument' }],
@@ -202,8 +202,8 @@ js.run('no-empty-jsdoc', rules['no-empty-jsdoc'], {
 
 js.run('no-open-coded-tty-check', rules['no-open-coded-tty-check'], {
   valid: [
-    // The spinner gate asks a different question — can output be redrawn —
-    // so it must not be routed through a prompt-answerability predicate.
+    // The spinner gate asks a different question (can output be redrawn), so
+    // it must not be routed through a prompt-answerability predicate.
     { code: 'const ok = process.stdout.isTTY && process.stderr.isTTY;' },
     { code: 'const ok = stdioIsInteractive();' },
     { code: 'const ok = process.stdin.isTTY;' },
@@ -216,6 +216,48 @@ js.run('no-open-coded-tty-check', rules['no-open-coded-tty-check'], {
     {
       code: 'if (!(process.stdin.isTTY && process.stdout.isTTY)) { throw new Error("x"); }',
       errors: [{ messageId: 'openCoded' }],
+    },
+  ],
+});
+
+ts.run('no-return-type-of-import', rules['no-return-type-of-import'], {
+  valid: [
+    // Named type imported instead of derived.
+    "import type { ProjectPaths } from '../types/config.js'; let p: ProjectPaths;",
+    // Package import: the author cannot export a name from node_modules.
+    "import { spinner } from '@clack/prompts'; let s: ReturnType<typeof spinner>;",
+    // Global, not imported.
+    'let t: ReturnType<typeof setTimeout>;',
+    // Local declaration, not imported.
+    'function f() { return 1; } let n: ReturnType<typeof f>;',
+    // Member expression query is not a bare imported identifier.
+    "import { vi } from 'vitest'; let m: ReturnType<typeof vi.fn>;",
+    // `typeof X` outside ReturnType is fine.
+    "import { getProjectPaths } from './config.js'; let g: typeof getProjectPaths;",
+  ],
+  invalid: [
+    {
+      code: "import { getProjectPaths } from './config.js'; let p: ReturnType<typeof getProjectPaths>;",
+      errors: [
+        {
+          messageId: 'returnTypeOfImport',
+          data: { name: 'getProjectPaths', source: './config.js' },
+        },
+      ],
+    },
+    {
+      // `import type` bindings count too.
+      code: "import type { loadConfig } from '../core/config.js'; type C = Awaited<ReturnType<typeof loadConfig>>;",
+      errors: [
+        {
+          messageId: 'returnTypeOfImport',
+          data: { name: 'loadConfig', source: '../core/config.js' },
+        },
+      ],
+    },
+    {
+      code: "import * as cfg from './config.js'; let p: ReturnType<typeof cfg>;",
+      errors: [{ messageId: 'returnTypeOfImport' }],
     },
   ],
 });

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import * as prompts from '@clack/prompts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { loadState, saveState } from '../../core/config.js';
+import { loadState, updateState } from '../../core/config.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
@@ -99,7 +99,7 @@ describe('resolve integration', () => {
     await runGit(engineDir, ['add', '-A']);
     await runGit(engineDir, ['commit', '-m', 'upstream change']);
 
-    // Import fails — sets pendingResolution
+    // Import fails and sets pendingResolution
     await expect(importCommand(projectRoot, { force: true })).rejects.toThrow();
 
     const stateBefore = await loadState(projectRoot);
@@ -119,7 +119,7 @@ describe('resolve integration', () => {
     const stateAfter = await loadState(projectRoot);
     expect(stateAfter.pendingResolution).toBeUndefined();
 
-    // Patch updated — should contain both files
+    // Patch updated. It should contain both files
     const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
     expect(patchContent).toContain('+++ b/browser/base/content/browser.js');
     expect(patchContent).toContain('+++ b/browser/modules/sidebar.js');
@@ -150,12 +150,12 @@ describe('resolve integration', () => {
     const patchFilename = manifest?.patches[0]?.filename;
 
     // Set up pendingResolution manually (simulating a failed import)
-    const state = await loadState(projectRoot);
-    state.pendingResolution = {
-      patchFilename: patchFilename ?? '',
-      originalError: 'Simulated conflict',
-    };
-    await saveState(projectRoot, state);
+    await updateState(projectRoot, {
+      pendingResolution: {
+        patchFilename: patchFilename ?? '',
+        originalError: 'Simulated conflict',
+      },
+    });
 
     // Delete one of the affected files (simulating upstream removal)
     await runGit(engineDir, ['rm', '-f', 'browser/modules/sidebar.js']);
@@ -166,7 +166,7 @@ describe('resolve integration', () => {
       'browser/base/content/browser.js': 'export const title = "resolved";\n',
     });
 
-    // Resolve — should update filesAffected to only the surviving file
+    // Resolve. This should update filesAffected to only the surviving file
     await resolveCommand(projectRoot);
 
     const stateAfter = await loadState(projectRoot);
@@ -184,7 +184,7 @@ describe('resolve integration', () => {
       'browser/base/content/browser.js': 'export const title = "ok";\n',
     });
 
-    // No pending resolution — should exit cleanly
+    // No pending resolution, so the command should exit cleanly
     await expect(resolveCommand(projectRoot)).resolves.toBeUndefined();
   });
 });

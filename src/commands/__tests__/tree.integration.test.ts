@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * End-to-end coverage for `fireforge tree`: real tempdir + git, real clone
- * (CoW when the filesystem supports it — the create path probes and uses
- * clonefile/reflink on APFS/btrfs; `--force-copy` keeps the same path green
+ * (CoW when the filesystem supports it: the create path probes and uses
+ * clonefile/reflink on APFS/btrfs, and `--force-copy` keeps the same path green
  * on ext4 CI runners), and the read-only guard enforced through the real
  * commander program.
  */
@@ -23,12 +23,12 @@ import {
 import { pathExists } from '../../utils/fs.js';
 import { treeCreateCommand, treeListCommand, treeRemoveCommand } from '../tree.js';
 
-// `tree create --with-objdir` runs `mach configure` inside the clone; the
-// synthetic objdir has no real mach, so only that call is stubbed —
+// `tree create --with-objdir` runs `mach configure` inside the clone. The
+// synthetic objdir has no real mach, so only that call is stubbed, and
 // everything else in core/mach.js stays real. The default implementation
-// (set in beforeEach) simulates a RELOCATING configure, rewriting the cloned
+// (set in beforeEach) simulates a relocating configure, rewriting the cloned
 // config.status/backend.mk to the tree's paths, because the post-configure
-// relocation check verifies exactly that; the failure-case tests override it
+// relocation check verifies exactly that. The failure-case tests override it
 // per case with mockImplementationOnce.
 vi.mock('../../core/mach.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../core/mach.js')>();
@@ -106,7 +106,7 @@ describePosix('fireforge tree end to end', () => {
     expect(vi.mocked(info)).toHaveBeenCalledWith(expect.stringContaining('shard-a'));
     expect(vi.mocked(info)).toHaveBeenCalledWith(expect.stringContaining('fresh'));
 
-    // Duplicate names refuse — refresh is remove + create.
+    // Duplicate names refuse. Refresh is remove + create.
     await expect(treeCreateCommand(projectRoot, 'shard-a', { forceCopy: true })).rejects.toThrow(
       /already exists/
     );
@@ -154,7 +154,7 @@ describePosix('fireforge tree end to end', () => {
 
     const treeRoot = join(projectRoot, '.fireforge', 'trees', 'shard-obj');
     await expect(tryReadTreeMarker(treeRoot)).resolves.toMatchObject({ clonedObjdir: 'obj-e2e' });
-    // The clone was reconfigured IN THE TREE before the marker vouched for it.
+    // The clone was reconfigured in the tree before the marker vouched for it.
     expect(vi.mocked(runMach)).toHaveBeenCalledWith(['configure'], join(treeRoot, 'engine'));
     const { readFile } = await import('node:fs/promises');
     const mozinfo = JSON.parse(
@@ -174,8 +174,8 @@ describePosix('fireforge tree end to end', () => {
       ).rejects.toThrow(/"test --build" rebuilds the engine and must run in the primary tree/);
 
       // Build-less `test` passes the guard: it proceeds into the command
-      // proper and fails on the synthetic objdir's missing binary — NOT on
-      // a tree refusal, and NOT on the relocated-artifacts mismatch the
+      // proper and fails on the synthetic objdir's missing binary, not on
+      // a tree refusal, and not on the relocated-artifacts mismatch the
       // mozinfo rewrite exists to prevent.
       const testProgram = createProgram();
       testProgram.exitOverride();
@@ -193,7 +193,7 @@ describePosix('fireforge tree end to end', () => {
   it('a refused mozinfo rewrite fails the create and leaves no partial tree behind', async () => {
     // A mozinfo with no topobjdir passes the primary artifact preflight
     // (an undefined field is not a mismatch) but the safe-relocation
-    // rewriter refuses it — exercising cloneTree's fail-closed path.
+    // rewriter refuses it, exercising cloneTree's fail-closed path.
     const engineDir = join(projectRoot, 'engine');
     await writeSyntheticObjdir(engineDir, 'obj-e2e', { topobjdir: null });
 
@@ -214,8 +214,8 @@ describePosix('fireforge tree end to end', () => {
   it('--with-objdir refuses a symlinked primary objdir and leaves no partial tree behind', async () => {
     // An external build symlinked into engine/ passes the symlink-agnostic
     // artifact detection (its mozinfo names the engine paths), but the
-    // clone guard must refuse before any copying — the clone would carry
-    // the link and rewrite the EXTERNAL build through it.
+    // clone guard must refuse before any copying: the clone would carry
+    // the link and rewrite the external build through it.
     const engineDir = join(projectRoot, 'engine');
     const externalRoot = join(projectRoot, 'external-build');
     await writeSyntheticObjdir(externalRoot, 'obj-e2e', {
@@ -287,7 +287,7 @@ describePosix('fireforge tree end to end', () => {
       if (args[0] === 'configure') {
         const { writeFile } = await import('node:fs/promises');
         // Relocate config.status/backend.mk but stamp mozinfo with the
-        // PRIMARY paths again — the shape a wrong mozconfig produces.
+        // primary paths again, the shape a wrong mozconfig produces.
         await writeFile(
           join(treeEngineDir, 'obj-e2e', 'config.status'),
           `topsrcdir = "${treeEngineDir}"\n`
@@ -374,7 +374,7 @@ describePosix('fireforge tree end to end', () => {
       process.chdir(previousCwd);
     }
 
-    // The dry-run passed the guard AND its own purity guard; assert the
+    // The dry-run passed the guard and its own purity guard. Assert the
     // artifact byte-identity independently too.
     await expect(readFile(patchPath, 'utf8')).resolves.toBe(patchBefore);
   });

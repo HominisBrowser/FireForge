@@ -20,20 +20,20 @@ describe('generateChromeDocPackagingTest', () => {
   it('emits a probe that reads the packaged tree directly rather than via chrome://', () => {
     const test = generateChromeDocPackagingTest('mybrowser', '// LICENSE');
     expect(test).toContain('// LICENSE');
-    // Probes the filesystem, not a chrome:// URI — the chrome-URI path is
-    // exactly what the generated test avoids. `probeEither` reflects that it
-    // tries both a primary and a fallback packaged-tree layout before
-    // failing.
+    // Probes the filesystem rather than a chrome:// URI, since the
+    // chrome-URI path is what the generated test avoids. `probeEither`
+    // reflects that it tries both a primary and a fallback packaged-tree
+    // layout before failing.
     expect(test).toContain('Services.dirsvc.get("XCurProcD"');
     expect(test).toMatch(/primaryFile\.exists\(\)|fallbackFile\.exists\(\)/);
-    // The assertion chain must not go through NetUtil / newChannel — that
+    // The assertion chain must not go through NetUtil / newChannel, which
     // would re-introduce the xpcshell chrome-URI registration dependency
     // the scaffold exists to sidestep. We tolerate the string appearing in
     // the explanatory header comment but require no actual call site.
     expect(test).not.toMatch(/^\s*NetUtil\./m);
     expect(test).not.toMatch(/Services\.io\.newChannel/);
-    // Task suffix uses underscores but filename preserves hyphens — avoids
-    // a JS-identifier parse error in the generated add_task callback.
+    // Task suffix uses underscores but filename preserves hyphens, which
+    // avoids a JS-identifier parse error in the generated add_task callback.
     expect(test).toContain('test_mybrowser_files_packaged');
   });
 
@@ -77,7 +77,7 @@ describe('generateChromeDocPackagingTest', () => {
   });
 
   it('warns about the omni.ja-packed build limitation in the inline comment', () => {
-    // A fork that packs omni.ja needs a different probe; the scaffold must
+    // A fork that packs omni.ja needs a different probe. The scaffold must
     // flag that explicitly so an operator on a packed-tree build does not
     // assume the scaffold is buggy when the probe fails.
     const test = generateChromeDocPackagingTest('mybrowser', '// LICENSE');

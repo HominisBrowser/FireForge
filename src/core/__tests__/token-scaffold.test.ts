@@ -17,7 +17,7 @@ describe('generateDefaultTokensCss', () => {
   it('seeds the canonical category set recognized by assertTokenCategoryExists', () => {
     const css = generateDefaultTokensCss('mybrowser', 'MPL-2.0');
     for (const category of DEFAULT_TOKEN_CATEGORIES) {
-      // Single-line /* = Category = */ pattern — matches the single-line
+      // Single-line /* = Category = */ pattern, matching the single-line
       // form findCategorySection/assertTokenCategoryExists recognise.
       expect(css).toContain(`/* = ${category} = */`);
     }

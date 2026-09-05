@@ -72,8 +72,8 @@ describe('evaluateJarManifestEscalation', () => {
     expect(decision.causes[0]?.reason).toContain('redirects the install base directory');
   });
 
-  // Indented `foo.jar:` inside a section is CONTENT, not a declaration —
-  // treating it as one would escalate on ordinary manifests.
+  // An indented `foo.jar:` inside a section is content, not a declaration.
+  // Treating it as one would escalate on ordinary manifests.
   it('does not read an indented jar-looking line as a declaration', async () => {
     vi.mocked(readText).mockResolvedValue('browser.jar:\n  [skin] something.jar:\n');
     const decision = await evaluateJarManifestEscalation('/engine', ['browser/jar.mn'], undefined);

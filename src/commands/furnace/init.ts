@@ -20,6 +20,7 @@ import type { FurnaceConfig } from '../../types/furnace.js';
 import { getNodeErrorCode, toError } from '../../utils/errors.js';
 import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, note, outro, success, warn } from '../../utils/logger.js';
+import { normalizePathSlashes } from '../../utils/paths.js';
 
 /**
  * File extensions that are definitely FTL resources (not locale
@@ -47,16 +48,16 @@ function hasFtlFileExtension(value: string): boolean {
 /**
  * Validates an FTL base path before writing it to furnace.json.
  * Rejects:
- *  - empty values and null bytes;
- *  - absolute paths (POSIX or Windows-drive) that escape the engine;
- *  - `..` segments that escape the engine;
+ *  - empty values and null bytes
+ *  - absolute paths (POSIX or Windows-drive) that escape the engine
+ *  - `..` segments that escape the engine
  *  - file-shaped values ending in `.ftl` / `.properties` / `.dtd`
- *    (these are locale resources, not directories — the operator
- *    almost certainly meant to name the parent directory).
+ *    (these are locale resources, not directories, so the operator
+ *    almost certainly meant to name the parent directory)
  *
  * When {@link engineDir} is provided and exists on disk, the resolved
- * `engine/${value}` path is probed: if it exists but is not a
- * directory, the same file-shape error fires; if it does not exist yet,
+ * `engine/${value}` path is probed. If it exists but is not a
+ * directory, the same file-shape error fires. If it does not exist yet,
  * a non-blocking warning is logged (a fresh project that has not
  * `fireforge download`-ed yet is the legitimate pre-existence case).
  */
@@ -75,7 +76,7 @@ async function validateFtlBasePath(value: string, engineDir?: string): Promise<v
   // Normalize with the POSIX rules regardless of host: `normalize` on Windows
   // emits backslashes, so a `../`-prefix test against the platform `normalize`
   // silently passes every traversal attempt there.
-  const normalized = posix.normalize(value.replace(/\\/g, '/'));
+  const normalized = posix.normalize(normalizePathSlashes(value));
   if (normalized === '..' || normalized.startsWith('../')) {
     throw new FurnaceError(
       `ftlBasePath "${value}" must not escape the engine checkout via parent-directory segments.`
@@ -104,17 +105,17 @@ async function validateFtlBasePath(value: string, engineDir?: string): Promise<v
       }
     } catch (error: unknown) {
       // FurnaceError (from the `isDirectory()` branch above) is a real
-      // shape failure — re-throw so the operator sees it.
+      // shape failure, so re-throw and let the operator see it.
       if (error instanceof FurnaceError) throw error;
       // ENOENT is expected on a fresh project before `fireforge
-      // download` has populated engine/; only warn.
+      // download` has populated engine/. Only warn.
       const code = getNodeErrorCode(error);
       if (code === 'ENOENT') {
         warn(
           `ftlBasePath "${value}" does not yet exist at ${resolved}. This is fine if you have not run "fireforge download" yet; rerun "fireforge furnace init --force" after the engine is extracted to re-validate.`
         );
       }
-      // Any other stat error is also best-effort ignored here — a
+      // Any other stat error is also ignored here as best-effort: a
       // permission issue or malformed engine checkout will surface on
       // the next command that actually reads the FTL tree.
     }
@@ -141,7 +142,7 @@ export async function furnaceInitCommand(
 
   // Seed the default furnace config with a tokenPrefix derived from
   // fireforge.json's binaryName so `token coverage` sees real tokens on the
-  // very first run — without the prefix default, a fresh init → token add →
+  // very first run. Without the prefix default, a fresh init → token add →
   // coverage sequence reports `0 tokens / N unknown` because the scan has
   // nothing to key off. Loading fireforge.json here is best-effort: a
   // project without one (mid-setup) falls through to the prefix-less
@@ -231,8 +232,8 @@ export async function furnaceInitCommand(
  * Scaffolds the default tokens CSS file under the engine and registers
  * its path in `fireforge.json`'s `patchLint.rawColorAllowlist`. Both
  * operations are skipped silently when the engine directory does not
- * yet exist (a fresh project that hasn't `fireforge download`ed yet);
- * the scaffold is re-driven on the next `furnace init --force`.
+ * yet exist (a fresh project that hasn't `fireforge download`ed yet).
+ * The scaffold is re-driven on the next `furnace init --force`.
  *
  * Returns the scaffolded path when the file was actually created, so
  * the init command can surface it in the summary note.
@@ -304,12 +305,12 @@ async function scaffoldTokensCss(projectRoot: string): Promise<{ tokensCssPath?:
   // is owned end-to-end by tooling. Scaffolding and allowlisting it without
   // registering leaves the very next `fireforge status` correctly flagging
   // it as unmanaged + unregistered while `furnace deploy --dry-run` reports
-  // nothing to deploy — a documented init command turning a clean project
+  // nothing to deploy, a documented init command turning a clean project
   // unclean. The CSS lives at the canonical
   // `browser/themes/shared/<binaryName>-tokens.css` path the shared-CSS rule
   // already targets, so it gets the same
   // `skin/classic/browser/<name>.css (../shared/<name>.css)` entry as any
-  // other shared CSS. Idempotent — `furnace init --force` against a
+  // other shared CSS. It is idempotent: `furnace init --force` against a
   // registered tree is a no-op.
   try {
     const fileBase = `${forgeConfig.binaryName}-tokens.css`;

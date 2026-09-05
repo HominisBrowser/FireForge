@@ -29,7 +29,7 @@ export const HISTORY_LOG_FILENAME = '.fireforge-history.jsonl';
  * A structural conflict that must block the operation even under `--force`.
  *
  * Intended for cases like "reorder would introduce a forward-import" or
- * "delete would orphan a later patch's import" — situations where the
+ * "delete would orphan a later patch's import", situations where the
  * operator almost certainly wants a different fix (re-export --files, etc.)
  * rather than a bypass. `--force-unsafe` is the escape hatch when the
  * operator genuinely accepts the risk.
@@ -48,9 +48,9 @@ export interface DestructiveOpInput {
   /** Short one-line title shown in the prompt. */
   title: string;
   /**
-   * Detailed change summary — every affected patch, file, or renumber row.
-   * Generic "proceed? [y/N]" is insufficient per the destructive-op contract;
-   * callers must list every concrete change here.
+   * Detailed change summary: every affected patch, file, or renumber row.
+   * Generic "proceed? [y/N]" is insufficient per the destructive-op
+   * contract. Callers must list every concrete change here.
    */
   summary: string[];
   /** Whether the caller passed `--yes`. */
@@ -66,9 +66,9 @@ export interface DestructiveOpInput {
 /**
  * Outcome of the destructive-operation contract.
  *
- * `'declined'` means the operator answered "no" — a successful run that
+ * `'declined'` means the operator answered "no", a successful run that
  * chose not to proceed, so callers return normally and the process exits 0.
- * An INTERRUPT (Esc / Ctrl+C) is not represented here: it throws
+ * An interrupt (Esc / Ctrl+C) is not represented here: it throws
  * {@link CancellationError} and exits 130. Collapsing the two would make an
  * interrupted prompt indistinguishable from a declined one.
  */
@@ -88,7 +88,7 @@ export interface HistoryEntry {
   yes?: boolean;
   /** True if `--force-unsafe` was used. */
   unsafeOverride?: boolean;
-  /** Result: `'ok'` on success; other strings describe failure. */
+  /** Result: `'ok'` on success. Other strings describe failure. */
   result: string;
 }
 
@@ -114,7 +114,7 @@ function printConflicts(conflicts: ConflictReport): void {
 }
 
 /**
- * True when BOTH standard handles are real TTYs, i.e. an interactive prompt
+ * True when both standard handles are real TTYs, i.e. an interactive prompt
  * can actually be answered.
  *
  * Named for the condition rather than for confirmation specifically: many
@@ -124,7 +124,7 @@ function printConflicts(conflicts: ConflictReport): void {
  * Node types `isTTY` as `boolean`, but at runtime it is `true | undefined`
  * (absent when the handle is not a TTY). Unusual harnesses (vitest stdio
  * capture, CI spawners, mocked pipes) can also leave it unset on only one
- * handle, so every falsy variant — false, undefined, a null-patched mock —
+ * handle, so every falsy variant (false, undefined, a null-patched mock)
  * must route to the non-interactive path.
  */
 export function stdioIsInteractive(): boolean {
@@ -134,11 +134,11 @@ export function stdioIsInteractive(): boolean {
 }
 
 /**
- * UP-FRONT non-interactive refusal for a command that will end at
+ * Up-front non-interactive refusal for a command that will end at
  * {@link confirmDestructive}.
  *
  * `confirmDestructive` already refuses a prompt-less run rather than
- * proceeding silently — but it does so at the END, after the command has
+ * proceeding silently, but it does so at the end, after the command has
  * built diffs and run projected per-patch lint. On `patch move-files
  * --create` that is minutes of work before a scripted run learns it needed
  * `--yes`, and the failure reads as an obscure late error rather than a
@@ -170,7 +170,7 @@ export function assertConfirmationAvailable(
  * Executes the destructive-operation contract: summary → conflict refusal →
  * dry-run / force / prompt / non-TTY refusal.
  *
- * Returns the decision for the caller to act on; callers must not execute
+ * Returns the decision for the caller to act on. Callers must not execute
  * the mutation when the result is `'dry-run'` or `'declined'`, and must call
  * {@link appendHistory} only after the mutation succeeds (never on dry-run
  * or decline).
@@ -239,8 +239,8 @@ export async function confirmDestructive(input: DestructiveOpInput): Promise<Des
     initialValue: false,
   });
 
-  // An INTERRUPT and a "no" are different outcomes and must not share an
-  // exit code. Esc / Ctrl+C is a real interrupt — 130 is 128+SIGINT and is
+  // An interrupt and a "no" are different outcomes and must not share an
+  // exit code. Esc / Ctrl+C is a real interrupt. 130 is 128+SIGINT and is
   // what a script needs to tell "the operator aborted" from "the operator
   // considered it and declined". Answering "no" is a successful run.
   //
@@ -261,8 +261,8 @@ export async function confirmDestructive(input: DestructiveOpInput): Promise<Des
  *
  * Call order matters: append only after the mutation succeeds, never
  * pre-emptively, so rolled-back failures do not leave ghost entries. The log
- * is append-only and advisory — no code path reads it back; it exists purely
- * so operators have a post-hoc audit trail when something goes wrong.
+ * is append-only and advisory: no code path reads it back. It exists so
+ * operators have a post-hoc audit trail when something goes wrong.
  *
  * @param patchesDir - Path to the patches directory
  * @param entry - Serializable history record

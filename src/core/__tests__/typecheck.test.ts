@@ -15,8 +15,8 @@ const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '__fixtures__', '
 /**
  * Helper that asserts the array has exactly one entry and returns it.
  * Avoids `array[0]!` non-null assertions while keeping per-test
- * narration short. Used in nearly every case below — the typecheck
- * engine is per-project so single-project tests dominate.
+ * narration short. Used in nearly every case below. The typecheck
+ * engine is per-project, so single-project tests dominate.
  */
 function expectSingle<T>(arr: ReadonlyArray<T>, message?: string): T {
   expect(arr, message).toHaveLength(1);
@@ -44,7 +44,7 @@ describe('runTypecheck', () => {
     expect(errors.some((i) => i.code === 2322)).toBe(true);
 
     // None of the suppressed module-resolution codes should leak into
-    // the output. (2304/2552 are no longer in this set —
+    // the output. (2304/2552 are no longer in this set,
     // but the basic fixture has no undefined identifiers.)
     const suppressed = [2304, 2305, 2306, 2307, 2552, 2580, 2792, 7016];
     for (const code of suppressed) {
@@ -65,7 +65,7 @@ describe('runTypecheck', () => {
     expect(undefinedIssues[0]?.message).toContain('undefined identifier');
     // Shim-covered globals stay clean.
     expect(result.issues.some((i) => i.message.includes("'Services'"))).toBe(false);
-    // No error-category issues — the default must not break gates.
+    // No error-category issues. The default must not break gates.
     expect(result.issues.filter((i) => i.category === 'error')).toHaveLength(0);
   });
 
@@ -94,7 +94,7 @@ describe('runTypecheck', () => {
       projects: ['disabled/jsconfig.json'],
     });
     const result: TypecheckProjectResult = expectSingle(results);
-    // Exactly one warning explaining the skip — no real type errors,
+    // Exactly one warning explaining the skip, and no real type errors,
     // because the user told us not to look.
     const issue: TypecheckIssue = expectSingle(result.issues);
     expect(issue.category).toBe('warning');
@@ -109,8 +109,8 @@ describe('runTypecheck', () => {
 
     // 2307 ("Cannot find module") is in the suppressed set, so the
     // suppression check above is the wrong assertion here. Instead,
-    // assert no errors AT ALL — if `paths` resolved correctly, the
-    // import is valid and no type error fires; if `paths` did not
+    // assert no errors at all: if `paths` resolved correctly, the
+    // import is valid and no type error fires. If `paths` did not
     // resolve, suppression masks it but `greet(...)` then returns
     // `any`, which would still be issue-free. The clean baseline is
     // the meaningful contract.
@@ -178,7 +178,7 @@ describe('runTypecheck', () => {
           '/** @returns {ShadowRoot} */',
           'export function attach() {',
           '  const obj = new MyBrowserBase();',
-          // Wrong shape — `mode: "wrong"` is not assignable.
+          // Wrong shape: `mode: "wrong"` is not assignable.
           '  return obj.attachShadow({ mode: "wrong" });',
           '}',
           '',
@@ -290,7 +290,7 @@ describe('runTypecheck', () => {
 
     const root = await mkdtemp(join(tmpdir(), 'ff-typecheck-override-'));
     try {
-      // The shared hub rejects mode "y"; the b-only shim accepts it.
+      // The shared hub rejects mode "y". The b-only shim accepts it.
       await writeFile(
         join(root, 'hub.d.ts'),
         'declare class HubBase { tag(init: { mode: "x" }): void; }\n'

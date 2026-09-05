@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge patch delete <name>` — removes a patch from the queue.
+ * `fireforge patch delete <name>`: removes a patch from the queue.
  *
  * Destructive: refuses when a later patch imports a module owned by the
  * target (that would leave a dangling forward import), prompts for
@@ -12,7 +12,8 @@ import { basename } from 'node:path';
 
 import { Command } from 'commander';
 
-import { appendHistory, confirmDestructive, type ConflictReport } from '../../core/destructive.js';
+import { confirmDestructive, type ConflictReport } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import {
   buildPatchQueueContext,
   extractImportSpecifiersWithLines,
@@ -23,9 +24,9 @@ import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import { removePatchFileAndManifest } from '../../core/patch-manifest.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchDeleteOptions } from '../../types/commands/index.js';
-import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /**
@@ -53,7 +54,7 @@ export async function patchDeleteCommand(
   // without re-parsing for the dependency check below.
   const baseCtx = await buildPatchQueueContext(paths.patches);
 
-  // Hard refusal: an import owned by a LATER patch that points at any of
+  // Hard refusal: an import owned by a later patch that points at any of
   // the target's newly-created files is a dependency on the target. That
   // check is built directly from `baseCtx` rather than by diffing lint runs
   // over a projected state.
@@ -65,10 +66,10 @@ export async function patchDeleteCommand(
     }
   }
 
-  // Scan every later patch's new files AND its added lines on pre-existing
+  // Scan every later patch's new files and its added lines on pre-existing
   // files for import specifiers that resolve to a leaf owned by the target.
   // Uses the shared specifier extractor so dynamic `import()` and
-  // `ChromeUtils.defineESModuleGetters` are picked up — the forward-import
+  // `ChromeUtils.defineESModuleGetters` are picked up: the forward-import
   // lint rule already covers those forms, and delete safety must match the
   // same set or it silently drops dependencies.
   //
@@ -134,14 +135,14 @@ export async function patchDeleteCommand(
   const conflicts: ConflictReport | null =
     dependents.length > 0
       ? {
-          // Wording deliberately clarifies the *runtime* impact: `git apply`
+          // The wording spells out the runtime impact: `git apply`
           // does not resolve imports and succeeds even when a later patch
           // imports a file the target created, so the queue re-imports
           // cleanly. The breakage surfaces at browser startup when
           // `ChromeUtils.importESModule` cannot locate the deleted module.
-          // Operators who deliberately plan to re-introduce the imported
-          // files (rename, refactor) need to know this is the impact model,
-          // not a patch-application failure.
+          // Operators who plan to re-introduce the imported files (rename,
+          // refactor) need to know this is the impact model rather than a
+          // patch-application failure.
           reason: `${dependents.length} later patch(es) contain import statements that reference files created by ${target.filename}. Patch application itself will still succeed, but runtime imports will fail at browser startup until those files are re-introduced.`,
           details: dependents,
         }
@@ -166,14 +167,7 @@ export async function patchDeleteCommand(
     conflicts,
   });
 
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Delete cancelled');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Delete cancelled')) return;
 
   // Proceed: remove under the patch directory lock so concurrent exports
   // cannot race us into the same manifest row. The history append lives
@@ -187,8 +181,9 @@ export async function patchDeleteCommand(
     paths.patches,
     async () => {
       await removePatchFileAndManifest(paths.patches, target.filename);
-      try {
-        await appendHistory(paths.patches, {
+      await appendHistoryBestEffort(
+        paths.patches,
+        {
           operation: 'patch-delete',
           args: {
             filename: target.filename,
@@ -198,12 +193,9 @@ export async function patchDeleteCommand(
           ...(options.yes === true ? { yes: true } : {}),
           ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
           result: 'ok',
-        });
-      } catch (historyError: unknown) {
-        warn(
-          `History log append failed after patch delete committed (${target.filename}): ${toError(historyError).message}`
-        );
-      }
+        },
+        `patch delete committed (${target.filename})`
+      );
     },
     { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch delete' }
   );

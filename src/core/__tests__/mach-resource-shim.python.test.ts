@@ -3,8 +3,9 @@
  * Runtime regression tests for the generated Python guard: on a degraded
  * host the wrapped psutil calls must return readings that survive
  * mozsystemmonitor's subscripting, iteration/unpacking, len(), `_fields`,
- * and `_asdict()` — and be per-function arity-correct, picklable across the
- * collector pipe, and reconstructible via `type(reading)(*values)`. The
+ * and `_asdict()`. They must also be per-function arity-correct, picklable
+ * across the collector pipe, and reconstructible via `type(reading)(*values)`.
+ * The
  * parent rebuilds each collector sample with `self._swap_type(*swap_mem)`,
  * so an svmem-shaped (8-field) fallback in the swap (6-field sswap) position
  * rejects every sample, fills the pipe, blocks the collector child in
@@ -29,7 +30,7 @@ import { GUARD_PYTHON_SOURCE } from '../mach-resource-shim.js';
 const DEGRADED_RAISE =
   'raise RuntimeError("host_statistics64(HOST_VM_INFO64) syscall failed: (ipc/mig) array not large enough")';
 
-/** Fake degraded psutil whose result namedtuples ARE resolvable. */
+/** Fake degraded psutil whose result namedtuples are resolvable. */
 const FAKE_PSUTIL_WITH_RESULT_CLASSES = `
 from collections import namedtuple
 
@@ -69,7 +70,7 @@ def disk_io_counters(perdisk=False):
     ${DEGRADED_RAISE}
 `;
 
-/** Fake degraded psutil WITHOUT resolvable result classes (guard-owned fallback path). */
+/** Fake degraded psutil without resolvable result classes (guard-owned fallback path). */
 const FAKE_PSUTIL_WITHOUT_RESULT_CLASSES = `
 def virtual_memory():
     ${DEGRADED_RAISE}
@@ -92,7 +93,7 @@ def disk_io_counters(perdisk=False):
 `;
 
 /**
- * Fake FLAPPING psutil for the monitor harness: healthy until the harness
+ * Fake flapping psutil for the monitor harness: healthy until the harness
  * flips `_state["fail"]`, mimicking a host whose vm/swap syscalls flap
  * between working and degraded.
  */
@@ -207,9 +208,9 @@ class SystemResourceMonitor(object):
 
 /**
  * Stub mozbuild.controller.building.BuildMonitor whose log_resource_usage
- * raises the AttributeError (usage["io"] is None → .read_bytes) —
- * post-compile resource reporting must warn-and-continue, not fail a build
- * whose artifacts are complete.
+ * raises the AttributeError (usage["io"] is None → .read_bytes).
+ * Post-compile resource reporting must warn and continue rather than fail a
+ * build whose artifacts are complete.
  */
 const FAKE_BUILDING = `
 class BuildMonitor(object):
@@ -219,7 +220,7 @@ class BuildMonitor(object):
 
 /**
  * Exercises the guarded psutil the way mozsystemmonitor does: `_build_meta`
- * subscripts `virtual_memory()[0]`; `_collect` iterates/unpacks readings
+ * subscripts `virtual_memory()[0]`. `_collect` iterates/unpacks readings
  * (per-CPU) and the parent reconstructs each pickled sample via
  * `type(reading)(*values)`. Prints a JSON report for the vitest assertions.
  */
@@ -296,8 +297,9 @@ print(json.dumps({
 /**
  * Exercises collector suppression and the BuildMonitor wrap on a flapping
  * host: a monitor degrading mid-run must terminate/drain its collector and
- * return zeroed aggregate shapes; once the host has degraded, new monitors
- * must never start a collector; log_resource_usage must warn-and-continue.
+ * return zeroed aggregate shapes. Once the host has degraded, new monitors
+ * must never start a collector, and log_resource_usage must
+ * warn-and-continue.
  */
 const MONITOR_HARNESS_PYTHON = `
 import json
@@ -410,6 +412,16 @@ interface MonitorHarnessReport {
   bm_warned: boolean;
 }
 
+/** Report from the staticmethod-descriptor harness. */
+interface StaticmethodHarnessReport {
+  instance_marker: [string, string, number, number] | null;
+  class_marker: [string, string, number, number] | null;
+  instance_event: [string, string, number] | null;
+  marker_is_staticmethod: boolean;
+  event_is_staticmethod: boolean;
+  degrade_warnings: string[];
+}
+
 const pythonAvailable = spawnSync('python3', ['--version'], { stdio: 'ignore' }).status === 0;
 
 const tempDirs: string[] = [];
@@ -447,6 +459,131 @@ async function runMonitorHarness(): Promise<MonitorHarnessReport> {
   await writeFile(join(dir, 'mozbuild', 'controller', 'building.py'), FAKE_BUILDING);
   await writeFile(join(dir, 'harness.py'), MONITOR_HARNESS_PYTHON);
   return runHarness(dir) as MonitorHarnessReport;
+}
+
+/**
+ * Healthy psutil: this case is about the monitor-class descriptor dispatch,
+ * so nothing may degrade the host first.
+ */
+const FAKE_PSUTIL_HEALTHY = `
+from collections import namedtuple
+
+svmem = namedtuple("svmem", ["total", "available", "percent", "used", "free", "active", "inactive", "wired"])
+sswap = namedtuple("sswap", ["total", "used", "free", "percent", "sin", "sout"])
+scputimes = namedtuple("scputimes", ["user", "nice", "system", "idle"])
+sdiskio = namedtuple("sdiskio", ["read_count", "write_count", "read_bytes", "write_bytes", "read_time", "write_time"])
+
+
+class _common(object):
+    svmem = svmem
+    sswap = sswap
+    scputimes = scputimes
+    sdiskio = sdiskio
+
+
+_psplatform = _common
+
+
+def virtual_memory():
+    return svmem(8, 8, 0.0, 0, 8, 0, 0, 0)
+
+
+def swap_memory():
+    return sswap(0, 0, 0, 0.0, 0, 0)
+
+
+def cpu_percent(interval=None, percpu=False):
+    return [] if percpu else 0.0
+
+
+def cpu_times(percpu=False):
+    return [] if percpu else scputimes(0.0, 0.0, 0.0, 0.0)
+
+
+def disk_io_counters():
+    return sdiskio(0, 0, 0, 0, 0, 0)
+`;
+
+/**
+ * Firefox 153.0esr shape: `record_marker` and `record_event` are
+ * `@staticmethod`s taking no receiver. Reproduces the downstream
+ * "takes 4 positional arguments but 5 were given" degrade.
+ */
+const FAKE_RESOURCEMONITOR_STATICMETHODS = `
+class SystemResourceMonitor(object):
+    instance = None
+
+    def __init__(self, poll_interval=1.0, **kwargs):
+        self.poll_interval = poll_interval
+
+    def start(self):
+        return None
+
+    def stop(self, upload_dir=None):
+        return None
+
+    @staticmethod
+    def record_marker(name, start, end, data):
+        return ("marker", name, start, end)
+
+    @staticmethod
+    def record_event(name, timestamp=None, data=None):
+        return ("event", name, timestamp)
+
+    def begin_phase(self, name):
+        return None
+
+    def finish_phase(self, name):
+        return None
+`;
+
+const STATICMETHOD_HARNESS_PYTHON = `
+import inspect
+import json
+import warnings
+
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    import fireforge_mach_guard  # noqa: F401
+    from mozsystemmonitor.resourcemonitor import SystemResourceMonitor
+
+    monitor = SystemResourceMonitor()
+    # The call shape that raised before the fix: the receiver was threaded
+    # into a function that declares no receiver parameter.
+    instance_marker = monitor.record_marker("build", 1.0, 2.0, {"type": "Text"})
+    class_marker = SystemResourceMonitor.record_marker("build", 1.0, 2.0, {"type": "Text"})
+    instance_event = monitor.record_event("evt", 1.0, None)
+
+print(
+    json.dumps(
+        {
+            "instance_marker": instance_marker,
+            "class_marker": class_marker,
+            "instance_event": instance_event,
+            "marker_is_staticmethod": isinstance(
+                inspect.getattr_static(SystemResourceMonitor, "record_marker"), staticmethod
+            ),
+            "event_is_staticmethod": isinstance(
+                inspect.getattr_static(SystemResourceMonitor, "record_event"), staticmethod
+            ),
+            "degrade_warnings": [
+                str(w.message) for w in caught if "resource monitor degraded" in str(w.message)
+            ],
+        }
+    )
+)
+`;
+
+async function runStaticmethodHarness(): Promise<StaticmethodHarnessReport> {
+  const dir = await makeHarnessDir(FAKE_PSUTIL_HEALTHY);
+  await mkdir(join(dir, 'mozsystemmonitor'));
+  await writeFile(join(dir, 'mozsystemmonitor', '__init__.py'), '');
+  await writeFile(
+    join(dir, 'mozsystemmonitor', 'resourcemonitor.py'),
+    FAKE_RESOURCEMONITOR_STATICMETHODS
+  );
+  await writeFile(join(dir, 'harness.py'), STATICMETHOD_HARNESS_PYTHON);
+  return runHarness(dir) as StaticmethodHarnessReport;
 }
 
 afterAll(async () => {
@@ -491,7 +628,7 @@ function expectPerFunctionShapes(report: GuardHarnessReport): void {
   expect(report.collected_ok).toBe(true);
   expect(report.cpu_percent_is_float).toBe(true);
   expect(report.cpu_percent).toBe(0);
-  // The collector child samples per-CPU; scalar fallbacks would break its
+  // The collector child samples per-CPU, so scalar fallbacks would break its
   // per-CPU diff arithmetic.
   expect(report.cpu_percent_percpu).toEqual([]);
   expect(report.cpu_times_percpu).toEqual([]);
@@ -503,7 +640,7 @@ function expectPerFunctionShapes(report: GuardHarnessReport): void {
   expect(report.disk_fields).toEqual(DISK_FIELDS);
   expect(report.disk_len).toBe(6);
   // The parent reconstructs samples via type(reading)(*values) and readings
-  // cross the collector pipe via pickle — both must survive.
+  // cross the collector pipe via pickle, and both must survive.
   expect(report.rebuild_ok).toBe(true);
   expect(report.pickle_ok).toBe(true);
 }
@@ -523,7 +660,7 @@ describe.skipIf(!pythonAvailable)('mach resource guard degraded fallbacks (pytho
 
   it('suppresses the collector on degradation and keeps mozbuild resource logging non-fatal', async () => {
     const report = await runMonitorHarness();
-    // Healthy at init: start reached the orig; the mid-run aggregate_io
+    // Healthy at init: start reached the orig. The mid-run aggregate_io
     // raise degraded the instance, terminated/drained the collector, and
     // returned a zeroed io shape (usage["io"].read_bytes survives).
     expect(report.b_start_calls).toBe(1);
@@ -538,7 +675,7 @@ describe.skipIf(!pythonAvailable)('mach resource guard degraded fallbacks (pytho
     expect(report.b_cpu_times_len).toBe(4);
     // Degraded stop never reaches the orig (which could re-wedge the drain).
     expect(report.b_stop_calls).toBe(0);
-    // Host has degraded once: fresh monitors stay inert — the collector
+    // Host has degraded once, so fresh monitors stay inert. The collector
     // child is never started, so a malformed sample stream cannot exist.
     expect(report.a_start_calls).toBe(0);
     expect(report.a_process_terminated).toBe(true);
@@ -552,5 +689,21 @@ describe.skipIf(!pythonAvailable)('mach resource guard degraded fallbacks (pytho
     // failing a build with complete artifacts.
     expect(report.bm_result_is_none).toBe(true);
     expect(report.bm_warned).toBe(true);
+  });
+
+  it('preserves a staticmethod descriptor so a 153-shaped record_marker still runs', async () => {
+    const report = await runStaticmethodHarness();
+    // Before the fix the wrapper was re-set as a plain function, so the
+    // class attribute stopped being a staticmethod and the receiver was
+    // passed through as an extra leading positional:
+    // "SystemResourceMonitor.record_marker() takes 4 positional arguments
+    // but 5 were given". That degraded the monitor for the whole build.
+    expect(report.degrade_warnings).toEqual([]);
+    expect(report.marker_is_staticmethod).toBe(true);
+    expect(report.event_is_staticmethod).toBe(true);
+    expect(report.instance_marker).toEqual(['marker', 'build', 1, 2]);
+    // Both call shapes must agree. Mozbuild uses the class-qualified one.
+    expect(report.class_marker).toEqual(report.instance_marker);
+    expect(report.instance_event).toEqual(['event', 'evt', 1]);
   });
 });

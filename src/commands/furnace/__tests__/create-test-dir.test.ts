@@ -18,7 +18,7 @@ import { scaffoldXpcshellTestFiles } from '../create-xpcshell.js';
 /**
  * Extracts the `engine/...` directory a formatter printed for the test
  * files. Used to pin the printed path to the directory the scaffolder
- * really wrote — the two used to be computed independently and disagreed
+ * really wrote. The two used to be computed independently and disagreed
  * under `--test-dir`.
  */
 function printedTestRoot(text: string): string {
@@ -91,7 +91,7 @@ describe('scaffoldTestFiles (browser-chrome)', () => {
     await scaffoldTestFiles('moz-panel', 'MPL-2.0', forgeConfig, { engine });
 
     const toml = await readText(join(dir, 'browser.toml'));
-    // Existing entries and support-files kept; new entry appended.
+    // Existing entries and support-files kept. New entry appended.
     expect(toml).toContain('["browser_other_patch.js"]');
     expect(toml).toContain('other-fixture.html');
     expect(toml).toContain('["browser_mybrowser_panel.js"]');

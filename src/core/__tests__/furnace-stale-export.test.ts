@@ -186,9 +186,9 @@ describe('findStaleFurnaceComponentsForFiles', () => {
     ]);
   });
 
-  // ── Localized FTL attribution: a localized component's deployed
-  //    `<ftlDir>/<name>.ftl` lives in the SHARED locale dir, outside its
-  //    targetPath — the gate attributes it by exact file name. ──
+  // Localized FTL attribution: a localized component's deployed
+  // `<ftlDir>/<name>.ftl` lives in the shared locale dir, outside its
+  // targetPath, so the gate attributes it by exact file name.
 
   it('reports a stale localized component when only its deployed FTL file is exported', async () => {
     seedFurnace();

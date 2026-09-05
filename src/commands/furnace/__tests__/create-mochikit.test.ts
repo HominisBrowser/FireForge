@@ -42,8 +42,8 @@ describe('mochikit templates', () => {
 
   it('clears the patch-lint assertion floor', () => {
     // The scaffold's only SimpleTest reference is the harness <script> src, so
-    // it must satisfy the floor through its real `ok()`/`is()` assertions —
-    // not through a lint rule loose enough to accept the script tag.
+    // it must satisfy the floor through its real `ok()`/`is()` assertions
+    // rather than through a lint rule loose enough to accept the script tag.
     expect(hasBrowserChromeAssertion(generateMochikitTestContent('moz-widget'))).toBe(true);
   });
 

@@ -100,8 +100,8 @@ export async function validateComponent(
     );
   }
 
-  // CSS fragment checks: missing fragment files are structural errors;
-  // stale deployed expansions are drift the next deploy refreshes.
+  // CSS fragment checks: missing fragment files are structural errors.
+  // Stale deployed expansions are drift the next deploy refreshes.
   if (type === 'custom') {
     const furnacePaths = getFurnacePaths(root ?? join(componentDir, '..', '..', '..'));
     const engineTargetDir =
@@ -138,7 +138,7 @@ export async function validateComponent(
   // When root is provided and this is a custom component with registration,
   // also run registration pattern and jar.mn validation for this component.
   // Skipped when an outer orchestrator (validateAllComponents) will run the
-  // aggregate versions itself; otherwise the same issues are reported twice.
+  // aggregate versions itself. Otherwise the same issues are reported twice.
   if (root && config && type === 'custom' && !options?.skipAggregateChecks) {
     const customConfig = config.custom[tagName];
     if (customConfig?.register) {
@@ -244,7 +244,7 @@ export async function validateAllComponents(root: string): Promise<Map<string, V
         continue;
       }
       // Pass root so that per-component token link validation runs.
-      // Skip registration/jar.mn checks inside validateComponent — the aggregate
+      // Skip registration/jar.mn checks inside validateComponent. The aggregate
       // validators below run them exactly once across all components, which both
       // surfaces cross-component issues and avoids double-counting.
       const issues = await validateComponent(componentDir, name, 'custom', config, root, {
@@ -273,7 +273,7 @@ export async function validateAllComponents(root: string): Promise<Map<string, V
     // `furnace create --with-tests --xpcshell` scaffolds a test directory at
     // `browser/base/content/test/<binary>-xpcshell/<name>/`. A leftover
     // scaffold whose `<name>` is not in furnace.json is almost always the
-    // aftermath of an incomplete `furnace remove` or `rename`; flag it as an
+    // aftermath of an incomplete `furnace remove` or `rename`. Flag it as an
     // `orphan-xpcshell-scaffold` error so operators delete or re-create the
     // scaffold instead of discovering the mismatch at test run time. A
     // missing engine or scaffold parent directory degrades silently, so this
@@ -287,15 +287,15 @@ export async function validateAllComponents(root: string): Promise<Map<string, V
         results.set(issue.component, existing);
       }
     } catch {
-      // Validation degrades gracefully — the absence of an engine
+      // Validation degrades gracefully: the absence of an engine
       // directory, permission denial reading the scaffold tree, or any
       // other transient fs issue should never cascade into false
       // "orphan" reports.
     }
 
     // jsconfig chrome-module paths drift: when `typecheckJsconfig` is
-    // configured, deploy maintains a paths mapping per deployed module file;
-    // missing or stale entries mean typed cross-module imports are silently
+    // configured, deploy maintains a paths mapping per deployed module file.
+    // Missing or stale entries mean typed cross-module imports are silently
     // degrading to `any` in the consumer's typecheck.
     if (config.typecheckJsconfig) {
       try {
@@ -320,7 +320,7 @@ export async function validateAllComponents(root: string): Promise<Map<string, V
         }
       } catch {
         // Drift detection must not break validation when the jsconfig is
-        // missing or unparsable — deploy reports those cases with guidance.
+        // missing or unparsable. Deploy reports those cases with guidance.
       }
     }
 

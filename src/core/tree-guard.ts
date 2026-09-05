@@ -4,10 +4,10 @@
  *
  * A tree is a snapshot: its `patches/` and `components/` are copies with
  * no merge-back model, so any command that mutates project or engine
- * state must run in the primary tree. Enforcement is DEFAULT-DENY via an
- * explicit verdict table over every top-level command — a newly added
+ * state must run in the primary tree. Enforcement is default-deny via an
+ * explicit verdict table over every top-level command, so a newly added
  * command is refused inside trees until its author classifies it (the
- * drift test in `tree-guard.test.ts` fails otherwise) — and lives in ONE
+ * drift test in `tree-guard.test.ts` fails otherwise). It lives in one
  * commander `preAction` hook installed by `createProgram()`, so the
  * guard fires no matter how the cwd ended up inside a tree (`tree exec`
  * or a plain `cd`).
@@ -24,8 +24,8 @@ import {
 } from './tree-store.js';
 
 /**
- * Per-command verdicts. `allowed` runs unconditionally; `refused` never
- * runs in a tree; `conditional` consults `TREE_CONDITIONAL_CHECKS` with
+ * Per-command verdicts. `allowed` runs unconditionally. `refused` never
+ * runs in a tree. `conditional` consults `TREE_CONDITIONAL_CHECKS` with
  * the invoked subcommand chain, parsed options, and the tree marker.
  */
 export const TREE_COMMAND_VERDICTS: Readonly<
@@ -50,7 +50,7 @@ export const TREE_COMMAND_VERDICTS: Readonly<
   package: 'refused',
   watch: 'refused',
   // Build-less runs only, and only in trees whose marker records a cloned
-  // (mozinfo-rewritten) objdir — see the conditional check below.
+  // (mozinfo-rewritten) objdir. See the conditional check below.
   test: 'conditional',
   config: 'conditional',
   doctor: 'conditional',
@@ -61,8 +61,8 @@ export const TREE_COMMAND_VERDICTS: Readonly<
   typecheck: 'allowed',
   verify: 'allowed',
   furnace: 'refused',
-  // No nesting; `tree list` inside a tree is pointless but harmless — the
-  // subcommand check below allows only `list`.
+  // No nesting. `tree list` inside a tree is pointless but harmless, and
+  // the subcommand check below allows only `list`.
   tree: 'conditional',
 };
 
@@ -75,7 +75,7 @@ const ALLOWED_SUMMARY =
 interface ConditionalInput {
   /** Subcommand chain below the top-level command (e.g. ['staged-dependency']). */
   subcommands: readonly string[];
-  /** Merged options of the ACTION command (leaf). */
+  /** Merged options of the action command (leaf). */
   options: Readonly<Record<string, unknown>>;
   /** Positional args of the action command. */
   args: readonly unknown[];
@@ -84,30 +84,30 @@ interface ConditionalInput {
 const TREE_CONDITIONAL_CHECKS: Readonly<
   Record<string, (input: ConditionalInput, marker: TreeMarker) => boolean>
 > = {
-  // Exports write patches/ + patches.json; only the dry-run preview is a read.
+  // Exports write patches/ + patches.json. Only the dry-run preview is a read.
   export: ({ options }) => options['dryRun'] === true,
   'export-all': ({ options }) => options['dryRun'] === true,
   // Same rule for refreshing existing patches: the dry-run projection is a
   // read (proven side-effect free and runtime-enforced by
-  // withDryRunPurityGuard); a real re-export writes patches/.
+  // withDryRunPurityGuard). A real re-export writes patches/.
   're-export': ({ options }) => options['dryRun'] === true,
-  // `config` with no positional value prints; with a value it writes.
+  // `config` with no positional value prints. With a value it writes.
   config: ({ args }) => args.filter((a) => typeof a === 'string').length <= 1,
   // Doctor reads unless a repair flag is set.
   doctor: ({ options }) => options['repairFurnace'] !== true && options['fix'] !== true,
   // Build-less test needs the objdir the marker records as cloned,
-  // mozinfo-rewritten AND reconfigured in-tree; `test --build` rebuilds
+  // mozinfo-rewritten and reconfigured in-tree. `test --build` rebuilds
   // the engine and stays primary-only (a tree is a snapshot with no
   // merge-back model, so build outputs mutated in-tree go nowhere).
   test: ({ options }, marker) => marker.clonedObjdir !== undefined && options['build'] !== true,
-  // No tree lifecycle inside a tree; `tree list` is the only read.
+  // No tree lifecycle inside a tree. `tree list` is the only read.
   tree: ({ subcommands }) => subcommands[0] === 'list',
 };
 
 /**
- * Command-specific refusal hints appended after the generic sentence —
- * for verdicts where "mutates project or engine state" alone would
- * misdiagnose the actual reason.
+ * Command-specific refusal hints appended after the generic sentence, for
+ * verdicts where "mutates project or engine state" alone would misdiagnose
+ * the actual reason.
  */
 const TREE_REFUSAL_HINTS: Readonly<
   Record<string, (input: ConditionalInput, marker: TreeMarker) => string | undefined>
@@ -190,13 +190,13 @@ export async function runTreeGuardHook(
   const state = located.state;
   if (state.kind === 'absent') return;
 
-  // A marker we cannot read is not evidence that this is not a tree — it is
+  // A marker we cannot read is not evidence that this is not a tree. It is
   // evidence that we cannot tell. Treating it as "not a tree" would grant the
   // full mutating command set to a snapshot on the strength of a file that
-  // failed to parse, which is exactly backwards for a default-deny guard.
-  // A marker from a NEWER FireForge is not damaged, so the corrupt branch's
-  // remedies — recreate the tree, delete the stray marker — are actively
-  // wrong for it. Refuse with the upgrade instruction instead, and do NOT
+  // failed to parse, which is backwards for a default-deny guard.
+  // A marker from a newer FireForge is not damaged, so the corrupt branch's
+  // remedies (recreate the tree, delete the stray marker) are actively
+  // wrong for it. Refuse with the upgrade instruction instead, and do not
   // offer --ignore-corrupt-tree-marker: proceeding would mean acting on a
   // marker whose fields this build does not understand.
   if (state.kind === 'unsupported') {
@@ -208,8 +208,8 @@ export async function runTreeGuardHook(
 
   if (state.kind === 'corrupt') {
     if (options['ignoreCorruptTreeMarker'] === true) return;
-    // Unconditionally-allowed commands never consult marker fields — their
-    // verdict is the same in every tree — so an unreadable marker cannot
+    // Unconditionally-allowed commands never consult marker fields, and
+    // their verdict is the same in every tree, so an unreadable marker cannot
     // change their answer. Letting them through keeps read-only diagnostics
     // (status, lint) usable on the very tree the operator needs to inspect.
     // 'conditional' verdicts stay refused: their predicates can write.

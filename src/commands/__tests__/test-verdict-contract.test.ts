@@ -5,8 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // FIREFORGE-VERDICT line as ` log=<path>`, so these exact-string verdict
 // assertions require no log to be open. Stating that here replaces the
 // accident they used to rely on: `/project` is a filesystem root on POSIX,
-// so the best-effort open failed and degraded to "no log" — while on
-// Windows the same path resolves against the current drive and succeeds.
+// so the best-effort open failed and degraded to "no log". On Windows the
+// same path resolves against the current drive and succeeds.
 vi.mock('../../core/run-log.js', async () =>
   (await import('../../test-utils/module-mocks.js')).createRunLogMock()
 );
@@ -24,7 +24,7 @@ vi.mock('../../core/build-baseline.js', async () =>
 );
 
 // The --extend-coverage anchor probes real git/file state (covered by
-// src/core/__tests__/coverage-extend.test.ts); here the command-level
+// src/core/__tests__/coverage-extend.test.ts). Here the command-level
 // contract is what the command does with each verdict, so the probes are
 // mocked and the union stays real.
 vi.mock('../../core/coverage-extend.js', async (importOriginal) =>
@@ -32,7 +32,7 @@ vi.mock('../../core/coverage-extend.js', async (importOriginal) =>
 );
 
 // Default to the pass-through analysis (file args, no siblings) so every
-// existing dispatch assertion stays valid; the directory-scope tests
+// existing dispatch assertion stays valid. The directory-scope tests
 // override per case. formatScopeNotice stays real so notice assertions
 // pin the actual wording. The fs-walking analysis itself is covered by
 // src/core/__tests__/test-path-scope.test.ts.
@@ -74,7 +74,7 @@ vi.mock('../../core/xpcshell-appdir.js', async () =>
   (await import('./test-command-mocks.js')).xpcshellAppdirMock()
 );
 
-// The in-tree objdir/marker cross-check is a pass-through by default; the
+// The in-tree objdir/marker cross-check is a pass-through by default. The
 // dedicated test drives its refusal. Real behavior is covered in
 // tree-store.integration.test.ts.
 vi.mock('../../core/tree-store.js', async () =>
@@ -85,7 +85,7 @@ import {} from '../../core/coverage-extend.js';
 import {
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
-  testWithOutput,
+  runMachTestSuite,
 } from '../../core/mach.js';
 import {} from '../../core/marionette-port.js';
 import { runMarionettePreflight } from '../../core/marionette-preflight.js';
@@ -94,8 +94,8 @@ import { findNearestXpcshellManifest } from '../../core/xpcshell-appdir.js';
 import { isSymlink, pathExists } from '../../utils/fs.js';
 import { testCommand } from '../test.js';
 
-// The one-verdict-line-per-run contract, split out of `test.test.ts` —
-// the shared `vi.mock` header comes from `test-command-mocks.ts`.
+// The one-verdict-line-per-run contract, split out of `test.test.ts`. The
+// shared `vi.mock` header comes from `test-command-mocks.ts`.
 describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per run)', () => {
   const GREEN = {
     exitCode: 0,
@@ -189,7 +189,7 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
   });
 
   it('a crashed shard classifies the aggregate as reason=crash, not test-failures', async () => {
-    vi.mocked(testWithOutput).mockResolvedValueOnce(GREEN).mockResolvedValueOnce(CRASH);
+    vi.mocked(runMachTestSuite).mockResolvedValueOnce(GREEN).mockResolvedValueOnce(CRASH);
 
     const capture = captureVerdictLines();
     try {
@@ -207,7 +207,7 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
   });
 
   it('a single failing run emits its classifier verdict once, with no preflight fallback on top', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue(REAL_FAILURE);
+    vi.mocked(runMachTestSuite).mockResolvedValue(REAL_FAILURE);
 
     const capture = captureVerdictLines();
     try {

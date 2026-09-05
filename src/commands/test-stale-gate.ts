@@ -4,7 +4,7 @@
  * and a run against a stale or under-packaged runtime: the packaging
  * coverage refusal, the stale-content refusal, and the compiled
  * StaticComponents refusal. Split out of `test.ts` so the command module
- * stays wiring; the probes and refusal copy live in
+ * stays wiring. The probes and refusal copy live in
  * `src/core/test-stale-check.ts`.
  */
 
@@ -18,27 +18,27 @@ import {
   formatStaticComponentsRefusal,
   formatTestCoverageRefusal,
 } from '../core/test-stale-check.js';
-import { GeneralError } from '../errors/base.js';
+import { PreflightRefusalError } from '../errors/base.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { warn } from '../utils/logger.js';
 
 /**
- * Stale-build preflight — when `--build` was NOT requested, detect packageable
- * engine edits since the last successful build and fail UP-FRONT unless the
+ * Stale-build preflight: when `--build` was not requested, detect packageable
+ * engine edits since the last successful build and fail up front unless the
  * operator explicitly accepts the stale package risk.
  *
- * Packaging COVERAGE is checked first, on EVERY non-`--build` run and
+ * Packaging coverage is checked first, on every non-`--build` run and
  * regardless of staleness or `--allow-stale-build`: a runtime packaged by a
- * file-scoped `test --build` can lack support fixtures for OTHER manifests
- * even when nothing changed since — dispatching such a run hangs on missing
+ * file-scoped `test --build` can lack support fixtures for other manifests
+ * even when nothing changed since, and dispatching such a run hangs on missing
  * fixtures rather than failing, so the flag (which only accepts stale
- * CONTENT) must not be the trigger. A three-file scoped rebuild leaving one
+ * content) must not be the trigger. A three-file scoped rebuild leaving one
  * fixture unpackaged makes a later run over different files time out waiting
  * on an event that never fires.
  *
  * Exception: a path-less `test --doctor` stops at the Marionette health check
  * (`runDoctorPreflight` returns 'stop' when no test paths were given) and
- * never dispatches a test, so it needs no packaging coverage — treating it as
+ * never dispatches a test, so it needs no packaging coverage. Treating it as
  * a full-suite request would refuse a probe that touches no fixtures. The
  * stale-content refusal still applies to it unchanged.
  */
@@ -54,19 +54,20 @@ export async function enforceStaleBuildGate(
     const recordedCoverage = stale.baseline?.testPackagingCoverage;
     const uncovered = findUncoveredRequestPaths(recordedCoverage, normalizedPaths);
     if (uncovered.length > 0) {
-      // The refusal is correct on its own; naming the manifest that gained
+      // The refusal is correct on its own. Naming the manifest that gained
       // an entry is the triage step it otherwise leaves to the reader.
       const changedManifests = await findChangedTestManifestsForPaths(
         engineDir,
         stale.baseline,
         uncovered
       );
-      throw new GeneralError(
+      throw new PreflightRefusalError(
         formatTestCoverageRefusal(
           uncovered,
           Array.isArray(recordedCoverage) ? recordedCoverage : [],
           changedManifests
-        )
+        ),
+        'coverage-replaced'
       );
     }
   }
@@ -87,19 +88,19 @@ export async function enforceStaleBuildGate(
     if (options.allowStaleBuild === true) {
       warn(staleMessage);
     } else {
-      throw new GeneralError(staleMessage);
+      throw new PreflightRefusalError(staleMessage, 'stale-build');
     }
   }
 }
 
 /**
- * Compiled-StaticComponents gate — refuses runs whose child process would
+ * Compiled-StaticComponents gate: refuses runs whose child process would
  * resolve a stale compiled component table. `components.conf` entries bake
- * into compiled code that only a FULL build regenerates; a scoped
+ * into compiled code that only a full build regenerates. A scoped
  * `test --build` repackages the file but the failure surfaces as
  * `NS_ERROR_MALFORMED_URI` inside the test. Applies to build-less runs
- * (after the coverage refusal) AND to scoped `test --build` runs (before
- * the pre-test build — that build cannot fix the table). A path-less
+ * (after the coverage refusal) and to scoped `test --build` runs (before
+ * the pre-test build, which cannot fix the table). A path-less
  * `test --build` is exempt: its full build refreshes the anchor itself.
  * `--allow-stale-components` downgrades the refusal to a warning.
  */
@@ -117,5 +118,5 @@ export async function enforceStaticComponentsGate(
     warn(message);
     return;
   }
-  throw new GeneralError(message);
+  throw new PreflightRefusalError(message, 'stale-components');
 }

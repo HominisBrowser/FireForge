@@ -9,11 +9,6 @@ import { GeneralError } from '../errors/base.js';
 export type Platform = 'darwin' | 'linux' | 'win32';
 
 /**
- * Supported CPU architectures.
- */
-export type Arch = 'x64' | 'arm64';
-
-/**
  * Gets the current operating system platform.
  * @throws Error if running on an unsupported platform
  */

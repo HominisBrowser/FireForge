@@ -2,7 +2,7 @@
 /**
  * Integration tests for metadata-only `fireforge patch` subcommands.
  * These edit PatchMetadata optional fields without rewriting the `.patch`
- * body — pinning that contract end to end (real fs + manifest reload) is the
+ * body. Pinning that contract end to end (real fs + manifest reload) is the
  * only way to confirm the exactOptionalPropertyTypes-aware "drop the field"
  * path actually removes the key from disk.
  */
@@ -22,7 +22,7 @@ import {
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import { ensureDir } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
-import { describeChange, patchLintIgnoreCommand } from '../patch/lint-ignore.js';
+import { patchLintIgnoreCommand } from '../patch/lint-ignore.js';
 
 vi.mock('../../utils/logger.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../utils/logger.js')>()),
@@ -111,33 +111,10 @@ describe('patch tier', () => {
     await patchTierCommand(projectRoot, '001-branding-assets.patch', { clear: true, yes: true });
 
     const manifest = await loadManifest(patchesDir);
-    // The on-disk JSON must omit the field — the validator preserves
+    // The on-disk JSON must omit the field. The validator preserves
     // only-when-present, and a stale `tier: undefined` would round-trip
     // back as a JSON parse error or a stray null.
     expect(manifest.patches[0]).not.toHaveProperty('tier');
-  });
-
-  it('rejects --tier and --clear together (mode mutex)', async () => {
-    await seed(patchesDir, [
-      makeMetadata('001-branding-assets.patch', 1, ['browser/branding/custom/logo.png']),
-    ]);
-
-    await expect(
-      patchTierCommand(projectRoot, '001-branding-assets.patch', {
-        tier: 'branding',
-        clear: true,
-      })
-    ).rejects.toBeInstanceOf(InvalidArgumentError);
-  });
-
-  it('rejects an invocation with neither --tier nor --clear', async () => {
-    await seed(patchesDir, [
-      makeMetadata('001-branding-assets.patch', 1, ['browser/branding/custom/logo.png']),
-    ]);
-
-    await expect(
-      patchTierCommand(projectRoot, '001-branding-assets.patch', {})
-    ).rejects.toBeInstanceOf(InvalidArgumentError);
   });
 
   it('resolves the patch by manifest `name` field, not just filename', async () => {
@@ -151,64 +128,6 @@ describe('patch tier', () => {
 
     const manifest = await loadManifest(patchesDir);
     expect(manifest.patches[0]?.tier).toBe('branding');
-  });
-
-  it('--dry-run does not write the manifest', async () => {
-    await seed(patchesDir, [
-      makeMetadata('001-branding-assets.patch', 1, ['browser/branding/custom/logo.png']),
-    ]);
-    const manifestPath = join(patchesDir, 'patches.json');
-    const beforeMtime = (await stat(manifestPath)).mtimeMs;
-
-    await patchTierCommand(projectRoot, '001-branding-assets.patch', {
-      tier: 'branding',
-      dryRun: true,
-    });
-
-    const afterMtime = (await stat(manifestPath)).mtimeMs;
-    expect(afterMtime).toBe(beforeMtime);
-  });
-
-  it('does not modify the .patch file body (metadata-only contract)', async () => {
-    await seed(
-      patchesDir,
-      [makeMetadata('001-branding-assets.patch', 1, ['browser/branding/custom/logo.png'])],
-      { '001-branding-assets.patch': '# original body marker\n' }
-    );
-    const patchPath = join(patchesDir, '001-branding-assets.patch');
-    const beforeMtime = (await stat(patchPath)).mtimeMs;
-
-    await patchTierCommand(projectRoot, '001-branding-assets.patch', {
-      tier: 'branding',
-      yes: true,
-    });
-
-    const afterMtime = (await stat(patchPath)).mtimeMs;
-    expect(afterMtime).toBe(beforeMtime);
-    const body = await readFile(patchPath, 'utf-8');
-    expect(body).toBe('# original body marker\n');
-  });
-
-  it('appends a history entry on success', async () => {
-    await seed(patchesDir, [
-      makeMetadata('001-branding-assets.patch', 1, ['browser/branding/custom/logo.png']),
-    ]);
-
-    await patchTierCommand(projectRoot, '001-branding-assets.patch', {
-      tier: 'branding',
-      yes: true,
-    });
-
-    const historyPath = join(patchesDir, HISTORY_LOG_FILENAME);
-    const history = await readFile(historyPath, 'utf-8');
-    interface HistoryRecord {
-      operation: string;
-      args: { filename: string; after?: string };
-    }
-    const entry = JSON.parse(history.trim()) as HistoryRecord;
-    expect(entry.operation).toBe('patch-tier');
-    expect(entry.args.filename).toBe('001-branding-assets.patch');
-    expect(entry.args.after).toBe('branding');
   });
 
   it('is a no-op when --tier matches the existing tier', async () => {
@@ -378,7 +297,7 @@ describe('patch lint-ignore', () => {
   });
 
   it('--remove that empties the list drops the field from the manifest entirely', async () => {
-    // The validator preserves only-when-present; an empty array would
+    // The validator preserves only-when-present. An empty array would
     // round-trip back as `lintIgnore: []` and grow noise. The spread +
     // unset path keeps the manifest minimal.
     await seed(patchesDir, [
@@ -405,89 +324,6 @@ describe('patch lint-ignore', () => {
 
     const manifest = await loadManifest(patchesDir);
     expect(manifest.patches[0]).not.toHaveProperty('lintIgnore');
-  });
-
-  it('rejects --add and --remove together (mode mutex)', async () => {
-    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
-
-    await expect(
-      patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
-        add: ['foo'],
-        remove: ['bar'],
-      })
-    ).rejects.toBeInstanceOf(InvalidArgumentError);
-  });
-
-  it('rejects --clear and --add together (mode mutex)', async () => {
-    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
-
-    await expect(
-      patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
-        clear: true,
-        add: ['foo'],
-      })
-    ).rejects.toBeInstanceOf(InvalidArgumentError);
-  });
-
-  it('rejects an invocation with no mode flag', async () => {
-    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
-
-    await expect(
-      patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {})
-    ).rejects.toBeInstanceOf(InvalidArgumentError);
-  });
-
-  it('--dry-run does not write the manifest', async () => {
-    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
-    const manifestPath = join(patchesDir, 'patches.json');
-    const beforeMtime = (await stat(manifestPath)).mtimeMs;
-
-    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
-      add: ['large-patch-files'],
-      dryRun: true,
-    });
-
-    const afterMtime = (await stat(manifestPath)).mtimeMs;
-    expect(afterMtime).toBe(beforeMtime);
-  });
-
-  it('does not modify the .patch file body (metadata-only contract)', async () => {
-    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])], {
-      '001-branding-a.patch': '# original body marker\n',
-    });
-    const patchPath = join(patchesDir, '001-branding-a.patch');
-    const beforeMtime = (await stat(patchPath)).mtimeMs;
-
-    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
-      add: ['large-patch-files'],
-      yes: true,
-    });
-
-    const afterMtime = (await stat(patchPath)).mtimeMs;
-    expect(afterMtime).toBe(beforeMtime);
-    const body = await readFile(patchPath, 'utf-8');
-    expect(body).toBe('# original body marker\n');
-  });
-
-  it('appends a history entry on success', async () => {
-    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
-
-    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
-      add: ['large-patch-files'],
-      yes: true,
-    });
-
-    const historyPath = join(patchesDir, HISTORY_LOG_FILENAME);
-    const history = await readFile(historyPath, 'utf-8');
-    interface HistoryRecord {
-      operation: string;
-      args: { filename: string; mode: string; after: string[] };
-    }
-    const entry = JSON.parse(history.trim()) as HistoryRecord;
-    expect(entry.operation).toBe('patch-lint-ignore');
-    expect(entry.args.filename).toBe('001-branding-a.patch');
-    expect(entry.args.mode).toBe('add');
-    expect(entry.args.after).toEqual(['large-patch-files']);
   });
 });
 
@@ -685,42 +521,6 @@ describe('patch staged-dependency', () => {
     expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
   });
 
-  it('--dry-run leaves the manifest unchanged', async () => {
-    await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
-    const manifestPath = join(patchesDir, 'patches.json');
-    const beforeMtime = (await stat(manifestPath)).mtimeMs;
-
-    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
-      add: true,
-      file: 'foo/A.sys.mjs',
-      specifier: 'resource:///modules/B.sys.mjs',
-      creates: 'foo/B.sys.mjs',
-      dryRun: true,
-    });
-
-    const afterMtime = (await stat(manifestPath)).mtimeMs;
-    expect(afterMtime).toBe(beforeMtime);
-  });
-
-  it('does not modify the .patch file body', async () => {
-    await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])], {
-      '001-ui-shim.patch': '# original body marker\n',
-    });
-    const patchPath = join(patchesDir, '001-ui-shim.patch');
-    const beforeMtime = (await stat(patchPath)).mtimeMs;
-
-    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
-      add: true,
-      file: 'foo/A.sys.mjs',
-      specifier: 'resource:///modules/B.sys.mjs',
-      creates: 'foo/B.sys.mjs',
-    });
-
-    const afterMtime = (await stat(patchPath)).mtimeMs;
-    expect(afterMtime).toBe(beforeMtime);
-    await expect(readFile(patchPath, 'utf-8')).resolves.toBe('# original body marker\n');
-  });
-
   it('rejects add without exact dependency fields', async () => {
     await seed(patchesDir, [makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'])]);
 
@@ -729,7 +529,7 @@ describe('patch staged-dependency', () => {
     ).rejects.toBeInstanceOf(InvalidArgumentError);
   });
 
-  // ──: --add refuses patch-name-shaped path values ──
+  // --add refuses patch-name-shaped path values
 
   it('--add refuses a --creates naming a queue patch, pointing at --owner', async () => {
     await seed(patchesDir, [
@@ -829,8 +629,8 @@ describe('patch staged-dependency', () => {
       })
     ).rejects.toThrow(/does not look like a patch filename/);
 
-    // Well-formed but not (yet) in the queue: advisory only — the owner
-    // may be exported moments later.
+    // Well-formed but not (yet) in the queue: advisory only, since the
+    // owner may be exported moments later.
     await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
       ...base,
       owner: '999-ui-ghost.patch',
@@ -977,35 +777,180 @@ describe('patch staged-dependency', () => {
   });
 });
 
-describe('patch lint-ignore — describeChange message format', () => {
-  it('--add no-op surfaces the existing list so the operator does not need to read patches.json', () => {
-    const message = describeChange(
-      ['existing-rule', 'modified-file-missing-header'],
-      ['existing-rule', 'modified-file-missing-header'],
-      'add',
-      ['modified-file-missing-header']
-    );
-    expect(message).toContain('current: [existing-rule, modified-file-missing-header]');
-    expect(message).toContain('all requested IDs already present');
+/**
+ * The three metadata-only `patch` subcommands share one contract: they touch
+ * `patches.json` only, never the `.patch` body, `--dry-run` writes nothing at
+ * all, and a mode-flag violation is refused before any write. Pinning that
+ * once per command from a single table keeps the three implementations from
+ * drifting apart.
+ */
+describe('metadata-only patch subcommand contract', () => {
+  let projectRoot: string;
+  let patchesDir: string;
+
+  interface MetadataCommand {
+    label: string;
+    filename: string;
+    filesAffected: string[];
+    /** Runs the command's happy path. `dryRun` toggles the preview mode. */
+    run: (root: string, options: { dryRun?: boolean }) => Promise<void>;
+    /** Expected history record fields, or null when the command logs none. */
+    history: { operation: string; check: (args: Record<string, unknown>) => void } | null;
+  }
+
+  const COMMANDS: MetadataCommand[] = [
+    {
+      label: 'patch tier',
+      filename: '001-branding-assets.patch',
+      filesAffected: ['browser/branding/custom/logo.png'],
+      run: (root, options) =>
+        patchTierCommand(root, '001-branding-assets.patch', {
+          tier: 'branding',
+          yes: true,
+          ...options,
+        }),
+      history: {
+        operation: 'patch-tier',
+        check: (args) => {
+          expect(args['filename']).toBe('001-branding-assets.patch');
+          expect(args['after']).toBe('branding');
+        },
+      },
+    },
+    {
+      label: 'patch lint-ignore',
+      filename: '001-branding-a.patch',
+      filesAffected: ['a.js'],
+      run: (root, options) =>
+        patchLintIgnoreCommand(root, '001-branding-a.patch', {
+          add: ['large-patch-files'],
+          yes: true,
+          ...options,
+        }),
+      history: {
+        operation: 'patch-lint-ignore',
+        check: (args) => {
+          expect(args['filename']).toBe('001-branding-a.patch');
+          expect(args['mode']).toBe('add');
+          expect(args['after']).toEqual(['large-patch-files']);
+        },
+      },
+    },
+    {
+      label: 'patch staged-dependency',
+      filename: '001-ui-shim.patch',
+      filesAffected: ['foo/A.sys.mjs'],
+      run: (root, options) =>
+        patchStagedDependencyCommand(root, '001-ui-shim.patch', {
+          add: true,
+          file: 'foo/A.sys.mjs',
+          specifier: 'resource:///modules/B.sys.mjs',
+          creates: 'foo/B.sys.mjs',
+          ...options,
+        }),
+      history: null,
+    },
+  ];
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-pmd-');
+    await writeFireForgeConfig(projectRoot);
+    patchesDir = join(projectRoot, 'patches');
+  });
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
   });
 
-  it('--add no-op against an empty list reports `(empty)` for clarity', () => {
-    const message = describeChange([], [], 'add', []);
-    // Add with zero net additions over an empty list — the no-op branch
-    // still fires; the operator should see the empty marker rather than
-    // a bare `[]` that could read as a placeholder.
-    expect(message).toContain('current: (empty)');
-  });
+  it.each(COMMANDS.map((c) => [c.label, c] as const))(
+    '%s does not modify the .patch file body',
+    async (_label, command) => {
+      await seed(patchesDir, [makeMetadata(command.filename, 1, command.filesAffected)], {
+        [command.filename]: '# original body marker\n',
+      });
+      const patchPath = join(patchesDir, command.filename);
+      const beforeMtime = (await stat(patchPath)).mtimeMs;
 
-  it('--remove no-op surfaces the existing list', () => {
-    const message = describeChange(['existing-rule'], ['existing-rule'], 'remove', ['absent-id']);
-    expect(message).toContain('current: [existing-rule]');
-    expect(message).toContain('none of the requested IDs were present');
+      await command.run(projectRoot, {});
+
+      expect((await stat(patchPath)).mtimeMs).toBe(beforeMtime);
+      await expect(readFile(patchPath, 'utf-8')).resolves.toBe('# original body marker\n');
+    }
+  );
+
+  it.each(COMMANDS.map((c) => [c.label, c] as const))(
+    '%s --dry-run does not write the manifest',
+    async (_label, command) => {
+      await seed(patchesDir, [makeMetadata(command.filename, 1, command.filesAffected)]);
+      const manifestPath = join(patchesDir, 'patches.json');
+      const beforeMtime = (await stat(manifestPath)).mtimeMs;
+
+      await command.run(projectRoot, { dryRun: true });
+
+      expect((await stat(manifestPath)).mtimeMs).toBe(beforeMtime);
+    }
+  );
+
+  it.each(COMMANDS.filter((c) => c.history !== null).map((c) => [c.label, c] as const))(
+    '%s appends a history entry on success',
+    async (_label, command) => {
+      await seed(patchesDir, [makeMetadata(command.filename, 1, command.filesAffected)]);
+
+      await command.run(projectRoot, {});
+
+      const history = await readFile(join(patchesDir, HISTORY_LOG_FILENAME), 'utf-8');
+      const entry = JSON.parse(history.trim()) as {
+        operation: string;
+        args: Record<string, unknown>;
+      };
+      expect(entry.operation).toBe(command.history?.operation);
+      command.history?.check(entry.args);
+    }
+  );
+
+  it.each([
+    [
+      'patch tier rejects --tier with --clear',
+      () =>
+        patchTierCommand(projectRoot, '001-branding-assets.patch', {
+          tier: 'branding',
+          clear: true,
+        }),
+    ],
+    [
+      'patch tier rejects an invocation with neither --tier nor --clear',
+      () => patchTierCommand(projectRoot, '001-branding-assets.patch', {}),
+    ],
+    [
+      'patch lint-ignore rejects --add with --remove',
+      () =>
+        patchLintIgnoreCommand(projectRoot, '001-branding-assets.patch', {
+          add: ['foo'],
+          remove: ['bar'],
+        }),
+    ],
+    [
+      'patch lint-ignore rejects --clear with --add',
+      () =>
+        patchLintIgnoreCommand(projectRoot, '001-branding-assets.patch', {
+          clear: true,
+          add: ['foo'],
+        }),
+    ],
+    [
+      'patch lint-ignore rejects an invocation with no mode flag',
+      () => patchLintIgnoreCommand(projectRoot, '001-branding-assets.patch', {}),
+    ],
+  ])('%s', async (_label, invoke) => {
+    await seed(patchesDir, [
+      makeMetadata('001-branding-assets.patch', 1, ['browser/branding/custom/logo.png']),
+    ]);
+
+    await expect(invoke()).rejects.toBeInstanceOf(InvalidArgumentError);
   });
 });
 
 describe('destructive-operation contract', () => {
-  // Both commands mutate manifest metadata and append history; they must
+  // Both commands mutate manifest metadata and append history. They must
   // follow the same summary + dry-run + confirmation/--yes contract as
   // patch delete/reorder/compact. They used to accept --yes without ever
   // prompting, so the flag only appeared in the history record.

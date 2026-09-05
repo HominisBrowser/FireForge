@@ -35,7 +35,7 @@ describe('parseAppdirFromToml', () => {
   });
 
   it('honours xpcshell.toml implicit [DEFAULT] before any section header', () => {
-    // Upstream manifestparser treats the pre-section block as DEFAULT; the
+    // Upstream manifestparser treats the pre-section block as DEFAULT. The
     // parser must match that to avoid false negatives on terse manifests.
     const body = ['firefox-appdir = "browser"', '', '["test_foo.js"]'].join('\n');
     expect(parseAppdirFromToml(body, 'firefox-appdir')?.value).toBe('browser');
@@ -68,7 +68,8 @@ describe('parseAppdirFromToml', () => {
   });
 
   it('does not match a key embedded in a comment', () => {
-    // A leading `#` makes this a commented-out directive — must not match.
+    // A leading `#` makes this a commented-out directive, so it must not
+    // match.
     const body = ['[DEFAULT]', '# firefox-appdir = "browser"'].join('\n');
     expect(parseAppdirFromToml(body, 'firefox-appdir')).toBeUndefined();
   });
@@ -245,8 +246,8 @@ describe('resolveAbsoluteAppPath', () => {
   });
 
   // On macOS, preferring `dist/bin/browser` resolves to
-  // `<App>.app/Contents/MacOS/browser/` via the convenience symlink — the
-  // *binaries* directory, not the Resources tree where `resource:///modules/`
+  // `<App>.app/Contents/MacOS/browser/` via the convenience symlink. That is
+  // the binaries directory, not the Resources tree where `resource:///modules/`
   // is rooted. The probe must prefer `.app/Contents/Resources/<value>` on
   // macOS so the injected appdir matches where modules actually live.
   // Non-macOS hosts keep the `dist/bin`-first order.
@@ -277,7 +278,7 @@ describe('resolveAbsoluteAppPath', () => {
     // the canonical appdir root). On macOS the new probe order prefers
     // the Resources path regardless of whether `dist/bin` is a real dir
     // or a symlink chain, because following the symlink produces the
-    // MacOS binaries directory — not the Resources tree.
+    // MacOS binaries directory, not the Resources tree.
     const realDir = join(workspace, 'dist/MyBrowser.app/Contents/Resources/browser');
     await ensureDir(realDir);
     try {
@@ -286,7 +287,7 @@ describe('resolveAbsoluteAppPath', () => {
         join(workspace, 'dist/bin')
       );
     } catch {
-      // Symlinks unavailable — skip this assertion rather than failing.
+      // Symlinks unavailable, so skip this assertion rather than failing.
       return;
     }
     const resolved = await resolveAbsoluteAppPath(workspace, 'browser');
@@ -449,7 +450,7 @@ describe('resolveXpcshellAppdirArg', () => {
     const dir = join(workspace, 'browser/base/content/test/foo');
     await ensureDir(dir);
     await writeText(join(dir, 'xpcshell.toml'), '[DEFAULT]\n');
-    // Empty manifest — no firefox-appdir key — exercises the "no key" path.
+    // Empty manifest (no firefox-appdir key) exercises the "no key" path.
     const result = await resolveXpcshellAppdirArg(
       workspace,
       ['browser/base/content/test/foo/test_x.js'],
@@ -479,9 +480,9 @@ describe('operatorAlreadySetAppPath', () => {
   });
 
   it('returns false when --app-path appears as the final arg with no value', () => {
-    // Strictly speaking a malformed CLI invocation — but worth pinning down
-    // so a future change does not regress to throwing when the operator
-    // typed an incomplete arg.
+    // Strictly speaking a malformed CLI invocation. Pinned down here so a
+    // future change does not regress to throwing when the operator typed an
+    // incomplete arg.
     expect(operatorAlreadySetAppPath(['--app-path'])).toBe(false);
   });
 });

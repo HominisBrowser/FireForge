@@ -77,7 +77,7 @@ vi.mock('../../core/furnace-refresh.js', () => ({
 
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
+  // the pending-repair marker (the behaviour these suites assert), so it
   // comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
@@ -280,7 +280,7 @@ describe('furnace refresh', () => {
     expect(refreshOverrideFile).toHaveBeenCalled();
     const calls = vi.mocked(refreshOverrideFile).mock.calls;
     for (const call of calls) {
-      expect(call[5]).toBe(true); // dryRun argument (6th positional, index 5)
+      expect(call[0].dryRun).toBe(true);
     }
 
     // Config should not be written during dry-run
@@ -313,7 +313,7 @@ describe('furnace refresh', () => {
     // Should use the per-override baseCommit, not the global state one
     const calls = vi.mocked(refreshOverrideFile).mock.calls;
     for (const call of calls) {
-      expect(call[3]).toBe('override-specific-sha');
+      expect(call[0].baseCommit).toBe('override-specific-sha');
     }
   });
 
@@ -426,30 +426,34 @@ describe('furnace refresh', () => {
       /Failed to refresh 1 override\(s\): moz-button: merge helper exploded/
     );
 
-    expect(refreshOverrideFile).toHaveBeenCalledWith(
-      nativePath('/project/engine'),
-      expect.stringContaining(nativePath('/components/overrides/moz-button/')),
-      expect.any(String),
-      expect.any(String),
-      expect.any(String),
-      false,
-      undefined
-    );
-    expect(refreshOverrideFile).toHaveBeenCalledWith(
-      nativePath('/project/engine'),
-      expect.stringContaining(nativePath('/components/overrides/moz-card/')),
-      expect.any(String),
-      expect.any(String),
-      expect.any(String),
-      false,
-      undefined
-    );
+    expect(refreshOverrideFile).toHaveBeenCalledWith({
+      engineDir: nativePath('/project/engine'),
+      overridePath: expect.stringContaining(
+        nativePath('/components/overrides/moz-button/')
+      ) as string,
+      engineRelPath: expect.any(String) as string,
+      baseCommit: expect.any(String) as string,
+      fileName: expect.any(String) as string,
+      dryRun: false,
+      strategy: undefined,
+    });
+    expect(refreshOverrideFile).toHaveBeenCalledWith({
+      engineDir: nativePath('/project/engine'),
+      overridePath: expect.stringContaining(
+        nativePath('/components/overrides/moz-card/')
+      ) as string,
+      engineRelPath: expect.any(String) as string,
+      baseCommit: expect.any(String) as string,
+      fileName: expect.any(String) as string,
+      dryRun: false,
+      strategy: undefined,
+    });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('moz-button: merge helper exploded'));
   });
 });
 
 /**
- * `vi.clearAllMocks()` clears call records but NOT implementations, so a
+ * `vi.clearAllMocks()` clears call records but not implementations, so a
  * `mockResolvedValue` set in one describe leaks into every later one. The
  * blocks below each start from a known baseline instead.
  */
@@ -505,7 +509,7 @@ describe('furnace refresh --reset-base', () => {
   it('re-snapshots the baseline to engine HEAD without merging', async () => {
     await furnaceRefreshCommand('/project', 'moz-button', { resetBase: true });
 
-    // The whole point: no three-way merge runs.
+    // No three-way merge runs.
     expect(refreshOverrideFile).not.toHaveBeenCalled();
     expect(getHead).toHaveBeenCalledWith(nativePath('/project/engine'));
     const written = vi.mocked(writeFurnaceConfig).mock.calls[0]?.[1];
@@ -557,9 +561,9 @@ describe('furnace refresh — rollback failure', () => {
   });
 
   it('records a repair breadcrumb and surfaces the rollback error', async () => {
-    // A merge fails, and the rollback that should undo it ALSO fails. The
+    // A merge fails, and the rollback that should undo it also fails. The
     // operator debugging with `doctor --repair-furnace` needs the breadcrumb,
-    // and the rollback error must win — the engine is in an unknown state.
+    // and the rollback error must win. The engine is in an unknown state.
     vi.mocked(refreshOverrideFile).mockRejectedValue(new Error('merge exploded'));
     vi.mocked(restoreRollbackJournalOrThrow).mockRejectedValue(
       new Error('could not restore moz-button.mjs')
@@ -569,8 +573,8 @@ describe('furnace refresh — rollback failure', () => {
       /could not restore moz-button\.mjs/
     );
 
-    // Asserts the OUTCOME — a pending-repair marker persisted to furnace
-    // state — rather than the internal call. The rollback sequence now lives
+    // Asserts the outcome (a pending-repair marker persisted to furnace
+    // state) rather than the internal call. The rollback sequence now lives
     // in `completeJournalRollback`, whose call to the recorder is
     // intra-module and so invisible to a module-level spy.
     const updater = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1] as
@@ -655,7 +659,7 @@ describe('furnace refresh --all tallies', () => {
       { name: 'moz-button.mjs', isFile: () => true },
       { name: 'moz-button.css', isFile: () => true },
     ] as never);
-    // Two conflicting files in ONE component must list that component once.
+    // Two conflicting files in one component must list that component once.
     vi.mocked(refreshOverrideFile).mockResolvedValue({
       fileName: 'moz-button.mjs',
       status: 'conflict',

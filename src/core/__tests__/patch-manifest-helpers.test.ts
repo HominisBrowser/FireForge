@@ -41,7 +41,7 @@ const NEW_WIDGET_PATCH = [
   '',
 ].join('\n');
 
-describe('patch manifest helper coverage', () => {
+describe('patch manifest lookups, integrity checks, and mutations', () => {
   const tempDirs: string[] = [];
 
   beforeEach(() => {
@@ -287,7 +287,7 @@ describe('resolvePatchIdentifier', () => {
 
   it('resolves by manifest `name` field', () => {
     // `patch reorder <name>` must accept the manifest `name` handle, which
-    // is what the CLI help and `patches.json` schema advertise — a resolver
+    // is what the CLI help and `patches.json` schema advertise. A resolver
     // that knows only filenames rejects it.
     expect(resolvePatchIdentifier('eval-furnace-token-override', fixturePatches)).toMatchObject({
       filename: '002-ui-eval-furnace-token-override.patch',

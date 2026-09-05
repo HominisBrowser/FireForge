@@ -245,7 +245,7 @@ describe('validateExportJsDoc', () => {
   it('reports a parse failure instead of silently passing the file', () => {
     // `[]` is the same value as "fully documented", so returning it here made
     // an unparseable .sys.mjs clear every rule in this module. A source that
-    // cannot be analysed is not a source that passed analysis.
+    // cannot be analysed has not passed analysis.
     const source = 'export function { broken syntax\n';
     const issues = validateExportJsDoc(source);
 

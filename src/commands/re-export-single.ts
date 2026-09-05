@@ -6,7 +6,6 @@
  * patch.
  */
 
-import { getProjectPaths } from '../core/config.js';
 import { stdioIsInteractive } from '../core/destructive.js';
 import { enforceFreshFurnaceSources } from '../core/furnace-stale-export.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
@@ -15,8 +14,9 @@ import { updatePatchAndMetadata } from '../core/patch-export.js';
 import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy.js';
 import { isGitIndexLockConflict } from '../errors/git.js';
 import type { PatchesManifest, PatchMetadata, ReExportOptions } from '../types/commands/index.js';
-import type { FireForgeConfig } from '../types/config.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { info, success, warn } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 import type { AdjacentUnmanagedContext } from './re-export-adjacent.js';
 import { findMissingFiles, reportAdjacentUnmanagedFiles } from './re-export-adjacent.js';
 import type { ForeignDriftContext } from './re-export-drift.js';
@@ -24,6 +24,7 @@ import { reportForeignDrift } from './re-export-drift.js';
 import {
   lintReExportedPatch,
   type ReExportLintContext,
+  type ReExportLintResult,
   refreshQueueCtxEntry,
   storeReExportLintResult,
 } from './re-export-lint.js';
@@ -36,69 +37,54 @@ import {
 
 const GIT_INDEX_LOCK_RETRY_MS = 300;
 
+export interface ReExportSinglePatchArgs {
+  /** Manifest row for the patch being refreshed. */
+  patch: PatchMetadata;
+  /** Resolved project paths. */
+  paths: ProjectPaths;
+  /** Patch queue manifest as loaded by the orchestrator. */
+  manifest: PatchesManifest;
+  /** Effective re-export options for this patch. */
+  options: ReExportOptions;
+  /** Whether the run is a dry run. */
+  isDryRun: boolean;
+  /** Project configuration. */
+  config: FireForgeConfig;
+  /** Adjacent-unmanaged-file reporting context. */
+  adjacentCtx: AdjacentUnmanagedContext;
+  /** Foreign-drift reporting context. */
+  driftCtx: ForeignDriftContext;
+  /** Per-patch lint context, including the shared lint cache. */
+  lintCtx: ReExportLintContext;
+}
+
 /**
  * Retries a single patch re-export exactly once when the failure is
  * transient git `index.lock` contention (an external git process holding
  * the engine repo's index). The retry re-enters `reExportSinglePatch`
- * from the top, so it re-reads clean state; a second lock failure
+ * from the top, so it re-reads clean state. A second lock failure
  * propagates to the loop's honest "N of M" accounting.
  */
 export async function reExportSinglePatchWithIndexLockRetry(
-  patch: PatchMetadata,
-  paths: ReturnType<typeof getProjectPaths>,
-  manifest: PatchesManifest,
-  options: ReExportOptions,
-  isDryRun: boolean,
-  config: FireForgeConfig,
-  adjacentCtx: AdjacentUnmanagedContext,
-  driftCtx: ForeignDriftContext,
-  lintCtx: ReExportLintContext
+  args: ReExportSinglePatchArgs
 ): Promise<boolean> {
   try {
-    return await reExportSinglePatch(
-      patch,
-      paths,
-      manifest,
-      options,
-      isDryRun,
-      config,
-      adjacentCtx,
-      driftCtx,
-      lintCtx
-    );
+    return await reExportSinglePatch(args);
   } catch (error: unknown) {
     if (!isGitIndexLockConflict(error)) {
       throw error;
     }
     warn(
-      `${patch.filename}: git index.lock contention detected — retrying once after ${String(GIT_INDEX_LOCK_RETRY_MS)} ms...`
+      `${args.patch.filename}: git index.lock contention detected — retrying once after ${GIT_INDEX_LOCK_RETRY_MS} ms...`
     );
-    await new Promise((resolve) => setTimeout(resolve, GIT_INDEX_LOCK_RETRY_MS));
-    return await reExportSinglePatch(
-      patch,
-      paths,
-      manifest,
-      options,
-      isDryRun,
-      config,
-      adjacentCtx,
-      driftCtx,
-      lintCtx
-    );
+    await sleep(GIT_INDEX_LOCK_RETRY_MS);
+    return await reExportSinglePatch(args);
   }
 }
 
-async function reExportSinglePatch(
-  patch: PatchMetadata,
-  paths: ReturnType<typeof getProjectPaths>,
-  manifest: PatchesManifest,
-  options: ReExportOptions,
-  isDryRun: boolean,
-  config: FireForgeConfig,
-  adjacentCtx: AdjacentUnmanagedContext,
-  driftCtx: ForeignDriftContext,
-  lintCtx: ReExportLintContext
-): Promise<boolean> {
+async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boolean> {
+  const { patch, paths, manifest, options, isDryRun, config, adjacentCtx, driftCtx, lintCtx } =
+    args;
   let currentFilesAffected = [...patch.filesAffected];
 
   // --- Scan for new/removed files ---
@@ -113,10 +99,10 @@ async function reExportSinglePatch(
     });
 
     // Forward-import gate at adoption time (runs in dry-run too): refuse
-    // to adopt unmanaged files that import modules created by LATER
-    // patches — the after-the-fact lint failure this leaves behind is the
-    // field-reported footgun. Applies to broad --scan, --scan-file, and
-    // the --scan-files bulk assignments alike.
+    // to adopt unmanaged files that import modules created by later
+    // patches, because the after-the-fact lint failure this leaves behind
+    // is the field-reported footgun. Applies to broad --scan, --scan-file,
+    // and the --scan-files bulk assignments alike.
     await assertScanAdoptionsHaveNoForwardImports({
       patchesDir: paths.patches,
       engineDir: paths.engine,
@@ -142,7 +128,7 @@ async function reExportSinglePatch(
     // When neither `--scan` nor `--files` is set and some of the manifest's
     // claimed files no longer exist on disk, the re-export silently writes a
     // refreshed body whose filesAffected still names the vanished paths.
-    // That is the documented contract, but it is also a footgun — a later
+    // That is the documented contract, but it is also a footgun: a later
     // `verify` then fails on manifest-consistency with no obvious trigger.
     // Emit one advisory warning up-front when the drift is cheap to detect,
     // so the operator can re-run with `--scan` or `--files` before the stale
@@ -152,9 +138,9 @@ async function reExportSinglePatch(
   }
 
   // --- Explicit file-subset path ---
-  // When --files is given, the target filesAffected is authoritative — drop
+  // When --files is given, the target filesAffected is authoritative: drop
   // anything not in the list, add anything new. This is the surgical repair
-  // primitive that replaces hand-editing patches.json; the user has already
+  // primitive that replaces hand-editing patches.json. The user has already
   // acknowledged via confirmDestructive (done in the caller) that any drop
   // is intentional.
   if (options.files !== undefined) {
@@ -168,7 +154,7 @@ async function reExportSinglePatch(
 
   // Stale-furnace-source gate: re-export captures deployed engine copies, so
   // a component source edited after the last furnace apply would land in the
-  // patch as its OLD deployed content. Refuse (or warn under
+  // patch as its old deployed content. Refuse (or warn under
   // --allow-stale-furnace) before diffing. Runs in dry-run too so the failure
   // surfaces early.
   await enforceFreshFurnaceSources(
@@ -179,11 +165,11 @@ async function reExportSinglePatch(
   );
 
   const absentFiles = await findMissingFiles(paths.engine, currentFilesAffected);
-  // A path absent from disk but tracked in engine HEAD is a DELETION, and
+  // A path absent from disk but tracked in engine HEAD is a deletion, and
   // `git diff HEAD` renders it as a real `deleted file mode` section. Only
   // a never-tracked path has nothing to diff. Skipping both alike meant a
   // retired file quietly left the patch body while staying in its file
-  // list — the patch then claimed a file it could not restore.
+  // list, so the patch then claimed a file it could not restore.
   const trackedAbsent = await listTrackedInHead(paths.engine, absentFiles);
   const deletedFiles = absentFiles.filter((f) => trackedAbsent.has(f));
   const untrackedAbsent = absentFiles.filter((f) => !trackedAbsent.has(f));
@@ -219,9 +205,9 @@ async function reExportSinglePatch(
 
   // Foreign-drift preview + optional hard stop: show which
   // payload lines are about to enter the body that the old body did not
-  // carry — the case where a concurrent session's uncommitted edits in
-  // OWNED files would be silently absorbed. Always previews (including
-  // dry-run and --scan); refuses only under --refuse-foreign-drift.
+  // carry, the case where a concurrent session's uncommitted edits in
+  // owned files would be silently absorbed. Always previews (including
+  // dry-run and --scan). Refuses only under --refuse-foreign-drift.
   if (
     await reportForeignDrift({
       patch,
@@ -249,7 +235,7 @@ async function reExportSinglePatch(
     forceUnsafe: options.forceUnsafe === true,
   });
 
-  // Lint against the ONCE-per-invocation hoisted context (queue context +
+  // Lint against the once-per-invocation hoisted context (queue context +
   // queue-wide checkJs program + per-patch result cache) instead of
   // rebuilding ~37 s of setup for every patch in the loop.
   const projectedMetadata = { ...patch, ...updates };
@@ -296,14 +282,14 @@ async function reExportSinglePatch(
  * directory lock (a split write would let a concurrent queue mutation
  * leave body and `filesAffected` disagreeing), then keeps the run's
  * in-memory state honest: the queue context entry is refreshed and the
- * fresh lint result is stored keyed against the just-written body — the
- * state a repeat invocation will observe — and the in-memory
+ * fresh lint result is stored keyed against the just-written body (the
+ * state a repeat invocation will observe), and the in-memory
  * manifest row mirrors the on-disk write for later loop iterations
  * (notably `--all --scan`, where `getClaimedFiles` reads this manifest).
  */
 async function commitRefreshedPatch(args: {
   patch: PatchMetadata;
-  paths: ReturnType<typeof getProjectPaths>;
+  paths: ProjectPaths;
   manifest: PatchesManifest;
   options: ReExportOptions;
   config: FireForgeConfig;
@@ -312,21 +298,21 @@ async function commitRefreshedPatch(args: {
   updates: Partial<PatchMetadata>;
   projectedMetadata: PatchMetadata;
   existingFiles: string[];
-  lintResult: Awaited<ReturnType<typeof lintReExportedPatch>>;
+  lintResult: ReExportLintResult | null;
 }): Promise<void> {
   const { patch, paths, manifest, options, config, lintCtx, diffContent, updates } = args;
-  const bodyChanged = await updatePatchAndMetadata(
-    paths.patches,
-    patch.filename,
-    diffContent,
+  const bodyChanged = await updatePatchAndMetadata({
+    patchesDir: paths.patches,
+    filename: patch.filename,
+    newContent: diffContent,
     updates,
-    undefined,
-    {
+    onCommitted: undefined,
+    policyGate: {
       config,
       command: 're-export',
       forceUnsafe: options.forceUnsafe === true,
-    }
-  );
+    },
+  });
 
   refreshQueueCtxEntry(lintCtx, patch.filename, diffContent);
   if (args.lintResult !== null) {
@@ -350,8 +336,8 @@ async function commitRefreshedPatch(args: {
     }
   }
 
-  // A bulk run refreshes every patch; saying "Re-exported" for one whose body
-  // did not move buries the patches that DID move. The run still counts this
+  // A bulk run refreshes every patch. Saying "Re-exported" for one whose body
+  // did not move buries the patches that did move. The run still counts this
   // patch as successfully refreshed, so `--stamp` completeness is unaffected.
   if (bodyChanged) {
     success(`Re-exported ${patch.filename}`);
@@ -371,7 +357,7 @@ interface ReExportUpdatePlan {
 
 /**
  * Threads the patch's own `lintIgnore` list through so the per-patch
- * suppression honoured by export/export-all is also honoured here — a
+ * suppression honoured by export/export-all is also honoured here. A
  * re-export could otherwise not refresh an advisory-noisy but intentional
  * patch without the blunt `--skip-lint`. The paired `patch.tier` threads the
  * explicit branding-threshold opt-in the same way. The CLI flags `--tier`

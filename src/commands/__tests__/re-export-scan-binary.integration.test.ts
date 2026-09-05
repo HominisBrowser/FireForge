@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Adopting a NEW BINARY file through `--scan --scan-file`, against a real
+ * Adopting a new binary file through `--scan --scan-file`, against a real
  * git repository.
  *
  * This is the reported 0.44.4 blocker: vendoring eight WOFF2 faces into a
  * patch failed after a clean lint pass with "Cannot extract text content from
  * binary patch section for …". The scan's forward-import projection fed every
- * detected new file to the TEXT extractor, which refuses binary sections by
- * design — so a file whose `GIT binary patch` the export half had just
+ * detected new file to the text extractor, which refuses binary sections by
+ * design, so a file whose `GIT binary patch` the export half had just
  * written correctly could not be adopted at all, and the faces stayed
  * unmanaged.
  *

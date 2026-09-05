@@ -15,7 +15,7 @@ import { failure, ok, warning } from './doctor-check-core.js';
 /**
  * "Furnace jar.mn registrations" check: detect widget registration lines
  * pointing at component files that no longer exist in the workspace,
- * typically left by a rename. These break `mach build` at packaging;
+ * typically left by a rename. These break `mach build` at packaging.
  * `--repair-furnace` prunes them.
  */
 export const furnaceStaleJarRegistrationCheck: DoctorCheckDefinition = {

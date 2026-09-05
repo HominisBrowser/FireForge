@@ -5,10 +5,10 @@
 // that no commit can reproduce.
 //
 // `--loud` (used by prepack) additionally prints a prominent stderr banner
-// when the tree is dirty; FIREFORGE_PACK_STRICT=1 turns that banner into a
+// when the tree is dirty. FIREFORGE_PACK_STRICT=1 turns that banner into a
 // refusal for consumers that want the hard gate. Plain builds stay quiet
-// and NEVER fail on git problems — a git-less staging directory must still
-// build (the wrapper smoke test packs from one).
+// and never fail on git problems, because a git-less staging directory must
+// still build (the wrapper smoke test packs from one).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';

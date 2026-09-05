@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { Command } from 'commander';
 
-import {
-  configExists,
-  getProjectPaths,
-  loadConfig,
-  loadState,
-  updateState,
-} from '../core/config.js';
+import { configExists, getProjectPaths, loadConfig, loadState } from '../core/config.js';
 import { furnaceConfigExists as checkFurnaceConfigExists } from '../core/furnace-config.js';
 import { getCurrentBranch, getHead, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { ensureGit } from '../core/git-base.js';
@@ -24,7 +18,7 @@ import { error, info, intro, outro, success, warn } from '../utils/logger.js';
 import { addWaitLockOption } from '../utils/options.js';
 import { findExecutable } from '../utils/process.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
-import { failure, ok, resolveDoctorSeverity, warning } from './doctor-check-core.js';
+import { failure, ok, warning } from './doctor-check-core.js';
 import { EXTERNAL_TOOLCHAIN_DOCTOR_CHECK } from './doctor-external-toolchains.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 import { ORPHANED_HARNESS_DOCTOR_CHECK } from './doctor-orphaned-harness.js';
@@ -32,6 +26,7 @@ import { PATCH_MANIFEST_CONSISTENCY_CHECK } from './doctor-patch-manifest.js';
 import { POST_REBASE_AUDIT_CHECK } from './doctor-post-rebase-audit.js';
 import { SOURCE_PIN_DOCTOR_CHECK } from './doctor-source-pin.js';
 import { inspectEngineWorkingTree } from './doctor-working-tree.js';
+import { clearPendingResolution } from './pending-resolution.js';
 import { collectPatchQueueHealth } from './verify.js';
 
 /**
@@ -129,8 +124,8 @@ async function runEngineGitChecks(ctx: DoctorCheckContext): Promise<DoctorCheck[
     currentHead === undefined &&
     !state.baseCommit
   ) {
-    // Unborn repository with no recorded baseline — the earlier failure row
-    // explains recovery; avoid adding a second near-identical row.
+    // Unborn repository with no recorded baseline. The earlier failure row
+    // explains recovery. Avoid adding a second near-identical row.
   } else if (!canValidateBranch) {
     rows.push(
       warning(
@@ -163,7 +158,7 @@ async function runEngineGitChecks(ctx: DoctorCheckContext): Promise<DoctorCheck[
  * context-population bug at runtime.
  *
  * Exported so tests can exercise the forward-only invariant against
- * fixtures — the real DOCTOR_CHECKS list is also validated at import
+ * fixtures. The real DOCTOR_CHECKS list is also validated at import
  * time, but a targeted unit test makes the contract explicit and
  * prevents regressions if the validator is ever relaxed.
  */
@@ -188,7 +183,7 @@ export function validateCheckDependencies(checks: readonly DoctorCheckDefinition
 /**
  * The declarative doctor check registry. The order of entries here is the
  * order checks appear in the report. Adding a new check is a one-entry
- * edit; each check only contains its own inspection logic.
+ * edit. Each check only contains its own inspection logic.
  *
  * ## Ordering dependency chain
  *
@@ -260,11 +255,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
           );
         }
 
-        await updateState(ctx.projectRoot, (current) => {
-          const next = { ...current };
-          delete next.pendingResolution;
-          return next;
-        });
+        await clearPendingResolution(ctx.projectRoot);
         return ok('Pending Resolution');
       }
 
@@ -280,7 +271,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
     name: 'Engine is git repository',
     skipIf: (ctx) => !ctx.engineExists,
     // runEngineGitChecks consults ctx.config for ownership-aware
-    // working-tree classification; declare the dependency so a future
+    // working-tree classification. Declare the dependency so a future
     // reorder doesn't silently regress the doctor back to the
     // count-only fallback.
     dependsOn: ['fireforge.json is valid'],
@@ -319,7 +310,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
       // Resolve the absolute path so the OK row names what doctor actually
       // found. A PATH-export discrepancy between the operator's interactive
       // shell and the spawned subprocess otherwise reads as doctor printing
-      // "OK" for a binary `which watchman` cannot find; surfacing the
+      // "OK" for a binary `which watchman` cannot find. Surfacing the
       // resolved path makes the discrepancy visible without a verbose flag.
       const path = await findExecutable('watchman');
       if (path) {
@@ -375,7 +366,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
   POST_REBASE_AUDIT_CHECK,
   // Furnace checks live in a sibling module so this file stays under the
   // max-lines threshold. Splicing them in as an array preserves the
-  // declarative registry contract — each entry remains a single
+  // declarative registry contract: each entry remains a single
   // `DoctorCheckDefinition` with its own skipIf/run/fix, and the order
   // here is the order they appear in the report.
   ...FURNACE_DOCTOR_CHECKS,
@@ -401,6 +392,8 @@ validateCheckDependencies(DOCTOR_CHECKS);
  * context-population dependency chain (see {@link DOCTOR_CHECKS}) must
  * also update this list, which gives us a single place to notice and
  * think through the consequences.
+ *
+ * @internal Exported only so tests can reach it. Not part of the public surface.
  */
 export const DOCTOR_CHECK_ORDER: readonly string[] = DOCTOR_CHECKS.map((check) => check.name);
 
@@ -421,7 +414,7 @@ export function reportDoctorResults(
   let failedCount = 0;
 
   for (const check of checks) {
-    const severity = resolveDoctorSeverity(check);
+    const severity = check.severity;
 
     if (severity === 'warning') {
       warn(`! ${check.name}: ${check.message}`);
@@ -481,7 +474,7 @@ export interface DoctorResult {
  * Rejects repair-flag combinations that cannot mean what they say.
  *
  * The two manifest repairs are different operations on the same file, and
- * `--dry-run` with nothing to project is a flag that silently does nothing —
+ * `--dry-run` with nothing to project is a flag that silently does nothing,
  * the shape most likely to be mistaken for a preview that reported "no
  * changes".
  */

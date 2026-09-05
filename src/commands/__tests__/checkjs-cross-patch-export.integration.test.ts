@@ -3,7 +3,7 @@
  * The export/re-export lint path resolves cross-patch `resource:///` imports
  * against the whole queue (no hand-generated ambient stub shim), while
  * reporting only the patch under export. `runPatchLint` is the shared helper
- * export/export-all/re-export(--files) all call; passing the whole-queue
+ * export/export-all/re-export(--files) all call. Passing the whole-queue
  * context makes patch B's import of patch A's module type-check against A's
  * real source.
  */
@@ -154,9 +154,16 @@ describe('export/re-export cross-patch checkJs resolution (item C)', () => {
 
     // With the whole-queue context, B's import resolves to A's real source,
     // so the misuse is a hard error that blocks the (re-)export.
-    await expect(runPatchLint(engineDir, [B_PATH], diff, config, false, ctx)).rejects.toThrow(
-      /error/i
-    );
+    await expect(
+      runPatchLint({
+        engineDir,
+        filesAffected: [B_PATH],
+        diffContent: diff,
+        config,
+        skipLint: false,
+        patchQueueCtx: ctx,
+      })
+    ).rejects.toThrow(/error/i);
     const lines = checkJsErrorLines();
     expect(lines.length).toBeGreaterThanOrEqual(1);
     expect(lines.every((l) => l.includes(B_PATH))).toBe(true);
@@ -169,7 +176,14 @@ describe('export/re-export cross-patch checkJs resolution (item C)', () => {
     // No context → resolution is limited to B's own files, so the import
     // degrades to the ambient wildcard and the misuse is invisible.
     await expect(
-      runPatchLint(engineDir, [B_PATH], diff, config, false, undefined)
+      runPatchLint({
+        engineDir,
+        filesAffected: [B_PATH],
+        diffContent: diff,
+        config,
+        skipLint: false,
+        patchQueueCtx: undefined,
+      })
     ).resolves.toBeUndefined();
     expect(checkJsErrorLines()).toHaveLength(0);
   });

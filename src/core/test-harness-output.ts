@@ -47,20 +47,20 @@ const FAILURE_LINE_PATTERNS: readonly RegExp[] = [
 /**
  * Finds the first high-signal failure line from captured mach test output.
  *
- * Selection is FIRST-MATCHING-LINE, not first-matching-pattern, so the bare
- * `AttributeError:` arm above has exactly the same standing as
- * `TEST-UNEXPECTED-FAIL` — whichever appears earlier in the text wins. That
+ * Selection is by first matching line, not by first matching pattern, so the
+ * bare `AttributeError:` arm above has exactly the same standing as
+ * `TEST-UNEXPECTED-FAIL`: whichever appears earlier in the text wins. That
  * is how a run whose real defect was an export shard's file-count assertion
- * got diagnosed as the recognized mozsystemmonitor teardown crash: the
- * information was present and the SELECTION was wrong, which is the
+ * got diagnosed as the recognized mozsystemmonitor teardown crash. The
+ * information was present and the selection was wrong, which is the
  * expensive kind of wrong, because the named cause is a real, documented,
  * unrelated upstream defect and therefore reads as an answer.
  *
  * So a capture carrying the recognized teardown incident gets two passes:
  * candidates excluding its `AttributeError` header first, and only if that
  * finds nothing does the full set apply. The narrowness the rest of the
- * codebase maintains is preserved exactly — the exclusion is gated on
- * `hasKnownTeardownNoise` for the WHOLE capture, so it requires both the
+ * codebase maintains is preserved exactly: the exclusion is gated on
+ * `hasKnownTeardownNoise` for the whole capture, so it requires both the
  * closed attribute allowlist and a `resourcemonitor.py` frame. A novel
  * attribute, or a traceback from anywhere else, stays a real failure and is
  * still eligible to be reported.

@@ -100,37 +100,46 @@ async function threeWayMergeFile(
   }
 }
 
+export interface RefreshOverrideFileOptions {
+  /** Path to the engine git repository. */
+  engineDir: string;
+  /** Path to the current override file in the workspace. */
+  overridePath: string;
+  /** Engine-relative path for git show. */
+  engineRelPath: string;
+  /** The git ref at which the override was originally created. */
+  baseCommit: string;
+  /** Display name for the file. */
+  fileName: string;
+  /** When true, compute the merge but write nothing. */
+  dryRun?: boolean | undefined;
+  /** Conflict resolution preference handed to `git merge-file`. */
+  strategy?: 'ours' | 'theirs' | undefined;
+}
+
 /**
  * Refreshes a single override file against the current engine HEAD.
  *
- * @param engineDir - Path to the engine git repository
- * @param overridePath - Path to the current override file in the workspace
- * @param engineRelPath - Engine-relative path for git show
- * @param baseCommit - The git ref at which the override was originally created
- * @param fileName - Display name for the file
+ * @param options - See {@link RefreshOverrideFileOptions}
  * @returns Merge result with the updated content written to the override file
  */
 export async function refreshOverrideFile(
-  engineDir: string,
-  overridePath: string,
-  engineRelPath: string,
-  baseCommit: string,
-  fileName: string,
-  dryRun?: boolean,
-  strategy?: 'ours' | 'theirs'
+  options: RefreshOverrideFileOptions
 ): Promise<RefreshFileResult> {
+  const { engineDir, overridePath, engineRelPath, baseCommit, fileName, dryRun, strategy } =
+    options;
   // Read the three versions
   const oursContent = await readText(overridePath);
 
   const baseContent = await getFileContentAtRef(engineDir, engineRelPath, baseCommit);
   if (baseContent === null) {
-    // File didn't exist at baseCommit — this is a new file introduced by the override
+    // File didn't exist at baseCommit: this is a new file introduced by the override
     return { fileName, status: 'new-file' };
   }
 
   const theirsContent = await getFileContentAtRef(engineDir, engineRelPath, 'HEAD');
   if (theirsContent === null) {
-    // File was removed upstream — no merge needed, keep the override as-is
+    // File was removed upstream, so no merge is needed. Keep the override as-is
     return { fileName, status: 'unchanged' };
   }
 

@@ -3,11 +3,12 @@
  * Category banner and token-declaration helpers for the tokens CSS file.
  * Split out of `token-manager.ts` to stay inside the per-file line budget.
  *
- * Banner matching is EXACT: the text between the `=` runs (single-line
+ * Banner matching is exact: the text between the `=` runs (single-line
  * shape) or on the block line (multi-line shape) must equal the category
- * after trimming. A substring match lets a TOC comment or a longer banner
- * (`Colors — Canvas` for `Colors`) satisfy the lookup, so `token add` writes
- * into the wrong section — or no-ops — with exit 0.
+ * after trimming. With a substring match, a TOC comment or a longer banner
+ * whose name merely starts with the category (a canvas colors banner
+ * satisfying a lookup for `Colors`) would also match, and `token add` would
+ * then write into the wrong section, or no-op, with exit 0.
  */
 import { join } from 'node:path';
 
@@ -24,25 +25,25 @@ function multiLineBlockNameMatches(blockLine: string, category: string): boolean
 }
 
 /**
- * Body of the first `/* … *\/` comment on `line`, or `null` when the line
- * carries no closed block comment.
+ * Body of the first `/* … *\/` comment on `line`, or `undefined` when the
+ * line carries no closed block comment.
  *
- * Deliberately index arithmetic rather than a regex: every regex spelling of
+ * This uses index arithmetic rather than a regex: every regex spelling of
  * "banner comment" this module used to carry was super-linear on a line that
  * repeats the opening shape (CodeQL `js/polynomial-redos`), and `tokens.css`
  * is a file FireForge reads out of a consumer's engine tree, so a
  * pathological line needs no attacker to arrive.
  */
-function blockCommentBody(line: string): string | null {
+function blockCommentBody(line: string): string | undefined {
   const open = line.indexOf('/*');
-  if (open === -1) return null;
+  if (open === -1) return undefined;
   const close = line.indexOf('*/', open + 2);
-  if (close === -1) return null;
+  if (close === -1) return undefined;
   return line.slice(open + 2, close);
 }
 
 /**
- * True when `line` carries a single-line banner comment — a closed block
+ * True when `line` carries a single-line banner comment: a closed block
  * comment whose body both opens and closes with `=`. Recognises the decorative
  * all-`=` rule as well as a named `= Foo =` banner, which is what the section
  * scan wants: either shape ends the preceding section.
@@ -53,42 +54,41 @@ function isSingleLineBannerLine(line: string): boolean {
 }
 
 /**
- * Name declared by a single-line banner (`/* = Foo = *\/` → `Foo`), or `null`
- * when the line is not a named banner. The `=` runs on both sides are
- * required; a decorative all-`=` rule carries no name and yields `null`.
+ * Name declared by a single-line banner (`/* = Foo = *\/` → `Foo`), or
+ * `undefined` when the line is not a named banner. The `=` runs on both sides
+ * are required. A decorative all-`=` rule carries no name and yields
+ * `undefined`.
  */
-function singleLineBannerName(line: string): string | null {
+function singleLineBannerName(line: string): string | undefined {
   const body = blockCommentBody(line);
-  if (body === null) return null;
+  if (body === undefined) return undefined;
 
   let start = 0;
   let end = body.length;
   while (start < end && /\s/.test(body[start] ?? '')) start++;
   const leadingEqStart = start;
   while (start < end && body[start] === '=') start++;
-  if (start === leadingEqStart) return null;
+  if (start === leadingEqStart) return undefined;
 
   while (end > start && /\s/.test(body[end - 1] ?? '')) end--;
   const trailingEqEnd = end;
   while (end > start && body[end - 1] === '=') end--;
-  if (end === trailingEqEnd) return null;
+  if (end === trailingEqEnd) return undefined;
 
   const name = body.slice(start, end).trim();
-  return name.length > 0 ? name : null;
+  return name.length > 0 ? name : undefined;
 }
 
 /**
  * True when `lines` contain a category header (single-line or multi-line
- * banner shape) whose name EQUALS `category`. Shared by the pre-add
+ * banner shape) whose name equals `category`. Shared by the pre-add
  * assertion, the banner creation path, and the section finder so all
  * agree on what "exists" means.
  */
 export function categoryHeaderExists(lines: string[], category: string): boolean {
   const singleLinePattern = singleLineBannerPattern(category);
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-
+  for (const [i, line] of lines.entries()) {
     if (singleLinePattern.test(line)) {
       return true;
     }
@@ -116,33 +116,45 @@ export function categoryHeaderExists(lines: string[], category: string): boolean
  * - Multi-line: `/* =====` opening, `Foo` on any of the next ~5 lines,
  *   closing `*\/`.
  *
- * This helper exists as a pure inspector; it never throws on malformed
+ * This helper exists as a pure inspector. It never throws on malformed
  * headers and silently skips shapes it cannot parse.
  */
-function discoverCategoryHeaders(lines: string[]): string[] {
-  const categories = new Set<string>();
+/**
+ * Category name declared by the banner starting at `index`, or `undefined`
+ * when that line opens no banner.
+ *
+ * The single reader for both banner shapes, so the inventory walk, the
+ * "available categories" error body and the section finder cannot drift on
+ * what counts as a header.
+ *
+ * @param lines - Tokens CSS split into lines
+ * @param index - 0-based line index to test
+ * @returns The declared category name, or undefined
+ */
+export function categoryBannerNameAt(lines: string[], index: number): string | undefined {
+  const line = lines[index] ?? '';
+  const extracted = singleLineBannerName(line);
+  if (extracted !== undefined) return extracted;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const extracted = singleLineBannerName(line);
-    if (extracted !== null) {
-      categories.add(extracted);
-      continue;
-    }
-
-    if (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) {
-      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
-        const blockLine = lines[j] ?? '';
-        if (/\*\//.test(blockLine)) break;
-        const trimmed = blockLine.replace(/^\s*\*\s*/, '').trim();
-        if (trimmed.length === 0) continue;
-        if (/^=+$/.test(trimmed)) continue;
-        categories.add(trimmed);
-        break;
-      }
+  if (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) {
+    for (let j = index + 1; j < Math.min(index + 6, lines.length); j++) {
+      const blockLine = lines[j] ?? '';
+      if (/\*\//.test(blockLine)) break;
+      const trimmed = blockLine.replace(/^\s*\*\s*/, '').trim();
+      if (trimmed.length === 0) continue;
+      if (/^=+$/.test(trimmed)) continue;
+      return trimmed;
     }
   }
+  return undefined;
+}
 
+function discoverCategoryHeaders(lines: string[]): string[] {
+  const categories = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    const name = categoryBannerNameAt(lines, i);
+    if (name !== undefined) categories.add(name);
+  }
   return [...categories];
 }
 
@@ -197,7 +209,7 @@ export function declareCategoryBanner(
   tokensCssPath: string
 ): void {
   const bounds = findBaseRootBounds(lines);
-  if (bounds === null) {
+  if (bounds === undefined) {
     throw new GeneralError(
       `Cannot create category "${category}": no :root block found in ${tokensCssPath}. ` +
         'Run "fireforge furnace init --force" to re-scaffold the tokens CSS file.'
@@ -220,16 +232,14 @@ export function findCategorySection(
   const singleLinePattern = singleLineBannerPattern(category);
 
   let categoryLine = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-
+  for (const [i, line] of lines.entries()) {
     // Check single-line format: /* = Category = */
     if (singleLinePattern.test(line)) {
       categoryLine = i;
       break;
     }
 
-    // Check multi-line format: line opens a block comment with === but does NOT close it
+    // Check multi-line format: line opens a block comment with === but does not close it
     if (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) {
       for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
         const blockLine = lines[j] ?? '';
@@ -286,15 +296,9 @@ export function findCategorySection(
 }
 
 /** 0-based open/close line indices of the base `:root {` block. */
-function findBaseRootBounds(lines: string[]): { open: number; close: number } | null {
-  let open = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/:root\s*\{/.test(lines[i] ?? '')) {
-      open = i;
-      break;
-    }
-  }
-  if (open === -1) return null;
+export function findBaseRootBounds(lines: string[]): { open: number; close: number } | undefined {
+  const open = lines.findIndex((line) => /:root\s*\{/.test(line));
+  if (open === -1) return undefined;
   for (let i = open + 1; i < lines.length; i++) {
     if (/^\s*\}/.test(lines[i] ?? '')) {
       return { open, close: i };
@@ -304,7 +308,7 @@ function findBaseRootBounds(lines: string[]): { open: number; close: number } | 
 }
 
 /** Masks block-comment content per line so declarations inside comments never match. */
-function maskCommentLines(lines: string[]): string[] {
+export function maskCommentLines(lines: string[]): string[] {
   const masked = lines.join('\n').replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
   return masked.split('\n');
 }
@@ -320,7 +324,7 @@ export interface TokenDeclarationLocation {
 /**
  * Finds an existing declaration of `tokenName` inside the base `:root`
  * block. Dark `@media` and `:root[variant]` companion blocks are
- * deliberately excluded — they mirror the base declaration, they do not
+ * excluded: they mirror the base declaration, they do not
  * own the token. Comment content never matches, and the name match is
  * exact (`--foo-bar` does not match `--x-foo-bar`).
  */
@@ -329,7 +333,7 @@ export function findTokenDeclarationInRoot(
   tokenName: string
 ): TokenDeclarationLocation | undefined {
   const bounds = findBaseRootBounds(lines);
-  if (bounds === null || bounds.close === -1) return undefined;
+  if (bounds === undefined || bounds.close === -1) return undefined;
 
   const masked = maskCommentLines(lines);
   const declPattern = new RegExp(`^\\s*${escapeRegex(tokenName)}\\s*:`);

@@ -5,8 +5,8 @@
  * classification outside {patch-backed, branding, furnace}, and
  * `--fail-on <class,...>` replaces that set for finer control.
  *
- * Helper module consumed by status.ts (which sits at the max-lines budget);
- * no top-level registrar is exported and none is wanted.
+ * Helper module consumed by status.ts, which sits at the max-lines budget.
+ * No top-level registrar is exported and none is wanted.
  */
 import type { ClassifiedFile, FileClassification } from '../core/status-classify.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -23,9 +23,9 @@ const ALL_CLASSIFICATIONS: readonly FileClassification[] = [
 
 /**
  * Default `--check` policy: everything outside {patch-backed, branding,
- * furnace, binary-unsupported} fails. `binary-unsupported` is deliberately
- * excluded — an honest "cannot compare" must not keep the gate permanently
- * red; strict CI can opt in via `--fail-on binary-unsupported`.
+ * furnace, binary-unsupported} fails. `binary-unsupported` is excluded so
+ * an honest "cannot compare" does not keep the gate permanently red.
+ * Strict CI can opt in via `--fail-on binary-unsupported`.
  */
 const DEFAULT_FAIL_CLASSIFICATIONS: readonly FileClassification[] = [
   'unmanaged',
@@ -41,7 +41,7 @@ export interface StatusCheckPolicy {
 
 /**
  * Resolves the enforcement policy from the raw flags: `--fail-on` implies
- * `--check` and replaces the default set; both are refused alongside the
+ * `--check` and replaces the default set. Both are refused alongside the
  * modes that skip (or elide) classification.
  */
 export function resolveStatusCheckPolicy(options: {
@@ -148,9 +148,9 @@ export function runStatusCheck(
     const preview = offender.files.slice(0, CHECK_FILE_PREVIEW_MAX).join(', ');
     const more =
       offender.count > CHECK_FILE_PREVIEW_MAX
-        ? `, +${String(offender.count - CHECK_FILE_PREVIEW_MAX)} more`
+        ? `, +${offender.count - CHECK_FILE_PREVIEW_MAX} more`
         : '';
-    return `${String(offender.count)} ${offender.classification} (${preview}${more})`;
+    return `${offender.count} ${offender.classification} (${preview}${more})`;
   });
   if (offending.length === 0) return;
   throw new GeneralError(

@@ -226,7 +226,7 @@ describe('patch manifest consistency', () => {
     });
     // 002-sidebar had no pre-existing manifest entry in this fixture,
     // so the rebuilder should list it as a recovered entry. 001-ui-toolbar
-    // WAS preserved (its description round-tripped), so it must NOT appear.
+    // was preserved (its description round-tripped), so it must not appear.
     expect(rebuilt.recoveredFilenames).toContain('002-sidebar.patch');
     expect(rebuilt.recoveredFilenames).not.toContain('001-ui-toolbar.patch');
   });

@@ -16,7 +16,6 @@ import {
   runPostBootstrapChecks,
 } from './bootstrap-checks.js';
 import { reportDoctorResults } from './doctor.js';
-import { resolveDoctorSeverity } from './doctor-check-core.js';
 
 /** One sentence per detected issue, keyed by the scanner's own tags. */
 const BOOTSTRAP_FAILURE_SENTENCES: Record<BootstrapIssue, string> = {
@@ -33,7 +32,7 @@ const BOOTSTRAP_FAILURE_SENTENCES: Record<BootstrapIssue, string> = {
 function buildBootstrapFailureMessage(output: string): string | undefined {
   // Delegates detection to the canonical scanner rather than keeping a
   // second copy of its six regexes. The copies had already disagreed: this
-  // one reported a traceback AND a 403 separately, while
+  // one reported a traceback and a 403 separately, while
   // `detectBootstrapIssues` collapses them, because a bootstrap traceback
   // accompanying a 403 is just the stack trace from that HTTP error.
   const issues = detectBootstrapIssues(output).map((issue) => BOOTSTRAP_FAILURE_SENTENCES[issue]);
@@ -90,7 +89,7 @@ export async function bootstrapCommand(projectRoot: string): Promise<ExitCode> {
     // Shares one resolver with reportDoctorResults so the two consumers of
     // this same array cannot drift apart on how a check's severity is
     // derived.
-    const hasErrors = checks.some((c) => resolveDoctorSeverity(c) === 'error');
+    const hasErrors = checks.some((c) => c.severity === 'error');
 
     info('');
     if (hasErrors) {
@@ -104,7 +103,7 @@ export async function bootstrapCommand(projectRoot: string): Promise<ExitCode> {
     if (hasErrors) {
       outro('Build dependencies installed with errors');
       // Propagate the failure (mirroring doctor's exit-code handling)
-      // instead of exiting 0 — CI gating on bootstrap used to proceed to a
+      // instead of exiting 0. CI gating on bootstrap used to proceed to a
       // build that could not succeed because error-severity check results
       // were discarded here.
       return checksExitCode;

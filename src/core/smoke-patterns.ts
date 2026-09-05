@@ -17,26 +17,26 @@
  * process. A hit on any of these patterns is a smoke failure unless the
  * line also matches the caller-supplied allowlist.
  *
- * Additions here should be conservative — false positives turn every
+ * Additions here should be conservative. False positives turn every
  * smoke run into noise for operators and every CI run into flake.
  */
 import { toError } from '../utils/errors.js';
 
-export const SMOKE_ERROR_PATTERNS: readonly RegExp[] = [
-  // Firefox chrome error lines — `JavaScript error: chrome://…, line N: TypeError: …`.
+const SMOKE_ERROR_PATTERNS: readonly RegExp[] = [
+  // Firefox chrome error lines: `JavaScript error: chrome://…, line N: TypeError: …`.
   /^\s*JavaScript error:/i,
   // Some log paths prefix browser-console `console.error(...)` with the literal label below.
   /^\s*console\.error:/i,
   // Older bracketed-prefix variant still seen in some chrome logs / test runs.
   /^\s*\[JavaScript (Error|Warning)\]/i,
-  // IPC-layer fatal assertions — Firefox prints `###!!! [Parent] Error: …` on content-process crashes.
+  // IPC-layer fatal assertions. Firefox prints `###!!! [Parent] Error: …` on content-process crashes.
   /^\s*###!!! \[Parent\]/,
   // A chrome:// or resource:// URL that resolves to nothing. Outside
   // automation Gecko only PRINTS this (printf_stderr in
-  // `CheckForBrokenChromeURL`, netwerk/base/nsNetUtil.cpp); under
+  // `CheckForBrokenChromeURL`, netwerk/base/nsNetUtil.cpp). Under
   // `xpc::IsInAutomation()` the same condition is a
   // `MOZ_CRASH_UNSAFE_PRINTF` in whichever process opened the channel. So
-  // the smoke probe — which runs OUTSIDE automation — sees the printed
+  // the smoke probe, which runs outside automation, sees the printed
   // line for the same defect that hard-crashes every harness run, and a
   // probe that exits 0 on it reports "startup is healthy" for a build that
   // hangs at "Waiting for browser…". Both spellings are matched: the
@@ -47,7 +47,7 @@ export const SMOKE_ERROR_PATTERNS: readonly RegExp[] = [
 
 /**
  * Returns `true` when `line` matches any pattern in
- * {@link SMOKE_ERROR_PATTERNS}. Does not consult the allowlist — that step
+ * {@link SMOKE_ERROR_PATTERNS}. Does not consult the allowlist. That step
  * lives in {@link matchAllowlist}, so the smoke runner can count
  * allowlisted hits separately from raw error matches for its summary.
  */
@@ -62,7 +62,7 @@ export function matchesSmokeError(line: string): boolean {
 
 /**
  * One compiled allowlist entry with its provenance retained so the smoke
- * summary can attribute hits per entry — an entry that silently
+ * summary can attribute hits per entry. An entry that silently
  * stops matching (its suppressed shape changed upstream) is only
  * detectable when zero-hit entries are visible.
  */
@@ -76,24 +76,19 @@ export interface CompiledAllowlistEntry {
 
 /**
  * Returns the index of the FIRST entry in `allow` matching `line`, or -1.
- * First-match attribution is deterministic and cheap; a line matching
+ * First-match attribution is deterministic and cheap. A line matching
  * several entries credits the earliest one. Safe to call with an empty
  * allowlist (always returns -1).
  */
 export function matchAllowlist(line: string, allow: readonly CompiledAllowlistEntry[]): number {
-  for (let i = 0; i < allow.length; i++) {
-    if (allow[i]?.pattern.test(line)) {
-      return i;
-    }
-  }
-  return -1;
+  return allow.findIndex((entry) => entry.pattern.test(line));
 }
 
 /**
- * Parses a newline-delimited allowlist file body. Lines are trimmed; blank
+ * Parses a newline-delimited allowlist file body. Lines are trimmed. Blank
  * lines and `#`-prefixed comments are skipped. Each remaining line is
  * compiled as a RegExp with its `<file>:<line>` origin retained. A bad
- * pattern throws immediately — better to fail fast at CLI parse time than
+ * pattern throws immediately: better to fail fast at CLI parse time than
  * to silently let a typo match nothing.
  */
 export function compileAllowlistFromFile(
@@ -109,11 +104,11 @@ export function compileAllowlistFromFile(
       compiled.push({
         pattern: new RegExp(line),
         source: line,
-        origin: `${sourcePath}:${String(index + 1)}`,
+        origin: `${sourcePath}:${index + 1}`,
       });
     } catch (error: unknown) {
       const message = toError(error).message;
-      throw new Error(`Invalid allowlist regex at ${sourcePath}:${String(index + 1)}: ${message}`, {
+      throw new Error(`Invalid allowlist regex at ${sourcePath}:${index + 1}: ${message}`, {
         cause: error,
       });
     }
@@ -132,12 +127,12 @@ export function compileAllowlistFromStrings(sources: readonly string[]): Compile
       compiled.push({
         pattern: new RegExp(source),
         source,
-        origin: `--console-allow #${String(index + 1)}`,
+        origin: `--console-allow #${index + 1}`,
       });
     } catch (error: unknown) {
       const message = toError(error).message;
       throw new Error(
-        `Invalid --console-allow regex at position ${String(index + 1)} ("${source}"): ${message}`,
+        `Invalid --console-allow regex at position ${index + 1} ("${source}"): ${message}`,
         { cause: error }
       );
     }

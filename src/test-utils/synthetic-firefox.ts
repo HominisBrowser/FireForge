@@ -119,7 +119,7 @@ const SYNTHETIC_FIREFOX_FILES: Record<string, string | Buffer> = {
   // `assertBrandingMozconfigAgreement` requires
   // `engine/browser/branding/<binaryName>/moz.build` before `mach build`
   // runs. Real Firefox branding trees always ship one, so the fixture must
-  // too — otherwise `setupBranding`'s copy produces a branding dir without
+  // too. Otherwise `setupBranding`'s copy produces a branding dir without
   // it and every integration test reaching `prepareBuildEnvironment` trips
   // the preflight.
   'browser/branding/unofficial/moz.build': 'DIRS += ["content"]\n',

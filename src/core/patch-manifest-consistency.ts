@@ -123,7 +123,7 @@ export async function validatePatchesManifestConsistency(
  *
  * Drift that is only in `filesAffected` is a derived value disagreeing with
  * the diff it describes, and the narrow repair fixes exactly that. Naming the
- * whole-manifest rebuild for it — as this hint used to, unconditionally — puts
+ * whole-manifest rebuild for it (as this hint used to, unconditionally) puts
  * an operator one keystroke from rewriting every row in the manifest to
  * correct one list.
  */
@@ -144,19 +144,19 @@ export function recommendManifestRepair(issues: readonly PatchManifestConsistenc
  * lists patches whose manifest entry was reconstructed from filename,
  * mtime, and diff alone (no pre-existing manifest entry to preserve).
  * These entries carry generic descriptions and mtime-based
- * timestamps; callers like `doctor --repair-patches-manifest` surface
+ * timestamps. Callers like `doctor --repair-patches-manifest` surface
  * a per-patch review warning so operators know which metadata was
  * invented vs which was restored.
  */
 export interface RebuildPatchesManifestResult {
   /**
    * Rebuilt manifest, ready to be re-applied by callers. Persisted unless
-   * the run was a dry run — see {@link RebuildPatchesManifestResult.written}.
+   * the run was a dry run. See {@link RebuildPatchesManifestResult.written}.
    */
   manifest: PatchesManifest;
   /**
    * Filenames whose manifest entry had no pre-existing metadata to
-   * preserve — every descriptive field on these entries is inferred.
+   * preserve. Every descriptive field on these entries is inferred.
    */
   recoveredFilenames: string[];
   /**
@@ -174,7 +174,7 @@ export interface RebuildPatchesManifestOptions extends PatchDirectoryLockOptions
   /**
    * Proceed even when patches.json exists but cannot be parsed, in which case
    * there is no existing metadata to preserve and every descriptive field on
-   * every entry is invented. Refused without this flag — see
+   * every entry is invented. Refused without this flag. See
    * {@link rebuildPatchesManifest}.
    */
   allowMetadataLoss?: boolean;
@@ -185,7 +185,7 @@ export interface RebuildPatchesManifestOptions extends PatchDirectoryLockOptions
 /**
  * Rebuilds patches.json from the patch files currently present on disk.
  *
- * This is a MERGE, not a from-scratch rebuild: only `filesAffected` and
+ * This is a merge, not a from-scratch rebuild: only `filesAffected` and
  * `order` are recomputed from the patch files, and every other field on an
  * existing entry is carried forward untouched. Entries with no pre-existing
  * metadata are recovered from filename structure, patch contents, and file
@@ -198,7 +198,7 @@ export interface RebuildPatchesManifestOptions extends PatchDirectoryLockOptions
  * @param patchesDir - Path to the patches directory
  * @param fallbackSourceEsrVersion - source version to use for recovered legacy entries
  * @param options - Lock options plus `allowMetadataLoss` / `dryRun`
- * @returns {@link RebuildPatchesManifestResult} — the rebuilt manifest, the
+ * @returns {@link RebuildPatchesManifestResult}: the rebuilt manifest, the
  *   filenames that were reconstructed from generic defaults, and the rows
  *   dropped because their patch file is gone.
  */
@@ -211,7 +211,7 @@ export async function rebuildPatchesManifest(
   // patch-directory lock (invariant 2, docs/lifecycle-invariants.md):
   // manifest writes serialize on this lock, so without it a repair racing a
   // concurrent export/reorder can clobber the other writer's manifest. Not
-  // reentrant — callers must not already hold it.
+  // reentrant: callers must not already hold it.
   //
   // A dry run takes the lock too: it reads the same manifest and patch bodies
   // a real run would, and a projection computed against a queue being
@@ -232,9 +232,9 @@ async function rebuildPatchesManifestUnderLock(
   const existingEntries = new Map<string, PatchMetadata>();
 
   // An unparseable manifest yields `manifest: null`, which the merge below
-  // cannot distinguish from "no manifest at all" — every entry would be
+  // cannot distinguish from "no manifest at all". Every entry would be
   // treated as new and every descriptive field reinvented. `filesAffected`
-  // is the only field a .patch body can yield; `stagedDependencies`,
+  // is the only field a .patch body can yield. `stagedDependencies`,
   // `lintIgnore`, `tier`, `description`, `category`, `createdAt` and the
   // source version cannot be reconstructed from a diff at all. Refuse rather
   // than write that, since the write is what makes it unrecoverable on a
@@ -291,22 +291,21 @@ async function rebuildPatchesManifestUnderLock(
       // callers can warn the operator per-patch. A missing entry means every
       // descriptive field (`description`, `createdAt`, `category`) was
       // invented rather than preserved, and FireForge patch files carry no
-      // header metadata that could carry a human description forward — so
+      // header metadata that could carry a human description forward, so
       // visibility is the best available, and silent overwrites of
       // human-written descriptions during a recovery run are the failure to
       // avoid.
       recoveredFilenames.push(patch.filename);
     }
 
-    // The rebuild OWNS exactly two fields — `filesAffected` (recomputed from
+    // The rebuild owns exactly two fields: `filesAffected` (recomputed from
     // the patch body) and `order` (from the filename ordinal). Everything
     // else on an existing entry is carried forward by the spread, so a field
-    // a .patch cannot express — `stagedDependencies`, `lintIgnore`, `tier`,
-    // and whatever is added to PatchMetadata next — survives a repair by
-    // construction rather than by someone remembering to list it here. It was
-    // an enumerated literal until `stagedDependencies` was dropped from every
-    // entry that had one, which is the failure this shape prevents from
-    // recurring.
+    // a .patch cannot express (`stagedDependencies`, `lintIgnore`, `tier`,
+    // and whatever is added to PatchMetadata next) survives a repair without
+    // anyone remembering to list it here. It was an enumerated literal until
+    // `stagedDependencies` was dropped from every entry that had one, which
+    // is the failure this shape prevents from recurring.
     const rebuilt: PatchMetadata = {
       ...(existing ?? {}),
       filename: patch.filename,
@@ -339,9 +338,9 @@ async function rebuildPatchesManifestUnderLock(
   };
 
   // Whatever is left in the map had a manifest row but no patch file, so the
-  // rebuild drops it. That is the correct outcome — the file is the source of
-  // truth — but dropping rows without naming them is indistinguishable from
-  // never having had them.
+  // rebuild drops it. That is the correct outcome, since the file is the
+  // source of truth, but dropping rows without naming them is
+  // indistinguishable from never having had them.
   const droppedFilenames = [...existingEntries.keys()].sort((left, right) =>
     left.localeCompare(right)
   );

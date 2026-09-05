@@ -44,7 +44,7 @@ describe('withConfigFileLock', () => {
     // Each writer reads the current document, adds its own key, and
     // writes the result back. Without the lock, both reads see the same
     // pre-state, both writes push their own mutation, and the later
-    // rename wins — one key is lost. With the lock, the second writer
+    // rename wins and one key is lost. With the lock, the second writer
     // blocks until the first finishes, sees the first writer's update,
     // and merges against it.
     const writer = async (key: string, value: number): Promise<void> => {
@@ -60,7 +60,7 @@ describe('withConfigFileLock', () => {
     const persisted = await loadRawConfigDocument(root);
     expect(persisted['addedByFirst']).toBe(1);
     expect(persisted['addedBySecond']).toBe(2);
-    // The base keys must still be present — the merge must not drop the
+    // The base keys must still be present: the merge must not drop the
     // pre-existing document shape.
     expect(persisted['binaryName']).toBe('mybrowser');
     expect(persisted['appId']).toBe('org.acme.browser');
@@ -78,7 +78,7 @@ describe('withConfigFileLock', () => {
       'boom'
     );
 
-    // A subsequent lock-guarded operation must not hang — the finally
+    // A subsequent lock-guarded operation must not hang: the finally
     // block in `withFileLock` should have removed the lock directory.
     const followupValue = await withConfigFileLock(root, async () => {
       const current = await loadRawConfigDocument(root);

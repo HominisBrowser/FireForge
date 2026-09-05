@@ -7,11 +7,11 @@
  * browser with that flag, so any test run needs the port free at start.
  *
  * An interrupted `fireforge test` can leave an orphan browser process
- * listening on 2828 with parent PID 1, and the next test run — possibly in a
- * *different* FireForge project — then fails with a bare Marionette bind
- * error. This probe runs before every test launch, detects when the port is
- * held, and — when the holder is a browser process (by command-line
- * `-marionette` flag or by basename matching a known browser binary) —
+ * listening on 2828 with parent PID 1, and the next test run (possibly in a
+ * *different* FireForge project) then fails with a bare Marionette bind
+ * error. This probe runs before every test launch and detects when the port
+ * is held. When the holder is a browser process (by command-line
+ * `-marionette` flag or by basename matching a known browser binary), it
  * throws a targeted `GeneralError` naming the PID and the exact `kill`
  * command to run.
  *
@@ -22,11 +22,12 @@
  *
  * Both paths tolerate missing tooling: if `lsof` / PowerShell is not
  * installed the probe returns `{ inUse: false }` rather than failing the
- * test run — it is a best-effort friendliness check, not a prerequisite.
+ * test run. It is a best-effort friendliness check rather than a
+ * prerequisite.
  */
-import { GeneralError } from '../errors/base.js';
+import { PreflightRefusalError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
-import { getPlatform } from '../utils/platform.js';
+import { getPlatform, type Platform } from '../utils/platform.js';
 import { exec } from '../utils/process.js';
 import { formatPsDuration, parsePsDuration } from '../utils/ps-duration.js';
 
@@ -54,7 +55,7 @@ export interface MarionettePortHolder {
   /**
    * Full command line the holder was launched with, when the probe
    * can recover it. `lsof` by itself only returns the basename, so
-   * POSIX callers see `command === commandLine`; Windows callers
+   * POSIX callers see `command === commandLine`. Windows callers
    * recover the full command line via `Get-Process`. Used to detect
    * the `-marionette` flag, which positively identifies a stale
    * browser rather than an unrelated listener.
@@ -78,7 +79,7 @@ export interface RunningBundleProcess {
   commandLine: string;
   /**
    * Elapsed wall-clock seconds since the process started, from `ps
-   * etime=`. `NaN` when the field was absent or unparseable — callers must
+   * etime=`. `NaN` when the field was absent or unparseable, and callers must
    * omit the clause rather than print a zero, because "started 0s ago" is
    * exactly the wrong attribution for a peer session's long-lived browser.
    */
@@ -112,7 +113,7 @@ async function findRunningBundleProcesses(
     }
 
     // `etime=` is what makes the refusal attributable on a shared checkout:
-    // a browser that started as YOUR run was finishing is not yours.
+    // a browser that started as your run was finishing is not yours.
     const result = await exec('ps', ['-axo', 'pid=,etime=,args=']);
     return parseProcessList(result.stdout, launchableBinary);
   } catch {
@@ -125,7 +126,7 @@ async function findRunningBundleProcesses(
  * regression-testable.
  *
  * Reads `pid etime args` where the middle field is a `ps` duration. The
- * elapsed field is parsed OPTIMISTICALLY: a listing produced without
+ * elapsed field is parsed optimistically: a listing produced without
  * `etime=` still parses, with the duration reported as `NaN` and the whole
  * second field folded back into the command line, so a caller that lost the
  * column degrades to the old behaviour instead of dropping the process.
@@ -181,23 +182,24 @@ export async function ensureLaunchableBrowserNotRunning(
       }
       return;
     } catch (error: unknown) {
-      throw new GeneralError(
-        `A browser from this objdir is still running (PID ${holder.pid}), but FireForge could not terminate it: ${toError(error).message}`
+      throw new PreflightRefusalError(
+        `A browser from this objdir is still running (PID ${holder.pid}), but FireForge could not terminate it: ${toError(error).message}`,
+        'stale-browser-kill-failed'
       );
     }
   }
 
-  throw new GeneralError(describeRunningBundleRefusal(holder));
+  throw new PreflightRefusalError(describeRunningBundleRefusal(holder), 'stale-browser');
 }
 
 /**
- * True when the process was launched BY a test harness — its command line
- * carries `-marionette` (the control channel every `fireforge test` browser
- * is started with) or a harness `-profile`.
+ * True when the process was launched by a test harness, i.e. its command
+ * line carries `-marionette` (the control channel every `fireforge test`
+ * browser is started with) or a harness `-profile`.
  *
  * This is the distinction the refusal turns on. The objdir-bundle probe
  * matches any process running this project's binary, which on a shared
- * checkout includes a peer session's LIVE browser and a developer's own
+ * checkout includes a peer session's live browser and a developer's own
  * interactive one. Only a marionette-driven browser is safely
  * attributable to an interrupted run.
  */
@@ -208,17 +210,17 @@ function isHarnessDrivenBrowser(commandLine: string): boolean {
 /**
  * Builds the refusal for a running objdir browser.
  *
- * Reports the EVIDENCE rather than a bare PID: the elapsed time and the
+ * Reports the evidence rather than a bare PID: the elapsed time and the
  * command line are what let an operator on a shared checkout decide whose
  * process it is, without reconstructing PID ancestry by hand. A downstream
- * fork hit exactly this — the message named a PID belonging to a peer
+ * fork hit exactly this: the message named a PID belonging to a peer
  * session's live browser and offered a flag that would have killed a
  * multi-hour evaluation run.
  *
- * So `--kill-stale-marionette` is offered ONLY for a marionette-driven
+ * So `--kill-stale-marionette` is offered only for a marionette-driven
  * browser. For a bare launch the message says what it found and stops:
  * FireForge cannot tell a dead run's orphan from someone's live window, and
- * the flag is the right MANUAL clear once ownership is verified, never an
+ * the flag is the right manual clear once ownership is verified, never an
  * automatic one.
  *
  * Exported for direct unit testing.
@@ -276,19 +278,19 @@ function isBrowserMarionettePortHolder(holder: MarionettePortHolder, binaryName?
 
 /**
  * Probes the given port with `lsof` (macOS / Linux). Returns
- * `{ inUse: false }` when the port is free OR when `lsof` is not
- * available — the probe is a best-effort courtesy check, so a
+ * `{ inUse: false }` when the port is free or when `lsof` is not
+ * available. The probe is a best-effort courtesy check, so a
  * missing tool must not block the test run.
  */
 async function probeWithLsof(port: number): Promise<MarionettePortProbeResult> {
   try {
-    // `-sTCP:LISTEN` filters to listeners only; `-P -n` avoids
+    // `-sTCP:LISTEN` filters to listeners only, and `-P -n` avoids
     // service/host lookups (faster + no DNS-dependent flakiness).
     // `-Fpcn` emits a machine-readable format: one field per line,
     // with `p<pid>`, `c<command>`, `n<name>` records.
     const result = await exec('lsof', ['-i', `tcp:${port}`, '-P', '-n', '-sTCP:LISTEN', '-Fpcn']);
-    // `lsof` exits 1 when no matches — that's "port is free", not an
-    // error. We key off stdout shape instead of exit code.
+    // `lsof` exits 1 when no matches, which means "port is free" rather
+    // than an error. We key off stdout shape instead of exit code.
     const stdout = result.stdout;
     const lines = stdout.split(/\r?\n/).filter((l) => l.length > 0);
     let pid = -1;
@@ -300,7 +302,7 @@ async function probeWithLsof(port: number): Promise<MarionettePortProbeResult> {
     if (!Number.isFinite(pid) || pid < 0 || command === '') {
       return { inUse: false };
     }
-    // `lsof` does not return the full command line; `ps` does. A
+    // `lsof` does not return the full command line, but `ps` does. A
     // missing `ps` (exotic Linux container) falls back to `command`
     // alone, which is still enough to match `BROWSER_BASENAMES`.
     let commandLine = command;
@@ -309,7 +311,7 @@ async function probeWithLsof(port: number): Promise<MarionettePortProbeResult> {
       const psLine = psResult.stdout.split(/\r?\n/).find((l) => l.trim().length > 0);
       if (psLine) commandLine = psLine.trim();
     } catch {
-      // ps not available — keep the basename.
+      // ps not available, so keep the basename.
     }
     return { inUse: true, holder: { pid, command, commandLine } };
   } catch {
@@ -372,11 +374,11 @@ async function probeWithPowerShell(port: number): Promise<MarionettePortProbeRes
 export async function probeMarionettePort(
   port: number = DEFAULT_MARIONETTE_PORT
 ): Promise<MarionettePortProbeResult> {
-  let platform: ReturnType<typeof getPlatform>;
+  let platform: Platform;
   try {
     platform = getPlatform();
   } catch {
-    // Unrecognised host platform — no probe strategy applies, so the port is
+    // Unrecognised host platform, so no probe strategy applies and the port is
     // reported free rather than blocking the run.
     return { inUse: false };
   }
@@ -389,7 +391,7 @@ export async function probeMarionettePort(
 
 /**
  * Raises a targeted {@link GeneralError} when the Marionette port
- * is held by a browser process; raises a softer warning-shaped
+ * is held by a browser process. Raises a softer warning-shaped
  * error when the holder is unrelated (so the operator still sees
  * a useful signal but can decide whether to wait it out).
  *
@@ -410,12 +412,13 @@ export async function assertMarionettePortAvailable(
       process.platform === 'win32'
         ? `Stop-Process -Id ${holder.pid} -Force`
         : `kill ${holder.pid}  # or "kill -9 ${holder.pid}" if it doesn't exit`;
-    throw new GeneralError(
+    throw new PreflightRefusalError(
       `Marionette port ${port} is already in use by ${holder.command} (PID ${holder.pid}). ` +
         `This is usually a browser left running by a previously interrupted "fireforge test" run. ` +
         `Kill it with "${killHint}", then retry. ` +
         `(If you expected ${holder.command} to be running on ${port}, stop it manually or pass ` +
-        `"--marionette-port <port>" to launch mach test on a different port.)`
+        `"--marionette-port <port>" to launch mach test on a different port.)`,
+      'marionette-port-busy'
     );
   }
 
@@ -423,9 +426,10 @@ export async function assertMarionettePortAvailable(
   // cause is not a stale FireForge-launched browser. Flag it
   // explicitly so the operator can decide what to do instead of
   // getting mach's bind error with no FireForge context.
-  throw new GeneralError(
+  throw new PreflightRefusalError(
     `Marionette port ${port} is already in use by ${holder.command} (PID ${holder.pid}). ` +
-      `This is not a FireForge-launched browser; stop the holder process or free the port before rerunning.`
+      `This is not a FireForge-launched browser; stop the holder process or free the port before rerunning.`,
+    'marionette-port-busy'
   );
 }
 
@@ -459,9 +463,10 @@ export async function ensureMarionettePortAvailable(
       process.kill(holder.pid, 'SIGTERM');
     }
   } catch (error: unknown) {
-    throw new GeneralError(
+    throw new PreflightRefusalError(
       `Marionette port ${port} is held by stale browser ${holder.command} (PID ${holder.pid}), ` +
-        `but FireForge could not terminate it: ${toError(error).message}`
+        `but FireForge could not terminate it: ${toError(error).message}`,
+      'stale-browser-kill-failed'
     );
   }
 }
@@ -477,15 +482,13 @@ export async function ensureMarionettePortAvailable(
  * the test command auto-forwards to mach.
  *
  * @param machArgs - Forwarded mach args as they would appear on the command
- *   line (one element per token; `--foo=bar` and `--foo bar` both supported).
- * @returns The integer port if a recognised arg is present and parses; else
- *   `undefined`.
+ *   line (one element per token, with `--foo=bar` and `--foo bar` both
+ *   supported).
+ * @returns The integer port if a recognised arg is present and parses,
+ *   otherwise `undefined`.
  */
 export function extractForwardedMarionettePort(machArgs: string[]): number | undefined {
-  for (let i = 0; i < machArgs.length; i++) {
-    const arg = machArgs[i];
-    if (arg === undefined) continue;
-
+  for (const [i, arg] of machArgs.entries()) {
     // `--marionette-port=NNNN`
     let match = /^--marionette-port=(\d+)$/.exec(arg);
     if (match?.[1]) {
@@ -500,7 +503,7 @@ export function extractForwardedMarionettePort(machArgs: string[]): number | und
         if (Number.isFinite(n)) return n;
       }
     }
-    // `--setpref=marionette.port=NNNN` — the auto-forward shape; recognised
+    // `--setpref=marionette.port=NNNN`, the auto-forward shape. Recognised
     // here so a duplicate check at the call site can spot operator-supplied
     // setprefs without re-implementing the parse.
     match = /^--setpref=marionette\.port=(\d+)$/.exec(arg);
@@ -516,18 +519,16 @@ export function extractForwardedMarionettePort(machArgs: string[]): number | und
  * True when forwarded mach args already set a Marionette **client** address
  * for mach/mochitest (`--marionette=host:port` or `--marionette host:port`).
  * Used only to avoid duplicating FireForge's auto-injected
- * `--marionette=127.0.0.1:<n>`; this is not a full URL validator (IPv6, etc.).
+ * `--marionette=127.0.0.1:<n>`. This is not a full URL validator (IPv6,
+ * etc.).
  *
- * Deliberately does **not** treat `--marionette-port` as a client endpoint.
+ * Does not treat `--marionette-port` as a client endpoint.
  */
 export function forwardedMachArgsIncludeMarionetteClient(machArgs: string[]): boolean {
   const valueLooksLikeHostPort = (token: string): boolean =>
     /:[0-9]+$/.test(token) || /^\[[^]]+\]:[0-9]+$/.test(token);
 
-  for (let i = 0; i < machArgs.length; i++) {
-    const arg = machArgs[i];
-    if (arg === undefined) continue;
-
+  for (const [i, arg] of machArgs.entries()) {
     if (arg.startsWith('--marionette=') && !arg.startsWith('--marionette-port=')) {
       return true;
     }
@@ -545,8 +546,7 @@ export function forwardedMachArgsIncludeMarionetteClient(machArgs: string[]): bo
  * for runs where the pref is ignored anyway.
  */
 export function hasExplicitXpcshellFlavor(machArgs: string[]): boolean {
-  for (let i = 0; i < machArgs.length; i += 1) {
-    const arg = machArgs[i] ?? '';
+  for (const [i, arg] of machArgs.entries()) {
     if (/^--flavor=xpcshell\b/.test(arg) || arg === '--flavor=xpcshell-tests') return true;
     if (arg === '--flavor' && /^xpcshell(?:-tests)?$/.test(machArgs[i + 1] ?? '')) return true;
   }
@@ -563,38 +563,4 @@ export function hasExplicitXpcshellFlavor(machArgs: string[]): boolean {
  */
 export function shouldAutoForwardMarionettePortToMach(machArgs: string[]): boolean {
   return !hasExplicitXpcshellFlavor(machArgs);
-}
-
-/**
- * Heuristic: do the test paths or forwarded mach args indicate a flavour
- * that actually launches a Marionette-driven browser? Browser-chrome and
- * mochitest do; xpcshell does not. A no-paths invocation (the default "run
- * all tests" shape) is treated as marionette-relevant since it includes
- * browser-chrome.
- *
- * Note: `fireforge test` auto-forward of `--marionette-port` to mach uses
- * {@link shouldAutoForwardMarionettePortToMach} (mach-arg flavor gate) rather
- * than this function alone, so toolkit paths without `/mochitest/` still get
- * the listener pref and harness `--marionette=127.0.0.1:<n>` when appropriate.
- *
- * @param testPaths - Engine-relative paths after `stripEnginePrefix`.
- * @param machArgs - Forwarded mach args (post-`--mach-arg`).
- * @returns `true` when the run is likely to bind a Marionette listener.
- */
-export function isMarionetteFlavor(testPaths: string[], machArgs: string[]): boolean {
-  if (hasExplicitXpcshellFlavor(machArgs)) return false;
-  for (const arg of machArgs) {
-    if (/^--flavor=(browser-chrome|mochitest|chrome|a11y)\b/.test(arg)) return true;
-  }
-  if (testPaths.length === 0) return true;
-  for (const path of testPaths) {
-    const base = path.split('/').pop() ?? path;
-    if (/^browser_.+\.(js|ini|toml)$/.test(base)) return true;
-    if (path.includes('/mochitest/') || path.startsWith('mochitest/')) return true;
-    if (path.includes('/browser-chrome/') || path.startsWith('browser-chrome/')) return true;
-    if (path.includes('toolkit/content/tests/') && !path.includes('/tests/xpcshell/')) {
-      return true;
-    }
-  }
-  return false;
 }

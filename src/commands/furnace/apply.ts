@@ -40,7 +40,7 @@ async function snapshotWatchedChecksums(watchDirs: string[]): Promise<Map<string
         combined.set(`${dir}/${file}`, hash);
       }
     } catch {
-      // Directory may have been removed between iterations — ignore.
+      // Directory may have been removed between iterations, so ignore.
     }
   }
   return combined;
@@ -57,7 +57,7 @@ function checksumMapsEqual(a: Map<string, string>, b: Map<string, string>): bool
 /**
  * Builds a watch-loop apply-failure message tailored to the error class so
  * transient filesystem errors (EACCES, ENOSPC, lock timeout) look different
- * from genuine apply-level failures; the previous generic "Apply failed: ..."
+ * from genuine apply-level failures. The previous generic "Apply failed: ..."
  * collapsed all causes into one string and made diagnosis difficult.
  */
 function classifyWatchApplyError(err: unknown): string {
@@ -86,8 +86,8 @@ function classifyWatchApplyError(err: unknown): string {
 
 async function runWatchLoop(projectRoot: string): Promise<void> {
   const furnacePaths = getFurnacePaths(projectRoot);
-  // Both categories are eligible targets. The set is fixed; only existence
-  // varies over time — a component dir created AFTER watch started (the user
+  // Both categories are eligible targets. The set is fixed. Only existence
+  // varies over time: a component dir created after watch started (the user
   // running `furnace create` in another terminal) must be picked up without
   // restarting watch. A one-shot `pathExists` check at startup captures only
   // the dirs that existed then, leaving any later creation invisible.
@@ -133,8 +133,8 @@ async function runWatchLoop(projectRoot: string): Promise<void> {
       lastChecksums = await snapshotWatchedChecksums(watchDirs);
     }
 
-    // Another change arrived while we were applying — run again so the edit
-    // is not silently absorbed into the post-apply checksum bump.
+    // Another change arrived while we were applying, so run again and the
+    // edit is not silently absorbed into the post-apply checksum bump.
     if (pendingChange) {
       pendingChange = false;
       await runApplyCycle();
@@ -143,7 +143,7 @@ async function runWatchLoop(projectRoot: string): Promise<void> {
 
   const triggerApply = (): void => {
     if (applyInFlight) {
-      // An apply is already running; record the change so runApplyCycle
+      // An apply is already running. Record the change so runApplyCycle
       // re-runs after it completes. Do not schedule a new debounce: the
       // in-flight apply will observe this flag when it finishes.
       pendingChange = true;
@@ -154,7 +154,7 @@ async function runWatchLoop(projectRoot: string): Promise<void> {
       debounceTimer = null;
       if (applyInFlight) {
         // Race with a change that started its own apply between the debounce
-        // scheduling and the timer firing. Record the pending change; the
+        // scheduling and the timer firing. Record the pending change. The
         // in-flight apply will pick it up.
         pendingChange = true;
         return;
@@ -205,7 +205,7 @@ async function runWatchLoop(projectRoot: string): Promise<void> {
     return added;
   };
 
-  // Register signal-driven cleanup BEFORE creating watchers so there is no
+  // Register signal-driven cleanup before creating watchers so there is no
   // race window where a SIGINT could arrive after watchers exist but before
   // cleanup handlers are registered.
   const cleanup = (): void => {
@@ -245,7 +245,7 @@ async function runWatchLoop(projectRoot: string): Promise<void> {
           triggerApply();
         }
       } catch {
-        // Best effort — errors here are transient filesystem issues.
+        // Best effort: errors here are transient filesystem issues.
       }
     })();
   }, WATCH_POLL_INTERVAL_MS);
@@ -308,14 +308,14 @@ export async function furnaceApplyCommand(
     projectRoot,
     'apply-rollback',
     async (ctx) => {
-      // `persistState: false` for a NAMED apply is load-bearing: the batch
-      // persist path replaces `appliedChecksums` wholesale with only this
-      // run's entries, and the batch loops filter to the named component —
-      // so routing a named apply through it persists a state file containing
-      // ONLY that component, wiping every other component's checksums.
+      // `persistState: false` for a named apply matters: the batch persist
+      // path replaces `appliedChecksums` wholesale with only this run's
+      // entries, and the batch loops filter to the named component, so
+      // routing a named apply through it persists a state file containing
+      // only that component and wipes every other component's checksums.
       // Orphan detection and deleted-file undeploy both key on that state,
       // so the wiped components' stale engine files become invisible to
-      // apply AND to `furnace validate`. Named apply merges per-component
+      // apply and to `furnace validate`. Named apply merges per-component
       // state below, exactly like `furnace deploy <name>`.
       const applyResult = await applyAllComponents(projectRoot, dryRun, {
         operationContext: ctx,

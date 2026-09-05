@@ -3,21 +3,21 @@
  * Foreign-drift preview + `--refuse-foreign-drift` gate for `re-export`.
  *
  * A scan-less re-export rebuilds each patch body as a whole-file
- * `git diff HEAD` over the owned files — so a CONCURRENT session's
+ * `git diff HEAD` over the owned files, so a concurrent session's
  * uncommitted lines inside a file the patch already owns are silently
  * absorbed into the refreshed body. The adjacency advisory
- * (`re-export-adjacent.ts`) warns about unmanaged NEIGHBOUR files but is
+ * (`re-export-adjacent.ts`) warns about unmanaged neighbour files but is
  * structurally blind to drift inside owned files. This module compares
  * the old body against the refreshed body per file and reports the
- * payload lines that are about to ENTER the body; under
+ * payload lines that are about to enter the body. Under
  * `--refuse-foreign-drift` the patch is skipped and the run exits
  * non-zero, mirroring `--refuse-adjacent-unmanaged`.
  *
  * "Foreign" is decided by content, not authorship: re-export's legitimate
  * job is capturing intentional engine edits, so the preview always prints
  * and the hard stop is an explicit opt-in for multi-session checkouts.
- * The comparison is offset-insensitive — per-file MULTISETS of `+`/`-`
- * payload lines — because a refresh legitimately shifts hunk offsets and
+ * The comparison is offset-insensitive, using per-file multisets of `+`/`-`
+ * payload lines, because a refresh legitimately shifts hunk offsets and
  * context without changing what the patch does.
  */
 
@@ -154,7 +154,7 @@ function summarizeForeignHunks(
       }
       if (added > 0 || removed > 0) {
         summaries.push(
-          `@@ -${String(hunk.oldStart)},${String(hunk.oldCount)} +${String(hunk.newStart)},${String(hunk.newCount)} @@ (+${String(added)}/-${String(removed)})`
+          `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ (+${added}/-${removed})`
         );
       }
     }
@@ -170,9 +170,9 @@ function countExcess(excess: ReadonlyMap<string, number>): number {
 
 /**
  * Pure comparison: per owned file, which `+`/`-` payload lines the
- * refreshed body carries that the old body did not. Files NOT in
- * `previousFilesAffected` are skipped — those are intentional adoptions
- * (`--scan`), not drift.
+ * refreshed body carries that the old body did not. Files not in
+ * `previousFilesAffected` are skipped, since those are intentional
+ * adoptions (`--scan`) rather than drift.
  */
 export function computeForeignDrift(
   oldBody: string,
@@ -222,7 +222,7 @@ export function computeForeignDrift(
 
 /**
  * Reads the old body, prints the always-on drift preview (including under
- * dry-run and `--scan`), and — when `ctx.refuseForeignDrift` is set —
+ * dry-run and `--scan`), and, when `ctx.refuseForeignDrift` is set,
  * records a refusal and returns `true` so the caller skips the write.
  */
 export async function reportForeignDrift(args: {
@@ -266,7 +266,7 @@ export async function reportForeignDrift(args: {
   const totalLines = drift.reduce((sum, d) => sum + d.addedLines + d.removedLines, 0);
   const lineNoun = totalLines === 1 ? 'line' : 'lines';
   warn(
-    `${patch.filename}: refreshed body absorbs ${String(totalLines)} ${lineNoun} not present in the old patch body (${String(drift.length)} file(s)):`
+    `${patch.filename}: refreshed body absorbs ${totalLines} ${lineNoun} not present in the old patch body (${drift.length} file(s)):`
   );
   for (const entry of drift.slice(0, MAX_FILES_REPORTED)) {
     const expectedTag = ctx.expectedDriftFiles.has(entry.file) ? ' (expected via --expect)' : '';
@@ -278,14 +278,14 @@ export async function reportForeignDrift(args: {
       continue;
     }
     info(
-      `  ${entry.file}: +${String(entry.addedLines)}/-${String(entry.removedLines)} newly captured line(s)${expectedTag}${authorshipTag}`
+      `  ${entry.file}: +${entry.addedLines}/-${entry.removedLines} newly captured line(s)${expectedTag}${authorshipTag}`
     );
     for (const summary of entry.hunkSummaries) {
       info(`    ${summary}`);
     }
   }
   if (drift.length > MAX_FILES_REPORTED) {
-    info(`  +${String(drift.length - MAX_FILES_REPORTED)} more file(s)`);
+    info(`  +${drift.length - MAX_FILES_REPORTED} more file(s)`);
   }
 
   if (ctx.refuseForeignDrift) {
@@ -317,13 +317,13 @@ export async function reportForeignDrift(args: {
 /**
  * Splits the drifting files into "you probably wrote this" and "this predates
  * your last export". `--refuse-foreign-drift` calls every absorbed line
- * "foreign" — including the operator's OWN additions from the same session —
- * and "foreign" reads as "another session's", which is precisely the case
- * where proceeding would be wrong. Authorship is unknowable, but RECENCY is
- * not: a file whose mtime is newer than the patch body this run is refreshing
+ * "foreign", including the operator's own additions from the same session,
+ * and "foreign" reads as "another session's", which is the case where
+ * proceeding would be wrong. Authorship is unknowable, but recency is not:
+ * a file whose mtime is newer than the patch body this run is refreshing
  * changed after the last export, which on a single-operator slice is the
- * operator's own edit. Returns the subset of `files` that qualifies; an
- * unstattable path is reported as NOT recently edited, so the cautious
+ * operator's own edit. Returns the subset of `files` that qualifies. An
+ * unstattable path is reported as not recently edited, so the cautious
  * wording is the fallback.
  */
 async function findFilesEditedSinceLastExport(
@@ -351,7 +351,7 @@ async function findFilesEditedSinceLastExport(
 
 /**
  * Fail-closed baseline handling: a missing or unreadable old
- * patch body means the drift comparison CANNOT run, so under
+ * patch body means the drift comparison cannot run, so under
  * `--refuse-foreign-drift` the patch is refused rather than written on the
  * strength of a check that never happened. Without the flag this stays the
  * historical advisory skip (the preview is best-effort there).
@@ -373,28 +373,28 @@ function refuseUnreadableBaseline(
 }
 
 /**
- * States, verbatim in the notice, WHAT the `--expect` whitelist is compared
- * against and WHEN. This notice is the only feedback an operator gets that
+ * States, verbatim in the notice, what the `--expect` whitelist is compared
+ * against and when. This notice is the only feedback an operator gets that
  * the drift belt looked at the files they named, and a downstream report
  * showed the previous copy actively misleading: it warned "showed no drift"
- * over an edit that WAS captured correctly, and none of the causes it named
+ * over an edit that was captured correctly, and none of the causes it named
  * held, so the operator's only recourse was `grep -c` on the written body.
  *
  * The measurement, stated exactly:
  *
- *  - COMPARED: for each file already in the patch's `filesAffected`, the
- *    `+`/`-` payload lines the REFRESHED body carries that the OLD patch
+ *  - Compared: for each file already in the patch's `filesAffected`, the
+ *    `+`/`-` payload lines the refreshed body carries that the old patch
  *    body did not (`computeForeignDrift`). It is a content comparison, and
- *    it is ONE-DIRECTIONAL: excess in the new body only.
- *  - WHEN: per patch, on the body about to be written, BEFORE the write —
- *    never against post-write state.
+ *    it is one-directional: excess in the new body only.
+ *  - When: per patch, on the body about to be written, before the write.
+ *    Never against post-write state.
  *
  * The one-directional half is what the earlier copy hid, and it is the
  * cause the report's first shape actually hit: deleting a line from an
- * engine file makes the refreshed body DROP that file's `+` line. Nothing
- * is absorbed, so by design there is no drift to see — the belt exists to
- * catch a concurrent session's edits being silently swallowed INTO a body,
- * not every difference between two bodies. Naming it is the fix; widening
+ * engine file makes the refreshed body drop that file's `+` line. Nothing
+ * is absorbed, so there is no drift to see. The belt exists to catch a
+ * concurrent session's edits being silently swallowed into a body, not
+ * every difference between two bodies. Stating that is the fix. Widening
  * the comparison would turn every ordinary line removal into a refusal.
  */
 const EXPECT_MEASUREMENT_NOTE =
@@ -405,7 +405,7 @@ const EXPECT_MEASUREMENT_NOTE =
 /**
  * Names `--expect` paths that never drifted this run. A typo'd
  * `--expect` path silently degrades the flag back to refusing the slice it
- * was meant to admit, so surface the mismatch — but only as a warning: an
+ * was meant to admit, so surface the mismatch, but only as a warning: an
  * expected file legitimately shows no drift in several shapes, all named
  * below.
  */

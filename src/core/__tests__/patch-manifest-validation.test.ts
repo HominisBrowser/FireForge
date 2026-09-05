@@ -262,7 +262,7 @@ describe('validatePatchesManifest', () => {
   });
 
   it('rejects unknown tier values with a clear message', () => {
-    // Opinionated choice — unknown tier values throw rather than
+    // Opinionated choice: unknown tier values throw rather than
     // silently strip, matching how category and sourceEsrVersion
     // are handled. A typo like "Branding" (capitalised) should
     // surface as a loader error, not quietly fall back to auto-

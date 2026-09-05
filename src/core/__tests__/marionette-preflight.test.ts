@@ -34,7 +34,7 @@ import { reportMarionettePreflight, runMarionettePreflight } from '../marionette
 
 class MockStream extends EventEmitter {
   // Matches Node's `Readable.destroy()` well enough for the preflight
-  // cleanup path — it's called unconditionally when the preflight finally
+  // cleanup path. It's called unconditionally when the preflight finally
   // block runs, so the stub must be a real function.
   destroy = vi.fn();
 }
@@ -126,8 +126,9 @@ describe('runMarionettePreflight', () => {
     const child = makeChild();
     const sockets: MockSocket[] = [];
     const spawner = vi.fn(() => child) as never;
-    // Each connect attempt gets a fresh socket — mirrors real net.createConnection
-    // and ensures `once('error', ...)` is always registered before we emit.
+    // Each connect attempt gets a fresh socket. That mirrors real
+    // net.createConnection and ensures `once('error', ...)` is always
+    // registered before we emit.
     const connect = vi.fn(() => {
       const socket = makeSocket();
       sockets.push(socket);
@@ -148,7 +149,7 @@ describe('runMarionettePreflight', () => {
     });
 
     // Let the preflight reach the point where it has attached a `data`
-    // listener to child.stderr before we emit — mkdtemp, ensureMach,
+    // listener to child.stderr before we emit. mkdtemp, ensureMach,
     // getPython, and the spawner call each park on a microtask.
     await vi.advanceTimersByTimeAsync(0);
     child.stderr?.emit('data', Buffer.from('failed to bind marionette: address in use\n'));
@@ -193,11 +194,11 @@ describe('runMarionettePreflight', () => {
     // Child never toggled exitCode/signalCode, so SIGKILL fires after the
     // 500 ms grace. The process-group kill (`process.kill(-pid, …)`)
     // happens via the module's killProcessGroup helper, which falls back
-    // to `child.kill` on unsupported environments; the test platform is
-    // non-win32 AND has a pid on the child, so the fallback only fires
+    // to `child.kill` on unsupported environments. The test platform is
+    // non-win32 and has a pid on the child, so the fallback only fires
     // when process.kill throws (which it will here because pid 4242 is
     // fake). Either way, `child.kill` must have been called with both
-    // signals in order — that's the escalation contract.
+    // signals in order, which is the escalation contract.
     const calls = child.kill.mock.calls.map((c): unknown => c[0]);
     expect(calls).toEqual(['SIGTERM', 'SIGKILL']);
   });
@@ -278,7 +279,7 @@ describe('runMarionettePreflight', () => {
     const child = makeChild();
     // Child is returned alive, but flips to exited before the settle timer
     // elapses. This is the scenario where Gecko aborts at startup because
-    // of a missing dylib, wrong CPU arch, or corrupt profile — the socket
+    // of a missing dylib, wrong CPU arch, or corrupt profile. The socket
     // poll would otherwise swallow the full budget waiting for bytes.
     const spawner = vi.fn(() => {
       queueMicrotask(() => {

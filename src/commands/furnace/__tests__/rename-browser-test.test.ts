@@ -3,7 +3,7 @@
  * Browser-chrome test-body rewriting for `furnace rename`.
  *
  * Bare, unanchored, global replacements make a rename of `moz-panel` rewrite
- * `moz-panel-group` and every other identifier merely *containing* the old
+ * `moz-panel-group` and every other identifier merely containing the old
  * name. The two sibling rewriters (`furnace/rename.ts` and
  * `rename-xpcshell.ts`) carry word-boundary guards for the same reason.
  */
@@ -92,7 +92,7 @@ describe('updateBrowserChromeTestContent', () => {
 
   it('does not rewrite an unrelated underscore-delimited test name', () => {
     // `deriveTestStem('moz-panel')` is `panel`, and `_` has to stay a legal
-    // neighbour for `test_panel_defined` to match at all — which meant
+    // neighbour for `test_panel_defined` to match at all, which meant
     // `test_panel_group_integration` matched too. The stem is anchored to the
     // one shape the scaffold emits instead.
     const source = [
@@ -120,8 +120,8 @@ describe('updateBrowserChromeTestContent', () => {
   });
 
   it('renames a hyphen-less tag to its hyphenated form, not the underscored one', () => {
-    // With no hyphen in the old name, the underscored form IS the tag, so the
-    // underscored rule and the tag rule matched the same text — and mapping by
+    // With no hyphen in the old name, the underscored form is the tag, so the
+    // underscored rule and the tag rule matched the same text, and mapping by
     // matched text let the underscored rule win, writing `widget_v2` where the
     // tag `widget-v2` was meant.
     const source = 'await customElements.whenDefined("widget");';

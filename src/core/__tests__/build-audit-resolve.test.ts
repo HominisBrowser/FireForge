@@ -22,7 +22,7 @@ describe('isTestPath', () => {
     ['browser/base/content/test/general/browser_foo.js', true],
     ['browser/base/content/test/widgets/xpcshell.toml', true],
     ['browser/base/content/test/widgets/browser.ini', true],
-    // `testing/` subtree — mochitest / marionette / xpcshell harness
+    // `testing/` subtree: mochitest, marionette and xpcshell harness
     // sources ship under `_tests/`, not `dist/`. Without these matches,
     // patches that touch e.g. `testing/mochitest/api.js` produce
     // "no packaged artifact under dist/" warnings on every build.
@@ -30,7 +30,7 @@ describe('isTestPath', () => {
     ['testing/mochitest/api.js', true],
     ['testing/marionette/client/marionette_driver/foo.py', true],
     ['testing/xpcshell/head.js', true],
-    // Interior `/testing/` segment — vendored harness trees should also
+    // Interior `/testing/` segment: vendored harness trees should also
     // route to `_tests/` rather than the package bundle.
     ['third_party/foo/testing/harness.js', true],
   ])('returns true for test-shaped path %s', (path) => {
@@ -42,7 +42,7 @@ describe('isTestPath', () => {
     ['browser/branding/mybrowser/content/aboutDialog.css', false],
     ['toolkit/locales/en-US/global/strings.ftl', false],
     ['browser/base/content/main.xhtml', false],
-    // `testing-tools/` is not the `testing/` subtree — only an exact
+    // `testing-tools/` is not the `testing/` subtree, and only an exact
     // segment match qualifies. Guards against over-broad substring match.
     ['testing-tools/lint/eslint.config.js', false],
   ])('returns false for non-test path %s', (path) => {
@@ -75,7 +75,7 @@ describe('countTrailingSegmentMatches', () => {
 
   // The candidate side is built by `join()` over a `readdir` walk, so on
   // Windows it arrives backslash-separated. A `/`-only split makes the whole
-  // candidate ONE segment, which scores every same-basename hit identically
+  // candidate one segment, which scores every same-basename hit identically
   // and lets the resolver pick an arbitrary artifact.
   it('counts segments the same when a path arrives backslash-separated', () => {
     expect(

@@ -16,11 +16,13 @@ import { assertConfirmationAvailable, confirmDestructive } from '../../core/dest
 import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import { buildPatchQueueContext } from '../../core/patch-lint.js';
 import { loadPatchesManifest, resolvePatchIdentifier } from '../../core/patch-manifest.js';
+import { formatPatchOrder } from '../../core/patch-parse.js';
 import { enforcePatchPolicy } from '../../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { PatchMoveFilesOptions } from '../../types/commands/index.js';
 import { info, intro, outro, success } from '../../utils/logger.js';
 import { normalizePatchDisplayName } from '../../utils/validation.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
 import { resolvePlacementPlan } from '../export-flow.js';
 import { runPatchLint } from '../export-shared.js';
 import { commitPatchSplit } from './split.js';
@@ -144,26 +146,26 @@ export async function patchMoveFilesCreateCommand(
   // projection lint is blind.
   const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
   const ignoreChecks = source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined;
-  await runPatchLint(
-    paths.engine,
-    remainingFiles,
-    remainingDiff,
+  await runPatchLint({
+    engineDir: paths.engine,
+    filesAffected: remainingFiles,
+    diffContent: remainingDiff,
     config,
-    options.skipLint,
+    skipLint: options.skipLint,
     patchQueueCtx,
     ignoreChecks,
-    source.tier
-  );
-  await runPatchLint(
-    paths.engine,
-    movedFiles,
-    movedDiff,
+    patchTier: source.tier,
+  });
+  await runPatchLint({
+    engineDir: paths.engine,
+    filesAffected: movedFiles,
+    diffContent: movedDiff,
     config,
-    options.skipLint,
+    skipLint: options.skipLint,
     patchQueueCtx,
     ignoreChecks,
-    source.tier
-  );
+    patchTier: source.tier,
+  });
 
   const { conflicts, stagedDependencyAdditions } = runProjectedSplitLint(plan, patchQueueCtx);
   plan.stagedDependencyAdditions = stagedDependencyAdditions;
@@ -188,19 +190,12 @@ export async function patchMoveFilesCreateCommand(
     unsafeOverride: options.forceUnsafe === true,
     conflicts,
   });
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Move cancelled');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Move cancelled')) return;
 
   await commitPatchSplit(paths.patches, plan, newMetadata, options, config);
 
   success(
-    `Created ${placement.newFilename} (order ${String(placement.insertionOrder).padStart(3, '0')}) ` +
+    `Created ${placement.newFilename} (order ${formatPatchOrder(placement.insertionOrder)}) ` +
       `and moved ${plan.movedFiles.length} file(s) out of ${source.filename}`
   );
   if (plan.ownerRewrites.length > 0) {

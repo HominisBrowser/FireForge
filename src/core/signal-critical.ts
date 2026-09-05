@@ -19,6 +19,8 @@
  * `waitForActiveCriticalSections` before terminating.
  */
 
+import { sleep } from '../utils/sleep.js';
+
 interface ActiveCriticalSection {
   /** Human-readable label for telemetry/debugging; never surfaced to users. */
   label: string;
@@ -68,8 +70,5 @@ export async function runInSignalCriticalSection<T>(
 export async function waitForActiveCriticalSections(timeoutMs: number): Promise<void> {
   if (activeSections.size === 0) return;
   const snapshot = [...activeSections].map((s) => s.promise);
-  await Promise.race([
-    Promise.allSettled(snapshot).then(() => undefined),
-    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-  ]);
+  await Promise.race([Promise.allSettled(snapshot).then(() => undefined), sleep(timeoutMs)]);
 }

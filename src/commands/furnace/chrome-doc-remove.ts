@@ -17,7 +17,12 @@ import {
   runFurnaceMutation,
 } from '../../core/furnace-operation.js';
 import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
-import { createRollbackJournal, snapshotDir, snapshotFile } from '../../core/furnace-rollback.js';
+import {
+  createRollbackJournal,
+  type RollbackJournal,
+  snapshotDir,
+  snapshotFile,
+} from '../../core/furnace-rollback.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import { pathExists, readText, removeDir, removeFile, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, note, outro } from '../../utils/logger.js';
@@ -41,7 +46,7 @@ async function removeChromeDocJarEntryIfPresent(
   engineDir: string,
   file: string,
   entry: string,
-  journal: ReturnType<typeof createRollbackJournal>
+  journal: RollbackJournal
 ): Promise<boolean> {
   const jarPath = join(engineDir, file);
   if (!(await pathExists(jarPath))) {
@@ -60,7 +65,7 @@ async function removeChromeDocJarEntryIfPresent(
 
 async function removeEmptyDirIfPresent(
   dirPath: string,
-  journal: ReturnType<typeof createRollbackJournal>
+  journal: RollbackJournal
 ): Promise<boolean> {
   if (!(await pathExists(dirPath))) return false;
   const entries = await readdir(dirPath);

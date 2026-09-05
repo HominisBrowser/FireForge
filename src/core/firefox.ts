@@ -14,44 +14,13 @@ import type { FirefoxProduct } from '../types/config.js';
 import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { ensureDir, removeDir } from '../utils/fs.js';
 import { resolveArchive } from './firefox-archive.js';
+import type { ArchiveIntegrityOptions } from './firefox-cache.js';
 import { ensureCachedArchive, invalidateArchiveCache } from './firefox-cache.js';
 import type { ProgressCallback } from './firefox-download.js';
 import { extractTarXz } from './firefox-extract.js';
 
 // ── Re-exports (preserve public API) ──
-export { resolveArchive } from './firefox-archive.js';
-export type { ProgressCallback } from './firefox-download.js';
 export { formatBytes, getFirefoxVersion } from './firefox-extract.js';
-
-/**
- * Gets the download URL for a Firefox source tarball.
- * @param version - Firefox version (e.g., "140.9.0esr")
- * @param product - Firefox product type
- * @param candidate - Optional release-candidate build directory (e.g. "build2")
- * @returns Full URL to the source tarball
- */
-export function getDownloadUrl(
-  version: string,
-  product: FirefoxProduct = 'firefox',
-  candidate?: string
-): string {
-  return resolveArchive(version, product, candidate).url;
-}
-
-/**
- * Gets the filename for a Firefox source tarball.
- * @param version - Firefox version
- * @param product - Firefox product type
- * @param candidate - Optional release-candidate build directory (e.g. "build2")
- * @returns Tarball filename
- */
-export function getTarballFilename(
-  version: string,
-  product: FirefoxProduct = 'firefox',
-  candidate?: string
-): string {
-  return resolveArchive(version, product, candidate).filename;
-}
 
 /**
  * Lifecycle phase reported by {@link downloadFirefoxSource}. The download
@@ -127,33 +96,51 @@ export async function sweepOrphanedEngineWorkDirs(destDir: string): Promise<stri
   return removed;
 }
 
+/** Inputs for {@link downloadFirefoxSource}. */
+export interface DownloadFirefoxSourceOptions {
+  /** Firefox version to fetch, e.g. `140.9.0esr`. */
+  version: string;
+  /** Product channel the version belongs to. */
+  product: FirefoxProduct;
+  /** Directory the extracted source tree is moved into. */
+  destDir: string;
+  /** Directory holding downloaded tarballs between runs. */
+  cacheDir: string;
+  /** Called with byte progress for the whole transfer. */
+  onProgress?: ProgressCallback | undefined;
+  /** Called when the run moves from downloading to extracting. */
+  onPhase?: FirefoxSourcePhaseCallback | undefined;
+  /** Expected archive checksum; verified after download when supplied. */
+  expectedSha256?: string | undefined;
+  /** Called with byte progress within the current phase. */
+  onPhaseProgress?: FirefoxSourceProgressCallback | undefined;
+  /**
+   * Release-candidate build directory (e.g. `build2`), resolving the archive
+   * under `candidates/` instead of `releases/`.
+   */
+  candidate?: string | undefined;
+  /** Integrity-check defaults for unpinned downloads. */
+  integrity?: ArchiveIntegrityOptions | undefined;
+}
+
 /**
  * Downloads and extracts Firefox source.
- * @param version - Firefox version to download
- * @param product - Firefox product type
- * @param destDir - Destination directory for extracted source
- * @param cacheDir - Directory to store downloaded tarball
- * @param onProgress - Optional progress callback for the download byte stream
- * @param onPhase - Optional callback fired when the function transitions
- *   between phases (`'download'` → `'extract'`). Fires exactly once per
- *   phase even if the cached archive path skips the wire entirely.
- * @param expectedSha256 - Expected archive checksum; verified after download when supplied
- * @param onPhaseProgress - Called with byte progress within the current phase
- * @param candidate - Optional release-candidate build directory (e.g.
- *   "build2") resolving the archive under `candidates/` instead of
- *   `releases/`.
+ *
+ * @param options - See {@link DownloadFirefoxSourceOptions}.
  */
-export async function downloadFirefoxSource(
-  version: string,
-  product: FirefoxProduct,
-  destDir: string,
-  cacheDir: string,
-  onProgress?: ProgressCallback,
-  onPhase?: FirefoxSourcePhaseCallback,
-  expectedSha256?: string,
-  onPhaseProgress?: FirefoxSourceProgressCallback,
-  candidate?: string
-): Promise<void> {
+export async function downloadFirefoxSource(options: DownloadFirefoxSourceOptions): Promise<void> {
+  const {
+    version,
+    product,
+    destDir,
+    cacheDir,
+    onProgress,
+    onPhase,
+    expectedSha256,
+    onPhaseProgress,
+    candidate,
+    integrity,
+  } = options;
   const archive = resolveArchive(version, product, candidate);
   const tarballPath = join(cacheDir, archive.filename);
 
@@ -161,7 +148,14 @@ export async function downloadFirefoxSource(
   await ensureDir(cacheDir);
 
   onPhase?.('download');
-  await ensureCachedArchive(archive, cacheDir, onProgress, expectedSha256, onPhaseProgress);
+  await ensureCachedArchive(
+    archive,
+    cacheDir,
+    onProgress,
+    expectedSha256,
+    onPhaseProgress,
+    integrity
+  );
 
   // Extract to a unique temporary directory so concurrent downloads for
   // the same destination do not clobber each other.

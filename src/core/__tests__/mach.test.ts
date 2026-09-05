@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import { pathExists, readJson, readText, writeText } from '../../utils/fs.js';
 import {
-  bootstrap,
   bootstrapWithOutput,
   build,
   buildArtifactMismatchMessage,
@@ -15,25 +14,32 @@ import {
   ensurePython,
   hasBuildArtifacts,
   hasRunnableBundle,
-  machPackage,
-  mochitestWithOutput,
-  resetResolvedPython,
   run as runBrowser,
   runMach,
   runMachCapture,
   runMachInheritCapture,
   runMachSmoke,
+  runMachTestSuite,
   runProtectedMachBuild,
-  test as runMachTest,
-  testWithOutput,
-  watch,
   watchWithOutput,
-  xpcshellTestWithOutput,
 } from '../mach.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, readdir: vi.fn() };
+  return {
+    ...actual,
+    readdir: vi.fn(),
+    // The resource-shim directory: created per-user, then lstat-verified as
+    // a private directory of the current uid before sitecustomize.py lands.
+    mkdir: vi.fn(() => Promise.resolve(undefined)),
+    lstat: vi.fn(() =>
+      Promise.resolve({
+        isDirectory: () => true,
+        uid: process.getuid?.() ?? 0,
+        mode: 0o40700,
+      })
+    ),
+  };
 });
 
 vi.mock('../../utils/fs.js', () => createFsMock());
@@ -58,6 +64,7 @@ vi.mock('../../utils/platform.js', () => ({
 
 import { nativePath } from '../../test-utils/index.js';
 import { getPlatform } from '../../utils/platform.js';
+import { resetResolvedPython } from '../mach-python.js';
 
 describe('hasBuildArtifacts', () => {
   beforeEach(() => {
@@ -288,11 +295,9 @@ describe('hasRunnableBundle', () => {
   });
 
   it('ignores non-directory and non-.app entries under dist/ on darwin', async () => {
-    // The `entry.isDirectory()` and `.app` filter branches must hit the
-    // skip-continue paths (not just the match path) so the module's
-    // branch coverage reflects all three outcomes. A mixed fixture —
-    // regular file, non-.app directory, `.app` directory with binary —
-    // exercises all three in one pass.
+    // A mixed fixture — regular file, non-.app directory, and an `.app`
+    // directory that owns the binary — proves the scan skips the first two
+    // and reports only the real bundle.
     vi.mocked(getPlatform).mockReturnValue('darwin');
     vi.mocked(readdir).mockResolvedValue([
       { name: 'README.txt', isDirectory: () => false, isFile: () => true } as never,
@@ -314,10 +319,8 @@ describe('hasRunnableBundle', () => {
   });
 
   it('keeps looking through later .app bundles when an earlier one is empty on darwin', async () => {
-    // Exercises the darwin for-loop's "candidate exists? no" continue
-    // branch. Two `.app` bundles, only the second owns the binary —
-    // the iterator must fall through the first `if (await pathExists)`
-    // branch and still return runnable via the second.
+    // Two `.app` bundles, only the second of which owns the binary: an
+    // empty first bundle must not end the scan.
     vi.mocked(getPlatform).mockReturnValue('darwin');
     vi.mocked(readdir).mockResolvedValue([
       { name: 'OldBrowser.app', isDirectory: () => true, isFile: () => false } as never,
@@ -623,14 +626,18 @@ describe('mach command execution', () => {
     await primePythonResolution();
     vi.mocked(execStream).mockResolvedValue(0);
 
-    await xpcshellTestWithOutput('/engine', ['a_test.js'], ['--headless']);
+    await runMachTestSuite('xpcshell-test', {
+      engineDir: '/engine',
+      testPaths: ['a_test.js'],
+      args: ['--headless'],
+    });
     expect(execStream).toHaveBeenLastCalledWith(
       'python3.12',
       [nativePath('/engine/mach'), 'xpcshell-test', 'a_test.js', '--headless'],
       expect.any(Object)
     );
 
-    await mochitestWithOutput('/engine', ['browser_x.js'], []);
+    await runMachTestSuite('mochitest', { engineDir: '/engine', testPaths: ['browser_x.js'] });
     expect(execStream).toHaveBeenLastCalledWith(
       'python3.12',
       [nativePath('/engine/mach'), 'mochitest', 'browser_x.js'],
@@ -641,10 +648,18 @@ describe('mach command execution', () => {
     // at startup cannot strand multiprocessing workers.
     expect(vi.mocked(execStream).mock.lastCall?.[2]).toMatchObject({ processGroup: true });
 
-    // Env-present branch (the `env ? { env } : {}` ternary) for both wrappers.
-    await xpcshellTestWithOutput('/engine', ['a_test.js'], [], { FF_X: '1' });
+    // Env-present branch for both suite kinds.
+    await runMachTestSuite('xpcshell-test', {
+      engineDir: '/engine',
+      testPaths: ['a_test.js'],
+      env: { FF_X: '1' },
+    });
     expect(vi.mocked(execStream).mock.lastCall?.[2]).toMatchObject({ env: { FF_X: '1' } });
-    await mochitestWithOutput('/engine', ['b.js'], [], { FF_M: '2' });
+    await runMachTestSuite('mochitest', {
+      engineDir: '/engine',
+      testPaths: ['b.js'],
+      env: { FF_M: '2' },
+    });
     expect(vi.mocked(execStream).mock.lastCall?.[2]).toMatchObject({ env: { FF_M: '2' } });
 
     stdoutSpy.mockRestore();
@@ -701,7 +716,10 @@ describe('mach command execution', () => {
       return Promise.resolve(0);
     });
 
-    const result = await testWithOutput('/engine', ['browser_x.js']);
+    const result = await runMachTestSuite('test', {
+      engineDir: '/engine',
+      testPaths: ['browser_x.js'],
+    });
 
     // Capture contract: the classifier still sees the RAW traceback.
     expect(result.stdout).toContain("no attribute 'stop_time'");
@@ -739,7 +757,7 @@ describe('mach command execution', () => {
       return Promise.resolve(1);
     });
 
-    await testWithOutput('/engine', ['browser_x.js']);
+    await runMachTestSuite('test', { engineDir: '/engine', testPaths: ['browser_x.js'] });
 
     const echo = echoed.join('');
     expect(echo).toContain('ZeroDivisionError: division by zero');
@@ -797,7 +815,59 @@ describe('mach command execution', () => {
     });
   });
 
-  it('covers the public wrapper commands', async () => {
+  type MachExecKind = 'inherit' | 'capture' | 'stream';
+
+  const WRAPPER_COMMANDS: ReadonlyArray<{
+    label: string;
+    kind: MachExecKind;
+    invoke: () => Promise<unknown>;
+    argv: string[];
+  }> = [
+    {
+      label: 'bootstrapWithOutput',
+      kind: 'capture',
+      invoke: () => bootstrapWithOutput('/engine'),
+      argv: ['bootstrap', '--application-choice', 'browser'],
+    },
+    {
+      label: 'build -j',
+      kind: 'capture',
+      invoke: () => build('/engine', 4),
+      argv: ['build', '-j', '4'],
+    },
+    { label: 'build', kind: 'capture', invoke: () => build('/engine'), argv: ['build'] },
+    {
+      label: 'buildUI',
+      kind: 'capture',
+      invoke: () => buildUI('/engine'),
+      argv: ['build', 'faster'],
+    },
+    {
+      label: 'run',
+      kind: 'inherit',
+      invoke: () => runBrowser('/engine', ['--safe-mode']),
+      argv: ['run', '--safe-mode'],
+    },
+    {
+      label: 'watchWithOutput',
+      kind: 'capture',
+      invoke: () => watchWithOutput('/engine'),
+      argv: ['watch'],
+    },
+    {
+      label: 'runMachTestSuite',
+      kind: 'stream',
+      invoke: () =>
+        runMachTestSuite('test', {
+          engineDir: '/engine',
+          testPaths: ['browser/test'],
+          args: ['--headless'],
+        }),
+      argv: ['test', 'browser/test', '--headless'],
+    },
+  ];
+
+  it.each(WRAPPER_COMMANDS)('$label forwards its argv to mach', async ({ kind, invoke, argv }) => {
     const { execInherit, execInheritCapture, execStream } = await import('../../utils/process.js');
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -810,78 +880,12 @@ describe('mach command execution', () => {
       return Promise.resolve(0);
     });
 
-    await expect(bootstrap('/engine')).resolves.toBe(0);
-    await expect(bootstrapWithOutput('/engine')).resolves.toEqual({
-      stdout: 'ok',
-      stderr: '',
-      exitCode: 0,
-    });
-    await expect(build('/engine', 4)).resolves.toMatchObject({ exitCode: 0 });
-    await expect(build('/engine')).resolves.toMatchObject({ exitCode: 0 });
-    await expect(buildUI('/engine')).resolves.toMatchObject({ exitCode: 0 });
-    await expect(runBrowser('/engine', ['--safe-mode'])).resolves.toBe(0);
-    await expect(machPackage('/engine')).resolves.toBe(0);
-    await expect(watch('/engine')).resolves.toBe(0);
-    await expect(watchWithOutput('/engine')).resolves.toEqual({
-      stdout: 'ok',
-      stderr: '',
-      exitCode: 0,
-    });
-    await expect(runMachTest('/engine', ['browser/test'], ['--headless'])).resolves.toBe(0);
-    await expect(testWithOutput('/engine', ['browser/test'], ['--headless'])).resolves.toEqual({
-      stdout: 'stream',
-      stderr: '',
-      exitCode: 0,
-    });
+    await invoke();
 
-    expect(execInherit).toHaveBeenCalledWith(
+    const spies = { inherit: execInherit, capture: execInheritCapture, stream: execStream };
+    expect(spies[kind]).toHaveBeenCalledWith(
       'python3.12',
-      [nativePath('/engine/mach'), 'bootstrap', '--application-choice', 'browser'],
-      expect.any(Object)
-    );
-    expect(execInheritCapture).toHaveBeenCalledWith(
-      'python3.12',
-      [nativePath('/engine/mach'), 'build', '-j', '4'],
-      expect.any(Object)
-    );
-    expect(execInheritCapture).toHaveBeenCalledWith(
-      'python3.12',
-      [nativePath('/engine/mach'), 'build'],
-      expect.any(Object)
-    );
-    expect(execInheritCapture).toHaveBeenCalledWith(
-      'python3.12',
-      [nativePath('/engine/mach'), 'build', 'faster'],
-      expect.any(Object)
-    );
-    expect(execInherit).toHaveBeenCalledWith(
-      'python3.12',
-      [nativePath('/engine/mach'), 'run', '--safe-mode'],
-      expect.any(Object)
-    );
-    expect(execInherit).toHaveBeenCalledWith(
-      'python3.12',
-      [nativePath('/engine/mach'), 'package'],
-      expect.any(Object)
-    );
-    expect(execInherit).toHaveBeenCalledWith(
-      'python3.12',
-      [nativePath('/engine/mach'), 'watch'],
-      expect.any(Object)
-    );
-    expect(execInherit).toHaveBeenCalledWith(
-      'python3.12',
-      [nativePath('/engine/mach'), 'test', 'browser/test', '--headless'],
-      expect.any(Object)
-    );
-    expect(execInheritCapture).toHaveBeenCalledWith(
-      'python3.12',
-      [nativePath('/engine/mach'), 'bootstrap', '--application-choice', 'browser'],
-      expect.any(Object)
-    );
-    expect(execInheritCapture).toHaveBeenCalledWith(
-      'python3.12',
-      [nativePath('/engine/mach'), 'watch'],
+      [nativePath('/engine/mach'), ...argv],
       expect.any(Object)
     );
 
@@ -1057,15 +1061,23 @@ describe('mach command execution', () => {
 
   it('injects the resource-monitor degrade shim into mach build and build faster', async () => {
     const { execInheritCapture } = await import('../../utils/process.js');
-    const { ensureDir, writeText } = await import('../../utils/fs.js');
+    const { writeText } = await import('../../utils/fs.js');
+    const { mkdir } = await import('node:fs/promises');
     await primePythonResolution();
     vi.mocked(execInheritCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
 
     await build('/engine');
     await buildUI('/engine');
 
-    // The sitecustomize degrade shim is written (degrades psutil failures).
-    expect(ensureDir).toHaveBeenCalledWith(expect.stringContaining('fireforge-mach-resource-shim'));
+    // The sitecustomize degrade shim is written (degrades psutil failures)
+    // into a per-user, mode-0700 directory — never a fixed shared name.
+    const uid = process.getuid?.();
+    const expectedSuffix =
+      uid === undefined ? 'fireforge-mach-resource-shim-' : `fireforge-mach-resource-shim-${uid}`;
+    expect(mkdir).toHaveBeenCalledWith(
+      expect.stringContaining(expectedSuffix),
+      expect.objectContaining({ mode: 0o700 })
+    );
     expect(writeText).toHaveBeenCalledWith(
       expect.stringContaining('sitecustomize.py'),
       expect.stringContaining('virtual_memory')

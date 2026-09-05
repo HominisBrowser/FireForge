@@ -148,9 +148,9 @@ export function runStatusCheck(
     const preview = offender.files.slice(0, CHECK_FILE_PREVIEW_MAX).join(', ');
     const more =
       offender.count > CHECK_FILE_PREVIEW_MAX
-        ? `, +${String(offender.count - CHECK_FILE_PREVIEW_MAX)} more`
+        ? `, +${offender.count - CHECK_FILE_PREVIEW_MAX} more`
         : '';
-    return `${String(offender.count)} ${offender.classification} (${preview}${more})`;
+    return `${offender.count} ${offender.classification} (${preview}${more})`;
   });
   if (offending.length === 0) return;
   throw new GeneralError(

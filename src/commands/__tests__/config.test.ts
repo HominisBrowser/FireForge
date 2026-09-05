@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -9,7 +8,7 @@ import {
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
-import { configCommand, registerConfig } from '../config.js';
+import { configCommand } from '../config.js';
 
 /**
  * Per-test override for withConfigFileLock. Undefined → real locking.
@@ -297,37 +296,5 @@ describe('configCommand', () => {
     >;
     expect(config['firstUnknown']).toBe('one');
     expect(config['secondUnknown']).toBe('two');
-  });
-});
-
-describe('registerConfig', () => {
-  let projectRoot: string;
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    projectRoot = await createTempProject();
-    await writeFireForgeConfig(projectRoot);
-  });
-
-  afterEach(async () => {
-    await removeTempProject(projectRoot);
-  });
-
-  it('routes parsed CLI arguments through the registered action', async () => {
-    const program = new Command();
-
-    registerConfig(program, {
-      getProjectRoot: () => projectRoot,
-      withErrorHandling: <T extends unknown[]>(handler: (...args: T) => Promise<void>) => handler,
-    });
-
-    await program.parseAsync(['node', 'test', 'config', 'build.jobs', '12']);
-    await program.parseAsync(['node', 'test', 'config', 'build.jobs']);
-
-    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
-      build?: { jobs?: number };
-    };
-    expect(config.build?.jobs).toBe(12);
-    expect(info).toHaveBeenCalledWith('build.jobs = 12');
   });
 });

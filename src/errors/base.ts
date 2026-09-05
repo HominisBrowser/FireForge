@@ -23,10 +23,11 @@ export abstract class FireForgeError extends Error {
       this.cause = cause;
     }
 
-    // Maintains proper stack trace in V8 environments
-    if (typeof Error.captureStackTrace === 'function') {
-      Error.captureStackTrace(this, this.constructor);
-    }
+    // Trims the constructor frames off the stack. `engines` pins Node >= 22,
+    // so the V8-only `captureStackTrace` is always present — the former
+    // `typeof === 'function'` guard was an unreachable branch that coverage
+    // could never close.
+    Error.captureStackTrace(this, this.constructor);
   }
 
   /**
@@ -39,10 +40,49 @@ export abstract class FireForgeError extends Error {
 }
 
 /**
+ * Renders the trailing "To fix this:" block shared by every FireForge error
+ * that offers remedies.
+ *
+ * Numbering is derived from the array rather than written into each string.
+ * Several classes vary their advice by context (`FurnaceError` drops the
+ * validate step, `ChecksumMismatchError` adds a Developer Edition note), and
+ * hand-numbered branches had to renumber every later step by hand — one
+ * conditional away from printing "2." twice.
+ *
+ * @param steps - The remedy lines, in order, without their numbers
+ * @returns The block, starting with the blank-line separator
+ */
+export function remedies(steps: readonly string[]): string {
+  return `\n\nTo fix this:\n${steps.map((step, index) => `  ${index + 1}. ${step}`).join('\n')}`;
+}
+
+/**
  * General error for unexpected failures.
  */
 export class GeneralError extends FireForgeError {
   readonly code = ExitCode.GENERAL_ERROR;
+}
+
+/**
+ * A `fireforge test` preflight gate that refused before any harness ran.
+ *
+ * Exists to carry a `note`, not to change behaviour: it keeps
+ * {@link ExitCode.GENERAL_ERROR}, so `docs/exit-codes.md` and every CI
+ * consumer keying on the exit status are untouched. The note is a stable
+ * kebab-case refusal class that the `FIREFORGE-VERDICT:` line reports as an
+ * additive `note=` key. Without it every preflight refusal reached an
+ * unattended reader as the single token `reason=preflight`, which covers
+ * everything from a missing build to a peer's packaging record — so the one
+ * line that survives a truncating pipe could not say WHICH gate fired.
+ */
+export class PreflightRefusalError extends GeneralError {
+  constructor(
+    message: string,
+    /** Stable refusal class, e.g. `stale-browser`. */
+    public readonly note: string
+  ) {
+    super(message);
+  }
 }
 
 /**
@@ -123,13 +163,9 @@ export class InvalidArgumentError extends FireForgeError {
   }
 
   override get userMessage(): string {
-    let msg = `Invalid Argument: ${this.message}`;
-
-    if (this.argument) {
-      msg += `\n\nArgument: ${this.argument}`;
-    }
-
-    return msg;
+    return this.argument
+      ? `Invalid Argument: ${this.message}\n\nArgument: ${this.argument}`
+      : `Invalid Argument: ${this.message}`;
   }
 }
 
@@ -145,6 +181,13 @@ export class InvalidArgumentError extends FireForgeError {
 export class ExecTimeoutError extends FireForgeError {
   readonly code = ExitCode.GENERAL_ERROR;
 
+  /** Standard output captured before the deadline fired (empty when the exec path does not capture). */
+  readonly stdout: string;
+  /** Standard error captured before the deadline fired (empty when the exec path does not capture). */
+  readonly stderr: string;
+  /** True when either captured stream was cut off at the exec layer's collector cap. */
+  readonly outputTruncated: boolean;
+
   constructor(
     /** Executable that was spawned (argv[0]). */
     public readonly command: string,
@@ -152,22 +195,58 @@ export class ExecTimeoutError extends FireForgeError {
     public readonly args: readonly string[],
     /** Timeout that elapsed, in milliseconds. */
     public readonly timeoutMs: number,
-    cause?: unknown
+    cause?: unknown,
+    output?: ExecTimeoutOutput
   ) {
     super(
       `Command timed out after ${Math.round(timeoutMs / 1000)}s: ${[command, ...args].join(' ')}`,
       cause
     );
+    this.stdout = output?.stdout ?? '';
+    this.stderr = output?.stderr ?? '';
+    this.outputTruncated = output?.truncated ?? false;
   }
 
   override get userMessage(): string {
     return (
       `${this.message}\n\n` +
       'The command was killed because it exceeded its time budget, not because it failed on its own. ' +
-      'If the host is just slow or loaded, re-running may succeed.'
+      'If the host is just slow or loaded, re-running may succeed.' +
+      this.outputTailForUser()
     );
   }
+
+  /**
+   * The last few lines the command printed before it was killed, so an
+   * operator can see what it was doing (a `git add -A` stuck on one path,
+   * a build step that hung) instead of a bare budget number. Prefers
+   * stderr; falls back to stdout when stderr is silent.
+   */
+  private outputTailForUser(): string {
+    const source = this.stderr.trim().length > 0 ? this.stderr : this.stdout;
+    const lines = source
+      .trimEnd()
+      .split(/\r?\n/)
+      .filter((line) => line.length > 0);
+    if (lines.length === 0) return '';
+    const tail = lines.slice(-EXEC_TIMEOUT_TAIL_LINES);
+    const label = this.stderr.trim().length > 0 ? 'stderr' : 'stdout';
+    const omitted =
+      lines.length > tail.length ? ` (last ${tail.length} of ${lines.length} lines)` : '';
+    const truncatedNote = this.outputTruncated ? ' [captured output was truncated]' : '';
+    return `\n\nOutput before the timeout (${label}${omitted})${truncatedNote}:\n${tail.map((line) => `  ${line}`).join('\n')}`;
+  }
 }
+
+/** Output captured before an exec timeout fired; see {@link ExecTimeoutError}. */
+export interface ExecTimeoutOutput {
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+}
+
+/** How many trailing output lines {@link ExecTimeoutError.userMessage} shows. */
+const EXEC_TIMEOUT_TAIL_LINES = 20;
 
 /**
  * Error thrown when a file-lock wait times out because another process holds

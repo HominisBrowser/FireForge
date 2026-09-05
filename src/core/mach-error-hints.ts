@@ -22,7 +22,7 @@ export interface MachErrorHint {
  * Registered hint patterns. Order-sensitive: the first match wins per
  * pattern, but multiple distinct patterns may fire for the same stderr.
  */
-export const MACH_ERROR_HINTS: MachErrorHint[] = [
+const MACH_ERROR_HINTS: MachErrorHint[] = [
   {
     pattern: /mozbuild\.preprocessor\.Preprocessor\.Error[\s\S]*?no preprocessor directives found/,
     hint:

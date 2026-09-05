@@ -586,3 +586,175 @@ describe('addCustomElementRegistration — markerComment output', () => {
     expect(occurrences).toHaveLength(1);
   });
 });
+
+describe('addCustomElementRegistration — Firefox 152 pre-declared arrays', () => {
+  const FIREFOX_152_ARRAYS = `const gNonDclCustomElements = [
+    ["findbar", "chrome://global/content/elements/findbar.js"],
+    ["wizard", "chrome://global/content/elements/wizard.js"],
+];
+
+for (let [tag, script] of gNonDclCustomElements) {
+  customElements.setElementCreationCallback(tag, () => {
+    Services.scriptloader.loadSubScript(script, window);
+  });
+}
+
+const gDclCustomElements = [
+    ["moz-button", "chrome://global/content/elements/moz-button.mjs"],
+    ["moz-toggle", "chrome://global/content/elements/moz-toggle.mjs"],
+];
+
+document.addEventListener("DOMContentLoaded", () => {
+  for (let [tag, script] of gDclCustomElements) {
+    customElements.setElementCreationCallback(tag, () => {
+      ChromeUtils.importESModule(script);
+    });
+  }
+});
+`;
+
+  async function makeFirefox152Engine(): Promise<{
+    engineDir: string;
+    customElementsPath: string;
+  }> {
+    const engineDir = await mkdtemp(join(tmpdir(), 'fireforge-ast-ff152-'));
+    cleanupPaths.push(engineDir);
+    const customElementsPath = join(engineDir, CUSTOM_ELEMENTS_JS);
+    await mkdir(dirname(customElementsPath), { recursive: true });
+    await writeFile(customElementsPath, FIREFOX_152_ARRAYS);
+    return { engineDir, customElementsPath };
+  }
+
+  it('inserts an .mjs entry alphabetically into the pre-declared DCL array', async () => {
+    const { engineDir, customElementsPath } = await makeFirefox152Engine();
+
+    await addCustomElementRegistration(
+      engineDir,
+      'moz-hominis-panel',
+      'chrome://global/content/elements/moz-hominis-panel.mjs'
+    );
+
+    const updated = await readFile(customElementsPath, 'utf8');
+    const lines = updated.split('\n');
+    const panelLine = lines.findIndex((line) => line.includes('["moz-hominis-panel"'));
+    const buttonLine = lines.findIndex((line) => line.includes('["moz-button"'));
+    const toggleLine = lines.findIndex((line) => line.includes('["moz-toggle"'));
+    const dclLine = lines.findIndex((line) => line.includes('DOMContentLoaded'));
+
+    expect(panelLine).toBeGreaterThan(buttonLine);
+    expect(panelLine).toBeLessThan(toggleLine);
+    // The array is declared *before* the DOMContentLoaded listener that
+    // consumes it, so the insertion must land above the listener.
+    expect(panelLine).toBeLessThan(dclLine);
+  });
+
+  it('does not duplicate a tag already in the pre-declared DCL array', async () => {
+    const { engineDir, customElementsPath } = await makeFirefox152Engine();
+
+    await addCustomElementRegistration(
+      engineDir,
+      'moz-button',
+      'chrome://global/content/elements/moz-button.mjs'
+    );
+
+    const updated = await readFile(customElementsPath, 'utf8');
+    expect(updated).toBe(FIREFOX_152_ARRAYS);
+  });
+});
+
+describe('addCustomElementRegistration — legacy tag with only a DCL block', () => {
+  it('refuses to let a .js entry land in the DOMContentLoaded block', async () => {
+    const engineDir = await mkdtemp(join(tmpdir(), 'fireforge-ast-dcl-only-'));
+    cleanupPaths.push(engineDir);
+    const customElementsPath = join(engineDir, CUSTOM_ELEMENTS_JS);
+    await mkdir(dirname(customElementsPath), { recursive: true });
+    await writeFile(
+      customElementsPath,
+      `document.addEventListener("DOMContentLoaded", () => {
+  for (let [tag, script] of [
+      ["moz-button", "chrome://global/content/elements/moz-button.mjs"],
+      ["moz-toggle", "chrome://global/content/elements/moz-toggle.mjs"],
+  ]) {
+    customElements.setElementCreationCallback(tag, () => {
+      ChromeUtils.importESModule(script);
+    });
+  }
+});
+`
+    );
+
+    await expect(
+      addCustomElementRegistration(
+        engineDir,
+        'my-widget',
+        'chrome://global/content/elements/my-widget.js'
+      )
+    ).rejects.toThrow(FurnaceError);
+    await expect(
+      addCustomElementRegistration(
+        engineDir,
+        'my-widget',
+        'chrome://global/content/elements/my-widget.js'
+      )
+    ).rejects.toThrow(/DOMContentLoaded/);
+  });
+});
+
+describe('addCustomElementRegistration — degenerate registration shapes', () => {
+  async function makeEngineWithContent(content: string): Promise<{
+    engineDir: string;
+    customElementsPath: string;
+  }> {
+    const engineDir = await mkdtemp(join(tmpdir(), 'fireforge-ast-degenerate-'));
+    cleanupPaths.push(engineDir);
+    const customElementsPath = join(engineDir, CUSTOM_ELEMENTS_JS);
+    await mkdir(dirname(customElementsPath), { recursive: true });
+    await writeFile(customElementsPath, content);
+    return { engineDir, customElementsPath };
+  }
+
+  it('inserts into an empty registration array when there is no entry to copy formatting from', async () => {
+    const { engineDir, customElementsPath } = await makeEngineWithContent(
+      `for (let [tag, script] of []) {
+  customElements.setElementCreationCallback(tag, () => {
+    Services.scriptloader.loadSubScript(script, window);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  for (let [tag, script] of []) {
+    customElements.setElementCreationCallback(tag, () => {
+      ChromeUtils.importESModule(script);
+    });
+  }
+});
+`
+    );
+
+    await addCustomElementRegistration(
+      engineDir,
+      'moz-dock',
+      'chrome://global/content/elements/moz-dock.mjs'
+    );
+
+    const updated = await readFile(customElementsPath, 'utf8');
+    expect(updated).toContain('["moz-dock", "chrome://global/content/elements/moz-dock.mjs"]');
+  });
+
+  it('treats a standalone setElementCreationCallback as already registered', async () => {
+    const { engineDir, customElementsPath } = await makeEngineWithContent(
+      'lazy.customElements.setElementCreationCallback("moz-dock", () => {});\n'
+    );
+    const before = await readFile(customElementsPath, 'utf8');
+
+    await expect(
+      addCustomElementRegistration(
+        engineDir,
+        'moz-dock',
+        'chrome://global/content/elements/moz-dock.mjs'
+      )
+    ).resolves.toBeUndefined();
+
+    expect(await readFile(customElementsPath, 'utf8')).toBe(before);
+  });
+});

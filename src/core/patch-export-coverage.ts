@@ -4,44 +4,8 @@
  */
 
 import type { PatchInfo, PatchMetadata } from '../types/commands/index.js';
-import { discoverPatches, isNewFilePatch } from './patch-apply.js';
+import { discoverPatches } from './patch-apply.js';
 import { loadPatchesManifest } from './patch-manifest.js';
-
-/**
- * Finds patches that are completely superseded by newer patches.
- * A patch is superseded if all its affected files are covered by newer patches.
- * @param patchesDir - Path to the patches directory
- * @param newPatchFiles - Files affected by the new patch
- * @param excludeFilename - Filename to exclude from results (the new patch itself)
- * @returns Superseded patches
- */
-export async function findSupersededPatches(
-  patchesDir: string,
-  newPatchFiles: string[],
-  excludeFilename?: string
-): Promise<PatchInfo[]> {
-  const manifest = await loadPatchesManifest(patchesDir);
-  if (!manifest) return [];
-
-  const patches = await discoverPatches(patchesDir);
-  const superseded: PatchInfo[] = [];
-
-  for (const metadata of manifest.patches) {
-    if (excludeFilename && metadata.filename === excludeFilename) continue;
-
-    if (metadata.filesAffected.length === 1) {
-      const affectedFile = metadata.filesAffected[0];
-      if (affectedFile && newPatchFiles.includes(affectedFile)) {
-        const patch = patches.find((p) => p.filename === metadata.filename);
-        if (patch && (await isNewFilePatch(patch.path))) {
-          superseded.push(patch);
-        }
-      }
-    }
-  }
-
-  return superseded;
-}
 
 /**
  * Report whether a patch is fully covered by a new export, and which of its

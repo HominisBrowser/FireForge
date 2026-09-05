@@ -14,8 +14,8 @@ import { pickDefined } from '../utils/options.js';
 import { FIREFOX_PRODUCTS, PROJECT_LICENSES } from '../utils/validation.js';
 import {
   buildSetupConfig,
-  parseFirefoxProductOption,
-  parseProjectLicenseOption,
+  resolveFirefoxProduct,
+  resolveProjectLicense,
   resolveSetupInputs,
   validateSetupOptions,
   writeSetupProjectFiles,
@@ -118,17 +118,11 @@ export function registerSetup(program: Command, { withErrorHandling }: CommandCo
           if (yes === true) setupOptions.force = true;
 
           if (product !== undefined) {
-            const parsedProduct = parseFirefoxProductOption(product);
-            if (parsedProduct !== undefined) {
-              setupOptions.product = parsedProduct;
-            }
+            setupOptions.product = resolveFirefoxProduct(product, '--product');
           }
 
           if (license !== undefined) {
-            const parsedLicense = parseProjectLicenseOption(license);
-            if (parsedLicense !== undefined) {
-              setupOptions.license = parsedLicense;
-            }
+            setupOptions.license = resolveProjectLicense(license, '--license');
           }
 
           await setupCommand(resolve(process.cwd()), setupOptions);

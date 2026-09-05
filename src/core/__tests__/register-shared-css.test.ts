@@ -51,6 +51,31 @@ describe('registerSharedCSS', () => {
     expect(customIdx).toBeLessThan(zoomIdx);
   });
 
+  it('inserts at the beginning when the name sorts before every existing entry', async () => {
+    const result = await registerSharedCSS('/engine', 'aardvark.css');
+
+    expect(result.skipped).toBe(false);
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    const lines = written.split('\n');
+    const newIdx = lines.findIndex((l: string) => l.includes('aardvark.css'));
+    const firstExistingIdx = lines.findIndex((l: string) => l.includes('autocomplete.css'));
+
+    expect(newIdx).toBeGreaterThanOrEqual(0);
+    expect(newIdx).toBeLessThan(firstExistingIdx);
+  });
+
+  it('inserts at the end when the name sorts after every existing entry', async () => {
+    const result = await registerSharedCSS('/engine', 'zzz-last.css');
+
+    expect(result.skipped).toBe(false);
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    const lines = written.split('\n');
+    const newIdx = lines.findIndex((l: string) => l.includes('zzz-last.css'));
+    const lastExistingIdx = lines.findIndex((l: string) => l.includes('zoom.css'));
+
+    expect(newIdx).toBeGreaterThan(lastExistingIdx);
+  });
+
   it('is idempotent — skips if already registered', async () => {
     const content =
       MOCK_JAR_INC_MN + '  skin/classic/browser/custom.css    (../shared/custom.css)\n';

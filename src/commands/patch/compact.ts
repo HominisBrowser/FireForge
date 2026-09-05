@@ -13,7 +13,8 @@
 import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
-import { appendHistory, confirmDestructive, type HistoryEntry } from '../../core/destructive.js';
+import { confirmDestructive, type HistoryEntry } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
   loadPatchesManifest,
@@ -25,9 +26,10 @@ import { GeneralError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchCompactOptions, PatchMetadata } from '../../types/commands/index.js';
 import type { PatchPolicyConfig } from '../../types/config.js';
-import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
+import { renameMapsEqual } from '../patch-rename-map.js';
 import { requirePatchQueue } from './patch-context.js';
 import { rebuildFilenameForOrder } from './reorder.js';
 
@@ -175,14 +177,7 @@ export async function patchCompactCommand(
     unsafeOverride: options.forceUnsafe === true,
   });
 
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Compact cancelled');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Compact cancelled')) return;
 
   await withPatchDirectoryLock(
     paths.patches,
@@ -196,6 +191,16 @@ export async function patchCompactCommand(
       if (currentRenameMap.size === 0) {
         info('Patch queue was compacted by another process. Nothing to do.');
         return;
+      }
+      // The operator confirmed a specific plan. A queue that changed between
+      // the prompt and the lock (an export landing a new patch, a delete)
+      // yields a different plan whose renames were never shown — refuse
+      // rather than commit them under a history entry that says "ok", the
+      // same gate `patch reorder` applies.
+      if (!renameMapsEqual(renameMap, currentRenameMap)) {
+        throw new GeneralError(
+          'Patch queue changed while waiting for confirmation. Re-run compact to recompute the rename plan.'
+        );
       }
 
       enforcePatchPolicy({
@@ -223,13 +228,7 @@ export async function patchCompactCommand(
         result: 'ok',
       };
 
-      try {
-        await appendHistory(paths.patches, historyEntry);
-      } catch (historyError: unknown) {
-        warn(
-          `History log append failed after patch compact committed: ${toError(historyError).message}`
-        );
-      }
+      await appendHistoryBestEffort(paths.patches, historyEntry, `patch compact committed`);
     },
     { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch compact' }
   );

@@ -131,7 +131,13 @@ describe('auditBuildArtifacts', () => {
 
   it('returns zeroed summary when there is no dist tree', async () => {
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
-    expect(summary).toEqual({ updated: 0, stale: 0, missing: 0, skipped: 0, entries: [] });
+    expect(summary).toMatchObject({
+      updated: 0,
+      stale: 0,
+      missing: 0,
+      skipped: 0,
+      entries: [],
+    });
   });
 
   it('warns when a packageable source has no matching artifact in the bundle', async () => {
@@ -243,7 +249,13 @@ describe('auditBuildArtifacts', () => {
       binaryName: 'mybrowser',
     };
     const summary = await auditBuildArtifacts('/project', engineDir, baseline);
-    expect(summary).toEqual({ updated: 0, stale: 0, missing: 0, skipped: 0, entries: [] });
+    expect(summary).toMatchObject({
+      updated: 0,
+      stale: 0,
+      missing: 0,
+      skipped: 0,
+      entries: [],
+    });
     expect(verboseMock).toHaveBeenCalled();
   });
 

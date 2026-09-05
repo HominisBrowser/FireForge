@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -16,6 +15,8 @@ import type { PatchesManifest } from '../types/commands/index.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { readText } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
+import { isObject } from '../utils/validation.js';
 import { normalizeEngineRelativeInput } from './re-export-scan.js';
 
 /** Concurrency bound for patch-body hashing (matches the classify/lint pools). */
@@ -30,10 +31,6 @@ interface ScanFilesManifest {
   assignments: ScanFilesManifestAssignment[];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function parseScanFilesManifest(raw: string, manifestPath: string): ScanFilesManifest {
   let parsed: unknown;
   try {
@@ -45,7 +42,7 @@ function parseScanFilesManifest(raw: string, manifestPath: string): ScanFilesMan
     );
   }
 
-  if (!isRecord(parsed) || !Array.isArray(parsed['assignments'])) {
+  if (!isObject(parsed) || !Array.isArray(parsed['assignments'])) {
     throw new InvalidArgumentError(
       '--scan-files manifest must contain an assignments array.',
       '--scan-files'
@@ -54,7 +51,7 @@ function parseScanFilesManifest(raw: string, manifestPath: string): ScanFilesMan
 
   const assignments: ScanFilesManifestAssignment[] = [];
   for (const [index, assignment] of parsed['assignments'].entries()) {
-    if (!isRecord(assignment)) {
+    if (!isObject(assignment)) {
       throw new InvalidArgumentError(
         `--scan-files assignments[${index}] must be an object.`,
         '--scan-files'
@@ -161,7 +158,7 @@ async function fingerprintDryRunState(
         unavailableGenerationReason(generation)
     );
   }
-  fingerprint.set('the engine working tree', createHash('sha256').update(generation).digest('hex'));
+  fingerprint.set('the engine working tree', sha256Hex(generation));
   let names: string[] = [];
   try {
     const entries = await readdir(patchesDir, { withFileTypes: true });
@@ -196,9 +193,7 @@ async function fingerprintDryRunState(
     async (name): Promise<PatchHashResult> => {
       try {
         return {
-          hash: createHash('sha256')
-            .update(await readFile(join(patchesDir, name)))
-            .digest('hex'),
+          hash: sha256Hex(await readFile(join(patchesDir, name))),
         };
       } catch (error: unknown) {
         // A file that vanished between the listing and the read is omitted, so

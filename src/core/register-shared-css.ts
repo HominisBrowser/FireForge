@@ -7,6 +7,7 @@ import { basename, join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { insertJarMnEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 
@@ -80,7 +81,7 @@ export function buildEntry(name: string, sourceColumn: number | undefined): stri
   const minColumn = target.length + MIN_SOURCE_GAP;
   const column = sourceColumn !== undefined && sourceColumn >= minColumn ? sourceColumn : minColumn;
   const padding = ' '.repeat(column - target.length);
-  return `${target}${padding}(../shared/${name}.css)`.replace(/\\/g, '/');
+  return normalizePathSlashes(`${target}${padding}(../shared/${name}.css)`);
 }
 
 /**

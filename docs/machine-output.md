@@ -52,14 +52,16 @@ if (options.json === true) {
 
 ## Current surfaces
 
-| Surface                            | Shape                                                 | Notes                                                                                                                                                                                                                              |
-| ---------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status --json`                    | `{ schemaVersion: 1, … }`                             | Error envelope on three engine preconditions                                                                                                                                                                                       |
-| `tree list --json`                 | `{ schemaVersion: 1, trees }`                         | Error envelope added in 0.44.0                                                                                                                                                                                                     |
-| `test` verdict line                | `FIREFORGE-VERDICT: PASS\|FAIL reason=… [log=<path>]` | Not JSON. A single final stdout line, sealed by `setStdoutSealed` so nothing can displace it. `log=` names the run's own complete output under `.fireforge/logs/`, so a piped or truncated run still leaves a re-readable artifact |
-| `lint --per-patch --report <path>` | `{ schemaVersion: 1, … }`                             | Written to a file, never read back by FireForge                                                                                                                                                                                    |
-| `status --raw`                     | `git status --porcelain` lines                        | Not JSON, but a machine surface: it engages the same stdout discipline, so rules 3 and 4 apply and rules 1 and 2 do not. A clean tree prints nothing                                                                               |
-| `build` log announcement           | `Full build output: <path>`                           | Not JSON. `build` prints no verdict line, so it names its run log directly on the way out                                                                                                                                          |
+| Surface                            | Shape                                                                | Notes                                                                                                                                                                                                                              |
+| ---------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status --json`                    | `{ schemaVersion: 1, … }`                                            | Error envelope on three engine preconditions                                                                                                                                                                                       |
+| `tree list --json`                 | `{ schemaVersion: 1, trees }`                                        | Error envelope added in 0.44.0                                                                                                                                                                                                     |
+| `token list --json`                | `{ schemaVersion: 1, tokensCssPath, categories }`                    | Categories in file order, each with its tokens (`name`, `line`, `value`)                                                                                                                                                           |
+| `token show --json`                | `{ schemaVersion: 1, name, category, declarations }`                 | One entry per declaring block, with its selector trail and line                                                                                                                                                                    |
+| `test` verdict line                | `FIREFORGE-VERDICT: PASS\|FAIL reason=… [note=<class>] [log=<path>]` | Not JSON. A single final stdout line, sealed by `setStdoutSealed` so nothing can displace it. `log=` names the run's own complete output under `.fireforge/logs/`, so a piped or truncated run still leaves a re-readable artifact |
+| `lint --per-patch --report <path>` | `{ schemaVersion: 1, … }`                                            | Written to a file, never read back by FireForge                                                                                                                                                                                    |
+| `status --raw`                     | `git status --porcelain` lines                                       | Not JSON, but a machine surface: it engages the same stdout discipline, so rules 3 and 4 apply and rules 1 and 2 do not. A clean tree prints nothing                                                                               |
+| `build` log announcement           | `Full build output: <path>`                                          | Not JSON. `build` prints no verdict line, so it names its run log directly on the way out                                                                                                                                          |
 
 `--raw` is why `cli.ts` reads `process.argv` for `--json` **or** `--raw`
 before dispatching: rule 3 is about who owns stdout, and that question is
@@ -92,3 +94,24 @@ what moved.
 | `inconclusive`  | A result exists but `engine/` moved under it, so it was discarded.                                                                                                                                                   |
 | `lock-timeout`  | The run never started: the engine session lock stayed contended.                                                                                                                                                     |
 | `killed`        | A signal terminated the run. Written from the signal handler so a log tail is always self-describing — a killed run must never be silent, or "killed", "still running" and "never started" become indistinguishable. |
+
+### The additive `note=` key
+
+A `FAIL reason=preflight` line covers every gate before the harness: a
+missing build, a peer's packaging record replacing this session's, a
+developer browser holding the objdir. An unattended reader whose pipe kept
+only the verdict line could not tell those apart, so a preflight refusal that
+classifies itself also emits `note=<class>`.
+
+`note=` is **additive**, like `log=`, `signal=` and `shards=`. `reason=` is
+unchanged and still comes from the closed set above, so a consumer that
+tokenises `key=value` pairs is unaffected, and a gate that names no class
+emits no `note=` at all. The classes are not a closed set and may grow;
+consumers should treat an unrecognised one as opaque. Current values:
+`stale-browser`, `stale-browser-kill-failed`, `marionette-port-busy`,
+`coverage-replaced`, `stale-build`, `stale-components`.
+
+A preflight refusal's own text is written to stdout **before** the verdict
+line, and into the run log, so the verdict stays the last stdout write while
+the reason survives both a redirect and a `tail`. See
+[`run-logs.md`](run-logs.md).

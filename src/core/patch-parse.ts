@@ -12,6 +12,34 @@ import { assert } from '../utils/assert.js';
  * must build on {@link parseDiffSections} rather than re-walking lines.
  */
 
+/** Width of the zero-padded numeric prefix on a patch filename ("001-…"). */
+const PATCH_ORDER_WIDTH = 3;
+
+/**
+ * Renders a patch order as the zero-padded prefix used in filenames and in
+ * every message that names an order.
+ *
+ * Eleven call sites across `patch-policy`, `patch-export`, `export-flow`,
+ * `export-placement-policy` and `patch move-files` spelled this as
+ * `String(order).padStart(3, '0')`, so the padding width lived in eleven
+ * places while the filenames it has to agree with are produced in one.
+ * @param order - Numeric patch order.
+ * @param width - Prefix width; defaults to the on-disk convention.
+ * @returns The zero-padded order, e.g. `007`.
+ */
+export function formatPatchOrder(order: number, width: number = PATCH_ORDER_WIDTH): string {
+  return String(order).padStart(width, '0');
+}
+
+/**
+ * Renders an inclusive order range the way `patchPolicy` diagnostics name it.
+ * @param range - Inclusive `from`/`to` order bounds.
+ * @returns The range label, e.g. `100-199`.
+ */
+export function formatOrderRange(range: { from: number; to: number }): string {
+  return `${formatPatchOrder(range.from)}-${formatPatchOrder(range.to)}`;
+}
+
 /**
  * Extracts the order number from a patch filename.
  * Expects format like "001-description.patch"

@@ -87,9 +87,24 @@ export function emitPassVerdict(): void {
   writeVerdictLine('FIREFORGE-VERDICT: PASS');
 }
 
-/** Emits a FAIL verdict carrying an emission-layer reason code. */
-export function emitFailVerdict(reason: FireforgeVerdictReason): void {
-  writeVerdictLine(`FIREFORGE-VERDICT: FAIL reason=${reason}`);
+/**
+ * Emits a FAIL verdict carrying an emission-layer reason code, and
+ * optionally the refusal class that produced it.
+ *
+ * `note=` is ADDITIVE, like the `log=`, `signal=` and `shards=` keys already
+ * on this line: `reason=` is unchanged and still comes from the closed set
+ * in `docs/machine-output.md`, so a consumer that tokenises `key=value`
+ * pairs is unaffected. It exists because `reason=preflight` covers every
+ * gate before the harness — a missing build, a peer's packaging record, a
+ * developer browser holding the objdir — and an unattended reader whose
+ * pipe kept only the verdict line could not tell those apart.
+ *
+ * @param reason - Closed-set verdict reason
+ * @param note - Stable refusal class, when the thrower named one
+ */
+export function emitFailVerdict(reason: FireforgeVerdictReason, note?: string): void {
+  const suffix = note === undefined ? '' : ` note=${note}`;
+  writeVerdictLine(`FIREFORGE-VERDICT: FAIL reason=${reason}${suffix}`);
 }
 
 /**

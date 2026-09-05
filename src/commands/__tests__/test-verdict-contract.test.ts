@@ -85,7 +85,7 @@ import {} from '../../core/coverage-extend.js';
 import {
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
-  testWithOutput,
+  runMachTestSuite,
 } from '../../core/mach.js';
 import {} from '../../core/marionette-port.js';
 import { runMarionettePreflight } from '../../core/marionette-preflight.js';
@@ -189,7 +189,7 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
   });
 
   it('a crashed shard classifies the aggregate as reason=crash, not test-failures', async () => {
-    vi.mocked(testWithOutput).mockResolvedValueOnce(GREEN).mockResolvedValueOnce(CRASH);
+    vi.mocked(runMachTestSuite).mockResolvedValueOnce(GREEN).mockResolvedValueOnce(CRASH);
 
     const capture = captureVerdictLines();
     try {
@@ -207,7 +207,7 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
   });
 
   it('a single failing run emits its classifier verdict once, with no preflight fallback on top', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue(REAL_FAILURE);
+    vi.mocked(runMachTestSuite).mockResolvedValue(REAL_FAILURE);
 
     const capture = captureVerdictLines();
     try {

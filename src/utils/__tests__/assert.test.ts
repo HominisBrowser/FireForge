@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { InternalInvariantError } from '../../errors/base.js';
 import { ExitCode } from '../../errors/codes.js';
-import { assert, assertDefined, expectDefined } from '../assert.js';
+import { assert, expectDefined } from '../assert.js';
 
 describe('assert', () => {
   it('returns without throwing when the condition is truthy', () => {
@@ -40,6 +40,8 @@ describe('assert', () => {
     }
   });
 
+  // The lazy-message contract is one shared code path (`resolveMessage`);
+  // asserting it once here covers `expectDefined` too.
   it('does not build a thunk message on the passing path', () => {
     const message = vi.fn(() => 'never built');
 
@@ -58,48 +60,6 @@ describe('assert', () => {
   });
 });
 
-describe('assertDefined', () => {
-  it('accepts present values, including falsy ones', () => {
-    expect(() => {
-      assertDefined(0, 'zero is present');
-    }).not.toThrow();
-    expect(() => {
-      assertDefined('', 'empty string is present');
-    }).not.toThrow();
-    expect(() => {
-      assertDefined(false, 'false is present');
-    }).not.toThrow();
-  });
-
-  it('throws on undefined', () => {
-    expect(() => {
-      assertDefined(undefined, 'manifest row for the renumbered patch');
-    }).toThrow(InternalInvariantError);
-  });
-
-  it('throws on null', () => {
-    expect(() => {
-      assertDefined(null, 'manifest row for the renumbered patch');
-    }).toThrow(InternalInvariantError);
-  });
-
-  it('narrows the value for subsequent statements', () => {
-    const value: string | undefined = 'present';
-
-    assertDefined(value, 'value is present');
-
-    expect(value.length).toBe(7);
-  });
-
-  it('does not build a thunk message on the passing path', () => {
-    const message = vi.fn(() => 'never built');
-
-    assertDefined('present', message);
-
-    expect(message).not.toHaveBeenCalled();
-  });
-});
-
 describe('expectDefined', () => {
   it('returns the value when present', () => {
     expect(expectDefined('present', 'value is present')).toBe('present');
@@ -114,19 +74,5 @@ describe('expectDefined', () => {
 
   it('throws on null', () => {
     expect(() => expectDefined(null, 'line at the hunk cursor')).toThrow(InternalInvariantError);
-  });
-
-  it('narrows away null and undefined in the return type', () => {
-    const lines: (string | undefined)[] = ['first'];
-
-    expect(expectDefined(lines[0], 'first line').length).toBe(5);
-  });
-
-  it('does not build a thunk message on the passing path', () => {
-    const message = vi.fn(() => 'never built');
-
-    expectDefined('present', message);
-
-    expect(message).not.toHaveBeenCalled();
   });
 });

@@ -123,6 +123,30 @@ describe('watchCommand', () => {
     expect(watchWithOutput).not.toHaveBeenCalled();
   });
 
+  it('fails instead of guessing when build artifacts are ambiguous', async () => {
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({
+      exists: true,
+      ambiguous: true,
+      objDirs: ['obj-debug', 'obj-release'],
+    });
+
+    await expect(watchCommand('/project')).rejects.toThrow(/Multiple build artifact directories/);
+
+    expect(watchWithOutput).not.toHaveBeenCalled();
+  });
+
+  it('rejects copied build artifacts whose mozinfo points at another workspace', async () => {
+    vi.mocked(hasBuildArtifacts).mockResolvedValue({
+      exists: true,
+      objDir: 'obj-debug',
+      metadataMismatch: { objDir: 'obj-debug', topsrcdir: '/other/workspace/engine' },
+    });
+
+    await expect(watchCommand('/project')).rejects.toThrow(/copied or relocated build artifacts/i);
+
+    expect(watchWithOutput).not.toHaveBeenCalled();
+  });
+
   it('translates configure-time watchman failures into actionable guidance', async () => {
     vi.mocked(watchWithOutput).mockResolvedValue({
       stdout: 'watchman was not available when the current build was configured',

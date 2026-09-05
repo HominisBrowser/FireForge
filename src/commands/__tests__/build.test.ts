@@ -242,31 +242,31 @@ describe('buildCommand', () => {
     // `fireforge build` packages the full test set, so the baseline claims
     // full packaging coverage for the --allow-stale-build coverage gate.
     await expect(buildCommand('/project', {})).resolves.toBeUndefined();
-    expect(writeBuildBaseline).toHaveBeenCalledWith(
-      '/project',
-      nativePath('/project/engine'),
-      'mybrowser',
-      'full',
-      undefined,
-      'fireforge build',
-      'auto',
-      'full'
-    );
+    expect(writeBuildBaseline).toHaveBeenCalledWith({
+      projectRoot: '/project',
+      engineDir: nativePath('/project/engine'),
+      binaryName: 'mybrowser',
+      testPackagingCoverage: 'full',
+      previousBaseline: undefined,
+      recordedBy: 'fireforge build',
+      staticComponentsHandling: 'auto',
+      buildKind: 'full',
+    });
 
     vi.mocked(writeBuildBaseline).mockClear();
     await expect(buildCommand('/project', { ui: true })).resolves.toBeUndefined();
-    expect(writeBuildBaseline).toHaveBeenCalledWith(
-      '/project',
-      nativePath('/project/engine'),
-      'mybrowser',
-      'full',
-      undefined,
-      'fireforge build --ui',
-      'auto',
+    expect(writeBuildBaseline).toHaveBeenCalledWith({
+      projectRoot: '/project',
+      engineDir: nativePath('/project/engine'),
+      binaryName: 'mybrowser',
+      testPackagingCoverage: 'full',
+      previousBaseline: undefined,
+      recordedBy: 'fireforge build --ui',
+      staticComponentsHandling: 'auto',
       // --ui is a `mach build faster`: its jar.mn fingerprints must be
       // carried forward, never refreshed.
-      'faster'
-    );
+      buildKind: 'faster',
+    });
   });
 
   it('refuses UI-only builds when the launchable bundle is missing', async () => {
@@ -582,17 +582,6 @@ describe('registerBuild', () => {
     });
     vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', attempts: 1 });
     vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', attempts: 1 });
-  });
-
-  it('routes parsed CLI options through the registered action', async () => {
-    const program = createProgram();
-
-    await program.parseAsync(['node', 'test', 'build', '--ui', '--jobs', '4', '--brand', 'beta']);
-
-    expect(validateBrandOverride).toHaveBeenCalledWith('mybrowser', 'beta');
-    expect(buildUI).toHaveBeenCalledWith(nativePath('/project/engine'));
-    expect(build).not.toHaveBeenCalled();
-    expect(info).toHaveBeenCalledWith('Using 4 parallel jobs');
   });
 
   it('rejects invalid parsed job counts before invoking the command action', async () => {

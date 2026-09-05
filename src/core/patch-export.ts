@@ -11,9 +11,7 @@ import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
-import { PATCH_CATEGORIES } from '../utils/validation.js';
 import { discoverPatches, withPatchDirectoryLock } from './patch-apply.js';
-import { normalizePatchArtifact } from './patch-artifact-normalize.js';
 import {
   findAllPatchesForFilesWithDetails,
   type SupersedeCoverageDetail,
@@ -21,24 +19,45 @@ import {
 import type { PatchDirectoryLockOptions } from './patch-lock.js';
 import {
   addPatchToManifest,
-  findPatchesAffectingFile,
   loadPatchesManifestForWrite,
   PATCHES_MANIFEST,
   savePatchesManifest,
 } from './patch-manifest.js';
-import { requirePatchOrder } from './patch-parse.js';
+import { formatPatchOrder, requirePatchOrder } from './patch-parse.js';
 import { allocatePolicyOrder, enforcePatchPolicy } from './patch-policy.js';
 
 export {
   findAllPatchesForFiles,
   findAllPatchesForFilesWithDetails,
-  findSupersededPatches,
-  isPatchFullyCovered,
-  type SupersedeCoverageDetail,
 } from './patch-export-coverage.js';
 import { escapeRegex } from '../utils/regex.js';
 export { mutatePatchMetadata, updatePatchMetadata } from './patch-export-metadata.js';
 export { updatePatchAndMetadata } from './patch-export-update.js';
+
+/**
+ * Projects the planning subset out of a wider export input (commit input,
+ * dry-run preview input) — the fields `planExport` /
+ * `computeExportPlanUnderLock` read. Optional fields are copied only when
+ * present so the plan input never carries explicit `undefined` keys, which
+ * would otherwise leak into the written metadata via spread. The commit
+ * path and the dry-run preview both go through this one projection so
+ * they cannot drift field by field.
+ */
+export function buildPlanExportInput(input: PlanExportInput): PlanExportInput {
+  return {
+    patchesDir: input.patchesDir,
+    category: input.category,
+    name: input.name,
+    description: input.description,
+    filesAffected: input.filesAffected,
+    sourceEsrVersion: input.sourceEsrVersion,
+    ...(input.sourceProduct !== undefined ? { sourceProduct: input.sourceProduct } : {}),
+    ...(input.sourceVersion !== undefined ? { sourceVersion: input.sourceVersion } : {}),
+    ...(input.tier !== undefined ? { tier: input.tier } : {}),
+    ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
+    ...(input.config !== undefined ? { config: input.config } : {}),
+  };
+}
 
 /**
  * Gets the next patch number for a new patch.
@@ -186,19 +205,7 @@ export async function commitExportedPatch(
   return withPatchDirectoryLock(
     input.patchesDir,
     async () => {
-      const plan = await computeExportPlanUnderLock({
-        patchesDir: input.patchesDir,
-        category: input.category,
-        name: input.name,
-        description: input.description,
-        filesAffected: input.filesAffected,
-        sourceEsrVersion: input.sourceEsrVersion,
-        ...(input.sourceProduct !== undefined ? { sourceProduct: input.sourceProduct } : {}),
-        ...(input.sourceVersion !== undefined ? { sourceVersion: input.sourceVersion } : {}),
-        ...(input.tier !== undefined ? { tier: input.tier } : {}),
-        ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
-        ...(input.config !== undefined ? { config: input.config } : {}),
-      });
+      const plan = await computeExportPlanUnderLock(buildPlanExportInput(input));
 
       if (input.config !== undefined) {
         enforcePatchPolicy({
@@ -220,7 +227,20 @@ export async function commitExportedPatch(
       }
 
       try {
-        await writeText(patchPath, normalizePatchArtifact(input.diff));
+        // Patch bodies are written byte-for-byte as git produced them, including the
+        // single-space rendering of a blank context line.
+        //
+        // Do NOT add a whitespace-trimming pass here or at any other write site.
+        // Stripping marker lines whose payload is pure whitespace (`/^[ +-]\s+$/` →
+        // bare marker) corrupts real content: Firefox sources contain whitespace-only
+        // lines, so a ` `/`-` line whose payload was two spaces no longer matches the
+        // pristine tree and the freshly exported patch fails `git apply --check`,
+        // while a `+` line silently changes what the patch produces. The repository
+        // whitespace check already exempts `patches/*.patch`
+        // (scripts/check-worktree-whitespace.mjs), and the byte-fidelity contract is
+        // pinned end-to-end by `git-diff-latin1-roundtrip.test.ts` and
+        // `re-export.integration.test.ts`.
+        await writeText(patchPath, input.diff);
 
         await addPatchToManifest(
           input.patchesDir,
@@ -276,70 +296,12 @@ export async function commitExportedPatch(
 }
 
 /**
- * Parses a patch filename to extract order, category, and name.
- * Supports both new format (001-category-name.patch) and legacy (001-name.patch).
- */
-export function parseFilename(filename: string): {
-  order: number;
-  category: PatchCategory | null;
-  name: string;
-} {
-  // New format: 001-ui-sidebar.patch
-  const newMatch = /^(\d+)-([a-z]+)-(.+)\.patch$/.exec(filename);
-  if (newMatch?.[1] && newMatch[2] && newMatch[3]) {
-    const orderStr = newMatch[1];
-    const category = newMatch[2];
-    const name = newMatch[3];
-    if ((PATCH_CATEGORIES as readonly string[]).includes(category)) {
-      return {
-        order: parseInt(orderStr, 10),
-        category,
-        name,
-      };
-    }
-  }
-
-  // Legacy format: 001-name.patch
-  const legacyMatch = /^(\d+)-(.+)\.patch$/.exec(filename);
-  if (legacyMatch?.[1] && legacyMatch[2]) {
-    return {
-      order: parseInt(legacyMatch[1], 10),
-      category: null,
-      name: legacyMatch[2],
-    };
-  }
-
-  return { order: Infinity, category: null, name: filename };
-}
-
-/**
- * Finds an existing patch that contains the specified file.
- * Returns the most recent (highest order) patch if multiple exist.
- * @param patchesDir - Path to the patches directory
- * @param filePath - File path to search for
- * @returns The patch info and metadata, or null if not found
- */
-export async function findExistingPatchForFile(
-  patchesDir: string,
-  filePath: string
-): Promise<{ patch: PatchInfo; metadata: PatchMetadata } | null> {
-  const affectingPatches = await findPatchesAffectingFile(patchesDir, filePath);
-
-  if (affectingPatches.length === 0) {
-    return null;
-  }
-
-  // Return the most recent (highest order) patch
-  return affectingPatches[affectingPatches.length - 1] ?? null;
-}
-
-/**
  * Updates the content of a patch file.
  * @param patchPath - Path to the patch file
  * @param newContent - New patch content
  */
 export async function updatePatch(patchPath: string, newContent: string): Promise<void> {
-  await writeText(patchPath, normalizePatchArtifact(newContent));
+  await writeText(patchPath, newContent);
 }
 
 /**
@@ -432,7 +394,7 @@ async function computeExportPlanUnderLock(input: PlanExportInput): Promise<Compu
       : null;
   const patchFilename =
     policyOrder !== null
-      ? `${String(policyOrder).padStart(3, '0')}-${input.category}-${patchNameSlug(input.name, input.category)}.patch`
+      ? `${formatPatchOrder(policyOrder)}-${input.category}-${patchNameSlug(input.name, input.category)}.patch`
       : await getNextPatchFilename(input.patchesDir, input.category, input.name);
   const patchPath = join(input.patchesDir, patchFilename);
 

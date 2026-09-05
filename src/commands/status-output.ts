@@ -283,8 +283,8 @@ export function renderTestCoverageStatus(baseline: BuildBaseline | undefined): v
   }
   const list = coverage.map((path) => `  - ${path}`).join('\n');
   info(
-    `Test packaging coverage: scoped to ${String(coverage.length)} path(s):\n${list}\n` +
+    `Test packaging coverage: scoped to ${coverage.length} path(s):\n${list}\n` +
       'A "fireforge test" over paths outside this list will be refused as uncovered.'
   );
-  outro(`Coverage: scoped (${String(coverage.length)} paths)`);
+  outro(`Coverage: scoped (${coverage.length} paths)`);
 }

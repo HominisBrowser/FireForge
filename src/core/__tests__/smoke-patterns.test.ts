@@ -6,7 +6,6 @@ import {
   compileAllowlistFromStrings,
   matchAllowlist,
   matchesSmokeError,
-  SMOKE_ERROR_PATTERNS,
 } from '../smoke-patterns.js';
 
 // A chrome:// URL that resolves to nothing is a printf outside automation
@@ -71,13 +70,6 @@ describe('matchesSmokeError', () => {
     expect(matchesSmokeError('Launching browser...')).toBe(false);
     expect(matchesSmokeError('INFO: started browser_delayed_startup_finished')).toBe(false);
     expect(matchesSmokeError('')).toBe(false);
-  });
-
-  it('exports the pattern list so operators can audit it', () => {
-    expect(SMOKE_ERROR_PATTERNS.length).toBeGreaterThan(0);
-    for (const pattern of SMOKE_ERROR_PATTERNS) {
-      expect(pattern).toBeInstanceOf(RegExp);
-    }
   });
 });
 

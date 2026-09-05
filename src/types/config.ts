@@ -15,6 +15,13 @@ export interface FirefoxConfig {
   /** Optional pinned SHA-256 for the resolved source archive */
   sha256?: string;
   /**
+   * Accept a freshly downloaded archive when Mozilla's published SHA256SUMS
+   * cannot be fetched or does not list it, instead of failing closed. The
+   * download is then trusted on TLS alone (with a warning). Ignored when
+   * `sha256` is pinned. Default false.
+   */
+  allowUnverifiedDownload?: boolean;
+  /**
    * Optional release-candidate build directory (e.g. "build2"). When set,
    * the source archive resolves under
    * `pub/<product>/candidates/<version>-candidates/<candidate>/` instead of
@@ -137,6 +144,8 @@ export interface FireForgeConfig {
   firefox: FirefoxConfig;
   /** Build settings */
   build?: BuildConfig;
+  /** Post-build packaging audit configuration */
+  buildAudit?: BuildAuditConfig;
   /** Test command defaults */
   test?: TestConfig;
   /** Optional project-specific external toolchains checked by doctor. */
@@ -207,6 +216,33 @@ export interface TypecheckConfig {
 /**
  * Wire command configuration.
  */
+/**
+ * One deliberately-unpackaged source, declared so the post-build audit stops
+ * reporting it as a missing registration.
+ *
+ * `reason` is required and must be non-empty. A carve-out whose rationale
+ * nobody wrote down is indistinguishable from a mistake by the time someone
+ * reads it, and this is the one audit class FireForge cannot derive from the
+ * tree — the file's own header may say "never loaded", but nothing in
+ * `moz.build` or `jar.mn` records that.
+ */
+export interface BuildAuditUnpackagedDeclaration {
+  /** Engine-relative path, exact or with a `*` inside one path segment. */
+  path: string;
+  /** Why this file is never packaged. Required, non-empty. */
+  reason: string;
+}
+
+/** Post-build packaging audit configuration. */
+export interface BuildAuditConfig {
+  /**
+   * Sources the audit must treat as deliberately unpackaged. Admitted paths
+   * are LISTED in the audit output rather than silenced, and one that DOES
+   * resolve to a packaged artifact is reported as a stale carve-out.
+   */
+  unpackaged?: BuildAuditUnpackagedDeclaration[];
+}
+
 export interface WireConfig {
   /** Subscript directory relative to engine/. Default: "browser/base/content" */
   subscriptDir?: string;
@@ -375,8 +411,6 @@ export interface FireForgeState {
   brand?: string;
   /** Build mode: dev, debug, release */
   buildMode?: BuildMode;
-  /** Last successful build timestamp (ISO string) */
-  lastBuild?: string;
   /** Firefox version that was downloaded */
   downloadedVersion?: string;
   /** Initial commit hash of the engine (baseline) */

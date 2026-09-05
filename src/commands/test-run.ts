@@ -12,12 +12,7 @@
  */
 
 import { type DisplaySleepState, probeDisplaySleepState } from '../core/display-state.js';
-import {
-  type MachCommandResult,
-  mochitestWithOutput,
-  testWithOutput,
-  xpcshellTestWithOutput,
-} from '../core/mach.js';
+import { type MachCommandResult, type MachTestSuiteKind, runMachTestSuite } from '../core/mach.js';
 import { getActiveRunLogPath } from '../core/run-log.js';
 import { changedPrefNoiseVerdictNote } from '../core/test-changed-prefs.js';
 import {
@@ -28,7 +23,7 @@ import {
   headedDisplayAsleepVerdictNote,
   headedNoOutputTimeoutHint,
 } from '../core/test-harness-crash.js';
-import { retryAfterXpcshellSymlinkRepair, type TestDispatch } from '../core/test-xpcshell-retry.js';
+import { retryAfterXpcshellSymlinkRepair } from '../core/test-xpcshell-retry.js';
 import { withXpcshellProfileDir } from '../core/xpcshell-profile-dir.js';
 import { TestFailureError } from '../errors/build.js';
 import { info, note, warn } from '../utils/logger.js';
@@ -48,11 +43,11 @@ export const DEFAULT_HARNESS_RETRIES = 2;
  */
 export type TestSuite = 'xpcshell' | 'mochitest' | 'generic';
 
-/** Resolves the capturing mach dispatcher for a suite. */
-function dispatchForSuite(suite: TestSuite): TestDispatch {
-  if (suite === 'xpcshell') return xpcshellTestWithOutput;
-  if (suite === 'mochitest') return mochitestWithOutput;
-  return testWithOutput;
+/** Resolves the mach test command a suite dispatches to. */
+function machKindForSuite(suite: TestSuite): MachTestSuiteKind {
+  if (suite === 'xpcshell') return 'xpcshell-test';
+  if (suite === 'mochitest') return 'mochitest';
+  return 'test';
 }
 
 /** Inputs shared by every harness invocation in one `fireforge test` run. */
@@ -127,7 +122,7 @@ async function runTestsWithRetriesInner(
     extraArgs
   );
 
-  const dispatch = dispatchForSuite(ctx.suite);
+  const kind = machKindForSuite(ctx.suite);
   const maxAttempts = Math.max(1, ctx.harnessRetries + 1);
   let attempts = 0;
   let result: MachCommandResult;
@@ -135,27 +130,24 @@ async function runTestsWithRetriesInner(
 
   for (;;) {
     attempts += 1;
-    // Arity is kept minimal when there is nothing extra to pass: the
-    // dispatchers' trailing parameters are optional, and appending explicit
-    // `undefined`s would only make every call site's shape depend on
-    // features the run is not using.
-    result =
-      ctx.fullOutput === true
-        ? await dispatch(ctx.engineDir, paths, extraArgs, env, true)
-        : env
-          ? await dispatch(ctx.engineDir, paths, extraArgs, env)
-          : await dispatch(ctx.engineDir, paths, extraArgs);
-    result = await retryAfterXpcshellSymlinkRepair(
-      ctx.engineDir,
-      ctx.objDir,
+    result = await runMachTestSuite(kind, {
+      engineDir: ctx.engineDir,
+      testPaths: paths,
+      args: extraArgs,
+      env,
+      fullOutput: ctx.fullOutput,
+    });
+    result = await retryAfterXpcshellSymlinkRepair({
+      engineDir: ctx.engineDir,
+      objDir: ctx.objDir,
       result,
-      ctx.classification,
-      paths,
+      classification: ctx.classification,
+      normalizedPaths: paths,
       extraArgs,
       env,
-      dispatch,
-      ctx.fullOutput
-    );
+      kind,
+      fullOutput: ctx.fullOutput,
+    });
     const combined = `${result.stdout}\n${result.stderr}`;
     verdict = classifyHarnessRun(result.exitCode, combined, paths);
     if (verdict.kind !== 'harness-crash' || attempts >= maxAttempts) break;

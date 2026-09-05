@@ -23,6 +23,7 @@ vi.mock('../git-status.js', () => ({
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { warn } from '../../utils/logger.js';
+import { isXpcomManifestPath } from '../build-audit.js';
 import { readBuildBaseline } from '../build-baseline.js';
 import { type BuildBaseline, DELETED_FILE_FINGERPRINT } from '../build-baseline-types.js';
 import { hasChanges } from '../git.js';
@@ -38,7 +39,6 @@ import {
   formatStaticComponentsRefusal,
   formatTestCoverageRefusal,
   FULL_SUITE_REQUEST,
-  isXpcomManifestPath,
   warnIfStaticComponentsStale,
 } from '../test-stale-check.js';
 
@@ -168,7 +168,8 @@ describe('checkStaleBuildForTest', () => {
     // export that vitest cannot spy on.
     const { mkdtemp, writeFile: fsWriteFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
-    const { join: joinPath } = await import('node:path');
+    const pathMod = await import('node:path');
+    const joinPath = (...parts: string[]): string => pathMod.join(...parts);
     const { createHash } = await import('node:crypto');
 
     const engineDir = await mkdtemp(joinPath(tmpdir(), 'ff-stale-fp-'));
@@ -200,7 +201,8 @@ describe('checkStaleBuildForTest', () => {
   it('still flags packageable paths whose live content differs from the fingerprint', async () => {
     const { mkdtemp, writeFile: fsWriteFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
-    const { join: joinPath } = await import('node:path');
+    const pathMod = await import('node:path');
+    const joinPath = (...parts: string[]): string => pathMod.join(...parts);
     const { createHash } = await import('node:crypto');
 
     const engineDir = await mkdtemp(joinPath(tmpdir(), 'ff-stale-fp-'));
@@ -484,7 +486,8 @@ describe('checkStaticComponentsStale', () => {
   it('treats a dirty manifest whose content still matches the anchor fingerprint as fresh', async () => {
     const { mkdtemp, writeFile: fsWriteFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
-    const { join: joinPath } = await import('node:path');
+    const pathMod = await import('node:path');
+    const joinPath = (...parts: string[]): string => pathMod.join(...parts);
     const { createHash } = await import('node:crypto');
 
     const engineDir = await mkdtemp(joinPath(tmpdir(), 'ff-static-comp-'));
@@ -511,7 +514,8 @@ describe('checkStaticComponentsStale', () => {
   it('still flags a manifest whose live content diverges from the anchor fingerprint', async () => {
     const { mkdtemp, writeFile: fsWriteFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
-    const { join: joinPath } = await import('node:path');
+    const pathMod = await import('node:path');
+    const joinPath = (...parts: string[]): string => pathMod.join(...parts);
     const { createHash } = await import('node:crypto');
 
     const engineDir = await mkdtemp(joinPath(tmpdir(), 'ff-static-comp-'));

@@ -28,21 +28,6 @@ import { pathExists, removeDir, removeFile } from '../utils/fs.js';
 import { info, intro, verbose, warn } from '../utils/logger.js';
 import { commanderArgParser, pickDefined, stringListOption } from '../utils/options.js';
 
-/**
- * Exit code returned by smoke-run mode when the captured console stream
- * produced one or more error lines that did NOT match the operator's
- * allowlist.
- */
-export const SMOKE_EXIT_FAILURE = ExitCode.SMOKE_EXIT_FAILURE;
-
-/**
- * Exit code returned by smoke-run mode when the browser itself exited
- * with a non-clean status before the smoke window elapsed — i.e. a
- * launch-side failure we could NOT observe as a console error line
- * (crash before console wiring, missing profile, etc.).
- */
-export const SMOKE_LAUNCH_FAILURE = ExitCode.SMOKE_LAUNCH_FAILURE;
-
 /** Recommendation surfaced when the smoke window is shorter than a typical cold start. */
 const SMOKE_COLD_START_THRESHOLD_MS = 30_000;
 
@@ -202,9 +187,7 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
     // Not an error — cold starts just tend to exceed the window. Surfacing
     // the hint here instead of failing lets agents run shorter windows
     // intentionally (e.g. warm-cache smoke checks).
-    verbose(
-      `Smoke window is ${String(smokeExit)}s; cold starts on slow machines often exceed 30s.`
-    );
+    verbose(`Smoke window is ${smokeExit}s; cold starts on slow machines often exceed 30s.`);
   }
 
   const allowlist = await buildAllowlist(options);
@@ -270,7 +253,7 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
     );
   }
 
-  info(`Launching browser (smoke-exit after ${String(smokeExit)}s)...\n`);
+  info(`Launching browser (smoke-exit after ${smokeExit}s)...\n`);
 
   const startedAt = Date.now();
   let result;
@@ -305,8 +288,8 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
   // Exit contract (precedence: unallowed errors dominate timed-out).
   if (findings.length > 0) {
     throw new SmokeRunError(
-      `Smoke run observed ${String(findings.length)} unallowed console error(s).`,
-      SMOKE_EXIT_FAILURE
+      `Smoke run observed ${findings.length} unallowed console error(s).`,
+      ExitCode.SMOKE_EXIT_FAILURE
     );
   }
 
@@ -320,8 +303,8 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
   }
 
   throw new SmokeRunError(
-    `Browser exited with code ${String(result.exitCode)} before smoke-exit window elapsed.`,
-    SMOKE_LAUNCH_FAILURE
+    `Browser exited with code ${result.exitCode} before smoke-exit window elapsed.`,
+    ExitCode.SMOKE_LAUNCH_FAILURE
   );
 }
 
@@ -376,15 +359,15 @@ function reportSmokeSummary(args: {
   const suffix = args.timedOut ? ' (deadline fired — SIGTERM sent to process group)' : '';
   info('');
   info(`Smoke run complete: ${seconds}s elapsed of ${windowSeconds}s window${suffix}`);
-  info(`  Unallowed errors: ${String(args.findings.length)}`);
+  info(`  Unallowed errors: ${args.findings.length}`);
   // The "suppressed errors" count is what the exit contract cares about — the
   // subset of allowlisted hits that would otherwise have been tallied as
   // findings. The "all allowlisted lines" count answers the operator's mental
   // model ("my --console-allow pattern matched N console lines"), without
   // which a visibly matching regex reports 0 hits.
-  info(`  Allowlisted error hits (suppressed): ${String(args.allowlistedErrorHits)}`);
-  info(`  Allowlisted lines total: ${String(args.allowlistedTotalHits)}`);
-  info(`  Child exit code:  ${String(args.exitCode)}`);
+  info(`  Allowlisted error hits (suppressed): ${args.allowlistedErrorHits}`);
+  info(`  Allowlisted lines total: ${args.allowlistedTotalHits}`);
+  info(`  Child exit code:  ${args.exitCode}`);
 
   // Per-entry attribution: first-match credit per line, with
   // zero-hit entries always visible — an allowlist entry whose suppressed
@@ -394,20 +377,20 @@ function reportSmokeSummary(args: {
     args.allowlist.forEach((entry, index) => {
       const hits = args.allowlistHits[index] ?? 0;
       const zeroSuffix = hits === 0 ? '  (never matched — candidate for removal)' : '';
-      info(`    ${String(hits)}×  ${entry.origin}  ${entry.source}${zeroSuffix}`);
+      info(`    ${hits}×  ${entry.origin}  ${entry.source}${zeroSuffix}`);
     });
   }
 
   if (args.findings.length === 0) return;
 
   warn('');
-  warn(`Unallowed console errors (first ${String(SMOKE_UNALLOWED_PREVIEW_MAX)}):`);
+  warn(`Unallowed console errors (first ${SMOKE_UNALLOWED_PREVIEW_MAX}):`);
   args.findings.slice(0, SMOKE_UNALLOWED_PREVIEW_MAX).forEach((finding, index) => {
-    warn(`  ${String(index + 1)}. [${finding.stream}] ${finding.line}`);
+    warn(`  ${index + 1}. [${finding.stream}] ${finding.line}`);
   });
   if (args.findings.length > SMOKE_UNALLOWED_PREVIEW_MAX) {
     const remaining = args.findings.length - SMOKE_UNALLOWED_PREVIEW_MAX;
-    warn(`  …and ${String(remaining)} more.`);
+    warn(`  …and ${remaining} more.`);
   }
 }
 

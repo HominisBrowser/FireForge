@@ -11,6 +11,7 @@
  */
 import {
   getPatchSizeThresholds,
+  type PatchSizeThresholds,
   type PatchSizeTierDecision,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
@@ -41,7 +42,7 @@ interface LintReportPatch {
   lineCount: number;
   filesAffected: number;
   tier: PatchSizeTierDecision;
-  thresholds: ReturnType<typeof getPatchSizeThresholds>;
+  thresholds: PatchSizeThresholds;
   issues: PatchLintIssue[];
   suppressedIssues: PatchLintIssue[];
 }

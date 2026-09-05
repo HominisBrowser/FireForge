@@ -81,15 +81,15 @@ export function groupProjectedPlacementErrors(
       details.push(`  ${formatPatchLintIssue(issue)}`);
     }
   };
-  pushGroup(`errors in the exported patch content (${String(exported.length)}):`, exported);
+  pushGroup(`errors in the exported patch content (${exported.length}):`, exported);
   pushGroup(
     `consequences of renumbering existing patches to make room at ordinal ` +
-      `${String(plan.insertionOrder)} (${String(renumbering.length)}) — these come from ` +
+      `${plan.insertionOrder} (${renumbering.length}) — these come from ` +
       'renumbering, NOT from the exported content:',
     renumbering
   );
   pushGroup(
-    `errors already present in the queue before this export (${String(preExisting.length)}):`,
+    `errors already present in the queue before this export (${preExisting.length}):`,
     preExisting
   );
   return details;

@@ -3,7 +3,7 @@
  * Rebase abort flow.
  */
 
-import { getProjectPaths, updateState } from '../../core/config.js';
+import { getProjectPaths } from '../../core/config.js';
 import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { resetChanges } from '../../core/git.js';
 import {
@@ -13,6 +13,7 @@ import {
 } from '../../core/rebase-session.js';
 import { NoRebaseSessionError } from '../../errors/rebase.js';
 import { intro, outro, spinner, success, warn } from '../../utils/logger.js';
+import { clearPendingResolution } from '../pending-resolution.js';
 import { confirmDirtyEngineReset } from './confirm.js';
 
 /**
@@ -72,12 +73,7 @@ export async function handleAbort(projectRoot: string, yes?: boolean): Promise<v
   await clearAppliedFurnaceState(projectRoot);
 
   // Step 3: clear pending resolution transactionally.
-  await updateState(projectRoot, (current) => {
-    if (!current.pendingResolution) return current;
-    const next = { ...current };
-    delete next.pendingResolution;
-    return next;
-  });
+  await clearPendingResolution(projectRoot);
 
   // Step 4: clear the rebase session LAST so a failure in any prior step
   // preserves the session on disk and a retry of --abort can succeed.

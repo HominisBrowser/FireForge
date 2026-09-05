@@ -98,7 +98,7 @@ async function runPostRebaseAudit(ctx: DoctorCheckContext): Promise<DoctorCheck>
   const browserTomls = await collectBrowserTomlFiles(engineDir);
   if (browserTomls.unreadable.length > 0) {
     issues.push(
-      `could not read ${String(browserTomls.unreadable.length)} ` +
+      `could not read ${browserTomls.unreadable.length} ` +
         `${browserTomls.unreadable.length === 1 ? 'directory' : 'directories'} under ` +
         `browser/base/content/test: ${browserTomls.unreadable.join(', ')}`
     );

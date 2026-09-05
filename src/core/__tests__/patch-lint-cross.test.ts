@@ -11,15 +11,16 @@ import { describe, expect, it } from 'vitest';
 import type { PatchMetadata } from '../../types/commands/index.js';
 import {
   collectNewFileCreatorsByPath,
-  extractImportSpecifiers,
+  extractImportSpecifiersWithLines,
   FORWARD_IMPORT_IGNORE_MARKER,
   lintPatchQueue,
   lintPatchQueueDuplicateCreations,
   lintPatchQueueForwardImports,
-  lintPatchQueueModuleRegistrations,
   type PatchQueueContext,
   type PatchQueueEntry,
 } from '../patch-lint.js';
+import { detectNewFilesInDiff } from '../patch-lint-diff.js';
+import { lintPatchQueueModuleRegistrations } from '../patch-lint-module-registration.js';
 
 function makeEntry(
   filename: string,
@@ -45,6 +46,11 @@ function makeEntry(
     },
     diff,
     newFiles: new Map(Object.entries(newFiles)),
+    // Derived from the BODY, not from `newFiles`: that is the whole point of
+    // the field — a binary creation has no text projection but is still a
+    // creation. The union with `newFiles` keeps the many fixtures that pass
+    // a newFiles map with a stub diff working.
+    createdFiles: new Set([...detectNewFilesInDiff(diff), ...Object.keys(newFiles)]),
     modifiedFileAdditions: new Map(Object.entries(modifiedFileAdditions)),
   };
 }
@@ -969,7 +975,10 @@ describe('collectNewFileCreatorsByPath', () => {
   });
 });
 
-describe('extractImportSpecifiers — adversarial shapes', () => {
+describe('import-specifier extraction — adversarial shapes', () => {
+  const extractImportSpecifiers = (source: string): string[] =>
+    extractImportSpecifiersWithLines(source).map((item) => item.specifier);
+
   it('captures side-effect imports (`import "..."` with no `from` clause)', () => {
     // Side-effect imports are a valid ES module form Firefox uses for
     // observer-registration modules. The optional `from` group in the regex
@@ -1152,5 +1161,128 @@ describe('lintPatchQueueDuplicateCreations — delete/recreate in same patch', (
     const issues = lintPatchQueueDuplicateCreations(ctx);
     expect(issues).toHaveLength(1);
     expect(issues[0]?.file).toBe('foo/A.sys.mjs');
+  });
+});
+
+describe('binary creations and staged registrations (item 3)', () => {
+  // The downstream 102/103 shape: patch 102's xpcshell.toml registers a
+  // fixture glob, and patch 103 creates the fixture as a binary new file.
+  const MANIFEST = 'browser/modules/hominis/test/unit/xpcshell.toml';
+  const FIXTURE = 'browser/modules/hominis/test/unit/fixtures/schema-v32.sqlite';
+  const REGISTRATION_LINE = 'support-files = ["fixtures/*.sqlite"]';
+
+  const MANIFEST_EDIT_DIFF = [
+    `diff --git a/${MANIFEST} b/${MANIFEST}`,
+    '--- a/' + MANIFEST,
+    '+++ b/' + MANIFEST,
+    '@@ -1,2 +1,4 @@',
+    ' ["test_HominisStoreSchema.js"]',
+    `+${REGISTRATION_LINE}`,
+    '',
+  ].join('\n');
+
+  const BINARY_CREATE_DIFF = [
+    `diff --git a/${FIXTURE} b/${FIXTURE}`,
+    'new file mode 100644',
+    'index 0000000..1111111',
+    'GIT binary patch',
+    'literal 12',
+    'zcmZQzU|<4ZV1PgP',
+    '',
+    'literal 0',
+    'HcmV?d00001',
+    '',
+  ].join('\n');
+
+  const BINARY_STUB_DIFF = [
+    `diff --git a/${FIXTURE} b/${FIXTURE}`,
+    'new file mode 100644',
+    'index 0000000..1111111',
+    `Binary files /dev/null and b/${FIXTURE} differ`,
+    '',
+  ].join('\n');
+
+  const registrationMetadata = {
+    stagedDependencies: {
+      registrations: [
+        {
+          file: MANIFEST,
+          line: REGISTRATION_LINE,
+          creates: FIXTURE,
+          owner: '103-infra-storage-spine.patch',
+        },
+      ],
+    },
+  } as Partial<PatchMetadata>;
+
+  function declaringEntry(metadata: Partial<PatchMetadata>): PatchQueueEntry {
+    return makeEntry(
+      '102-infra-security-primitives.patch',
+      102,
+      MANIFEST_EDIT_DIFF,
+      {},
+      { [MANIFEST]: `+${REGISTRATION_LINE}\n${REGISTRATION_LINE}` },
+      metadata
+    );
+  }
+
+  it('resolves a declared registration against a BINARY creation', () => {
+    // Before the fix `newFiles` dropped the binary body, so `creates` never
+    // resolved and the declaration was reported stale on every run.
+    const issues = lintPatchQueueForwardImports({
+      entries: [
+        declaringEntry(registrationMetadata),
+        makeEntry('103-infra-storage-spine.patch', 103, BINARY_CREATE_DIFF),
+      ],
+    });
+    expect(issues.filter((i) => i.check === 'staged-dependency-unused')).toEqual([]);
+  });
+
+  it('counts a payload-less "Binary files … differ" creation the same way', () => {
+    // The file will exist after apply either way; only the body differs.
+    const issues = lintPatchQueueForwardImports({
+      entries: [
+        declaringEntry(registrationMetadata),
+        makeEntry('103-infra-storage-spine.patch', 103, BINARY_STUB_DIFF),
+      ],
+    });
+    expect(issues.filter((i) => i.check === 'staged-dependency-unused')).toEqual([]);
+  });
+
+  it('flags the same shape as an undeclared forward registration when nothing declares it', () => {
+    // The other half of the report: with the declaration removed, lint was
+    // equally silent, so neither arm could tell the operator anything.
+    const issues = lintPatchQueue({
+      entries: [
+        declaringEntry({}),
+        makeEntry('103-infra-storage-spine.patch', 103, BINARY_CREATE_DIFF),
+      ],
+    });
+    const forward = issues.filter((i) => i.check === 'forward-registration');
+    expect(forward).toHaveLength(1);
+    expect(forward[0]?.file).toBe(MANIFEST);
+    expect(forward[0]?.severity).toBe('error');
+    expect(forward[0]?.message).toContain(FIXTURE);
+    expect(forward[0]?.message).toContain('103-infra-storage-spine.patch');
+    expect(forward[0]?.message).toContain('--kind registration');
+  });
+
+  it('stays silent once the staged dependency is declared', () => {
+    const issues = lintPatchQueue({
+      entries: [
+        declaringEntry(registrationMetadata),
+        makeEntry('103-infra-storage-spine.patch', 103, BINARY_CREATE_DIFF),
+      ],
+    });
+    expect(issues.filter((i) => i.check === 'forward-registration')).toEqual([]);
+  });
+
+  it('says nothing when the fixture is created by an EARLIER patch', () => {
+    // Applying the queue up to the manifest edit already has the file, so
+    // there is no dangling registration to report.
+    const issues = lintPatchQueue({
+      entries: [makeEntry('101-infra-fixtures.patch', 101, BINARY_CREATE_DIFF), declaringEntry({})],
+    });
+    expect(issues.filter((i) => i.check === 'forward-registration')).toEqual([]);
   });
 });

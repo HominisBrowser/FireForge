@@ -186,7 +186,7 @@ export function formatUnexportedDriftWarning(files: readonly UnexportedDriftAtRi
     return `  ${entry.file} [${entry.classification}]${owner}`;
   });
   return (
-    `This build is about to rewrite ${String(files.length)} engine file(s) from FireForge-owned ` +
+    `This build is about to rewrite ${files.length} engine file(s) from FireForge-owned ` +
     'sources, and their current content matches NEITHER a patch body NOR the pristine ' +
     'baseline — so the edits below are recorded nowhere and the build will destroy them:\n' +
     `${rows.join('\n')}\n\n` +

@@ -24,9 +24,9 @@
  * installed the probe returns `{ inUse: false }` rather than failing the
  * test run — it is a best-effort friendliness check, not a prerequisite.
  */
-import { GeneralError } from '../errors/base.js';
+import { PreflightRefusalError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
-import { getPlatform } from '../utils/platform.js';
+import { getPlatform, type Platform } from '../utils/platform.js';
 import { exec } from '../utils/process.js';
 import { formatPsDuration, parsePsDuration } from '../utils/ps-duration.js';
 
@@ -181,13 +181,14 @@ export async function ensureLaunchableBrowserNotRunning(
       }
       return;
     } catch (error: unknown) {
-      throw new GeneralError(
-        `A browser from this objdir is still running (PID ${holder.pid}), but FireForge could not terminate it: ${toError(error).message}`
+      throw new PreflightRefusalError(
+        `A browser from this objdir is still running (PID ${holder.pid}), but FireForge could not terminate it: ${toError(error).message}`,
+        'stale-browser-kill-failed'
       );
     }
   }
 
-  throw new GeneralError(describeRunningBundleRefusal(holder));
+  throw new PreflightRefusalError(describeRunningBundleRefusal(holder), 'stale-browser');
 }
 
 /**
@@ -372,7 +373,7 @@ async function probeWithPowerShell(port: number): Promise<MarionettePortProbeRes
 export async function probeMarionettePort(
   port: number = DEFAULT_MARIONETTE_PORT
 ): Promise<MarionettePortProbeResult> {
-  let platform: ReturnType<typeof getPlatform>;
+  let platform: Platform;
   try {
     platform = getPlatform();
   } catch {
@@ -410,12 +411,13 @@ export async function assertMarionettePortAvailable(
       process.platform === 'win32'
         ? `Stop-Process -Id ${holder.pid} -Force`
         : `kill ${holder.pid}  # or "kill -9 ${holder.pid}" if it doesn't exit`;
-    throw new GeneralError(
+    throw new PreflightRefusalError(
       `Marionette port ${port} is already in use by ${holder.command} (PID ${holder.pid}). ` +
         `This is usually a browser left running by a previously interrupted "fireforge test" run. ` +
         `Kill it with "${killHint}", then retry. ` +
         `(If you expected ${holder.command} to be running on ${port}, stop it manually or pass ` +
-        `"--marionette-port <port>" to launch mach test on a different port.)`
+        `"--marionette-port <port>" to launch mach test on a different port.)`,
+      'marionette-port-busy'
     );
   }
 
@@ -423,9 +425,10 @@ export async function assertMarionettePortAvailable(
   // cause is not a stale FireForge-launched browser. Flag it
   // explicitly so the operator can decide what to do instead of
   // getting mach's bind error with no FireForge context.
-  throw new GeneralError(
+  throw new PreflightRefusalError(
     `Marionette port ${port} is already in use by ${holder.command} (PID ${holder.pid}). ` +
-      `This is not a FireForge-launched browser; stop the holder process or free the port before rerunning.`
+      `This is not a FireForge-launched browser; stop the holder process or free the port before rerunning.`,
+    'marionette-port-busy'
   );
 }
 
@@ -459,9 +462,10 @@ export async function ensureMarionettePortAvailable(
       process.kill(holder.pid, 'SIGTERM');
     }
   } catch (error: unknown) {
-    throw new GeneralError(
+    throw new PreflightRefusalError(
       `Marionette port ${port} is held by stale browser ${holder.command} (PID ${holder.pid}), ` +
-        `but FireForge could not terminate it: ${toError(error).message}`
+        `but FireForge could not terminate it: ${toError(error).message}`,
+      'stale-browser-kill-failed'
     );
   }
 }
@@ -482,10 +486,7 @@ export async function ensureMarionettePortAvailable(
  *   `undefined`.
  */
 export function extractForwardedMarionettePort(machArgs: string[]): number | undefined {
-  for (let i = 0; i < machArgs.length; i++) {
-    const arg = machArgs[i];
-    if (arg === undefined) continue;
-
+  for (const [i, arg] of machArgs.entries()) {
     // `--marionette-port=NNNN`
     let match = /^--marionette-port=(\d+)$/.exec(arg);
     if (match?.[1]) {
@@ -524,10 +525,7 @@ export function forwardedMachArgsIncludeMarionetteClient(machArgs: string[]): bo
   const valueLooksLikeHostPort = (token: string): boolean =>
     /:[0-9]+$/.test(token) || /^\[[^]]+\]:[0-9]+$/.test(token);
 
-  for (let i = 0; i < machArgs.length; i++) {
-    const arg = machArgs[i];
-    if (arg === undefined) continue;
-
+  for (const [i, arg] of machArgs.entries()) {
     if (arg.startsWith('--marionette=') && !arg.startsWith('--marionette-port=')) {
       return true;
     }
@@ -545,8 +543,7 @@ export function forwardedMachArgsIncludeMarionetteClient(machArgs: string[]): bo
  * for runs where the pref is ignored anyway.
  */
 export function hasExplicitXpcshellFlavor(machArgs: string[]): boolean {
-  for (let i = 0; i < machArgs.length; i += 1) {
-    const arg = machArgs[i] ?? '';
+  for (const [i, arg] of machArgs.entries()) {
     if (/^--flavor=xpcshell\b/.test(arg) || arg === '--flavor=xpcshell-tests') return true;
     if (arg === '--flavor' && /^xpcshell(?:-tests)?$/.test(machArgs[i + 1] ?? '')) return true;
   }
@@ -563,38 +560,4 @@ export function hasExplicitXpcshellFlavor(machArgs: string[]): boolean {
  */
 export function shouldAutoForwardMarionettePortToMach(machArgs: string[]): boolean {
   return !hasExplicitXpcshellFlavor(machArgs);
-}
-
-/**
- * Heuristic: do the test paths or forwarded mach args indicate a flavour
- * that actually launches a Marionette-driven browser? Browser-chrome and
- * mochitest do; xpcshell does not. A no-paths invocation (the default "run
- * all tests" shape) is treated as marionette-relevant since it includes
- * browser-chrome.
- *
- * Note: `fireforge test` auto-forward of `--marionette-port` to mach uses
- * {@link shouldAutoForwardMarionettePortToMach} (mach-arg flavor gate) rather
- * than this function alone, so toolkit paths without `/mochitest/` still get
- * the listener pref and harness `--marionette=127.0.0.1:<n>` when appropriate.
- *
- * @param testPaths - Engine-relative paths after `stripEnginePrefix`.
- * @param machArgs - Forwarded mach args (post-`--mach-arg`).
- * @returns `true` when the run is likely to bind a Marionette listener.
- */
-export function isMarionetteFlavor(testPaths: string[], machArgs: string[]): boolean {
-  if (hasExplicitXpcshellFlavor(machArgs)) return false;
-  for (const arg of machArgs) {
-    if (/^--flavor=(browser-chrome|mochitest|chrome|a11y)\b/.test(arg)) return true;
-  }
-  if (testPaths.length === 0) return true;
-  for (const path of testPaths) {
-    const base = path.split('/').pop() ?? path;
-    if (/^browser_.+\.(js|ini|toml)$/.test(base)) return true;
-    if (path.includes('/mochitest/') || path.startsWith('mochitest/')) return true;
-    if (path.includes('/browser-chrome/') || path.startsWith('browser-chrome/')) return true;
-    if (path.includes('toolkit/content/tests/') && !path.includes('/tests/xpcshell/')) {
-      return true;
-    }
-  }
-  return false;
 }

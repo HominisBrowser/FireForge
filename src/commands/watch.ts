@@ -6,6 +6,7 @@ import { Command } from 'commander';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
 import { warnIfFurnaceStale } from '../core/furnace-staleness.js';
+import type { MachCommandResult } from '../core/mach.js';
 import {
   generateMozconfig,
   hasBuildArtifacts,
@@ -232,7 +233,7 @@ export async function watchCommand(projectRoot: string): Promise<void> {
       };
   verbose(`watch: resolved watchman at ${watchmanPath}; forwarding directory in subprocess PATH.`);
 
-  let result: Awaited<ReturnType<typeof watchWithOutput>>;
+  let result: MachCommandResult;
 
   try {
     result = await watchWithOutput(paths.engine, { env: watchmanEnv });

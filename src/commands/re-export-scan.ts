@@ -12,6 +12,7 @@ import {
   buildPatchQueueContext,
   lintPatchQueue,
 } from '../core/patch-lint.js';
+import { detectNewFilesInDiff } from '../core/patch-lint-diff.js';
 import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
 import { getClaimedFiles } from '../core/patch-manifest.js';
 import { buildNewFileTextProjection } from '../core/patch-transform.js';
@@ -215,7 +216,7 @@ export async function confirmBroadScanAdditions(args: {
 
   const dirCount = new Set(added.map((f) => dirname(f))).size;
   warn(
-    `${patchFilename}: --scan would add ${String(added.length)} file(s) that span ${String(dirCount)} director${dirCount === 1 ? 'y' : 'ies'}. ` +
+    `${patchFilename}: --scan would add ${added.length} file(s) that span ${dirCount} director${dirCount === 1 ? 'y' : 'ies'}. ` +
       'Broad scans can silently pull adjacent features into a patch — review the diff before continuing.'
   );
 
@@ -227,7 +228,7 @@ export async function confirmBroadScanAdditions(args: {
   }
 
   const confirmed = await confirm({
-    message: `Proceed and broaden ${patchFilename} with ${String(added.length)} newly discovered file(s)?`,
+    message: `Proceed and broaden ${patchFilename} with ${added.length} newly discovered file(s)?`,
     initialValue: false,
   });
 
@@ -268,6 +269,7 @@ export async function assertScanAdoptionsHaveNoForwardImports(args: {
   if (!candidateDiff.trim()) return;
 
   const candidateNewFiles = buildNewFileTextProjection(candidateDiff);
+  const candidateCreations = detectNewFilesInDiff(candidateDiff);
   const candidateAdditions = buildModifiedFileAdditionsFromDiff(candidateDiff);
 
   const baseCtx = await buildPatchQueueContext(patchesDir);
@@ -277,6 +279,7 @@ export async function assertScanAdoptionsHaveNoForwardImports(args: {
       ...entry,
       diff: `${entry.diff}\n${candidateDiff}`,
       newFiles: new Map([...entry.newFiles, ...candidateNewFiles]),
+      createdFiles: new Set([...entry.createdFiles, ...candidateCreations]),
       modifiedFileAdditions: new Map([...entry.modifiedFileAdditions, ...candidateAdditions]),
     };
   });

@@ -6,11 +6,7 @@ import { createFsMock } from '../../test-utils/module-mocks.js';
 vi.mock('../../utils/fs.js', () => createFsMock());
 
 import { readText } from '../../utils/fs.js';
-import {
-  getAllTargetFilesFromPatch,
-  getTargetFileFromPatch,
-  isNewFilePatch,
-} from '../patch-files.js';
+import { getAllTargetFilesFromPatch } from '../patch-files.js';
 
 /**
  * Exercises `getAllTargetFilesFromPatch` with real patch content so the
@@ -75,37 +71,5 @@ describe('patch-files parsing', () => {
       'browser/branding/mybrowser/content/about-logo.png',
       'browser/branding/mybrowser/locales/en-US/brand.ftl',
     ]);
-  });
-
-  it('returns the first `+++ b/…` target via getTargetFileFromPatch', async () => {
-    vi.mocked(readText).mockResolvedValueOnce(
-      [
-        'diff --git a/foo.js b/foo.js',
-        '--- a/foo.js',
-        '+++ b/foo.js',
-        '@@ -1 +1 @@',
-        '-old',
-        '+new',
-        '',
-      ].join('\n')
-    );
-
-    await expect(getTargetFileFromPatch('/patches/001.patch')).resolves.toBe('foo.js');
-  });
-
-  it('flags new-file patches via isNewFilePatch', async () => {
-    vi.mocked(readText).mockResolvedValueOnce(
-      [
-        'diff --git a/foo.js b/foo.js',
-        'new file mode 100644',
-        '--- /dev/null',
-        '+++ b/foo.js',
-        '@@ -0,0 +1 @@',
-        '+first',
-        '',
-      ].join('\n')
-    );
-
-    await expect(isNewFilePatch('/patches/001.patch')).resolves.toBe(true);
   });
 });

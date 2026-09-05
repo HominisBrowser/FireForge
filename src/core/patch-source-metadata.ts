@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import type { PatchMetadata } from '../types/commands/index.js';
-import type { FirefoxConfig, FirefoxProduct } from '../types/config.js';
+import type { FirefoxConfig } from '../types/config.js';
 
 /** Metadata fields stamped on new or refreshed patch entries. */
 export function buildPatchSourceMetadata(
@@ -18,11 +18,4 @@ export function getPatchSourceVersion(
   patch: Pick<PatchMetadata, 'sourceEsrVersion' | 'sourceVersion'>
 ): string {
   return patch.sourceVersion ?? patch.sourceEsrVersion;
-}
-
-/** Backward-compatible source product reader for legacy manifests. */
-export function getPatchSourceProduct(
-  patch: Pick<PatchMetadata, 'sourceProduct'>
-): FirefoxProduct | undefined {
-  return patch.sourceProduct;
 }

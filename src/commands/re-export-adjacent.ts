@@ -16,11 +16,11 @@
 import { dirname, join } from 'node:path';
 
 import { isBrandingManagedPath } from '../core/branding.js';
-import type { getProjectPaths } from '../core/config.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
 import { getClaimedFiles } from '../core/patch-manifest.js';
 import { isGeneratedBrandingPath } from '../core/status-classify.js';
 import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
+import type { ProjectPaths } from '../types/config.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { pathExists } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
@@ -43,7 +43,13 @@ export interface AdjacentUnmanagedContext {
   approvedUnmanaged: ReadonlySet<string>;
   /** Approved paths actually met this run, so unused ones can be surfaced. */
   approvedSeen: Set<string>;
-  refusals: { patchFilename: string; files: string[] }[];
+  /**
+   * Offenders collected across the loop. `files` stays the bare paths that
+   * downstream consumers already read; `anchored` carries the same entries
+   * with the owned directory that made each one adjacent, so the run-level
+   * refusal can name the anchor without re-deriving it.
+   */
+  refusals: { patchFilename: string; files: string[]; anchored: string[] }[];
 }
 
 /** Concurrency bound for existence probes (matches the classify/lint pools). */
@@ -80,18 +86,36 @@ function isToolManagedPath(
   return false;
 }
 
+/**
+ * One unmanaged file and the owned directory that made it adjacent.
+ *
+ * The anchor is what an unattended run could not previously recover: the
+ * notice named the offending file and the patch, but not WHICH of the
+ * patch's owned locations the file sits beside, so triaging a refusal on a
+ * patch that owns files in several directories meant re-deriving the
+ * adjacency by hand from the manifest.
+ */
+export interface AdjacentUnmanagedFile {
+  /** Engine-relative path of the unmanaged file. */
+  file: string;
+  /** Directory holding at least one file this patch owns. */
+  anchorDir: string;
+}
+
 async function findAdjacentUnmanagedFiles(args: {
   currentFilesAffected: readonly string[];
   engineDir: string;
   manifest: PatchesManifest;
   patchFilename: string;
   ctx: AdjacentUnmanagedContext;
-}): Promise<string[]> {
+}): Promise<AdjacentUnmanagedFile[]> {
   const { currentFilesAffected, engineDir, manifest, patchFilename, ctx } = args;
   const parentDirs = [...new Set(currentFilesAffected.map((file) => dirname(file)))];
   const currentSet = new Set(currentFilesAffected);
   const claimedByOthers = getClaimedFiles(manifest, patchFilename);
-  const candidates = new Set<string>();
+  // First anchor wins: the dirs are scanned in ownership order and a file
+  // lives in exactly one of them, so the map is a dedupe, not a choice.
+  const candidates = new Map<string, string>();
 
   for (const dir of parentDirs) {
     const [modifiedFiles, untrackedFiles] = await Promise.all([
@@ -102,11 +126,13 @@ async function findAdjacentUnmanagedFiles(args: {
     for (const file of [...modifiedFiles, ...untrackedFiles]) {
       if (currentSet.has(file) || claimedByOthers.has(file)) continue;
       if (isToolManagedPath(file, untrackedSet.has(file), ctx)) continue;
-      candidates.add(file);
+      if (!candidates.has(file)) candidates.set(file, dir);
     }
   }
 
-  return [...candidates].sort();
+  return [...candidates.entries()]
+    .map(([file, anchorDir]) => ({ file, anchorDir }))
+    .sort((a, b) => a.file.localeCompare(b.file));
 }
 
 /**
@@ -116,20 +142,25 @@ async function findAdjacentUnmanagedFiles(args: {
  * dropped: an exception nobody can see is how a carve-out quietly widens.
  */
 function partitionApproved(
-  files: readonly string[],
+  files: readonly AdjacentUnmanagedFile[],
   ctx: AdjacentUnmanagedContext
-): { refusing: string[]; approved: string[] } {
-  const refusing: string[] = [];
-  const approved: string[] = [];
-  for (const file of files) {
-    if (ctx.approvedUnmanaged.has(file)) {
-      ctx.approvedSeen.add(file);
-      approved.push(file);
+): { refusing: AdjacentUnmanagedFile[]; approved: AdjacentUnmanagedFile[] } {
+  const refusing: AdjacentUnmanagedFile[] = [];
+  const approved: AdjacentUnmanagedFile[] = [];
+  for (const entry of files) {
+    if (ctx.approvedUnmanaged.has(entry.file)) {
+      ctx.approvedSeen.add(entry.file);
+      approved.push(entry);
     } else {
-      refusing.push(file);
+      refusing.push(entry);
     }
   }
   return { refusing, approved };
+}
+
+/** Renders `<file> (beside engine/<dir>)` for a notice line. */
+function describeAnchored(entry: AdjacentUnmanagedFile): string {
+  return `${entry.file} (beside engine/${entry.anchorDir})`;
 }
 
 /**
@@ -142,7 +173,7 @@ function partitionApproved(
  */
 export async function reportAdjacentUnmanagedFiles(args: {
   patch: PatchMetadata;
-  paths: ReturnType<typeof getProjectPaths>;
+  paths: ProjectPaths;
   manifest: PatchesManifest;
   currentFilesAffected: readonly string[];
   ctx: AdjacentUnmanagedContext;
@@ -171,23 +202,32 @@ export async function reportAdjacentUnmanagedFiles(args: {
 
   if (approved.length > 0) {
     info(
-      `${patch.filename}: ${String(approved.length)} adjacent unmanaged file(s) admitted by ` +
-        `--expect-unmanaged (${approved.join(', ')}) — reported, not refused.`
+      `${patch.filename}: ${approved.length} adjacent unmanaged file(s) admitted by ` +
+        `--expect-unmanaged (${approved.map(describeAnchored).join(', ')}) — reported, not refused.`
     );
   }
   if (unmanagedFiles.length === 0) return false;
 
-  const firstFew = unmanagedFiles.slice(0, 3).join(', ');
-  const more = unmanagedFiles.length > 3 ? `, +${String(unmanagedFiles.length - 3)} more` : '';
+  const firstFew = unmanagedFiles.slice(0, 3).map(describeAnchored).join(', ');
+  const more = unmanagedFiles.length > 3 ? `, +${unmanagedFiles.length - 3} more` : '';
   warn(
-    `${patch.filename}: found ${String(unmanagedFiles.length)} unmanaged file(s) adjacent to this patch's ownership (${firstFew}${more}); plain re-export keeps filesAffected unchanged — use --scan-file to include reviewed files.`
+    `${patch.filename}: found ${unmanagedFiles.length} unmanaged file(s) adjacent to this patch's ownership (${firstFew}${more}); ` +
+      `adjacent means the file sits in a directory this patch already owns a file in. ` +
+      `Plain re-export keeps filesAffected unchanged — use --scan-file to include reviewed files.`
   );
-  for (const file of unmanagedFiles) {
-    info(`  ${file} — fireforge re-export ${patch.filename} --scan --scan-file ${file}`);
+  for (const entry of unmanagedFiles) {
+    info(
+      `  ${entry.file} — beside engine/${entry.anchorDir} — ` +
+        `fireforge re-export ${patch.filename} --scan --scan-file ${entry.file}`
+    );
   }
 
   if (ctx.refuseAdjacentUnmanaged) {
-    ctx.refusals.push({ patchFilename: patch.filename, files: unmanagedFiles });
+    ctx.refusals.push({
+      patchFilename: patch.filename,
+      files: unmanagedFiles.map((entry) => entry.file),
+      anchored: unmanagedFiles.map(describeAnchored),
+    });
     return true;
   }
   return false;

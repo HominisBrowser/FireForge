@@ -41,7 +41,7 @@ const NEW_WIDGET_PATCH = [
   '',
 ].join('\n');
 
-describe('patch manifest helper coverage', () => {
+describe('patch manifest lookups, integrity checks, and mutations', () => {
   const tempDirs: string[] = [];
 
   beforeEach(() => {

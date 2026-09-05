@@ -28,7 +28,6 @@ export default defineConfig({
         '**/test-utils/**',
         '**/types/**',
         'bin/**',
-        'src/core/wire-targets.ts',
       ],
       thresholds: {
         lines: 88,

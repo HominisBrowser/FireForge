@@ -72,7 +72,8 @@ export interface RebaseSession {
 
 const SESSION_FILENAME = 'rebase-session.json';
 
-function sessionPath(projectRoot: string): string {
+/** Absolute path of the session file, for messages that must name it. */
+export function getRebaseSessionPath(projectRoot: string): string {
   return join(getProjectPaths(projectRoot).fireforgeDir, SESSION_FILENAME);
 }
 
@@ -188,11 +189,6 @@ export type RebaseSessionRead =
   | { present: true; valid: true; session: RebaseSession }
   | { present: true; valid: false; reason: string };
 
-/** Absolute path of the session file, for messages that must name it. */
-export function getRebaseSessionPath(projectRoot: string): string {
-  return sessionPath(projectRoot);
-}
-
 /**
  * Reads the session file, reporting absent, valid, and corrupt as three
  * distinct outcomes. Never throws for a malformed file: `readJson` calls
@@ -207,7 +203,7 @@ export function getRebaseSessionPath(projectRoot: string): string {
  * markers.
  */
 export async function readRebaseSession(projectRoot: string): Promise<RebaseSessionRead> {
-  const path = sessionPath(projectRoot);
+  const path = getRebaseSessionPath(projectRoot);
 
   let data: unknown;
   try {
@@ -234,23 +230,13 @@ export async function readRebaseSession(projectRoot: string): Promise<RebaseSess
 }
 
 /**
- * Loads an existing rebase session, or returns `null` when none exists or the
- * file on disk is unusable. Callers that must tell those two apart — every
- * command that reports to an operator — should use {@link readRebaseSession}.
- */
-export async function tryReadRebaseSession(projectRoot: string): Promise<RebaseSession | null> {
-  const result = await readRebaseSession(projectRoot);
-  return result.present && result.valid ? result.session : null;
-}
-
-/**
  * Persists a rebase session atomically.
  */
 export async function saveRebaseSession(
   projectRoot: string,
   session: RebaseSession
 ): Promise<void> {
-  const path = sessionPath(projectRoot);
+  const path = getRebaseSessionPath(projectRoot);
   await withFileLock(createSiblingLockPath(path, '.rebase-session.lock'), async () => {
     await writeJson(path, session);
   });
@@ -260,7 +246,7 @@ export async function saveRebaseSession(
  * Removes the rebase session file.
  */
 export async function clearRebaseSession(projectRoot: string): Promise<void> {
-  const path = sessionPath(projectRoot);
+  const path = getRebaseSessionPath(projectRoot);
   if (await pathExists(path)) {
     await removeFile(path);
   }

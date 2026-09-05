@@ -111,8 +111,8 @@ export function describeMochitestServerRefusal(
       ? `Stop-Process -Id ${holder.pid} -Force`
       : `kill -9 ${holder.pid}`;
   const evidence =
-    `The mochitest server port ${String(port)} is already held by ${holder.command} ` +
-    `(PID ${String(holder.pid)}).\n` +
+    `The mochitest server port ${port} is already held by ${holder.command} ` +
+    `(PID ${holder.pid}).\n` +
     `  command: ${holder.commandLine}\n` +
     "  A browser launched now would connect to THAT server, which cannot serve this run's " +
     'manifest — the run would stall before TEST_START and die on the no-output timeout with ' +
@@ -130,6 +130,6 @@ export function describeMochitestServerRefusal(
     evidence +
     "  This is NOT the mochitest harness's server.js, so FireForge will not offer to kill it. " +
     `Stop the holder yourself with "${killHint}" if it is yours, or free the port, then retry. ` +
-    `Diagnose with "lsof -nP -iTCP:${String(port)}".`
+    `Diagnose with "lsof -nP -iTCP:${port}".`
   );
 }

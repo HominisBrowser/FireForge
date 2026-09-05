@@ -192,15 +192,15 @@ async function refreshSingleOverride(
             ftlDir
           ).slice(paths.engine.length + 1);
 
-          const result = await refreshOverrideFile(
-            paths.engine,
+          const result = await refreshOverrideFile({
+            engineDir: paths.engine,
             overridePath,
             engineRelPath,
             baseCommit,
-            entry.name,
+            fileName: entry.name,
             dryRun,
-            strategy
-          );
+            strategy,
+          });
           fileResults.push(result);
         }
 

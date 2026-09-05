@@ -76,17 +76,6 @@ export interface PrepareBuildOptions {
 const BACKEND_INVALIDATING_SUFFIXES = ['moz.build', 'moz.configure', 'Makefile.in'];
 
 /**
- * Packaging manifests whose graph/destination directories MAY need a full
- * build. Path-shape only: {@link evaluateJarManifestEscalation} decides
- * whether a given changed manifest actually forces one (a new manifest, or
- * one that redirects its install base directory), so an entry added to an
- * existing `dist/bin` manifest no longer costs a ~10-minute build.
- */
-export function requiresFullBuildForIncrementalTest(path: string): boolean {
-  return isJarManifestPath(path);
-}
-
-/**
  * Build-input manifests changed since the last SUCCESSFUL build — not
  * merely dirty against HEAD. `collectChangedEnginePaths` unions the
  * baseline-to-HEAD diff with every worktree modification, and a fork's
@@ -198,14 +187,19 @@ async function decideJarEscalation(
   changed: readonly string[],
   baseline: BuildBaseline | undefined
 ): Promise<string | undefined> {
+  // Packaging manifests whose graph/destination directories MAY need a full
+  // build. Path-shape only: `evaluateJarManifestEscalation` decides whether a
+  // given changed manifest actually forces one (a new manifest, or one that
+  // redirects its install base directory), so an entry added to an existing
+  // `dist/bin` manifest no longer costs a ~10-minute build.
   const decision = await evaluateJarManifestEscalation(
     engineDir,
-    changed.filter(requiresFullBuildForIncrementalTest),
+    changed.filter(isJarManifestPath),
     baseline
   );
   if (decision.cleared.length > 0) {
     verbose(
-      `jar escalation: ${String(decision.cleared.length)} changed jar.mn add entries to an existing dist/bin manifest; not escalating for ${decision.cleared.join(', ')}.`
+      `jar escalation: ${decision.cleared.length} changed jar.mn add entries to an existing dist/bin manifest; not escalating for ${decision.cleared.join(', ')}.`
     );
   }
   return decision.escalate ? formatJarEscalationNotice(decision) : undefined;

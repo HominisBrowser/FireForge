@@ -17,16 +17,11 @@ import {
 import { basename, dirname, join } from 'node:path';
 
 import { getNodeErrorCode } from './errors.js';
+import { sleep } from './sleep.js';
 
 const RETRIABLE_REMOVE_ERRORS = new Set(['ENOTEMPTY', 'EBUSY', 'EPERM']);
 
 const RETRIABLE_RENAME_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY']);
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
 
 /**
  * Checks if a path exists.
@@ -36,8 +31,7 @@ export async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
-  } catch (error: unknown) {
-    void error;
+  } catch {
     return false;
   }
 }
@@ -114,8 +108,7 @@ export async function removeFile(path: string): Promise<void> {
 export async function isSymlink(path: string): Promise<boolean> {
   try {
     return (await lstat(path)).isSymbolicLink();
-  } catch (error: unknown) {
-    void error;
+  } catch {
     return false;
   }
 }
@@ -267,13 +260,14 @@ async function syncParentDir(path: string): Promise<void> {
   try {
     directoryHandle = await open(dirname(path), 'r');
     await directoryHandle.sync();
-  } catch (error: unknown) {
-    void error;
+  } catch {
+    // Best-effort durability: a directory that cannot be opened or fsynced
+    // (network mounts, Windows) must not fail the write it was protecting.
   } finally {
     try {
       await directoryHandle?.close();
-    } catch (error: unknown) {
-      void error;
+    } catch {
+      // Nothing left to do — the handle is being discarded either way.
     }
   }
 }

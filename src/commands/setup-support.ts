@@ -48,7 +48,14 @@ function renderLicenseTemplate(
   return template.replace(/\[year\]/g, String(now.getFullYear())).replace(/\[fullname\]/g, vendor);
 }
 
-function resolveFirefoxProduct(value: unknown, field: string): FirefoxProduct {
+/**
+ * Narrows a raw CLI or prompt value to a supported Firefox product.
+ * @param value - Raw value from `--product` or the setup prompt.
+ * @param field - Field name quoted in the refusal (e.g. `--product`).
+ * @returns The validated product.
+ * @throws {@link InvalidArgumentError} when the value names no supported product.
+ */
+export function resolveFirefoxProduct(value: unknown, field: string): FirefoxProduct {
   // Matches the sibling `resolveProjectLicense`, which already delegates to
   // its guard. The `||` chain this replaced spelled the member list twice —
   // once as the predicate and once in the message.
@@ -59,7 +66,14 @@ function resolveFirefoxProduct(value: unknown, field: string): FirefoxProduct {
   throw new InvalidArgumentError(`Invalid product (use: ${FIREFOX_PRODUCTS.join(', ')})`, field);
 }
 
-function resolveProjectLicense(value: unknown, field: string): ProjectLicense {
+/**
+ * Narrows a raw CLI or prompt value to a supported SPDX licence identifier.
+ * @param value - Raw value from `--license` or the setup prompt.
+ * @param field - Field name quoted in the refusal (e.g. `--license`).
+ * @returns The validated licence identifier.
+ * @throws {@link InvalidArgumentError} when the value names no supported licence.
+ */
+export function resolveProjectLicense(value: unknown, field: string): ProjectLicense {
   if (typeof value === 'string' && isValidProjectLicense(value)) {
     return value;
   }
@@ -68,24 +82,6 @@ function resolveProjectLicense(value: unknown, field: string): ProjectLicense {
     'Invalid license (use: EUPL-1.2, MPL-2.0, 0BSD, GPL-2.0-or-later)',
     field
   );
-}
-
-/** Parses an optional Firefox product flag into a typed product value. */
-export function parseFirefoxProductOption(product: string | undefined): FirefoxProduct | undefined {
-  if (product === undefined) {
-    return undefined;
-  }
-
-  return resolveFirefoxProduct(product, '--product');
-}
-
-/** Parses an optional license flag into a validated SPDX identifier. */
-export function parseProjectLicenseOption(license: string | undefined): ProjectLicense | undefined {
-  if (license === undefined) {
-    return undefined;
-  }
-
-  return resolveProjectLicense(license, '--license');
 }
 
 /** Validates non-interactive setup options before project scaffolding begins. */

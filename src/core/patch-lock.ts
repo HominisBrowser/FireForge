@@ -37,12 +37,12 @@ function formatWaitProgressLine(
   timeoutMs: number,
   holder: LockHolder | undefined
 ): string {
-  const progress = `${String(Math.round(waitedMs / 1000))}s of up to ${String(Math.round(timeoutMs / 1000))}s`;
+  const progress = `${Math.round(waitedMs / 1000)}s of up to ${Math.round(timeoutMs / 1000)}s`;
   if (holder === undefined) {
     return `Waiting for the FireForge patch directory lock — ${progress}.`;
   }
   const details = holder.metadata.length > 0 ? ` (${holder.metadata.join(', ')})` : '';
-  return `Waiting for the FireForge patch directory lock held by PID ${String(holder.pid)}${details} — ${progress}.`;
+  return `Waiting for the FireForge patch directory lock held by PID ${holder.pid}${details} — ${progress}.`;
 }
 
 /**
@@ -75,7 +75,7 @@ export async function assertPatchDirectoryLockHeld(
     status.holder === undefined || status.holder.pid === process.pid,
     () =>
       `patch directory lock is owned by this process before ${context} ` +
-      `(held by PID ${String(status.holder?.pid)}, we are ${String(process.pid)})`
+      `(held by PID ${status.holder?.pid}, we are ${process.pid})`
   );
 }
 

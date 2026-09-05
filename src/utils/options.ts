@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
+import type { Command } from 'commander';
+import { InvalidArgumentError as CommanderInvalidArgumentError } from 'commander';
+
+import { GeneralError, InvalidArgumentError } from '../errors/base.js';
+import { toError } from './errors.js';
+
 /**
  * Filters an object to only include keys whose values are not undefined.
  * Designed for use with exactOptionalPropertyTypes — the result can be
@@ -24,12 +30,6 @@ export function pickDefined<T extends object>(
   }
   return result as { [K in keyof T]+?: Exclude<T[K], undefined> };
 }
-
-import type { Command } from 'commander';
-import { InvalidArgumentError as CommanderInvalidArgumentError } from 'commander';
-
-import { GeneralError, InvalidArgumentError } from '../errors/base.js';
-import { toError } from './errors.js';
 
 /**
  * Wraps an option-argument parser so its failures surface through
@@ -118,7 +118,7 @@ function waitLockSecondsFromEnv(): number | undefined {
   const parsed = parseWaitLockSeconds(raw);
   if (parsed === undefined) {
     throw new InvalidArgumentError(
-      `${WAIT_LOCK_ENV_VAR} must be an integer in ${String(MIN_WAIT_LOCK_SECONDS)}..${String(MAX_WAIT_LOCK_SECONDS)} (got "${raw}")`,
+      `${WAIT_LOCK_ENV_VAR} must be an integer in ${MIN_WAIT_LOCK_SECONDS}..${MAX_WAIT_LOCK_SECONDS} (got "${raw}")`,
       WAIT_LOCK_ENV_VAR
     );
   }
@@ -158,7 +158,7 @@ export function resolveWaitLockSeconds(
   const parsed = parseWaitLockSeconds(value);
   if (parsed === undefined) {
     throw new GeneralError(
-      `--wait-lock must be an integer in ${String(MIN_WAIT_LOCK_SECONDS)}..${String(MAX_WAIT_LOCK_SECONDS)} (got "${value}")`
+      `--wait-lock must be an integer in ${MIN_WAIT_LOCK_SECONDS}..${MAX_WAIT_LOCK_SECONDS} (got "${value}")`
     );
   }
   return parsed;
@@ -217,7 +217,7 @@ function addAcceptedWaitLockOption(command: Command): Command {
  * CLI wiring to add the accept-and-ignore variant only where the honoring
  * one is absent.
  */
-export function hasWaitLockOption(command: Command): boolean {
+function hasWaitLockOption(command: Command): boolean {
   return command.options.some((option) => option.long === '--wait-lock');
 }
 

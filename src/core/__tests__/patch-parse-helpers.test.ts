@@ -32,7 +32,7 @@ const MULTI_HUNK_PATCH = [
   '',
 ].join('\n');
 
-describe('patch parse helper coverage', () => {
+describe('patch parsing — order, hunks, and diff headers', () => {
   it('extracts numeric patch order and falls back to Infinity for non-prefixed names', () => {
     expect(extractOrder('001-test.patch')).toBe(1);
     expect(extractOrder('patch.patch')).toBe(Number.POSITIVE_INFINITY);

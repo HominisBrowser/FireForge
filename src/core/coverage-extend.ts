@@ -35,11 +35,11 @@
  * window, because the earlier scope simply stops being covered.
  */
 
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { getNodeErrorCode, toError } from '../utils/errors.js';
+import { sha256Hex } from '../utils/hash.js';
 import { verbose } from '../utils/logger.js';
 import {
   type BuildBaseline,
@@ -190,7 +190,7 @@ export function formatExtendCoverageRefusal(result: {
     case 'fingerprint-diverged':
       return (
         '--extend-coverage refused: ' +
-        `${String(result.detail.length)} packageable file(s) the recorded build staged have changed ` +
+        `${result.detail.length} packageable file(s) the recorded build staged have changed ` +
         `since (${formatDivergedPaths(result.detail)}). Extending would vouch for the earlier scope ` +
         `while obj-*/_tests/ still holds its stale staging. ${remedy}`
       );
@@ -206,7 +206,7 @@ export function formatExtendCoverageRefusal(result: {
 function formatDivergedPaths(paths: readonly string[]): string {
   const head = paths.slice(0, MAX_DIVERGED_REPORTED).join(', ');
   const extra = paths.length - Math.min(paths.length, MAX_DIVERGED_REPORTED);
-  return extra > 0 ? `${head}, … (+${String(extra)} more)` : head;
+  return extra > 0 ? `${head}, … (+${extra} more)` : head;
 }
 
 /**
@@ -222,7 +222,7 @@ export async function hashEngineFile(
 ): Promise<string | undefined> {
   try {
     const buffer = await readFile(join(engineDir, relPath));
-    return createHash('sha256').update(buffer).digest('hex');
+    return sha256Hex(buffer);
   } catch (error: unknown) {
     if (getNodeErrorCode(error) === 'ENOENT') {
       return DELETED_FILE_FINGERPRINT;

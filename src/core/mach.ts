@@ -40,7 +40,7 @@ export {
   hasRunnableBundle,
 } from './mach-build-artifacts.js';
 export { generateMozconfig } from './mach-mozconfig.js';
-export { ensurePython, resetResolvedPython } from './mach-python.js';
+export { ensurePython } from './mach-python.js';
 
 /**
  * Ensures mach is available in the engine directory.
@@ -236,15 +236,6 @@ export async function runMachInheritCapture(
     mirror: { stdout: teeToRunLog(process.stdout), stderr: teeToRunLog(process.stderr) },
     processGroup: true,
   });
-}
-
-/**
- * Runs mach bootstrap to install build dependencies.
- * @param engineDir - Path to the engine directory
- * @returns Exit code
- */
-export async function bootstrap(engineDir: string): Promise<number> {
-  return runMach(['bootstrap', '--application-choice', 'browser'], engineDir, { inherit: true });
 }
 
 /**
@@ -501,35 +492,15 @@ export async function runMachSmoke(
 }
 
 /**
- * Creates a distribution package.
- * @param engineDir - Path to the engine directory
- * @returns Exit code
- */
-export async function machPackage(engineDir: string): Promise<number> {
-  return runMach(['package'], engineDir, { inherit: true });
-}
-
-/**
  * Creates a distribution package while streaming output to the terminal
- * and capturing the stderr tail for post-run diagnostics. Callers that
- * want to consult {@link explainMachError} on failure should use this
- * variant; the inherit-only `machPackage` above remains for callers that
- * just need an exit code.
+ * and capturing the stderr tail for post-run diagnostics, so callers can
+ * consult {@link explainMachError} on failure.
  *
  * @param engineDir - Path to the engine directory
  * @returns Captured mach result (stdout tail, stderr tail, exit code)
  */
 export async function machPackageCapture(engineDir: string): Promise<MachCommandResult> {
   return runMachCapture(['package'], engineDir);
-}
-
-/**
- * Runs mach watch for auto-rebuilding.
- * @param engineDir - Path to the engine directory
- * @returns Exit code
- */
-export async function watch(engineDir: string): Promise<number> {
-  return runMach(['watch'], engineDir, { inherit: true });
 }
 
 /**
@@ -551,21 +522,6 @@ export async function watchWithOutput(
   options: { env?: Record<string, string> } = {}
 ): Promise<MachCommandResult> {
   return runMachInheritCapture(['watch'], engineDir, options.env ? { env: options.env } : {});
-}
-
-/**
- * Runs mach test with the given test paths.
- * @param engineDir - Path to the engine directory
- * @param testPaths - Test file or directory paths (relative to engine)
- * @param args - Additional arguments to pass to mach test
- * @returns Exit code
- */
-export async function test(
-  engineDir: string,
-  testPaths: string[] = [],
-  args: string[] = []
-): Promise<number> {
-  return runMach(['test', ...testPaths, ...args], engineDir, { inherit: true });
 }
 
 /**
@@ -596,72 +552,56 @@ function testVerbosityEnvUnset(fullOutput: boolean | undefined): readonly string
 }
 
 /**
- * Runs mach test while capturing streamed output for better diagnostics.
+ * Which mach test command a capturing test dispatch runs.
  *
- * @param engineDir - Absolute path to the engine checkout
- * @param testPaths - Test paths to pass to `mach test`; empty runs the default set
- * @param args - Extra `mach test` arguments appended after the paths
- * @param env - Optional extra environment variables for the mach process
- *   (merged over `process.env` by the exec layer). Used by
- *   `fireforge test --perf-samples` to publish the artifact-path contract.
+ * - `test`: the generic `mach test` (mixed/all-tests runs, or the
+ *   `--generic-mach-test` opt-out).
+ * - `xpcshell-test` / `mochitest`: the suite-specific commands. Unlike the
+ *   generic `mach test`, these degrade a broken mozlog resource monitor to a
+ *   warning instead of crashing at startup, so `fireforge test` dispatches
+ *   single-suite runs to them to stay resilient to the host psutil failure.
  */
-export async function testWithOutput(
-  engineDir: string,
-  testPaths: string[] = [],
-  args: string[] = [],
-  env?: Record<string, string>,
-  fullOutput?: boolean
-): Promise<MachCommandResult> {
-  const guard = await installMachResourceGuard(engineDir);
-  const envUnset = testVerbosityEnvUnset(fullOutput);
-  return runMachCapture(['test', ...testPaths, ...args], engineDir, {
-    env: { ...guard.env, ...env },
-    ...(envUnset ? { envUnset } : {}),
-    annotateKnownTeardownNoise: true,
-  });
+export type MachTestSuiteKind = 'test' | 'xpcshell-test' | 'mochitest';
+
+/** Options for {@link runMachTestSuite}. */
+export interface MachTestSuiteOptions {
+  /** Absolute path to the engine checkout. */
+  engineDir: string;
+  /** Test paths to pass to the mach command; empty runs the default set. */
+  testPaths?: string[];
+  /** Extra mach arguments appended after the paths. */
+  args?: string[];
+  /**
+   * Extra environment variables for the mach process (merged over
+   * `process.env` by the exec layer). Used by `fireforge test
+   * --perf-samples` to publish the artifact-path contract.
+   */
+  env?: Record<string, string> | undefined;
+  /**
+   * Pass full mozbuild verbosity through by unsetting the coding-agent
+   * markers that quiet it. See {@link CODING_AGENT_ENV_MARKERS}.
+   */
+  fullOutput?: boolean | undefined;
 }
 
 /**
- * Runs `mach xpcshell-test` (the suite-specific xpcshell command) while
- * capturing output. Unlike the generic `mach test`, the suite-specific
- * commands degrade a broken mozlog resource monitor to a warning instead of
- * crashing at startup, so `fireforge test` dispatches single-suite runs here
- * to stay resilient to the host psutil failure.
+ * Runs one mach test command (`mach test` / `mach xpcshell-test` / `mach
+ * mochitest`) while capturing streamed output for better diagnostics. The
+ * three commands share every other detail of the dispatch — resource guard,
+ * verbosity env, teardown-noise annotation — so they share one entry point
+ * keyed by `kind` rather than three copies that drift.
  *
- * Signature mirrors {@link testWithOutput} so the two are interchangeable in
- * the dispatch path.
+ * @param kind - Which mach command to run
+ * @param options - Engine checkout, test paths, extra args, env, verbosity
  */
-export async function xpcshellTestWithOutput(
-  engineDir: string,
-  testPaths: string[] = [],
-  args: string[] = [],
-  env?: Record<string, string>,
-  fullOutput?: boolean
+export async function runMachTestSuite(
+  kind: MachTestSuiteKind,
+  options: MachTestSuiteOptions
 ): Promise<MachCommandResult> {
+  const { engineDir, testPaths = [], args = [], env, fullOutput } = options;
   const guard = await installMachResourceGuard(engineDir);
   const envUnset = testVerbosityEnvUnset(fullOutput);
-  return runMachCapture(['xpcshell-test', ...testPaths, ...args], engineDir, {
-    env: { ...guard.env, ...env },
-    ...(envUnset ? { envUnset } : {}),
-    annotateKnownTeardownNoise: true,
-  });
-}
-
-/**
- * Runs `mach mochitest` (covers browser-chrome / mochitest flavors) while
- * capturing output. The suite-specific counterpart to {@link testWithOutput}
- * for non-xpcshell single-suite runs — see {@link xpcshellTestWithOutput}.
- */
-export async function mochitestWithOutput(
-  engineDir: string,
-  testPaths: string[] = [],
-  args: string[] = [],
-  env?: Record<string, string>,
-  fullOutput?: boolean
-): Promise<MachCommandResult> {
-  const guard = await installMachResourceGuard(engineDir);
-  const envUnset = testVerbosityEnvUnset(fullOutput);
-  return runMachCapture(['mochitest', ...testPaths, ...args], engineDir, {
+  return runMachCapture([kind, ...testPaths, ...args], engineDir, {
     env: { ...guard.env, ...env },
     ...(envUnset ? { envUnset } : {}),
     annotateKnownTeardownNoise: true,

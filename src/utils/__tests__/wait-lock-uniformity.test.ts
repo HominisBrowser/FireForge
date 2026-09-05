@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * A scripted sequence blanket-appends `--wait-lock`, and a subcommand that
- * rejects it with "unknown option" kills the sequence with a usage error
- * instead of a lock message.
+ * Parse-level behaviour of the blanket `--wait-lock` registration: a
+ * lock-free command must accept the flag (rather than die on "unknown
+ * option") without becoming permissive about malformed values.
+ *
+ * Which real commands carry — and honor — the flag is asserted against the
+ * actual program in `src/__tests__/wait-lock-contract.test.ts`.
  */
 import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
-import {
-  addWaitLockOption,
-  ensureWaitLockOptionEverywhere,
-  hasWaitLockOption,
-} from '../options.js';
+import { addWaitLockOption, ensureWaitLockOptionEverywhere } from '../options.js';
 
 function buildTree(): Command {
   const program = new Command();
@@ -29,35 +28,6 @@ function buildTree(): Command {
 }
 
 describe('ensureWaitLockOptionEverywhere', () => {
-  it('gives every subcommand at every depth a --wait-lock flag', () => {
-    const program = buildTree();
-    expect(hasWaitLockOption(program.commands[1] as Command)).toBe(false);
-
-    ensureWaitLockOptionEverywhere(program);
-
-    const [build, status, patch] = program.commands as [Command, Command, Command];
-    expect(hasWaitLockOption(build)).toBe(true);
-    expect(hasWaitLockOption(status)).toBe(true);
-    expect(hasWaitLockOption(patch.commands[0] as Command)).toBe(true);
-  });
-
-  it('does not replace the honoring registration on a lock-taking command', () => {
-    const program = buildTree();
-    ensureWaitLockOptionEverywhere(program);
-    const build = program.commands[0] as Command;
-    expect(build.options.filter((o) => o.long === '--wait-lock')).toHaveLength(1);
-    expect(build.options.find((o) => o.long === '--wait-lock')?.description).not.toContain(
-      'ignored'
-    );
-  });
-
-  it('says plainly that the accepted flag is ignored on lock-free commands', () => {
-    const program = buildTree();
-    ensureWaitLockOptionEverywhere(program);
-    const status = program.commands[1] as Command;
-    expect(status.options.find((o) => o.long === '--wait-lock')?.description).toContain('ignored');
-  });
-
   it('parses the flag on a lock-free command instead of erroring on an unknown option', () => {
     const program = buildTree();
     ensureWaitLockOptionEverywhere(program);

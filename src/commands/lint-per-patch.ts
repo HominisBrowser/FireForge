@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join } from 'node:path';
 
-import { getProjectPaths, loadConfig } from '../core/config.js';
+import { loadConfig } from '../core/config.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { withPrivateGitIndex } from '../core/git-readonly-index.js';
 import {
@@ -13,6 +13,7 @@ import {
   lintPatchQueue,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
+import type { PerPatchLintCacheFile } from '../core/patch-lint-cache.js';
 import {
   buildPerPatchLintCacheKey,
   getCachedPerPatchLintIssues,
@@ -21,11 +22,13 @@ import {
   savePerPatchLintCache,
   setCachedPerPatchLintIssues,
 } from '../core/patch-lint-cache.js';
+import type { PatchQueueContext } from '../core/patch-lint-cross.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
 import { GeneralError } from '../errors/base.js';
-import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
+import type { PatchesManifest, PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
 import type { LintCommandOptions } from '../types/commands/index.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { pathExists } from '../utils/fs.js';
 import { info, outro, success, warn } from '../utils/logger.js';
@@ -56,10 +59,10 @@ function emitTierNotice(filename: string, files: string[], tier: PatchMetadata['
 /** Shared inputs threaded into every per-patch lint invocation. */
 interface QueuedPatchLintContext {
   projectRoot: string;
-  paths: ReturnType<typeof getProjectPaths>;
-  config: Awaited<ReturnType<typeof loadConfig>>;
-  ctx: Awaited<ReturnType<typeof buildPatchQueueContext>>;
-  cache: Awaited<ReturnType<typeof loadPerPatchLintCache>> | undefined;
+  paths: ProjectPaths;
+  config: FireForgeConfig;
+  ctx: PatchQueueContext;
+  cache: PerPatchLintCacheFile | undefined;
   engineHeadSha: string | undefined;
   /** Queue-wide checkJs program + per-patch attribution; undefined when
    *  `patchLint.checkJs` is off. */
@@ -226,7 +229,7 @@ async function applyPerPatchResults(
   results: QueuedPatchResult[],
   issues: PatchLintIssue[],
   checkJs: PerRunCheckJs | undefined,
-  cache: Awaited<ReturnType<typeof loadPerPatchLintCache>> | undefined
+  cache: PerPatchLintCacheFile | undefined
 ): Promise<PerPatchTotals> {
   const totals: PerPatchTotals = {
     linted: 0,
@@ -260,15 +263,15 @@ async function applyPerPatchResults(
     }
 
     if (result.cacheWrite && cache) {
-      setCachedPerPatchLintIssues(
+      setCachedPerPatchLintIssues({
         cache,
-        patch.filename,
-        result.cacheWrite.key,
-        result.rawIssues,
-        result.suppressedIssues,
-        result.lineCount,
-        result.cacheWrite.lintIgnore
-      );
+        patchFilename: patch.filename,
+        key: result.cacheWrite.key,
+        issues: result.rawIssues,
+        suppressed: result.suppressedIssues,
+        lineCount: result.lineCount,
+        lintIgnore: result.cacheWrite.lintIgnore,
+      });
       totals.cacheDirty = true;
     }
 
@@ -391,12 +394,12 @@ function reportPerPatchOutcome(
 /**
  * Resolves the `--patches <name…>` subset filter against the manifest,
  * matching each requested name tolerantly (exact filename, filename ±
- * `.patch`, or the manifest `name` field). Throws listing the available
+ * `.patch`, the bare order number, or the manifest `name` field). Throws listing the available
  * patches when a requested name matches none, so a typo fails loud rather
  * than silently linting nothing.
  */
 function selectPatchSubset(
-  manifest: NonNullable<Awaited<ReturnType<typeof loadPatchesManifest>>>,
+  manifest: PatchesManifest,
   requested: readonly string[]
 ): PatchMetadata[] {
   const normalizedRequests = requested
@@ -406,7 +409,13 @@ function selectPatchSubset(
 
   const patchAliases = (p: PatchMetadata): Set<string> => {
     const aliases = new Set<string>([p.filename, p.filename.replace(/\.patch$/, ''), p.name]);
+    // The bare order number, both as the manifest records it and as the
+    // filename spells it (`2` and `002`). The refusal message offers stems,
+    // and an operator reading `102-ui-canvas-tiles.patch` in a lint finding
+    // reaches for `102` first.
+    aliases.add(String(p.order));
     const match = /^(\d+)-([a-z]+)-(.+)\.patch$/.exec(p.filename);
+    if (match?.[1]) aliases.add(match[1]);
     if (match?.[2] && match[3]) {
       aliases.add(`${match[2]}-${match[3]}`);
       aliases.add(match[3]);
@@ -429,7 +438,7 @@ function selectPatchSubset(
       const available = manifest.patches.map((p) => p.filename).join(', ');
       throw new GeneralError(
         `No patch in the queue matches "${name}". In --per-patch mode, positional arguments ` +
-          `and --patches select patches (filename, stem, manifest name, or slug) — not engine ` +
+          `and --patches select patches (filename, stem, order number, manifest name, or slug) — not engine ` +
           `files; drop --per-patch to lint engine paths. Available patches: ${available}`
       );
     }
@@ -452,7 +461,7 @@ function selectPatchSubset(
  */
 export async function lintPerPatch(
   projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   options: LintCommandOptions = {}
 ): Promise<void> {
   // Read-only to the operator, an index WRITER to git: the per-patch diffs
@@ -464,7 +473,7 @@ export async function lintPerPatch(
 
 async function lintPerPatchInner(
   projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   options: LintCommandOptions = {}
 ): Promise<void> {
   const manifest = await loadPatchesManifest(paths.patches);

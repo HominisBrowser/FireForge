@@ -63,18 +63,12 @@ const RESOURCEMONITOR_FRAME_PATTERN = /mozsystemmonitor[/\\]resourcemonitor\.py/
  */
 const SHUTDOWN_MARKER_PATTERN = /\bSUITE_END\b/;
 
-/** Whole-block recognition — every signal must hold (see module doc). */
-function isRecognizedTeardownNoise(block: string): boolean {
-  return (
-    KNOWN_TEARDOWN_ATTRIBUTE_ERROR_PATTERN.test(block) && RESOURCEMONITOR_FRAME_PATTERN.test(block)
-  );
-}
-
 /**
- * True when CAPTURED output carries the documented mozsystemmonitor
- * teardown traceback.
+ * Whole-block recognition — every signal must hold (see module doc). True
+ * when CAPTURED output carries the documented mozsystemmonitor teardown
+ * traceback.
  *
- * The echo filter above only affects what a human sees. The CLASSIFIER
+ * The echo filter below only affects what a human sees. The CLASSIFIER
  * reads the raw capture, and it needs the same recognition to tell "the
  * suite finished clean and then upstream fell over at shutdown" from "the
  * suite did not finish". Deliberately the same two-signal test the echo
@@ -91,7 +85,10 @@ function isRecognizedTeardownNoise(block: string): boolean {
  * @returns True when the recognized teardown traceback is present
  */
 export function hasKnownTeardownNoise(output: string): boolean {
-  return isRecognizedTeardownNoise(output);
+  return (
+    KNOWN_TEARDOWN_ATTRIBUTE_ERROR_PATTERN.test(output) &&
+    RESOURCEMONITOR_FRAME_PATTERN.test(output)
+  );
 }
 
 /**
@@ -198,7 +195,7 @@ export function createKnownTeardownNoiseFilter(
   const releaseHeld = (): string => {
     const block = resetHold();
     if (block.length === 0) return '';
-    return context.shutdownSeen && isRecognizedTeardownNoise(block)
+    return context.shutdownSeen && hasKnownTeardownNoise(block)
       ? KNOWN_TEARDOWN_NOISE_ANNOTATION
       : block;
   };

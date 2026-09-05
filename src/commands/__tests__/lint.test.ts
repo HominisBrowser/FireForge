@@ -157,7 +157,7 @@ function fakeStats(overrides: Partial<Stats>): Stats {
   return { isDirectory: () => false, isFile: () => true, ...overrides } as Stats;
 }
 
-describe('lintCommand — branch coverage', () => {
+describe('lintCommand — ad-hoc input resolution and verdict', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(pathExists).mockResolvedValue(true);
@@ -537,10 +537,10 @@ describe('lintCommand — branch coverage', () => {
         }
       );
       vi.mocked(setCachedPerPatchLintIssues).mockImplementation(
-        (cache, filename, key, issues, suppressed, lineCount, lintIgnore) => {
-          cache.entries[filename] = {
+        ({ cache, patchFilename, key, issues, suppressed, lineCount, lintIgnore }) => {
+          cache.entries[patchFilename] = {
             key,
-            patchFilename: filename,
+            patchFilename,
             issues: issues.map((issue) => ({ ...issue })),
             suppressed: suppressed.map((issue) => ({ ...issue })),
             lineCount,
@@ -635,6 +635,24 @@ describe('lintCommand — branch coverage', () => {
       expect(lintExportedPatch).toHaveBeenCalledTimes(3);
     });
 
+    it('accepts a bare order number in --patches, padded or not', async () => {
+      // The refusal message offers stems, and an operator reading
+      // `102-ui-canvas-tiles.patch` in a forward-registration finding
+      // reaches for `102` first; refusing it while advertising stems was a
+      // message that contradicted itself.
+      const a = makePatch('002-ui-a.patch', ['a.ts']);
+      const b = makePatch('102-ui-b.patch', ['b.ts']);
+      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([a, b]));
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(getDiffForFilesAgainstHead).mockResolvedValue('diff content');
+
+      await expect(
+        lintCommand('/project', [], { perPatch: true, patches: ['102', '2'] })
+      ).resolves.toBeUndefined();
+
+      expect(lintExportedPatch).toHaveBeenCalledTimes(2);
+    });
+
     it('forwards patch.tier to lintExportedPatch as the 7th arg', async () => {
       // A branding patch that also touches a non-allowlisted sibling
       // declares `tier: "branding"` in patches.json so `lint --per-patch`
@@ -679,15 +697,15 @@ describe('lintCommand — branch coverage', () => {
           engineHeadSha: 'test-head-sha',
         })
       );
-      expect(setCachedPerPatchLintIssues).toHaveBeenCalledWith(
-        memoryCache,
-        '001-ui-test.patch',
-        'key:001-ui-test.patch',
-        [],
-        [],
-        42,
-        []
-      );
+      expect(setCachedPerPatchLintIssues).toHaveBeenCalledWith({
+        cache: memoryCache,
+        patchFilename: '001-ui-test.patch',
+        key: 'key:001-ui-test.patch',
+        issues: [],
+        suppressed: [],
+        lineCount: 42,
+        lintIgnore: [],
+      });
       expect(savePerPatchLintCache).toHaveBeenCalledWith('/project', memoryCache);
     });
 
@@ -1159,6 +1177,7 @@ describe('applyAggregateLintIgnoreSuppression', () => {
         order: i + 1,
         diff: '',
         newFiles: new Map<string, string>(),
+        createdFiles: new Set<string>(),
         modifiedFileAdditions: new Map<string, string>(),
         metadata: {
           filename: e.filename,

@@ -279,13 +279,8 @@ export async function stageAllFiles(
     phase = 'chunked';
     phaseStartedAt = Date.now();
 
-    try {
-      await stageAllFilesChunked(dir, scan, options);
-      reportProgress?.('Git phase complete: chunked source indexing finished.');
-    } catch (error: unknown) {
-      if (error instanceof GitIndexingTimeoutError) throw error;
-      throw error;
-    }
+    await stageAllFilesChunked(dir, scan, options);
+    reportProgress?.('Git phase complete: chunked source indexing finished.');
   } finally {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
   }
@@ -354,13 +349,30 @@ export async function initRepository(
   await git(['remote', 'add', 'origin', 'https://github.com/mozilla-firefox/firefox'], dir);
   reportProgress('Git phase complete: source git repository metadata initialized.');
 
+  await stageAndCommitSource(
+    dir,
+    reportProgress,
+    'Indexing Firefox source with git add -A (this can take several minutes on large trees)...'
+  );
+}
+
+/**
+ * The tail shared by {@link initRepository} and {@link resumeRepository}:
+ * normalizes the Firefox ignore files, stages the whole tree, and creates
+ * the initial source commit. Index-lock failures on either git step are
+ * wrapped into the typed lock error so both entry points report them the
+ * same way.
+ */
+async function stageAndCommitSource(
+  dir: string,
+  reportProgress: (message: string) => void,
+  stagingMessage: string
+): Promise<void> {
   reportProgress('Normalizing Firefox ignore files for Git-backed mach lint compatibility...');
   await ensureFirefoxIgnorefileCompatibility(dir);
 
   // Add all files
-  reportProgress(
-    'Indexing Firefox source with git add -A (this can take several minutes on large trees)...'
-  );
+  reportProgress(stagingMessage);
   await assertNoGitIndexLock(dir);
   try {
     await stageAllFiles(dir, { onProgress: reportProgress });
@@ -385,7 +397,6 @@ export async function resumeRepository(
   dir: string,
   options: { onProgress?: (message: string) => void } = {}
 ): Promise<void> {
-  await ensureGit();
   const reportProgress = options.onProgress ?? (() => {});
 
   if (!(await isGitRepository(dir))) {
@@ -405,24 +416,7 @@ export async function resumeRepository(
   // Ensure origin remote exists (may have been added before the interrupt)
   await ensureOriginRemote(dir);
 
-  reportProgress('Normalizing Firefox ignore files for Git-backed mach lint compatibility...');
-  await ensureFirefoxIgnorefileCompatibility(dir);
-
-  // Stage all files
-  reportProgress('Indexing Firefox source (resuming)...');
-  await assertNoGitIndexLock(dir);
-  try {
-    await stageAllFiles(dir, { onProgress: reportProgress });
-  } catch (error: unknown) {
-    throw await maybeWrapIndexLockError(dir, error);
-  }
-
-  // Create initial commit
-  try {
-    await createInitialSourceCommit(dir, reportProgress);
-  } catch (error: unknown) {
-    throw await maybeWrapIndexLockError(dir, error);
-  }
+  await stageAndCommitSource(dir, reportProgress, 'Indexing Firefox source (resuming)...');
 }
 
 async function assertNoGitIndexLock(dir: string): Promise<void> {
@@ -626,8 +620,6 @@ export async function reversePatch(patchPath: string, repoDir: string): Promise<
  * @returns True if there are uncommitted changes
  */
 export async function hasChanges(repoDir: string): Promise<boolean> {
-  await ensureGit();
-
   const entries = await getWorkingTreeStatus(repoDir);
   return entries.length > 0;
 }
@@ -652,8 +644,6 @@ export function isMissingHeadError(error: unknown): boolean {
  * @returns Commit hash
  */
 export async function getHead(repoDir: string): Promise<string> {
-  await ensureGit();
-
   const output = await git(['rev-parse', 'HEAD'], repoDir);
   return output.trim();
 }
@@ -664,8 +654,6 @@ export async function getHead(repoDir: string): Promise<string> {
  * @returns Branch name
  */
 export async function getCurrentBranch(repoDir: string): Promise<string> {
-  await ensureGit();
-
   const output = await git(['rev-parse', '--abbrev-ref', 'HEAD'], repoDir);
   return output.trim();
 }
@@ -675,26 +663,12 @@ export async function getCurrentBranch(repoDir: string): Promise<string> {
  * @param repoDir - Repository directory
  */
 export async function resetChanges(repoDir: string): Promise<void> {
-  await ensureGit();
-
   try {
     await git(['reset', '--hard', 'HEAD'], repoDir);
   } catch (error: unknown) {
     throw await maybeWrapIndexLockError(repoDir, error);
   }
   await git(['clean', '-fd'], repoDir);
-}
-
-/**
- * Creates a commit with all current changes.
- * @param repoDir - Repository directory
- * @param message - Commit message
- */
-export async function commit(repoDir: string, message: string): Promise<void> {
-  await ensureGit();
-
-  await stageAllFiles(repoDir);
-  await git(['commit', '-m', message], repoDir);
 }
 
 /**

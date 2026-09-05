@@ -8,7 +8,6 @@ import { describe, expect, it } from 'vitest';
 import { GitIndexLockError } from '../../errors/git.js';
 import { runGit } from '../../test-utils/index.js';
 import {
-  commit,
   hasChanges,
   initRepository,
   isMissingHeadError,
@@ -16,7 +15,7 @@ import {
   resumeRepository,
   stageAllFiles,
 } from '../git.js';
-import { getFileContentAtRef, getFileContentFromHead } from '../git-file-ops.js';
+import { getFileContentAtRef } from '../git-file-ops.js';
 import { getDirtyFiles, getWorkingTreeStatus, parsePorcelainStatus } from '../git-status.js';
 
 describe('parsePorcelainStatus', () => {
@@ -57,6 +56,20 @@ describe('parsePorcelainStatus', () => {
       isDeleted: true,
       file: 'removed.ts',
     });
+  });
+
+  it('parses filenames containing spaces', () => {
+    const output = 'M  path with spaces/file name.ts\0';
+    const entries = parsePorcelainStatus(output);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.file).toBe('path with spaces/file name.ts');
+  });
+
+  it('parses a worktree-only deletion', () => {
+    const output = ' D worktree-deleted.ts\0';
+    const entries = parsePorcelainStatus(output);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ worktreeStatus: 'D', isDeleted: true });
   });
 
   it('parses renamed files with original path', () => {
@@ -112,6 +125,59 @@ describe('parsePorcelainStatus', () => {
     const entries = parsePorcelainStatus(output);
     expect(entries).toHaveLength(1);
     expect(entries[0]?.file).toBe('file.ts');
+  });
+
+  it('consumes the original path for a worktree-side rename (` R`)', () => {
+    // git >= 2.18 with status.renames detects unstaged renames and puts the
+    // R in the WORKTREE column. The old parser only consumed the second NUL
+    // record for an index R, so `old.ts` became a bogus extra entry whose
+    // status was its first two path characters.
+    const output = ' R new.ts\0old.ts\0M  other.ts\0';
+    const entries = parsePorcelainStatus(output);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      status: ' R',
+      indexStatus: ' ',
+      worktreeStatus: 'R',
+      file: 'new.ts',
+      originalPath: 'old.ts',
+      isRenameOrCopy: true,
+    });
+    expect(entries[1]).toMatchObject({ file: 'other.ts', isRenameOrCopy: false });
+  });
+
+  it('consumes the original path for a staged rename with worktree edits (`RM`)', () => {
+    const output = 'RM new.ts\0old.ts\0';
+    const entries = parsePorcelainStatus(output);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      status: 'RM',
+      file: 'new.ts',
+      originalPath: 'old.ts',
+      isRenameOrCopy: true,
+    });
+  });
+
+  it('consumes the original path for a worktree-side copy (` C`)', () => {
+    const output = ' C copy.ts\0original.ts\0?? scratch.ts\0';
+    const entries = parsePorcelainStatus(output);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      status: ' C',
+      file: 'copy.ts',
+      originalPath: 'original.ts',
+      isRenameOrCopy: true,
+    });
+    expect(entries[1]).toMatchObject({ file: 'scratch.ts', isUntracked: true });
+  });
+
+  it('does not treat a path starting with "R " as a rename', () => {
+    // Only the two status columns decide; the path field is never inspected.
+    const output = '?? R d.ts\0M  next.ts\0';
+    const entries = parsePorcelainStatus(output);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ file: 'R d.ts', isRenameOrCopy: false });
+    expect(entries[1]?.file).toBe('next.ts');
   });
 });
 
@@ -338,7 +404,8 @@ describe('commit', () => {
       // Create a new file
       await writeFile(join(repoDir, 'new.txt'), 'new\n', 'utf8');
 
-      await commit(repoDir, 'add new file');
+      await stageAllFiles(repoDir);
+      await runGit(repoDir, ['commit', '-m', 'add new file']);
 
       const log = await runGit(repoDir, ['log', '--oneline']);
       expect(log).toContain('add new file');
@@ -376,7 +443,7 @@ describe('getFileContentAtRef', () => {
       expect(pristine).toBe('.root { color: blue; }\n');
       expect(head).toBe('.root { color: red; }\n');
       // Backwards-compat wrapper still points at HEAD.
-      expect(await getFileContentFromHead(repoDir, 'widget.css')).toBe(head);
+      expect(await getFileContentAtRef(repoDir, 'widget.css')).toBe(head);
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }

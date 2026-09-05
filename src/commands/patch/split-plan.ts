@@ -13,25 +13,24 @@ import { type ConflictReport } from '../../core/destructive.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import { extractAffectedFiles } from '../../core/patch-apply.js';
 import {
-  buildModifiedFileAdditionsFromDiff,
-  buildPatchQueueContext,
   collectForwardImportEdges,
   formatPatchLintIssue,
   lintPatchQueue,
   type PatchQueueEntry,
 } from '../../core/patch-lint.js';
+import type { PatchQueueContext } from '../../core/patch-lint-cross.js';
 import { computeProjectedLintRegressions } from '../../core/patch-lint-projection.js';
 import { rewriteStagedDependencyOwners } from '../../core/patch-manifest.js';
 import { applyRenameMapToManifest, buildProjectedManifest } from '../../core/patch-policy.js';
 import { buildPatchSourceMetadata } from '../../core/patch-source-metadata.js';
-import { buildNewFileTextProjection } from '../../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { PatchStagedForwardImport } from '../../types/commands/index.js';
-import type { PatchCategory, PatchMetadata } from '../../types/commands/index.js';
+import type { PatchCategory, PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import type { FireForgeConfig } from '../../types/config.js';
 import { pathExists } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
 import { type PlacementPlan } from '../export-flow.js';
+import { projectEntryBody } from './entry-projection.js';
 
 /** Everything the commit step needs, computed and confirmed up front. */
 export interface SplitPlan {
@@ -152,16 +151,9 @@ export function rewriteSplitOwners(
   };
 }
 
-function buildEntryProjection(
-  diff: string
-): Pick<PatchQueueEntry, 'diff' | 'newFiles' | 'modifiedFileAdditions'> {
-  const newFiles = buildNewFileTextProjection(diff);
-  return { diff, newFiles, modifiedFileAdditions: buildModifiedFileAdditionsFromDiff(diff) };
-}
-
 /** Builds the projected post-split queue entries (renumber + shrunken source + new patch). */
 function buildProjectedSplitEntries(
-  baseCtx: Awaited<ReturnType<typeof buildPatchQueueContext>>,
+  baseCtx: PatchQueueContext,
   plan: SplitPlan
 ): PatchQueueEntry[] {
   const movedSet = new Set(plan.movedFiles);
@@ -184,14 +176,14 @@ function buildProjectedSplitEntries(
       ? { ...entry, metadata, filename: rename.newFilename, order: rename.newOrder }
       : { ...entry, metadata };
     if (entry.filename !== plan.source.filename) return base;
-    return { ...base, ...buildEntryProjection(plan.remainingDiff) };
+    return { ...base, ...projectEntryBody(plan.remainingDiff) };
   });
 
   entries.push({
     filename: plan.placement.newFilename,
     order: plan.placement.insertionOrder,
     metadata: null,
-    ...buildEntryProjection(plan.movedDiff),
+    ...projectEntryBody(plan.movedDiff),
   });
   entries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
   return entries;
@@ -281,7 +273,7 @@ function injectStagedDependencyAdditions(
  */
 export function runProjectedSplitLint(
   plan: SplitPlan,
-  baseCtx: Awaited<ReturnType<typeof buildPatchQueueContext>>
+  baseCtx: PatchQueueContext
 ): {
   conflicts: ConflictReport | null;
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
@@ -325,7 +317,7 @@ export function projectSplitManifest(
   manifest: { version: 1; patches: PatchMetadata[] },
   plan: SplitPlan,
   newMetadata: PatchMetadata
-): ReturnType<typeof buildProjectedManifest> {
+): PatchesManifest {
   const movedSet = new Set(plan.movedFiles);
   const renamed = applyRenameMapToManifest(manifest, plan.placement.renameMap);
   const effectiveSourceFilename =

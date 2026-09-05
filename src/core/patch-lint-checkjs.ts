@@ -200,6 +200,38 @@ export interface GroupedCheckJsResult {
   global: PatchLintIssue[];
 }
 
+/** Inputs for {@link runCheckJsGrouped}. */
+export interface RunCheckJsGroupedInput {
+  /** Absolute engine (repository) directory. */
+  repoDir: string;
+  /**
+   * Patch-owned `.sys.mjs` paths (relative to `repoDir`) the program should
+   * see and resolve against.
+   */
+  resolutionOwned: Set<string>;
+  /**
+   * Optional project-relative extra `.d.ts` appended to the built-in
+   * Firefox-globals shim (from `patchLint.checkJsExtraShim`).
+   */
+  extraShimPath?: string;
+  /** Absolute project root for resolving `extraShimPath`. */
+  projectRoot?: string;
+  /** Strictness preset plus allowlisted compiler-option overrides. */
+  mode?: CheckJsMode;
+  /** Optional shim text appended AFTER the consumer shim. */
+  builtinShimSuffix?: string;
+  /**
+   * When set, only these repo-relative files become program ROOTS;
+   * resolution (and the host allowlist) still spans all of
+   * `resolutionOwned`, so a subset root's cross-patch imports type-check
+   * against the real owning sources while unrelated owned files are never
+   * parsed. `.mjs` files are module-scoped, so a root's diagnostics are
+   * identical whether other owned files are roots or mere resolution
+   * targets.
+   */
+  rootScope?: ReadonlySet<string>;
+}
+
 /**
  * Builds the checkJs program **once** over `resolutionOwned` and returns its
  * diagnostics grouped by originating file. Callers slice the result by their
@@ -208,32 +240,13 @@ export interface GroupedCheckJsResult {
  * every file in `resolutionOwned`, so cross-patch `resource:///`/`chrome://`
  * imports resolve to real sources.
  *
- * @param repoDir - Absolute engine (repository) directory
- * @param resolutionOwned - Patch-owned `.sys.mjs` paths (relative to repoDir)
- *   the program should see and resolve against
- * @param extraShimPath - Optional project-relative extra `.d.ts` appended to
- *   the built-in Firefox-globals shim (from `patchLint.checkJsExtraShim`)
- * @param projectRoot - Absolute project root for resolving `extraShimPath`
- * @param mode - Strictness preset plus allowlisted compiler-option overrides
- * @param builtinShimSuffix - Optional shim text appended AFTER the consumer
- *   shim
- * @param rootScope - When set, only these repo-relative files become program
- *   ROOTS; resolution (and the host allowlist) still spans all of
- *   `resolutionOwned`, so a subset root's cross-patch imports type-check
- *   against the real owning sources while unrelated owned files are never
- *   parsed. `.mjs` files are module-scoped, so a root's diagnostics are
- *   identical whether other owned files are roots or mere resolution targets.
+ * @param input - Program inputs; see {@link RunCheckJsGroupedInput}
  * @returns Diagnostics grouped per owning file plus run-level errors
  */
 export async function runCheckJsGrouped(
-  repoDir: string,
-  resolutionOwned: Set<string>,
-  extraShimPath?: string,
-  projectRoot?: string,
-  mode?: CheckJsMode,
-  builtinShimSuffix?: string,
-  rootScope?: ReadonlySet<string>
+  input: RunCheckJsGroupedInput
 ): Promise<GroupedCheckJsResult> {
+  const { repoDir, resolutionOwned, extraShimPath, rootScope } = input;
   const empty: GroupedCheckJsResult = { byFile: new Map(), global: [] };
   if (resolutionOwned.size === 0) return empty;
 
@@ -282,12 +295,14 @@ export async function runCheckJsGrouped(
   // also undefined, so the resolution target is irrelevant.
   let shimSource: string;
   try {
-    const composed = await composeShimSource(projectRoot ?? repoDir, extraShimPath);
+    const composed = await composeShimSource(input.projectRoot ?? repoDir, extraShimPath);
     // The suffix (e.g. the loose test-harness baseline) goes
     // AFTER the consumer's extra shim: TypeScript resolves conflicting
     // `declare var` redeclarations to the FIRST declaration, so a typed
     // consumer declaration must precede the loose fallback to win.
-    shimSource = builtinShimSuffix ? `${composed.source}\n${builtinShimSuffix}` : composed.source;
+    shimSource = input.builtinShimSuffix
+      ? `${composed.source}\n${input.builtinShimSuffix}`
+      : composed.source;
     if (composed.extraShimAppended) {
       verbose(`checkJs: extra shim ${extraShimPath ?? ''} appended to Firefox globals shim`);
     }
@@ -308,7 +323,7 @@ export async function runCheckJsGrouped(
   const shimPath = toTsPath(resolve(repoDir, SHIM_FILENAME));
   rootFiles.push(shimPath);
 
-  const strict = mode?.strict === true;
+  const strict = input.mode?.strict === true;
   const strictness: import('typescript').CompilerOptions = strict
     ? { strict: true, noImplicitAny: true }
     : {
@@ -323,7 +338,7 @@ export async function runCheckJsGrouped(
   // sources without a hand-generated ambient stub shim.
   const overrides: import('typescript').CompilerOptions = {};
   let pathsMapping: Record<string, string[]> | undefined;
-  const co = mode?.compilerOptions;
+  const co = input.mode?.compilerOptions;
   if (co) {
     for (const key of Object.keys(co) as (keyof PatchLintCheckJsCompilerOptions)[]) {
       const v = co[key];
@@ -416,7 +431,7 @@ export async function runCheckJsGrouped(
     ts,
     [...program.getSemanticDiagnostics(), ...program.getSyntacticDiagnostics()],
     relByAbsolute,
-    mode?.undefinedIdentifiers ?? 'warning'
+    input.mode?.undefinedIdentifiers ?? 'warning'
   );
 
   verbose(`checkJs: analyzed ${rootFiles.length - 1} file(s) across ${byFile.size} owning file(s)`);
@@ -497,13 +512,13 @@ export async function runCheckJs(
   mode?: CheckJsMode,
   reportScope?: ReadonlySet<string>
 ): Promise<PatchLintIssue[]> {
-  const { byFile, global } = await runCheckJsGrouped(
+  const { byFile, global } = await runCheckJsGrouped({
     repoDir,
-    patchOwnedFiles,
-    extraShimPath,
-    projectRoot,
-    mode
-  );
+    resolutionOwned: patchOwnedFiles,
+    ...(extraShimPath !== undefined ? { extraShimPath } : {}),
+    ...(projectRoot !== undefined ? { projectRoot } : {}),
+    ...(mode !== undefined ? { mode } : {}),
+  });
   const issues = [...global];
   for (const [rel, list] of byFile) {
     if (reportScope && !reportScope.has(rel)) continue;
@@ -586,14 +601,16 @@ export async function runCheckJsTestFilesGrouped(
         roots.add(candidate);
       }
     }
-    const result = await runCheckJsGrouped(
+    const result = await runCheckJsGrouped({
       repoDir,
-      roots,
-      patchLint.checkJsTestShim,
+      resolutionOwned: roots,
+      ...(patchLint.checkJsTestShim !== undefined
+        ? { extraShimPath: patchLint.checkJsTestShim }
+        : {}),
       projectRoot,
       mode,
-      TEST_HARNESS_SHIM
-    );
+      builtinShimSuffix: TEST_HARNESS_SHIM,
+    });
     const own = result.byFile.get(file);
     if (own && own.length > 0) {
       merged.byFile.set(file, [
@@ -645,15 +662,16 @@ export async function invokePatchLintCheckJsGrouped(
   projectRoot: string,
   rootScope?: ReadonlySet<string>
 ): Promise<GroupedCheckJsResult> {
-  return runCheckJsGrouped(
+  return runCheckJsGrouped({
     repoDir,
-    patchOwnedFiles,
-    patchLint.checkJsExtraShim,
+    resolutionOwned: patchOwnedFiles,
+    ...(patchLint.checkJsExtraShim !== undefined
+      ? { extraShimPath: patchLint.checkJsExtraShim }
+      : {}),
     projectRoot,
-    modeFromPatchLintConfig(patchLint),
-    undefined,
-    rootScope
-  );
+    mode: modeFromPatchLintConfig(patchLint),
+    ...(rootScope !== undefined ? { rootScope } : {}),
+  });
 }
 
 /**

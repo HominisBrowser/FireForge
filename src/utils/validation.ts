@@ -102,7 +102,7 @@ export function isArray(value: unknown): value is unknown[] {
  * @returns True if value is a JSON object node
  */
 export function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return isObject(value);
 }
 
 /**
@@ -149,21 +149,40 @@ export function isValidFirefoxCandidate(candidate: string): boolean {
  * in ONE direction: it rejects an entry here that the union does not
  * declare. It cannot see a union member missing from this list — widening a
  * `readonly T[]` check never fails for being short. The reverse direction is
- * covered by the exhaustive switch in `utils/__tests__/validation.test.ts`,
- * which fails to compile when the union grows.
+ * covered by the `ExhaustiveFirefoxProductList` operand below, which stops
+ * compiling when the union grows past this list.
  */
-export const FIREFOX_PRODUCTS = [
+const FIREFOX_PRODUCT_VALUES = [
   'firefox',
   'firefox-esr',
   'firefox-beta',
   'firefox-devedition',
-] as const satisfies readonly FirefoxProduct[];
+] as const;
+
+/**
+ * The type of a complete `FIREFOX_PRODUCTS` list: `readonly FirefoxProduct[]`
+ * while `T` covers every member of the union, and `never` as soon as one is
+ * missing.
+ *
+ * A plain `satisfies readonly FirefoxProduct[]` only rejects an ENTRY the
+ * union does not declare; widening never fails for being short, so a union
+ * member with no entry slipped through. Satisfying `never` is impossible, so
+ * routing the check through this alias closes that direction too. It has to
+ * be a `satisfies` operand rather than a standalone alias: an alias nothing
+ * instantiates is never evaluated and would assert nothing.
+ */
+type ExhaustiveFirefoxProductList<T extends FirefoxProduct> =
+  Exclude<FirefoxProduct, T> extends never ? readonly FirefoxProduct[] : never;
+
+export const FIREFOX_PRODUCTS = FIREFOX_PRODUCT_VALUES satisfies ExhaustiveFirefoxProductList<
+  (typeof FIREFOX_PRODUCT_VALUES)[number]
+>;
 
 /**
  * Validates a Firefox product string.
  *
- * A type predicate, matching its siblings {@link isValidPatchCategory} and
- * {@link isValidProjectLicense}. Returning plain `boolean` would force
+ * A type predicate, matching its sibling {@link isValidProjectLicense}.
+ * Returning plain `boolean` would force
  * `as FirefoxProduct` casts at the call sites even though the `.includes`
  * check IS the runtime proof.
  */
@@ -206,11 +225,6 @@ export const isValidProjectLicense = makeEnumGuard(PROJECT_LICENSES);
  * Valid patch categories.
  */
 export const PATCH_CATEGORIES = ['branding', 'ui', 'privacy', 'security', 'infra'] as const;
-
-/**
- * Validates a patch category string.
- */
-export const isValidPatchCategory = makeEnumGuard(PATCH_CATEGORIES);
 
 /**
  * Checks whether a Firefox version string has an ESR suffix.
@@ -301,13 +315,6 @@ export function describeProductVersionIncompatibility(
  */
 export function isValidAppId(appId: string): boolean {
   return /^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$/.test(appId);
-}
-
-/**
- * Checks if a value is defined (not undefined or null).
- */
-export function isDefined<T>(value: T | undefined | null): value is T {
-  return value !== undefined && value !== null;
 }
 
 /**

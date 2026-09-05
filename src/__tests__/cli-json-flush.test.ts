@@ -19,21 +19,18 @@
  */
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   createTempProject,
+  FIREFORGE_BIN_ENTRY,
   initCommittedRepo,
   removeTempProject,
+  TSX_CLI,
   writeFiles,
   writeFireForgeConfig,
 } from '../test-utils/index.js';
-
-const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
-const tsxCli = join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const binEntry = join(repoRoot, 'bin', 'fireforge.ts');
 
 /** Enough unmanaged files that the JSON payload clears 64 KiB comfortably. */
 const UNMANAGED_FILE_COUNT = 600;
@@ -72,7 +69,7 @@ describe('status --json --fail-on refusal through a real pipe', () => {
     // 65 536 bytes.
     const pipeline = [
       'set -o pipefail',
-      `"${process.execPath}" "${tsxCli}" "${binEntry}" status --json --fail-on unmanaged | { sleep 0.5; cat; }`,
+      `"${process.execPath}" "${TSX_CLI}" "${FIREFORGE_BIN_ENTRY}" status --json --fail-on unmanaged | { sleep 0.5; cat; }`,
     ].join('\n');
     const child = spawn('bash', ['-c', pipeline], {
       cwd: projectRoot,

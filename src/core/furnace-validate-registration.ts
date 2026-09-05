@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { createHash } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -12,6 +11,7 @@ import type {
 } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { warn } from '../utils/logger.js';
 import { escapeRegex, stripJsComments } from '../utils/regex.js';
 import { getProjectPaths, loadConfig } from './config.js';
@@ -155,8 +155,8 @@ export async function checkRegistrationConsistency(
       // comparisons hashed raw bytes, so on a CRLF checkout `furnace status`
       // and `furnace validate` reported drift for files apply had just
       // decided were identical.
-      const srcHash = createHash('sha256').update(normalizeForChecksum(srcContent)).digest('hex');
-      const destHash = createHash('sha256').update(normalizeForChecksum(destContent)).digest('hex');
+      const srcHash = sha256Hex(normalizeForChecksum(srcContent));
+      const destHash = sha256Hex(normalizeForChecksum(destContent));
 
       if (srcHash !== destHash) {
         status.driftedFiles.push(entry.name);
@@ -181,10 +181,8 @@ export async function checkRegistrationConsistency(
       } else {
         const srcContent = await readText(ftlSrc);
         const destContent = await readText(ftlDest);
-        const srcHash = createHash('sha256').update(normalizeForChecksum(srcContent)).digest('hex');
-        const destHash = createHash('sha256')
-          .update(normalizeForChecksum(destContent))
-          .digest('hex');
+        const srcHash = sha256Hex(normalizeForChecksum(srcContent));
+        const destHash = sha256Hex(normalizeForChecksum(destContent));
         if (srcHash !== destHash) {
           status.driftedFiles.push(ftlName);
           status.filesInSync = false;

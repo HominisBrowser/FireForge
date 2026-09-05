@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
@@ -7,6 +6,7 @@ import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import type { JsonValue } from '../types/json.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { getPackageVersion } from '../utils/package-root.js';
 import { getFurnacePaths } from './furnace-config.js';
 import { git } from './git-base.js';
@@ -81,11 +81,6 @@ function stableJson(value: JsonValue): string {
   return `{${entries
     .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item as JsonValue)}`)
     .join(',')}}`;
-}
-
-/** Computes a SHA-256 hex digest for text or binary content. */
-function sha256Hex(content: string | Buffer): string {
-  return createHash('sha256').update(content).digest('hex');
 }
 
 /** Computes a stable SHA-256 digest for JSON-compatible data. */
@@ -303,16 +298,26 @@ export function getCachedPerPatchLintIssues(
   };
 }
 
+export interface SetCachedPerPatchLintIssuesInput {
+  /** Cache file to mutate in place. */
+  cache: PerPatchLintCacheFile;
+  /** Patch the payload belongs to; also the cache entry key. */
+  patchFilename: string;
+  /** Fingerprint the payload is valid for. */
+  key: string;
+  /** Reported issues, stored as copies. */
+  issues: PatchLintIssue[];
+  /** Issues suppressed by `lintIgnore`, stored as copies. */
+  suppressed: PatchLintIssue[];
+  /** Line count the run measured. */
+  lineCount: number;
+  /** Suppression ids in force for the run, normalized on store. */
+  lintIgnore?: Iterable<string> | undefined;
+}
+
 /** Stores the per-patch lint payload after a successful lint calculation. */
-export function setCachedPerPatchLintIssues(
-  cache: PerPatchLintCacheFile,
-  patchFilename: string,
-  key: string,
-  issues: PatchLintIssue[],
-  suppressed: PatchLintIssue[],
-  lineCount: number,
-  lintIgnore?: Iterable<string>
-): void {
+export function setCachedPerPatchLintIssues(input: SetCachedPerPatchLintIssuesInput): void {
+  const { cache, patchFilename, key, issues, suppressed, lineCount, lintIgnore } = input;
   cache.entries[patchFilename] = {
     key,
     patchFilename,

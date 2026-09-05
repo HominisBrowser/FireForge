@@ -20,6 +20,7 @@ import { info, intro, outro, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { normalizeTokenName } from '../utils/validation.js';
 import { tokenCoverageCommand } from './token-coverage.js';
+import { tokenListCommand, tokenShowCommand } from './token-list.js';
 
 async function normalizeTokenNameForProject(
   projectRoot: string,
@@ -77,7 +78,7 @@ function reportSkippedToken(
       ? `:root${options.variant}`
       : `category "${result.skippedExisting?.category ?? options.category ?? ''}"`;
   const where = result.skippedExisting
-    ? ` in ${scope} (line ${String(result.skippedExisting.line)}), unchanged`
+    ? ` in ${scope} (line ${result.skippedExisting.line}), unchanged`
     : '';
   info(`Token ${tokenName} already exists${where} (skipped)`);
 }
@@ -270,6 +271,34 @@ export function registerToken(
           });
         }
       )
+    );
+
+  token
+    .command('list')
+    .description(
+      'List the design-token categories declared in the tokens CSS with their token names, in file order'
+    )
+    .option('--category <name>', 'Restrict the report to one category')
+    .option('--json', 'Emit the machine-readable envelope on stdout (see docs/machine-output.md)')
+    .action(
+      withErrorHandling(async (options: { category?: string; json?: boolean }) => {
+        await tokenListCommand(
+          getProjectRoot(),
+          pickDefined({ category: options.category, json: options.json })
+        );
+      })
+    );
+
+  token
+    .command('show <token-name>')
+    .description(
+      'Show one token: its category, the value it takes in every declaring block, and where it is defined. The leading `--` is optional; with it, use the `--` separator first (e.g. `fireforge token show -- --my-token`).'
+    )
+    .option('--json', 'Emit the machine-readable envelope on stdout (see docs/machine-output.md)')
+    .action(
+      withErrorHandling(async (tokenName: string, options: { json?: boolean }) => {
+        await tokenShowCommand(getProjectRoot(), tokenName, pickDefined({ json: options.json }));
+      })
     );
 
   token

@@ -32,6 +32,7 @@
 
 import { join } from 'node:path';
 
+import { toError } from '../utils/errors.js';
 import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { isJarManifestPath } from './build-audit.js';
@@ -110,7 +111,9 @@ export async function evaluateJarManifestEscalation(
       isNew = await isNewJarManifest(engineDir, path);
     } catch (error: unknown) {
       // Fail closed: an unanswerable "is this new?" keeps the old rule.
-      verbose(`jar escalation: could not classify engine/${path} (${String(error)}); escalating.`);
+      verbose(
+        `jar escalation: could not classify engine/${path} (${toError(error).message}); escalating.`
+      );
       causes.push({ path, reason: 'could not determine whether the manifest is new' });
       continue;
     }
@@ -123,7 +126,9 @@ export async function evaluateJarManifestEscalation(
     try {
       body = await readText(join(engineDir, path));
     } catch (error: unknown) {
-      verbose(`jar escalation: could not read engine/${path} (${String(error)}); escalating.`);
+      verbose(
+        `jar escalation: could not read engine/${path} (${toError(error).message}); escalating.`
+      );
       causes.push({ path, reason: 'manifest could not be read' });
       continue;
     }

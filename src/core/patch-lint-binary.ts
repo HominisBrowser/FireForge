@@ -22,23 +22,16 @@
  * cross-patch lint graph.
  */
 import type { PatchLintIssue } from '../types/commands/index.js';
+import type { PatchQueueBodyEntry, PatchQueueView } from './patch-lint-queue-types.js';
 import { parseDiffSections } from './patch-parse.js';
 
 /**
- * The slice of a queue entry this rule reads. Declared structurally rather
- * than importing `PatchQueueEntry` from `patch-lint-cross.ts`, which imports
- * this module back — the local shape keeps the dependency edge one-way and
- * `dpdm` clean, matching `patch-lint-module-registration.ts`.
+ * Queue view accepted by {@link lintPatchQueueBinaryBodies}. Described
+ * structurally rather than by importing `PatchQueueContext` from
+ * `patch-lint-cross.ts`, which imports this module back — the shared leaf
+ * type keeps the dependency edge one-way and `dpdm` clean.
  */
-interface BinaryBodyQueueEntry {
-  filename: string;
-  diff: string;
-}
-
-/** Queue view accepted by {@link lintPatchQueueBinaryBodies}. */
-interface BinaryBodyQueueContext {
-  entries: readonly BinaryBodyQueueEntry[];
-}
+type BinaryBodyQueueContext = PatchQueueView<PatchQueueBodyEntry>;
 
 /** Lint check identifier emitted by {@link lintPatchQueueBinaryBodies}. */
 export const BINARY_BODY_CHECK = 'binary-body-not-reconstructable';

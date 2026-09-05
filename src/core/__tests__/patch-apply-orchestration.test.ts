@@ -15,7 +15,7 @@ vi.mock('../git.js', () => ({
 }));
 
 vi.mock('../git-file-ops.js', () => ({
-  getFileContentFromHead: vi.fn(),
+  getFileContentAtRef: vi.fn(),
 }));
 
 vi.mock('../patch-manifest.js', async (importOriginal) => {
@@ -39,7 +39,6 @@ vi.mock('../patch-transform.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../patch-transform.js')>();
   return {
     ...actual,
-    applyPatchToContent: vi.fn(),
     applyPatchTextToContent: vi.fn(),
   };
 });
@@ -57,26 +56,19 @@ import { readdir } from 'node:fs/promises';
 import { nativePath } from '../../test-utils/index.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { applyPatchIdempotent, reversePatch } from '../git.js';
-import { getFileContentFromHead } from '../git-file-ops.js';
+import { getFileContentAtRef } from '../git-file-ops.js';
 import {
   applyPatchesWithContinue,
   countPatches,
   createPatchedContentContext,
   discoverPatches,
-  getAllTargetFilesFromPatch,
-  getTargetFileFromPatch,
-  isNewFilePatch,
 } from '../patch-apply.js';
+import { getAllTargetFilesFromPatch } from '../patch-files.js';
 import { loadPatchesManifest } from '../patch-manifest.js';
 import { extractAffectedFiles, extractConflictingFiles } from '../patch-parse.js';
 import { applyPatchTextToContent } from '../patch-transform.js';
 
 describe('patch orchestration helpers', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(extractAffectedFiles).mockReturnValue([]);
-  });
-
   it('returns no patches when the directory does not exist', async () => {
     vi.mocked(pathExists).mockResolvedValue(false);
 
@@ -106,35 +98,20 @@ describe('patch orchestration helpers', () => {
   });
 
   it('parses target file helpers from patch content', async () => {
-    vi.mocked(readText).mockResolvedValue(
-      [
-        'diff --git a/foo.js b/foo.js',
-        'new file mode 100644',
-        '--- /dev/null',
-        '+++ b/foo.js',
-        '@@ -0,0 +1 @@',
-        '+first',
-        'diff --git a/bar.css b/bar.css',
-        '--- a/bar.css',
-        '+++ b/bar.css',
-        '@@ -1 +1 @@',
-        '-old',
-        '+new',
-        '',
-      ].join('\n')
-    );
-
     // `getAllTargetFilesFromPatch` delegates to `extractAffectedFiles` (mocked
-    // in this file to `[]`). The real parser is exercised by the unit test
-    // in `patch-files.test.ts`; here we just confirm the orchestration layer
-    // calls through correctly.
+    // in this file). The real parser is exercised by the unit test in
+    // `patch-files.test.ts`; here we confirm the orchestration layer calls
+    // through correctly.
     vi.mocked(extractAffectedFiles).mockReturnValueOnce(['foo.js', 'bar.css']);
-    await expect(isNewFilePatch('/patches/001-foo.patch')).resolves.toBe(true);
-    await expect(getTargetFileFromPatch('/patches/001-foo.patch')).resolves.toBe('foo.js');
+
     await expect(getAllTargetFilesFromPatch('/patches/001-foo.patch')).resolves.toEqual([
       'foo.js',
       'bar.css',
     ]);
+  });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(extractAffectedFiles).mockReturnValue([]);
   });
 
   it('stops on the first failed patch when continue mode is disabled', async () => {
@@ -186,7 +163,9 @@ describe('patch orchestration helpers', () => {
       .mockRejectedValueOnce(new Error('reject pass failed'))
       .mockResolvedValueOnce(undefined);
 
-    const summary = await applyPatchesWithContinue('/patches', '/engine', true);
+    const summary = await applyPatchesWithContinue('/patches', '/engine', {
+      continueOnFailure: true,
+    });
 
     expect(summary.total).toBe(3);
     expect(summary.succeeded.map((result) => result.patch.filename)).toEqual([
@@ -200,7 +179,7 @@ describe('patch orchestration helpers', () => {
   });
 
   it('returns HEAD content unchanged when no patches affect the file', async () => {
-    vi.mocked(getFileContentFromHead).mockResolvedValue('base content\n');
+    vi.mocked(getFileContentAtRef).mockResolvedValue('base content\n');
     vi.mocked(loadPatchesManifest).mockResolvedValue(null);
     vi.mocked(pathExists).mockResolvedValue(false);
 
@@ -210,7 +189,7 @@ describe('patch orchestration helpers', () => {
   });
 
   it('applies affecting patches in order and reads each body once when computing patched content', async () => {
-    vi.mocked(getFileContentFromHead).mockResolvedValue('base content\n');
+    vi.mocked(getFileContentAtRef).mockResolvedValue('base content\n');
     vi.mocked(loadPatchesManifest).mockResolvedValue({
       version: 1,
       patches: [
@@ -286,7 +265,9 @@ describe('patch orchestration helpers', () => {
       .mockRejectedValueOnce(new Error('context mismatch')) // 002 fails
       .mockRejectedValueOnce(new Error('reject also fails')); // 002 --reject pass
 
-    const summary = await applyPatchesWithContinue('/patches', '/engine', false);
+    const summary = await applyPatchesWithContinue('/patches', '/engine', {
+      continueOnFailure: false,
+    });
 
     expect(summary.succeeded).toHaveLength(1);
     expect(summary.failed).toHaveLength(1);
@@ -311,7 +292,7 @@ describe('patch orchestration helpers', () => {
       .mockRejectedValueOnce(new Error('fails')) // 002 fails
       .mockRejectedValueOnce(new Error('reject fails')); // 002 --reject pass
 
-    await applyPatchesWithContinue('/patches', '/engine', true);
+    await applyPatchesWithContinue('/patches', '/engine', { continueOnFailure: true });
 
     // No rollback in continue mode
     expect(reversePatch).not.toHaveBeenCalled();

@@ -33,7 +33,6 @@ vi.mock('../furnace-config.js', () => ({
 
 import { writeFile } from 'node:fs/promises';
 
-import { nativePath } from '../../test-utils/index.js';
 import { loadFurnaceState, updateFurnaceState } from '../furnace-config.js';
 import {
   __resetFurnaceOperationStateForTests,
@@ -83,10 +82,6 @@ afterEach(async () => {
 });
 
 describe('runFurnaceMutation', () => {
-  it('resolves the furnace lock path under the .fireforge directory', () => {
-    expect(getFurnaceLockPath('/project')).toBe(nativePath('/project/.fireforge/furnace.lock'));
-  });
-
   it('returns the body result on the happy path', async () => {
     const root = await makeTempProject('fireforge-furnace-op-');
 

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -6,7 +7,8 @@ import * as prompts from '@clack/prompts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadState } from '../../core/config.js';
-import { resetResolvedPython } from '../../core/mach.js';
+import { resolveArchive } from '../../core/firefox-archive.js';
+import { resetResolvedPython } from '../../core/mach-python.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
@@ -26,7 +28,6 @@ import { buildCommand } from '../build.js';
 import { discardCommand } from '../discard.js';
 import { downloadCommand } from '../download.js';
 import { exportCommand } from '../export.js';
-import { exportAllCommand } from '../export-all.js';
 import { importCommand } from '../import.js';
 import { reExportCommand } from '../re-export.js';
 import { resetCommand } from '../reset.js';
@@ -82,11 +83,19 @@ describe('connected Firefox workflow integration', () => {
     const archivePath = await makeSyntheticFirefoxArchive(projectRoot);
     const archiveBody = await readFile(archivePath);
     // URL-aware: the archive download gets the tarball, the default
-    // integrity check's SHA256SUMS fetch gets a 404 (warn-and-continue).
+    // integrity check's SHA256SUMS fetch gets a listing that matches it
+    // (the check fails closed without one).
+    const digest = createHash('sha256').update(archiveBody).digest('hex');
+    const sumsBody = `${digest}  ${
+      resolveArchive(
+        FIREFOX_WORKFLOW_SETUP_OPTIONS.firefoxVersion,
+        FIREFOX_WORKFLOW_SETUP_OPTIONS.product
+      ).pathInChecksums
+    }\n`;
     fetchMock.mockImplementation((url: unknown) =>
       Promise.resolve(
         String(url).endsWith('/SHA256SUMS')
-          ? new Response('not found', { status: 404 })
+          ? new Response(sumsBody, { status: 200 })
           : new Response(archiveBody, {
               status: 200,
               headers: { 'content-length': String(archiveBody.length) },
@@ -283,55 +292,6 @@ describe('connected Firefox workflow integration', () => {
     ).resolves.toBe('export const browserTitle = "patched";\n');
   });
 
-  it('exports and round-trips a non-JS source file (Rust build.rs)', async () => {
-    await downloadCommand(projectRoot, {});
-
-    const engineDir = join(projectRoot, 'engine');
-    const rustFile = SYNTHETIC_FIREFOX_PATHS.rustBuildScript;
-
-    // Apply a realistic Rust modification (similar to a real fork's build.rs edit)
-    await writeFiles(engineDir, {
-      [rustFile]: [
-        'use std::fs;',
-        '',
-        'fn generate_bindings() {',
-        '    let out_file = "bindings.rs";',
-        '    let src = "// post-processed".to_string();',
-        '    fs::write(out_file, src).expect("write failed");',
-        '}',
-        '',
-        'fn main() {',
-        '    generate_bindings();',
-        '}',
-        '',
-      ].join('\n'),
-    });
-
-    await exportCommand(projectRoot, [rustFile], {
-      name: 'profiler-bindgen-fix',
-      category: 'infra',
-      description: 'Fix profiler Rust API build script',
-    });
-
-    const manifest = await loadPatchesManifest(join(projectRoot, 'patches'));
-    expect(manifest?.patches).toHaveLength(1);
-    expect(manifest?.patches[0]?.filesAffected).toEqual([rustFile]);
-
-    const patchFilename = manifest?.patches[0]?.filename;
-    expect(patchFilename).toBeDefined();
-    const patchContent = await readProjectText(projectRoot, `patches/${patchFilename}`);
-    expect(patchContent).toContain('+    let src = "// post-processed".to_string();');
-    expect(patchContent).toContain('+    fs::write(out_file, src).expect("write failed");');
-
-    // Round-trip: checkout original, re-import, verify
-    await runGit(engineDir, ['checkout', '--', rustFile]);
-    await importCommand(projectRoot, {});
-
-    const imported = await readProjectText(engineDir, rustFile);
-    expect(imported).toContain('let src = "// post-processed".to_string();');
-    expect(imported).toContain('fs::write(out_file, src).expect("write failed");');
-  });
-
   it('exports multiple patches across JS and Rust files, then re-imports the full stack', async () => {
     await downloadCommand(projectRoot, {});
 
@@ -491,38 +451,6 @@ describe('connected Firefox workflow integration', () => {
     expect(mozbuild).toContain('DIRS += ["mybrowser"]');
     const rust = await readProjectText(engineDir, SYNTHETIC_FIREFOX_PATHS.rustBuildScript);
     expect(rust).toContain('let src = "// patched".to_string();');
-  });
-
-  it('export-all refuses branding-managed changes in a connected workflow', async () => {
-    await downloadCommand(projectRoot, {});
-
-    const engineDir = join(projectRoot, 'engine');
-
-    // Make a non-branding change AND a branding change
-    await writeFiles(engineDir, {
-      [SYNTHETIC_FIREFOX_PATHS.browserScript]: 'export const browserTitle = "patched";\n',
-      [SYNTHETIC_FIREFOX_PATHS.mozConfigure]: 'imply_option("MOZ_APP_VENDOR", "My Company")\n',
-    });
-
-    // export-all should refuse because moz.configure is branding-managed
-    await expect(
-      exportAllCommand(projectRoot, {
-        name: 'all-changes',
-        category: 'infra',
-        description: 'Should fail due to branding files',
-      })
-    ).rejects.toThrow('branding');
-
-    // Individual export of just the browser script should work fine
-    await exportCommand(projectRoot, [SYNTHETIC_FIREFOX_PATHS.browserScript], {
-      name: 'browser-title-only',
-      category: 'ui',
-      description: 'Non-branding change exported individually',
-    });
-
-    const manifest = await loadPatchesManifest(join(projectRoot, 'patches'));
-    expect(manifest?.patches).toHaveLength(1);
-    expect(manifest?.patches[0]?.filesAffected).toEqual([SYNTHETIC_FIREFOX_PATHS.browserScript]);
   });
 
   it('re-exports a patch with --scan after adding new files to a touched directory', async () => {

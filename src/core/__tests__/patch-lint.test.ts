@@ -921,120 +921,6 @@ describe('lintPatchedJs', () => {
     expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
   });
 
-  it('does not flag new files below the notice threshold', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const smallFile = Array.from({ length: 400 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(smallFile);
-
-    const issues = await lintPatchedJs('/engine', ['small.js'], new Set(['small.js']), mockConfig);
-
-    expect(issues.some((i) => i.check === 'file-too-large')).toBe(false);
-  });
-
-  it('emits notice for new files in the notice tier (501–750 lines)', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 550 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs('/engine', ['mid.js'], new Set(['mid.js']), mockConfig);
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('notice');
-  });
-
-  it('emits warning for new files in the warning tier (751–900 lines)', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 800 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs('/engine', ['big.js'], new Set(['big.js']), mockConfig);
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('warning');
-  });
-
-  it('emits error for new files above the error tier (901+ lines)', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 950 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs('/engine', ['huge.js'], new Set(['huge.js']), mockConfig);
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('error');
-  });
-
-  it('uses test-file thresholds for files in /test/ paths', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 1300 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs(
-      '/engine',
-      ['browser/base/content/test/general/browser_foo.js'],
-      new Set(['browser/base/content/test/general/browser_foo.js']),
-      mockConfig
-    );
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('notice');
-    expect(sizeIssue?.message).toContain('Test file');
-  });
-
-  it('emits warning for test files in the warning tier (1401–1600 lines)', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 1500 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs(
-      '/engine',
-      ['browser/base/content/test/general/browser_bar.js'],
-      new Set(['browser/base/content/test/general/browser_bar.js']),
-      mockConfig
-    );
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('warning');
-    expect(sizeIssue?.message).toContain('splitting');
-  });
-
-  it('emits error for test files above 1600 lines', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 1700 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs(
-      '/engine',
-      ['test_utils.js'],
-      new Set(['test_utils.js']),
-      mockConfig
-    );
-
-    const sizeIssue = issues.find((i) => i.check === 'file-too-large');
-    expect(sizeIssue).toBeDefined();
-    expect(sizeIssue?.severity).toBe('error');
-  });
-
-  it('does not flag test files below 1200 lines', async () => {
-    mockPathExists.mockResolvedValue(true);
-    const file = Array.from({ length: 1100 }, (_, i) => `const x${i} = ${i};`).join('\n');
-    mockReadText.mockResolvedValue(file);
-
-    const issues = await lintPatchedJs(
-      '/engine',
-      ['browser/base/content/test/general/browser_baz.js'],
-      new Set(['browser/base/content/test/general/browser_baz.js']),
-      mockConfig
-    );
-
-    expect(issues.some((i) => i.check === 'file-too-large')).toBe(false);
-  });
-
   // ── file-too-large boundary triads (limits are inclusive: strict >) ────
 
   const makeJsFile = (lines: number): string =>
@@ -1070,6 +956,19 @@ describe('lintPatchedJs', () => {
     expect(await fileSizeSeverityAt(1199, file)).toBe('none');
     expect(await fileSizeSeverityAt(1200, file)).toBe('none');
     expect(await fileSizeSeverityAt(1201, file)).toBe('notice');
+  });
+
+  it('uses the test-file tier and says so in the message for /test/ paths', async () => {
+    const file = 'browser/base/content/test/general/browser_bar.js';
+    mockPathExists.mockResolvedValue(true);
+    mockReadText.mockResolvedValue(makeJsFile(1500));
+    const issue = (await lintPatchedJs('/engine', [file], new Set([file]), mockConfig)).find(
+      (i) => i.check === 'file-too-large'
+    );
+    expect(issue?.severity).toBe('warning');
+    expect(issue?.message).toContain('Test file');
+    expect(issue?.message).toContain('splitting');
+    expect(await fileSizeSeverityAt(1700, file)).toBe('error');
   });
 
   it('counts lines like wc -l — a trailing newline adds no phantom line', async () => {
@@ -1768,29 +1667,6 @@ describe('lintPatchSize', () => {
       'test/test_f.js',
     ];
     expect(lintPatchSize(testFiles, 100).some((i) => i.check === 'large-patch-files')).toBe(true);
-  });
-
-  it('returns notice when patch exceeds 800 lines', () => {
-    const issues = lintPatchSize(['a.js'], 801);
-
-    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('notice');
-  });
-
-  it('returns warning when patch exceeds 1500 lines', () => {
-    const issues = lintPatchSize(['a.js'], 1501);
-
-    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('warning');
-  });
-
-  it('returns error when patch exceeds 3000 lines', () => {
-    const issues = lintPatchSize(['a.js'], 3001);
-
-    expect(issues.find((i) => i.check === 'large-patch-lines')?.severity).toBe('error');
-  });
-
-  it('returns no line-count issue at or below 800 lines', () => {
-    expect(lintPatchSize(['a.js'], 799).some((i) => i.check === 'large-patch-lines')).toBe(false);
-    expect(lintPatchSize(['a.js'], 800).some((i) => i.check === 'large-patch-lines')).toBe(false);
   });
 
   it('notice boundary triad: 799/800 pass, 801 is the first notice', () => {

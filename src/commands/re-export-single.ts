@@ -6,7 +6,6 @@
  * patch.
  */
 
-import { getProjectPaths } from '../core/config.js';
 import { stdioIsInteractive } from '../core/destructive.js';
 import { enforceFreshFurnaceSources } from '../core/furnace-stale-export.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
@@ -15,8 +14,9 @@ import { updatePatchAndMetadata } from '../core/patch-export.js';
 import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy.js';
 import { isGitIndexLockConflict } from '../errors/git.js';
 import type { PatchesManifest, PatchMetadata, ReExportOptions } from '../types/commands/index.js';
-import type { FireForgeConfig } from '../types/config.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { info, success, warn } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 import type { AdjacentUnmanagedContext } from './re-export-adjacent.js';
 import { findMissingFiles, reportAdjacentUnmanagedFiles } from './re-export-adjacent.js';
 import type { ForeignDriftContext } from './re-export-drift.js';
@@ -24,6 +24,7 @@ import { reportForeignDrift } from './re-export-drift.js';
 import {
   lintReExportedPatch,
   type ReExportLintContext,
+  type ReExportLintResult,
   refreshQueueCtxEntry,
   storeReExportLintResult,
 } from './re-export-lint.js';
@@ -36,6 +37,27 @@ import {
 
 const GIT_INDEX_LOCK_RETRY_MS = 300;
 
+export interface ReExportSinglePatchArgs {
+  /** Manifest row for the patch being refreshed. */
+  patch: PatchMetadata;
+  /** Resolved project paths. */
+  paths: ProjectPaths;
+  /** Patch queue manifest as loaded by the orchestrator. */
+  manifest: PatchesManifest;
+  /** Effective re-export options for this patch. */
+  options: ReExportOptions;
+  /** Whether the run is a dry run. */
+  isDryRun: boolean;
+  /** Project configuration. */
+  config: FireForgeConfig;
+  /** Adjacent-unmanaged-file reporting context. */
+  adjacentCtx: AdjacentUnmanagedContext;
+  /** Foreign-drift reporting context. */
+  driftCtx: ForeignDriftContext;
+  /** Per-patch lint context, including the shared lint cache. */
+  lintCtx: ReExportLintContext;
+}
+
 /**
  * Retries a single patch re-export exactly once when the failure is
  * transient git `index.lock` contention (an external git process holding
@@ -44,61 +66,25 @@ const GIT_INDEX_LOCK_RETRY_MS = 300;
  * propagates to the loop's honest "N of M" accounting.
  */
 export async function reExportSinglePatchWithIndexLockRetry(
-  patch: PatchMetadata,
-  paths: ReturnType<typeof getProjectPaths>,
-  manifest: PatchesManifest,
-  options: ReExportOptions,
-  isDryRun: boolean,
-  config: FireForgeConfig,
-  adjacentCtx: AdjacentUnmanagedContext,
-  driftCtx: ForeignDriftContext,
-  lintCtx: ReExportLintContext
+  args: ReExportSinglePatchArgs
 ): Promise<boolean> {
   try {
-    return await reExportSinglePatch(
-      patch,
-      paths,
-      manifest,
-      options,
-      isDryRun,
-      config,
-      adjacentCtx,
-      driftCtx,
-      lintCtx
-    );
+    return await reExportSinglePatch(args);
   } catch (error: unknown) {
     if (!isGitIndexLockConflict(error)) {
       throw error;
     }
     warn(
-      `${patch.filename}: git index.lock contention detected — retrying once after ${String(GIT_INDEX_LOCK_RETRY_MS)} ms...`
+      `${args.patch.filename}: git index.lock contention detected — retrying once after ${GIT_INDEX_LOCK_RETRY_MS} ms...`
     );
-    await new Promise((resolve) => setTimeout(resolve, GIT_INDEX_LOCK_RETRY_MS));
-    return await reExportSinglePatch(
-      patch,
-      paths,
-      manifest,
-      options,
-      isDryRun,
-      config,
-      adjacentCtx,
-      driftCtx,
-      lintCtx
-    );
+    await sleep(GIT_INDEX_LOCK_RETRY_MS);
+    return await reExportSinglePatch(args);
   }
 }
 
-async function reExportSinglePatch(
-  patch: PatchMetadata,
-  paths: ReturnType<typeof getProjectPaths>,
-  manifest: PatchesManifest,
-  options: ReExportOptions,
-  isDryRun: boolean,
-  config: FireForgeConfig,
-  adjacentCtx: AdjacentUnmanagedContext,
-  driftCtx: ForeignDriftContext,
-  lintCtx: ReExportLintContext
-): Promise<boolean> {
+async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boolean> {
+  const { patch, paths, manifest, options, isDryRun, config, adjacentCtx, driftCtx, lintCtx } =
+    args;
   let currentFilesAffected = [...patch.filesAffected];
 
   // --- Scan for new/removed files ---
@@ -303,7 +289,7 @@ async function reExportSinglePatch(
  */
 async function commitRefreshedPatch(args: {
   patch: PatchMetadata;
-  paths: ReturnType<typeof getProjectPaths>;
+  paths: ProjectPaths;
   manifest: PatchesManifest;
   options: ReExportOptions;
   config: FireForgeConfig;
@@ -312,21 +298,21 @@ async function commitRefreshedPatch(args: {
   updates: Partial<PatchMetadata>;
   projectedMetadata: PatchMetadata;
   existingFiles: string[];
-  lintResult: Awaited<ReturnType<typeof lintReExportedPatch>>;
+  lintResult: ReExportLintResult | null;
 }): Promise<void> {
   const { patch, paths, manifest, options, config, lintCtx, diffContent, updates } = args;
-  const bodyChanged = await updatePatchAndMetadata(
-    paths.patches,
-    patch.filename,
-    diffContent,
+  const bodyChanged = await updatePatchAndMetadata({
+    patchesDir: paths.patches,
+    filename: patch.filename,
+    newContent: diffContent,
     updates,
-    undefined,
-    {
+    onCommitted: undefined,
+    policyGate: {
       config,
       command: 're-export',
       forceUnsafe: options.forceUnsafe === true,
-    }
-  );
+    },
+  });
 
   refreshQueueCtxEntry(lintCtx, patch.filename, diffContent);
   if (args.lintResult !== null) {

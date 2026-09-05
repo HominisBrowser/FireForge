@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
+import type { FurnacePaths } from '../../core/furnace-config.js';
 import {
   getFurnacePaths,
   loadFurnaceConfig,
@@ -31,13 +32,13 @@ import {
 import {
   createRollbackJournal,
   recordCreatedDir,
+  type RollbackJournal,
   snapshotDir,
   snapshotFile,
 } from '../../core/furnace-rollback.js';
 import { getStoriesDir } from '../../core/furnace-stories.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
-import type { FurnaceConfig } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
 import {
   copyFile,
@@ -58,19 +59,7 @@ import {
   updateConfigForOverrideRename,
 } from './rename-helpers.js';
 import { renameXpcshellTestFiles } from './rename-xpcshell.js';
-
-/**
- * Derives the test file name for a component, matching the convention used by
- * `furnace create --with-tests`.
- */
-function deriveTestFileName(componentName: string, binaryName: string): string {
-  const strippedName = componentName.startsWith('moz-') ? componentName.slice(4) : componentName;
-  const withoutBinaryPrefix = strippedName.startsWith(binaryName + '-')
-    ? strippedName.slice(binaryName.length + 1)
-    : strippedName;
-  const underscored = withoutBinaryPrefix.replace(/-/g, '_');
-  return `browser_${binaryName}_${underscored}.js`;
-}
+import { browserTestFileName } from './test-file-name.js';
 
 /**
  * Renames test files created by `furnace create --with-tests` in the engine
@@ -82,7 +71,7 @@ async function renameTestFiles(
   projectRoot: string,
   oldName: string,
   newName: string,
-  journal: ReturnType<typeof createRollbackJournal>
+  journal: RollbackJournal
 ): Promise<void> {
   let forgeConfig;
   try {
@@ -92,8 +81,8 @@ async function renameTestFiles(
   }
 
   const binaryName = forgeConfig.binaryName;
-  const oldTestFileName = deriveTestFileName(oldName, binaryName);
-  const newTestFileName = deriveTestFileName(newName, binaryName);
+  const oldTestFileName = browserTestFileName(oldName, binaryName);
+  const newTestFileName = browserTestFileName(newName, binaryName);
   const testDir = join(engineDir, 'browser/base/content/test', binaryName);
 
   if (!(await pathExists(testDir))) return;
@@ -151,7 +140,7 @@ async function renameTestFiles(
 async function removeStaleDeployedComponentDir(
   engineDir: string,
   oldTargetPath: string,
-  journal: ReturnType<typeof createRollbackJournal>
+  journal: RollbackJournal
 ): Promise<void> {
   const oldDeployed = join(engineDir, oldTargetPath);
   if (!(await pathExists(oldDeployed))) return;
@@ -186,7 +175,7 @@ async function renameMochikitTestFiles(
   engineDir: string,
   oldName: string,
   newName: string,
-  journal: ReturnType<typeof createRollbackJournal>
+  journal: RollbackJournal
 ): Promise<void> {
   const testDir = join(engineDir, 'toolkit/content/tests/widgets');
   if (!(await pathExists(testDir))) return;
@@ -261,13 +250,9 @@ async function performRenameMutations(args: {
   projectRoot: string;
   oldName: string;
   newName: string;
-  oldDir: string;
   newDir: string;
-  isCustom: boolean;
-  componentType: string;
-  config: FurnaceConfig;
   furnaceConfigPath: string;
-  furnacePaths: ReturnType<typeof getFurnacePaths>;
+  furnacePaths: FurnacePaths;
   engineDir: string;
 }): Promise<void> {
   const { projectRoot, oldName, newName } = args;
@@ -378,15 +363,15 @@ async function performRenameMutations(args: {
       if (isCustom && config.custom[newName]?.register && (await pathExists(args.engineDir))) {
         const ftlDir = resolveFtlDir(config.ftlBasePath);
         const isLocalized = config.custom[newName].localized;
-        await updateEngineRegistrations(
-          args.engineDir,
+        await updateEngineRegistrations({
+          engineDir: args.engineDir,
           oldName,
           newName,
           newDir,
           ftlDir,
           isLocalized,
-          journal
-        );
+          journal,
+        });
       }
 
       // 4. Re-key furnace-state.json checksums from old name to new name
@@ -454,15 +439,31 @@ async function performRenameMutations(args: {
   });
 }
 
-async function updateEngineRegistrations(
-  engineDir: string,
-  oldName: string,
-  newName: string,
-  newDir: string,
-  ftlDir: string,
-  isLocalized: boolean,
-  journal: ReturnType<typeof createRollbackJournal>
-): Promise<void> {
+interface UpdateEngineRegistrationsOptions {
+  /** Absolute path to the engine checkout. */
+  engineDir: string;
+  /** Tag name being renamed away from. */
+  oldName: string;
+  /** Tag name being renamed to. */
+  newName: string;
+  /** Workspace directory holding the renamed component's files. */
+  newDir: string;
+  /** Engine-relative directory localized components deploy their `.ftl` into. */
+  ftlDir: string;
+  /** Whether the component ships a localized `.ftl` file. */
+  isLocalized: boolean;
+  /** Rollback journal every write is recorded in. */
+  journal: RollbackJournal;
+}
+
+/**
+ * Re-points the engine-side registrations (customElements.js, jar.mn, and
+ * the localized `.ftl` entries) from the old tag name to the new one.
+ *
+ * @param options - See {@link UpdateEngineRegistrationsOptions}
+ */
+async function updateEngineRegistrations(options: UpdateEngineRegistrationsOptions): Promise<void> {
+  const { engineDir, oldName, newName, newDir, ftlDir, isLocalized, journal } = options;
   const customElementsPath = join(engineDir, 'toolkit/content/customElements.js');
   const jarMnPath = join(engineDir, 'toolkit/content/jar.mn');
 
@@ -564,15 +565,15 @@ export async function furnaceRenameCommand(
     );
   }
 
-  const componentType = isCustom ? 'custom' : 'override';
-  // `componentType` is the furnace-state key (singular: `custom` /
-  // `override`); the on-disk directory label differs — custom components
-  // live under `components/custom/` (singular) while overrides live under
-  // `components/overrides/` (plural). Appending an `s` to `componentType`
-  // produces the wrong label `components/customs/` for custom components
-  // and is correct for overrides only by coincidence. `componentDirLabel`
-  // centralises the pick so every operator-facing string names the
-  // directory that actually exists on disk.
+  // The furnace-state key is singular (`custom` / `override`, derived
+  // inside performRenameMutations); the on-disk directory label differs —
+  // custom components live under `components/custom/` (singular) while
+  // overrides live under `components/overrides/` (plural). Appending an
+  // `s` to the state key produces the wrong label `components/customs/`
+  // for custom components and is correct for overrides only by
+  // coincidence. `componentDirLabel` centralises the pick so every
+  // operator-facing string names the directory that actually exists on
+  // disk.
   const componentDirLabel = isCustom ? 'custom' : 'overrides';
   const baseDir = isCustom ? furnacePaths.customDir : furnacePaths.overridesDir;
   const oldDir = join(baseDir, oldName);
@@ -595,11 +596,7 @@ export async function furnaceRenameCommand(
     projectRoot,
     oldName,
     newName,
-    oldDir,
     newDir,
-    isCustom,
-    componentType,
-    config,
     furnaceConfigPath: furnacePaths.furnaceConfig,
     furnacePaths,
     engineDir: paths.engine,

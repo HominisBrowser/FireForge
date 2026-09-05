@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadState } from '../../core/config.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
-import { getRebaseSessionPath, tryReadRebaseSession } from '../../core/rebase-session.js';
+import { getRebaseSessionPath, readRebaseSession } from '../../core/rebase-session.js';
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
   createTempProject,
@@ -18,7 +18,7 @@ import {
 import { pathExists } from '../../utils/fs.js';
 import { escapeRegex } from '../../utils/regex.js';
 import { exportCommand } from '../export.js';
-import { rebaseCommand } from '../rebase.js';
+import { rebaseCommand } from '../rebase/index.js';
 import { setupCommand } from '../setup.js';
 
 vi.mock('../../utils/logger.js', () => ({
@@ -233,8 +233,9 @@ describe('rebase integration', () => {
     await rebaseCommand(projectRoot, { yes: true });
 
     // Session should exist with failed patch
-    const session = await tryReadRebaseSession(projectRoot);
-    expect(session).not.toBeNull();
+    const read = await readRebaseSession(projectRoot);
+    expect(read.present).toBe(true);
+    const session = read.present && read.valid ? read.session : undefined;
     expect(session?.patches[0]?.status).toBe('failed');
 
     // pendingResolution should be set

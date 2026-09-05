@@ -35,13 +35,7 @@ function sanitizeProjectState(data: unknown): StateValidationResult {
   const state: FireForgeState = {};
   const issues: string[] = [];
   const recoveredFields: string[] = [];
-  const stringFields = [
-    'brand',
-    'buildMode',
-    'lastBuild',
-    'downloadedVersion',
-    'baseCommit',
-  ] as const;
+  const stringFields = ['brand', 'buildMode', 'downloadedVersion', 'baseCommit'] as const;
 
   for (const key of stringFields) {
     const value = data[key];
@@ -172,19 +166,6 @@ async function loadStateFromPath(
 export async function loadState(root: string): Promise<FireForgeState> {
   const paths = getProjectPaths(root);
   return loadStateFromPath(paths.state);
-}
-
-/**
- * Saves the fireforge state.
- * @param root - Root directory of the project
- * @param state - State to save
- */
-export async function saveState(root: string, state: FireForgeState): Promise<void> {
-  const paths = getProjectPaths(root);
-  const validatedState = validateFireForgeState(state);
-  await withStateFileLock(paths.state, async () => {
-    await writeJson(paths.state, validatedState);
-  });
 }
 
 /**

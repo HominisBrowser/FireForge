@@ -27,7 +27,7 @@ import { registerLint } from './lint.js';
 import { registerPackage } from './package.js';
 import { registerPatch } from './patch/index.js';
 import { registerReExport } from './re-export-register.js';
-import { registerRebase } from './rebase.js';
+import { registerRebase } from './rebase/index.js';
 import { registerRegister } from './register.js';
 import { registerReset } from './reset.js';
 import { registerResolve } from './resolve.js';

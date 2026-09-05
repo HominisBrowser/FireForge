@@ -29,38 +29,54 @@ import {
   PATCH_CATEGORIES,
 } from '../utils/validation.js';
 
+export interface RunPatchLintOptions {
+  /** Engine root directory. */
+  engineDir: string;
+  /** Files touched by the patch. */
+  filesAffected: string[];
+  /** Raw unified diff string. */
+  diffContent: string;
+  /** Project configuration. */
+  config: FireForgeConfig;
+  /** If true, downgrade errors to warnings. */
+  skipLint?: boolean | undefined;
+  /** Optional cross-patch context for ownership resolution. */
+  patchQueueCtx?: import('../core/patch-lint-cross.js').PatchQueueContext | undefined;
+  /**
+   * Optional per-patch set of `check` IDs to suppress (threaded from
+   * `PatchMetadata.lintIgnore`). Surgical alternative to `--skip-lint` when
+   * exactly one advisory rule does not apply to a specific patch — e.g.
+   * `large-patch-lines` on a cohesive branding bundle that genuinely cannot
+   * be split.
+   */
+  ignoreChecks?: ReadonlySet<string> | undefined;
+  /**
+   * Optional explicit tier override (threaded from `PatchMetadata.tier`).
+   * Forces the branding-tier thresholds when set, independent of the
+   * auto-detect allowlist. When the branding tier is applied, a single
+   * `info()` line surfaces the choice so the tier decision is visible rather
+   * than silent.
+   */
+  patchTier?: 'branding' | undefined;
+}
+
 /**
  * Runs the full patch lint pipeline and reports results. Warnings are always
  * displayed. Errors block the export unless skipLint is true.
  *
- * @param engineDir - Engine root directory
- * @param filesAffected - Files touched by the patch
- * @param diffContent - Raw unified diff string
- * @param config - Project configuration
- * @param skipLint - If true, downgrade errors to warnings
- * @param patchQueueCtx - Optional cross-patch context for ownership
- *   resolution
- * @param ignoreChecks - Optional per-patch set of `check` IDs to suppress
- *   (threaded from `PatchMetadata.lintIgnore`). Surgical alternative to
- *   `--skip-lint` when exactly one advisory rule does not apply to a
- *   specific patch — e.g. `large-patch-lines` on a cohesive branding bundle
- *   that genuinely cannot be split.
- * @param patchTier - Optional explicit tier override (threaded from
- *   `PatchMetadata.tier`). Forces the branding-tier thresholds when set,
- *   independent of the auto-detect allowlist. When the branding tier is
- *   applied, a single `info()` line surfaces the choice so the tier decision
- *   is visible rather than silent.
+ * @param options - See {@link RunPatchLintOptions}
  */
-export async function runPatchLint(
-  engineDir: string,
-  filesAffected: string[],
-  diffContent: string,
-  config: FireForgeConfig,
-  skipLint?: boolean,
-  patchQueueCtx?: import('../core/patch-lint-cross.js').PatchQueueContext,
-  ignoreChecks?: ReadonlySet<string>,
-  patchTier?: 'branding'
-): Promise<void> {
+export async function runPatchLint(options: RunPatchLintOptions): Promise<void> {
+  const {
+    engineDir,
+    filesAffected,
+    diffContent,
+    config,
+    skipLint,
+    patchQueueCtx,
+    ignoreChecks,
+    patchTier,
+  } = options;
   // Compute the tier decision independently of the lint pipeline so it can
   // be surfaced even when the rule body emitted no issues — a branding patch
   // under the soft threshold still benefits from operators knowing which
@@ -145,6 +161,16 @@ export function reportPatchLintOutcome(issues: PatchLintIssue[], skipLint?: bool
   }
 }
 
+/** Patch identity resolved for an export, from flags or interactive prompts. */
+export interface ExportPatchMetadata {
+  /** Normalized patch name (without order prefix or extension). */
+  patchName: string;
+  /** Category the patch is filed under. */
+  selectedCategory: PatchCategory;
+  /** Human-readable patch description. */
+  description: string;
+}
+
 /**
  * Resolves patch metadata interactively or from flags, with shared validation.
  * @param options - Export command options
@@ -156,7 +182,7 @@ export async function promptExportPatchMetadata(
   isInteractive: boolean,
   commandName: 'export' | 'export-all',
   config?: FireForgeConfig
-): Promise<{ patchName: string; selectedCategory: PatchCategory; description: string } | null> {
+): Promise<ExportPatchMetadata | null> {
   const categories =
     config !== undefined ? getPatchPolicyCategories(config) : [...PATCH_CATEGORIES];
   // A filename-shaped `--name foo.patch` must not die on the dot rule —
@@ -460,7 +486,7 @@ export async function guardOwnershipOverlap(args: {
   s.stop();
   const entries = [...overlap.entries()].sort(([a], [b]) => a.localeCompare(b));
   warn(
-    `This export would create cross-patch ownership overlap on ${String(entries.length)} file${entries.length === 1 ? '' : 's'}:`
+    `This export would create cross-patch ownership overlap on ${entries.length} file${entries.length === 1 ? '' : 's'}:`
   );
   for (const [file, owners] of entries) {
     warn(`  - ${file} already claimed by: ${owners.join(', ')}`);

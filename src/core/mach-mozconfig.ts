@@ -5,6 +5,7 @@ import { MozconfigError } from '../errors/build.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { pathExists, readText, writeTextIfChanged } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { getPlatform } from '../utils/platform.js';
 import { BrandingMozconfigMismatchError, splitAppId } from './branding.js';
 
@@ -124,7 +125,7 @@ export async function assertBrandingMozconfigAgreement(
   // Normalise both sides to forward slashes before compare — Windows-edited
   // configs can carry backslash path separators that the build would treat
   // as literal characters in a repo-relative path.
-  const normalizedFound = found.replace(/\\/g, '/');
+  const normalizedFound = normalizePathSlashes(found);
   if (normalizedFound !== expected) {
     throw new BrandingMozconfigMismatchError(expected, found, 'name-mismatch');
   }

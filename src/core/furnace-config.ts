@@ -52,7 +52,7 @@ export const SHARED_FRAGMENTS_DIR = 'shared';
 /**
  * Paths for furnace-related files and directories.
  */
-interface FurnacePaths {
+export interface FurnacePaths {
   /** Path to furnace.json */
   furnaceConfig: string;
   /** Path to components directory */
@@ -94,27 +94,20 @@ export async function furnaceConfigExists(root: string): Promise<boolean> {
   return pathExists(paths.furnaceConfig);
 }
 
+/** True when a recovered record carries at least one entry. */
+function hasEntries(record: Record<string, string>): boolean {
+  return Object.keys(record).length > 0;
+}
+
 /** The current (and only) config schema version. */
 const CURRENT_CONFIG_VERSION = 1;
 
 /**
- * Migrates a furnace config from an older schema version to the current one.
- * Returns the data unchanged if it is already at the current version.
- *
- * When a future version 2 is introduced, add a `case 1:` that transforms
- * v1 data into v2 shape and falls through to validation. The pattern is:
- *
- * ```
- * case 1:
- *   data = migrateV1ToV2(data);
- *   // fallthrough
- * case 2:
- *   break;
- * ```
+ * Rejects a config whose `version` field is not the single schema version that
+ * exists. A non-integer or sub-1 value is a malformed document; a value above
+ * the current version was written by a newer FireForge and cannot be read here.
  */
-function migrateFurnaceConfig(data: JsonObject): JsonObject {
-  const version = data['version'];
-
+function validateConfigVersion(version: unknown): void {
   if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) {
     throw new FurnaceError(
       `Furnace config: "version" must be a positive integer (got ${JSON.stringify(version)}). ` +
@@ -128,10 +121,6 @@ function migrateFurnaceConfig(data: JsonObject): JsonObject {
         'Upgrade FireForge to read this config.'
     );
   }
-
-  // Today only version 1 exists, so no migration is needed. When future
-  // versions are added, migration steps will be chained here.
-  return data;
 }
 
 /**
@@ -148,46 +137,41 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
   // Furnace config documents arrive from JSON.parse (loadFurnaceConfig /
   // writeFurnaceConfig round-trips), which can only produce JSON values,
   // so the object check above is the only invariant left to establish.
-  // Run migration before validation so older configs are transparently upgraded.
-  const migrated = migrateFurnaceConfig(data as JsonObject);
+  const raw = data as JsonObject;
 
-  if (migrated['version'] !== CURRENT_CONFIG_VERSION) {
-    throw new FurnaceError(
-      `Furnace config: "version" must be ${CURRENT_CONFIG_VERSION} after migration`
-    );
-  }
+  validateConfigVersion(raw['version']);
 
-  if (!isString(migrated['componentPrefix'])) {
+  if (!isString(raw['componentPrefix'])) {
     throw new FurnaceError('Furnace config: "componentPrefix" must be a string');
   }
 
   // Validate optional tokenPrefix
-  if (migrated['tokenPrefix'] !== undefined && !isString(migrated['tokenPrefix'])) {
+  if (raw['tokenPrefix'] !== undefined && !isString(raw['tokenPrefix'])) {
     throw new FurnaceError('Furnace config: "tokenPrefix" must be a string if provided');
   }
 
   // Validate optional tokenAllowlist
-  if (migrated['tokenAllowlist'] !== undefined) {
-    parseStringArray(migrated['tokenAllowlist'], 'tokenAllowlist');
+  if (raw['tokenAllowlist'] !== undefined) {
+    parseStringArray(raw['tokenAllowlist'], 'tokenAllowlist');
   }
 
   // Validate optional runtimeVariables — CSS runtime state channels
   // (e.g. `--cam-x`) that are exempt from `token-prefix-violation`.
-  validateRuntimeVariables(migrated['runtimeVariables']);
+  validateRuntimeVariables(raw['runtimeVariables']);
 
   // Validate optional tokenHostDocuments — list of chrome XHTMLs that the
   // `missing-token-link` validator scans for the tokens CSS link.
-  validateTokenHostDocuments(migrated['tokenHostDocuments']);
+  validateTokenHostDocuments(raw['tokenHostDocuments']);
 
-  const stock = parseStockList(migrated['stock']);
+  const stock = parseStockList(raw['stock']);
 
   const overrides = parseNamedComponentMap(
-    migrated['overrides'],
+    raw['overrides'],
     'override',
     'overrides',
     parseOverrideConfig
   );
-  const custom = parseNamedComponentMap(migrated['custom'], 'custom', 'custom', parseCustomConfig);
+  const custom = parseNamedComponentMap(raw['custom'], 'custom', 'custom', parseCustomConfig);
 
   // Detect circular composes references among custom components.
   detectComposesCycles(custom);
@@ -218,13 +202,13 @@ export function validateFurnaceConfig(data: unknown): FurnaceConfig {
 
   const config: FurnaceConfig = {
     version: CURRENT_CONFIG_VERSION,
-    componentPrefix: migrated['componentPrefix'],
+    componentPrefix: raw['componentPrefix'],
     stock,
     overrides,
     custom,
   };
 
-  applyOptionalFurnaceFields(migrated, config);
+  applyOptionalFurnaceFields(raw, config);
 
   return config;
 }
@@ -316,7 +300,7 @@ function sanitizeFurnaceState(data: unknown): FurnaceStateValidationResult {
         appliedChecksums[filePath] = checksum;
       }
 
-      if (Object.keys(appliedChecksums).length > 0 || !hasInvalidChecksum) {
+      if (hasEntries(appliedChecksums) || !hasInvalidChecksum) {
         state.appliedChecksums = appliedChecksums;
         recoveredFields.push('appliedChecksums');
       }
@@ -333,7 +317,7 @@ function sanitizeFurnaceState(data: unknown): FurnaceStateValidationResult {
           engineChecksums[filePath] = checksum;
         }
       }
-      if (Object.keys(engineChecksums).length > 0) {
+      if (hasEntries(engineChecksums)) {
         state.engineChecksums = engineChecksums;
         recoveredFields.push('engineChecksums');
       }

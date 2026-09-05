@@ -296,7 +296,7 @@ function evaluateBaseTokenIdempotency(
       : `pass --category "${existing.category}" to target the existing declaration, or remove it first`;
   throw new GeneralError(
     `Token "${options.tokenName}" is already declared outside category "${options.category}" ` +
-      `(${tokensCssPath}:${String(existing.line)}${sectionSuffix}). ` +
+      `(${tokensCssPath}:${existing.line}${sectionSuffix}). ` +
       `A token belongs to exactly one category — ${remedy}.`
   );
 }

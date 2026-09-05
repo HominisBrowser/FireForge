@@ -22,9 +22,32 @@ mistake.
 
 ## The contract
 
-- **Raw bytes, never the echo filter's collapsed form.** The artifact exists
-  to be re-read by whoever is diagnosing the run; shortening it would
-  reintroduce the loss it prevents.
+- **Complete output, never the echo filter's collapsed form.** The artifact
+  exists to be re-read by whoever is diagnosing the run; shortening it would
+  reintroduce the loss it prevents. The one transformation applied is the
+  secret-masking pass below — it changes values, never line structure.
+- **Secret-shaped values are masked in the file, and only in the file.** The
+  terminal already showed every byte to the operator who ran the command; the
+  file is retained twenty deep and gets attached to bug reports, so it gets a
+  narrow redaction pass (`src/core/run-log-redact.ts`), applied per line
+  before the write (a line split across two chunks is held until its
+  terminator arrives — `\n`, or a lone `\r` from progress-bar repaints — or
+  it exceeds 1 MiB, or the log is closed). Exactly what is redacted:
+  - the value of an env-style assignment `KEY=value` whose `KEY` matches
+    `/(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|AUTH)/i` — the value up to the
+    next whitespace, or a whole quoted string — is written as
+    `KEY=<redacted>`; the `--password=x` and `-DAUTH_TOKEN=x` spellings that
+    mach and configure echo from their argv are the same shape and are
+    masked too;
+  - the credential of an `Authorization:` header (`Bearer`, `Basic` and
+    `Token` keep the scheme word; any other value is masked whole).
+
+  Nothing else is. A bare token in a URL, a space-separated `--password foo`
+  argument, a JSON `"token": "…"` field, or a cookie passes through unchanged — the pass is a
+  seatbelt against the common accidental leak (mach echoing its environment),
+  not a guarantee that a log is free of secrets. Review a log before sharing
+  it.
+
 - **Opened before any preflight**, so a refusal is logged too. Those are
   exactly the runs whose only output a `tail` throws away.
 - **Retained 20 deep per command kind.** Per-kind, so a busy `test` loop
@@ -37,7 +60,24 @@ mistake.
   degrades to no log. A run must never fail over a diagnostic, so `openRunLog`
   returns `undefined` on failure, a post-open stream error latches `broken`
   and drops every later write, and pruning failures are logged verbosely
-  only.
+  only. The entry point's SIGINT/SIGTERM path closes the active log (also
+  best-effort) before exiting, so the held partial line of a killed run
+  reaches disk.
+
+## Preflight refusals
+
+`fireforge test` opens its run log before any preflight, so a refusal is
+logged too — those are exactly the runs whose only output a `tail` throws
+away. The refusal's own explanatory text is written into the log, and to
+stdout, **before** the verdict line seals stdout.
+
+Both halves are load-bearing. The verdict seal routes everything the CLI
+error boundary renders afterwards to stderr, so a run captured with
+`> file` used to keep `FIREFORGE-VERDICT: FAIL reason=preflight` and nothing
+else; and that rendering happens after the run log is closed, so the artifact
+the verdict's own `log=` key pointed at held only the pre-test build. Writing
+before the seal fixes both without trading away the contract: the reason
+lands on both channels, and the verdict is still the run's last stdout line.
 
 ## Where the path is announced
 

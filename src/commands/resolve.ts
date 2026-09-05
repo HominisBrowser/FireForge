@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
-import { getProjectPaths, loadConfig, loadState, updateState } from '../core/config.js';
+import { getProjectPaths, loadConfig, loadState } from '../core/config.js';
 import { stdioIsInteractive } from '../core/destructive.js';
 import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { getStagedDiffForFiles } from '../core/git-diff.js';
@@ -27,6 +27,7 @@ import {
   success,
 } from '../utils/logger.js';
 import { addWaitLockOption, resolveWaitLockSeconds } from '../utils/options.js';
+import { clearPendingResolution } from './pending-resolution.js';
 
 /**
  * Options accepted by {@link resolveCommand}.
@@ -188,29 +189,28 @@ export async function resolveCommand(
     // here keeps resolve in agreement with every other writer.
     const diffFilesAffected = extractAffectedFiles(diffContent);
     const config = await loadConfig(projectRoot);
-    await updatePatchAndMetadata(
-      paths.patches,
-      patchFilename,
-      diffContent,
-      {
+    await updatePatchAndMetadata({
+      patchesDir: paths.patches,
+      filename: patchFilename,
+      newContent: diffContent,
+      updates: {
         filesAffected: diffFilesAffected,
         ...buildPatchSourceMetadata(config.firefox),
       },
-      undefined,
-      undefined,
-      { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'resolve' }
-    );
+      onCommitted: undefined,
+      policyGate: undefined,
+      lockOptions: {
+        waitLockSeconds: resolveWaitLockSeconds(options.waitLock),
+        command: 'resolve',
+      },
+    });
 
     // Clear pendingResolution from state.json transactionally so a
     // concurrent update to unrelated keys (another command writing buildMode
     // or baseCommit between our load and save) is not clobbered. The updater
     // runs inside the state-file lock with the freshest on-disk state, so
     // only pendingResolution is affected.
-    await updateState(projectRoot, (current) => {
-      const next = { ...current };
-      delete next.pendingResolution;
-      return next;
-    });
+    await clearPendingResolution(projectRoot);
 
     s.stop(`Updated ${patchFilename}`);
     success('Patch updated successfully and resolution state cleared.');

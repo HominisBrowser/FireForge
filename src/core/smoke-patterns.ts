@@ -22,7 +22,7 @@
  */
 import { toError } from '../utils/errors.js';
 
-export const SMOKE_ERROR_PATTERNS: readonly RegExp[] = [
+const SMOKE_ERROR_PATTERNS: readonly RegExp[] = [
   // Firefox chrome error lines — `JavaScript error: chrome://…, line N: TypeError: …`.
   /^\s*JavaScript error:/i,
   // Some log paths prefix browser-console `console.error(...)` with the literal label below.
@@ -81,12 +81,7 @@ export interface CompiledAllowlistEntry {
  * allowlist (always returns -1).
  */
 export function matchAllowlist(line: string, allow: readonly CompiledAllowlistEntry[]): number {
-  for (let i = 0; i < allow.length; i++) {
-    if (allow[i]?.pattern.test(line)) {
-      return i;
-    }
-  }
-  return -1;
+  return allow.findIndex((entry) => entry.pattern.test(line));
 }
 
 /**
@@ -109,11 +104,11 @@ export function compileAllowlistFromFile(
       compiled.push({
         pattern: new RegExp(line),
         source: line,
-        origin: `${sourcePath}:${String(index + 1)}`,
+        origin: `${sourcePath}:${index + 1}`,
       });
     } catch (error: unknown) {
       const message = toError(error).message;
-      throw new Error(`Invalid allowlist regex at ${sourcePath}:${String(index + 1)}: ${message}`, {
+      throw new Error(`Invalid allowlist regex at ${sourcePath}:${index + 1}: ${message}`, {
         cause: error,
       });
     }
@@ -132,12 +127,12 @@ export function compileAllowlistFromStrings(sources: readonly string[]): Compile
       compiled.push({
         pattern: new RegExp(source),
         source,
-        origin: `--console-allow #${String(index + 1)}`,
+        origin: `--console-allow #${index + 1}`,
       });
     } catch (error: unknown) {
       const message = toError(error).message;
       throw new Error(
-        `Invalid --console-allow regex at position ${String(index + 1)} ("${source}"): ${message}`,
+        `Invalid --console-allow regex at position ${index + 1} ("${source}"): ${message}`,
         { cause: error }
       );
     }

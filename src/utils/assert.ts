@@ -32,7 +32,7 @@ import { InternalInvariantError } from '../errors/base.js';
  * the string only when the assertion actually fails, where a plain
  * template literal would build it on every call.
  */
-export type AssertionMessage = string | (() => string);
+type AssertionMessage = string | (() => string);
 
 /**
  * Resolves an {@link AssertionMessage} at failure time.
@@ -60,30 +60,9 @@ export function assert(condition: unknown, message: AssertionMessage): asserts c
 }
 
 /**
- * Asserts that a value is neither `null` nor `undefined`, narrowing it in
- * place for the statements that follow.
- *
- * Use this in statement position, where the value is already bound to a
- * name. Use {@link expectDefined} in expression position, where it is not.
- *
- * @param value - The value that should be present
- * @param message - What was supposed to be present, and why
- * @throws {@link InternalInvariantError} when `value` is `null` or `undefined`.
- */
-export function assertDefined<T>(
-  value: T,
-  message: AssertionMessage
-): asserts value is NonNullable<T> {
-  if (value === null || value === undefined) {
-    throw new InternalInvariantError(resolveMessage(message));
-  }
-}
-
-/**
  * Returns a value that must be present, throwing if it is not.
  *
- * The expression-position counterpart to {@link assertDefined}: it checks
- * and returns in one step, so an indexed read can be asserted inline
+ * Checks and returns in one step, so an indexed read can be asserted inline
  * (`push({ content: expectDefined(lines[k], …) })`) without first binding
  * it to a local.
  *

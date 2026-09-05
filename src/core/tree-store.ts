@@ -20,6 +20,7 @@ import { GeneralError } from '../errors/base.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getNodeErrorCode, isProcessAlive, toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { verbose, warn } from '../utils/logger.js';
 import { isObject } from '../utils/validation.js';
 import { getBuildBaselinePath } from './build-baseline.js';
@@ -197,7 +198,7 @@ export async function readTreeMarker(root: string): Promise<TreeMarkerRead> {
   } catch (error: unknown) {
     const code = getNodeErrorCode(error);
     if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
-    verbose(`Unreadable tree marker at ${markerPath}: ${String(error)}`);
+    verbose(`Unreadable tree marker at ${markerPath}: ${toError(error).message}`);
     return { kind: 'corrupt', reason: `the marker could not be read (${toError(error).message})` };
   }
 }
@@ -257,9 +258,7 @@ export async function computePrimaryFingerprint(primaryRoot: string): Promise<{
   }
   let engineFingerprint: string | null;
   try {
-    engineFingerprint = createHash('sha256')
-      .update(await getAllDiff(engineDir))
-      .digest('hex');
+    engineFingerprint = sha256Hex(await getAllDiff(engineDir));
   } catch {
     engineFingerprint = null;
   }
@@ -591,7 +590,7 @@ export async function removeTree(
     const state = await inspectTreeLock(lockPath);
     if (state.kind === 'held') {
       throw new GeneralError(
-        `Refusing to remove tree "${name}": a live process (pid ${String(state.pid)}) holds ${lockPath}. ` +
+        `Refusing to remove tree "${name}": a live process (pid ${state.pid}) holds ${lockPath}. ` +
           'Wait for it to finish, then retry.'
       );
     }

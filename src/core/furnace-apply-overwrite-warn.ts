@@ -24,13 +24,11 @@ import type { CustomComponentConfig, OverrideComponentConfig } from '../types/fu
 import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { getProjectPaths } from './config.js';
-import {
-  getOverrideEngineTargetPath,
-  isOverrideCopyCandidate,
-  isRegularFile,
-} from './furnace-apply-helpers.js';
+import { getOverrideEngineTargetPath, isOverrideCopyCandidate } from './furnace-apply-helpers.js';
 import { FTL_DIR } from './furnace-constants.js';
+import { isRegularFile } from './furnace-dir-entry.js';
 import { checkRegistrationConsistency } from './furnace-validate-registration.js';
 import { loadPatchesManifest } from './patch-manifest.js';
 import { buildPatchClaims } from './status-classify.js';
@@ -122,7 +120,7 @@ async function findOverrideOverwrites(args: {
     const enginePath = getOverrideEngineTargetPath(engineDir, config, entry.name, ftlDir);
     // A missing target is a fresh deploy, not a lost engine edit.
     if (!(await pathExists(enginePath))) continue;
-    const engineRel = relative(engineDir, enginePath).replace(/\\/g, '/');
+    const engineRel = normalizePathSlashes(relative(engineDir, enginePath));
     const owners = patchClaims.get(engineRel);
     if (owners === undefined || owners.length === 0) continue;
     const [engineContent, sourceContent] = await Promise.all([

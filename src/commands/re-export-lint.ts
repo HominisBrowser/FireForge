@@ -21,7 +21,6 @@
  *   against the just-refreshed body instead of the stale one.
  */
 
-import { getProjectPaths, loadConfig } from '../core/config.js';
 import {
   buildPatchQueueContext,
   countNonBinaryDiffLines,
@@ -44,7 +43,7 @@ import { invalidateNewFileCreatorsCache } from '../core/patch-lint-cross.js';
 import { extractAddedLinesPerFile } from '../core/patch-lint-diff.js';
 import { resolvePatchOwnedSysMjs } from '../core/patch-lint-ownership.js';
 import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
-import type { FireForgeConfig } from '../types/config.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { pathExists } from '../utils/fs.js';
 import { info } from '../utils/logger.js';
 import { reportPatchLintOutcome } from './export-shared.js';
@@ -53,7 +52,7 @@ import { buildPerRunCheckJs, type PerRunCheckJs } from './lint-per-run-checkjs.j
 /** Per-invocation lint context, built once and threaded through the loop. */
 export interface ReExportLintContext {
   projectRoot: string;
-  paths: ReturnType<typeof getProjectPaths>;
+  paths: ProjectPaths;
   config: FireForgeConfig;
   /** Whole-queue context, built WITH config so the forward-import hints
    * match `lint --per-patch`; undefined when no patches dir. */
@@ -72,8 +71,8 @@ export interface ReExportLintContext {
 /** Builds the once-per-invocation lint context. */
 export async function buildReExportLintContext(
   projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  config: Awaited<ReturnType<typeof loadConfig>>,
+  paths: ProjectPaths,
+  config: FireForgeConfig,
   noCache: boolean
 ): Promise<ReExportLintContext> {
   const patchQueueCtx = (await pathExists(paths.patches))
@@ -245,15 +244,15 @@ export async function storeReExportLintResult(
     queueContext: patchQueueCtx,
     ...(lintCtx.engineHeadSha === undefined ? {} : { engineHeadSha: lintCtx.engineHeadSha }),
   });
-  setCachedPerPatchLintIssues(
+  setCachedPerPatchLintIssues({
     cache,
     patchFilename,
-    cacheKey,
-    result.issues,
-    result.suppressed,
-    result.lineCount,
-    result.lintIgnore
-  );
+    key: cacheKey,
+    issues: result.issues,
+    suppressed: result.suppressed,
+    lineCount: result.lineCount,
+    lintIgnore: result.lintIgnore,
+  });
   lintCtx.cacheDirty = true;
 }
 

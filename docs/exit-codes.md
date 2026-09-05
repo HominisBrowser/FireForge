@@ -7,25 +7,37 @@ branches on it, and CI decides whether to retry or escalate. The values live
 in `src/errors/codes.ts`; this file is the operator-facing statement of what
 they mean and which class produces each.
 
-| Code | Name                   | Meaning                                                                                                                  | Produced by                                                    |
-| ---: | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
-|    0 | `SUCCESS`              | Completed. Also a run that prompted and the operator declined — declining is a successful run that chose not to proceed. | —                                                              |
-|    1 | `GENERAL_ERROR`        | Unspecified failure the operator must act on.                                                                            | `GeneralError`, `ParserFallbackError`                          |
-|    2 | `CONFIG_ERROR`         | `fireforge.json` missing or invalid.                                                                                     | `ConfigError` and subclasses                                   |
-|    3 | `DOWNLOAD_ERROR`       | Could not download or extract Firefox source.                                                                            | `DownloadError` and subclasses                                 |
-|    4 | `GIT_ERROR`            | A git operation failed.                                                                                                  | `GitError` and subclasses                                      |
-|    5 | `BUILD_ERROR`          | `mach build` failed, or a test suite went red.                                                                           | `BuildError` and subclasses, `TestFailureError`                |
-|    6 | `PATCH_ERROR`          | A patch failed to apply, or the patch queue could not be mutated.                                                        | `PatchError`                                                   |
-|    7 | `MISSING_DEPENDENCY`   | A required tool (python3, git, tar) was not found.                                                                       | `PythonNotFoundError`, `GitNotFoundError`, `MachNotFoundError` |
-|    8 | `INVALID_ARGUMENT`     | The flags were wrong. Usage problem, not an environment one.                                                             | `InvalidArgumentError`                                         |
-|    9 | `FURNACE_ERROR`        | A Furnace component operation failed.                                                                                    | `FurnaceError`                                                 |
-|   10 | `RESOLUTION_ERROR`     | Conflict resolution failed.                                                                                              | `ResolutionError`                                              |
-|   11 | `INTERNAL_ERROR`       | A FireForge invariant did not hold. **A bug in FireForge**, not something the operator can fix.                          | `InternalInvariantError`                                       |
-|   12 | `SMOKE_EXIT_FAILURE`   | `run --smoke-exit` saw unallowed console errors in the smoke window.                                                     | `SmokeRunError`                                                |
-|   13 | `SMOKE_LAUNCH_FAILURE` | `run --smoke-exit` saw a non-clean browser exit before the window elapsed.                                               | `SmokeRunError`                                                |
-|   14 | `INCONCLUSIVE`         | A test run's verdict was thrown away: `engine/` moved while the harness ran. **Not red** — re-run it.                    | `InconclusiveVerdictError`                                     |
-|   15 | `LOCK_TIMEOUT`         | A lock wait expired, so the run never started. Re-queue it, with a larger `--wait-lock`.                                 | `LockContentionError`                                          |
-|  130 | `USER_CANCELLED`       | The operator INTERRUPTED a prompt (Esc / Ctrl+C). 128 + SIGINT.                                                          | `CancellationError`                                            |
+| Code | Name                   | Meaning                                                                                                                  | Produced by                                                                                  |
+| ---: | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+|    0 | `SUCCESS`              | Completed. Also a run that prompted and the operator declined — declining is a successful run that chose not to proceed. | —                                                                                            |
+|    1 | `GENERAL_ERROR`        | Unspecified failure the operator must act on.                                                                            | `GeneralError` (and `PreflightRefusalError`), `ParserFallbackError`, `ExecTimeoutError`      |
+|    2 | `CONFIG_ERROR`         | `fireforge.json` missing or invalid.                                                                                     | `ConfigError` and subclasses                                                                 |
+|    3 | `DOWNLOAD_ERROR`       | Could not download or extract Firefox source.                                                                            | `DownloadError` and subclasses                                                               |
+|    4 | `GIT_ERROR`            | A git operation failed.                                                                                                  | `GitError` and subclasses, except `GitNotFoundError`                                         |
+|    5 | `BUILD_ERROR`          | `mach build` failed, or a test suite went red.                                                                           | `BuildError` and subclasses, `TestFailureError`                                              |
+|    6 | `PATCH_ERROR`          | A patch failed to apply, or the patch queue could not be mutated.                                                        | `PatchError`, `PatchManifestCorruptError`, `RebaseError` and subclasses                      |
+|    7 | `MISSING_DEPENDENCY`   | A required tool (python3, git, tar) was not found.                                                                       | `PythonNotFoundError`, `GitNotFoundError`, `MachNotFoundError`                               |
+|    8 | `INVALID_ARGUMENT`     | The flags were wrong. Usage problem, not an environment one.                                                             | `InvalidArgumentError`; commander usage errors (unknown command or option, missing argument) |
+|    9 | `FURNACE_ERROR`        | A Furnace component operation failed.                                                                                    | `FurnaceError`                                                                               |
+|   10 | `RESOLUTION_ERROR`     | Conflict resolution failed.                                                                                              | `ResolutionError`                                                                            |
+|   11 | `INTERNAL_ERROR`       | A FireForge invariant did not hold. **A bug in FireForge**, not something the operator can fix.                          | `InternalInvariantError`                                                                     |
+|   12 | `SMOKE_EXIT_FAILURE`   | `run --smoke-exit` saw unallowed console errors in the smoke window.                                                     | `SmokeRunError`                                                                              |
+|   13 | `SMOKE_LAUNCH_FAILURE` | `run --smoke-exit` saw a non-clean browser exit before the window elapsed.                                               | `SmokeRunError`                                                                              |
+|   14 | `INCONCLUSIVE`         | A test run's verdict was thrown away: `engine/` moved while the harness ran. **Not red** — re-run it.                    | `InconclusiveVerdictError`                                                                   |
+|   15 | `LOCK_TIMEOUT`         | A lock wait expired, so the run never started. Re-queue it, with a larger `--wait-lock`.                                 | `LockContentionError`                                                                        |
+|  130 | `USER_CANCELLED`       | The operator INTERRUPTED a prompt (Esc / Ctrl+C). 128 + SIGINT.                                                          | `CancellationError`                                                                          |
+
+A usage error commander itself detects — an unknown command, an unknown or
+malformed option, a missing required argument — never reaches a command
+action, so before 0.46.0 commander terminated the process with its own exit
+1 and, under `--json`, no refusal envelope. `createProgram` now installs
+commander's `exitOverride()` and the entry point maps the resulting
+`CommanderError` to `INVALID_ARGUMENT` (8) with the standard envelope on
+stdout. `--help` and `--version` travel the same path and still exit 0, and
+so does a command group invoked without a subcommand (`fireforge`,
+`fireforge tree`): commander prints the group's help and the entry point
+treats it as informational rather than as a wrong flag, matching the exit 0
+that `patch`, `token` and `furnace` give through their own help action.
 
 ## The three distinctions that matter for CI
 

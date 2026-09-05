@@ -17,7 +17,6 @@ import type {
   PatchLintIssue,
   PatchMetadata,
   PatchStagedForwardImport,
-  PatchStagedRegistration,
 } from '../types/commands/index.js';
 import type { FireForgeConfig, PatchPolicyConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
@@ -28,7 +27,15 @@ import { discoverPatches } from './patch-files.js';
 import { lintPatchQueueBinaryBodies } from './patch-lint-binary.js';
 import { collectNewFileCreatorsByPath } from './patch-lint-creators.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
+import { lintPatchQueueForwardRegistrations } from './patch-lint-forward-registration.js';
 import { lintPatchQueueModuleRegistrations } from './patch-lint-module-registration.js';
+import type { NewFileOwner } from './patch-lint-staged-registration.js';
+import {
+  describeRegistrationFailure,
+  findStagedRegistrationFailure,
+  isLaterOwner,
+  quoteRegistrationLine,
+} from './patch-lint-staged-registration.js';
 import { loadPatchesManifest } from './patch-manifest-io.js';
 import { categoryRangeForOrder, categoryRangeLabel } from './patch-policy.js';
 import { extractNewFileContent } from './patch-transform.js';
@@ -56,6 +63,17 @@ export interface PatchQueueEntry {
    * are not indexed here.
    */
   newFiles: Map<string, string>;
+  /**
+   * Every path this patch CREATES, whatever the body kind — text, a
+   * reconstructable `GIT binary patch`, or a payload-less
+   * `Binary files … differ` stub. `newFiles` is text-only by design (a
+   * binary authors no imports, so the import rules gain nothing from it and
+   * `extractNewFileContent` correctly refuses to decode one), but "does a
+   * later patch create this path" is a question about existence after apply,
+   * not about content — and answering it from `newFiles` made every binary
+   * creation invisible to the staged-registration rules.
+   */
+  createdFiles: Set<string>;
   /**
    * Map from existing-file path → concatenated added lines from the patch's
    * hunks against that file (joined with `\n`). Populated for files the
@@ -150,6 +168,9 @@ export async function buildPatchQueueContext(
       metadata: metadataByFilename.get(patch.filename) ?? null,
       diff,
       newFiles,
+      // Straight from the detector, before the text-extraction filter above
+      // drops the bodies it cannot decode.
+      createdFiles: newFilePaths,
       modifiedFileAdditions,
     });
   }
@@ -223,16 +244,10 @@ export function isForwardImportableFile(path: string): boolean {
  * Returns the raw specifier strings — callers should take the leaf basename
  * to match against the newFileIndex, because we do not resolve `resource://`
  * URLs to engine file paths.
- */
-export function extractImportSpecifiers(source: string): string[] {
-  return extractImportSpecifiersWithLines(source).map((item) => item.specifier);
-}
-
-/**
- * Internal form of {@link extractImportSpecifiers} that also returns the
- * (0-indexed) line number where each specifier was found. Used by the
- * forward-import rule so it can correlate specifiers against the
- * ignore-marker line set and skip suppressed matches.
+ *
+ * Also returns the (0-indexed) line number where each specifier was found, so
+ * the forward-import rule can correlate specifiers against the ignore-marker
+ * line set and skip suppressed matches.
  */
 export interface ExtractedSpecifier {
   specifier: string;
@@ -333,7 +348,7 @@ function collectGetterSpecifiers(
 
 /**
  * Returns import specifiers plus 0-indexed line numbers, preserving the
- * same matching behavior as {@link extractImportSpecifiers}.
+ * same matching behavior as {@link extractImportSpecifiersWithLines}.
  */
 export function extractImportSpecifiersWithLines(source: string): ExtractedSpecifier[] {
   // stripJsComments replaces comment bodies with space runs of equal
@@ -392,8 +407,8 @@ function extractBareGetterSpecifiers(source: string): ExtractedSpecifier[] {
   const stripped = stripJsComments(source);
   const results: ExtractedSpecifier[] = [];
   const lines = stripped.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const match = BARE_GETTER_PROPERTY_LINE.exec(lines[i] ?? '');
+  for (const [i, line] of lines.entries()) {
+    const match = BARE_GETTER_PROPERTY_LINE.exec(line);
     if (match?.[1]) results.push({ specifier: match[1], line: i });
   }
   return results;
@@ -426,9 +441,8 @@ export const FORWARD_IMPORT_IGNORE_MARKER = 'fireforge-ignore: forward-import';
 export function findForwardImportIgnoreLines(source: string): Set<number> {
   const lines = source.split('\n');
   const ignored = new Set<number>();
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line && line.includes(FORWARD_IMPORT_IGNORE_MARKER)) {
+  for (const [i, line] of lines.entries()) {
+    if (line.includes(FORWARD_IMPORT_IGNORE_MARKER)) {
       ignored.add(i);
       ignored.add(i + 1);
     }
@@ -462,23 +476,6 @@ function findMatchingStagedDependency(
           owner.fullPath === dependency.creates &&
           (dependency.owner === undefined || dependency.owner === owner.filename)
       )
-  );
-}
-
-interface NewFileOwner {
-  filename: string;
-  order: number;
-  fullPath: string;
-}
-
-/**
- * Later-in-apply-order predicate shared by the forward-import scan and the
- * registration validation: strictly higher ordinal, or same ordinal with a
- * lexicographically later filename (the apply loop's tiebreak).
- */
-function isLaterOwner(owner: NewFileOwner, entry: PatchQueueEntry): boolean {
-  return (
-    owner.order > entry.order || (owner.order === entry.order && owner.filename > entry.filename)
   );
 }
 
@@ -517,21 +514,49 @@ export interface ForwardImportEdge {
   creates: string;
 }
 
-/** Builds the basename → later-creators index used by the forward-import scan. */
-function buildNewFileIndex(ctx: PatchQueueContext): Map<string, NewFileOwner[]> {
-  const newFileIndex = new Map<string, NewFileOwner[]>();
+/** Builds a basename → creators index from one path set per entry. */
+function buildCreatorIndex(
+  ctx: PatchQueueContext,
+  pathsOf: (entry: PatchQueueEntry) => Iterable<string>
+): Map<string, NewFileOwner[]> {
+  const index = new Map<string, NewFileOwner[]>();
   for (const entry of ctx.entries) {
-    for (const fullPath of entry.newFiles.keys()) {
+    for (const fullPath of pathsOf(entry)) {
       const leaf = basename(fullPath);
-      let owners = newFileIndex.get(leaf);
+      let owners = index.get(leaf);
       if (!owners) {
         owners = [];
-        newFileIndex.set(leaf, owners);
+        index.set(leaf, owners);
       }
       owners.push({ filename: entry.filename, order: entry.order, fullPath });
     }
   }
-  return newFileIndex;
+  return index;
+}
+
+/**
+ * Basename → later-creators index for the forward-IMPORT scan.
+ *
+ * Keyed on `newFiles` deliberately: this index answers "which patch creates
+ * the module this specifier resolves to", and a binary is not a module.
+ */
+function buildNewFileIndex(ctx: PatchQueueContext): Map<string, NewFileOwner[]> {
+  return buildCreatorIndex(ctx, (entry) => entry.newFiles.keys());
+}
+
+/**
+ * Basename → creators index for the staged-REGISTRATION rules.
+ *
+ * Keyed on `createdFiles`, which includes binary creations. A registration
+ * (`support-files`, a jar.mn line, an actor entry) points at a file that
+ * must EXIST after apply; whether its body was text or a `GIT binary patch`
+ * has nothing to do with it. Resolving this from `newFiles` made a declared
+ * dependency on a binary fixture report `creates-unresolved`, so the
+ * declaration read as stale on every lint run and removing it changed
+ * nothing either — the failure was symmetric and therefore invisible.
+ */
+function buildCreatedFileIndex(ctx: PatchQueueContext): Map<string, NewFileOwner[]> {
+  return buildCreatorIndex(ctx, (entry) => entry.createdFiles);
 }
 
 /**
@@ -566,9 +591,9 @@ function eachForwardImportSite(
       // Dedupe by (specifier, line): a patch that adds the whole getter
       // call carries both the opener (found by the balanced walk) and the
       // property line (found here) — report each site once.
-      const seen = new Set(sites.map((site) => `${site.specifier}|${String(site.line)}`));
+      const seen = new Set(sites.map((site) => `${site.specifier}|${site.line}`));
       for (const extra of extractBareGetterSpecifiers(content)) {
-        if (!seen.has(`${extra.specifier}|${String(extra.line)}`)) sites.push(extra);
+        if (!seen.has(`${extra.specifier}|${extra.line}`)) sites.push(extra);
       }
     }
 
@@ -629,6 +654,7 @@ export function collectForwardImportEdges(ctx: PatchQueueContext): ForwardImport
  */
 export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintIssue[] {
   const newFileIndex = buildNewFileIndex(ctx);
+  const createdFileIndex = buildCreatedFileIndex(ctx);
   const issues: PatchLintIssue[] = [];
   const usedStagedDeclarations = new Set<string>();
 
@@ -719,7 +745,7 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
     // (with `owner`, when set, naming that patch) — mirroring
     // findMatchingStagedDependency for the import kind.
     for (const registration of entry.metadata?.stagedDependencies?.registrations ?? []) {
-      const failure = findStagedRegistrationFailure(entry, registration, newFileIndex);
+      const failure = findStagedRegistrationFailure(entry, registration, createdFileIndex);
       if (failure === undefined) continue;
       issues.push({
         file: registration.file,
@@ -729,84 +755,16 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
         message:
           `${entry.filename} declares a staged registration in ${registration.file} ` +
           `("${registration.line}") for ${registration.creates}, but ${describeRegistrationFailure(failure)} ` +
-          'Remove the stale declaration with "fireforge patch staged-dependency --remove --kind registration" or update it to match the patch and queue.',
+          'Remove the stale declaration with: ' +
+          `fireforge patch staged-dependency ${entry.filename} --remove --kind registration ` +
+          `--file ${registration.file} --line "${quoteRegistrationLine(registration.line)}" ` +
+          `--creates ${registration.creates}; or update it to match the patch and queue.`,
         severity: 'warning',
       });
     }
   }
 
   return issues;
-}
-
-/** Why a staged registration declaration failed validation. */
-type StagedRegistrationFailure =
-  | { kind: 'line-absent' }
-  | { kind: 'creates-unresolved' }
-  | { kind: 'owner-mismatch'; creators: readonly NewFileOwner[] };
-
-/**
- * Validates one registration-kind declaration against the patch content
- * and the queue, mirroring {@link findMatchingStagedDependency}: the
- * declared line must be added by this patch, `creates` must exactly match
- * a file a LATER-ordered patch creates (an earlier-only creator means the
- * dependency is already satisfied and the declaration is stale), and
- * `owner`, when set, must name one of those creating patches. Returns
- * undefined when valid.
- */
-function findStagedRegistrationFailure(
-  entry: PatchQueueEntry,
-  registration: PatchStagedRegistration,
-  newFileIndex: Map<string, NewFileOwner[]>
-): StagedRegistrationFailure | undefined {
-  if (!isRegistrationLinePresent(entry, registration)) return { kind: 'line-absent' };
-  const creators = (newFileIndex.get(basename(registration.creates)) ?? []).filter(
-    (owner) => owner.fullPath === registration.creates && isLaterOwner(owner, entry)
-  );
-  if (creators.length === 0) return { kind: 'creates-unresolved' };
-  if (
-    registration.owner !== undefined &&
-    !creators.some((owner) => owner.filename === registration.owner)
-  ) {
-    return { kind: 'owner-mismatch', creators };
-  }
-  return undefined;
-}
-
-/** Message tail for each {@link StagedRegistrationFailure} shape. */
-function describeRegistrationFailure(failure: StagedRegistrationFailure): string {
-  switch (failure.kind) {
-    case 'line-absent':
-      return 'the patch does not add that line.';
-    case 'creates-unresolved':
-      return (
-        'no later-ordered patch creates that file — the declaration is stale, ' +
-        'or the queue order no longer stages it.'
-      );
-    case 'owner-mismatch':
-      return `that file is created by ${failure.creators.map((o) => o.filename).join(', ')}, not the declared owner.`;
-  }
-}
-
-/**
- * True when the declared registration/packaging line appears (trimmed)
- * among the lines the patch introduces in the declaring file — either as a
- * newly-created file's content or as added lines to an existing file
- * (where jar.mn / customElements.js / actor-registration edits land).
- */
-function isRegistrationLinePresent(
-  entry: PatchQueueEntry,
-  registration: PatchStagedRegistration
-): boolean {
-  const declared = registration.line.trim();
-  if (declared.length === 0) return false;
-  const introduced = [
-    entry.newFiles.get(registration.file),
-    entry.modifiedFileAdditions.get(registration.file),
-  ];
-  return introduced.some(
-    (content) =>
-      content !== undefined && content.split('\n').some((line) => line.trim() === declared)
-  );
 }
 
 /**
@@ -826,6 +784,7 @@ export function lintPatchQueue(ctx: PatchQueueContext): PatchLintIssue[] {
     ...lintPatchQueueDuplicateCreations(ctx),
     ...lintPatchQueueForwardImports(ctx),
     ...lintPatchQueueModuleRegistrations(ctx),
+    ...lintPatchQueueForwardRegistrations(ctx),
     ...lintPatchQueueBinaryBodies(ctx),
   ];
 }

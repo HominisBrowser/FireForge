@@ -584,7 +584,7 @@ export async function runFurnaceMutation<T>(
         lockStatus.holder === undefined || lockStatus.holder.pid === process.pid,
         () =>
           `furnace lock is owned by this process ` +
-          `(held by PID ${String(lockStatus.holder?.pid)}, we are ${String(process.pid)})`
+          `(held by PID ${lockStatus.holder?.pid}, we are ${process.pid})`
       );
 
       activeOperations.set(token, operation);
@@ -643,6 +643,8 @@ export async function recordFurnaceRollbackFailure(
  * reuse the module across tests, so the test suite must call this between
  * cases that exercise the signal pathway. Not exported from the package
  * entry point.
+ *
+ * @internal Exported only so tests can reach it; not part of the public surface.
  */
 export function __resetFurnaceOperationStateForTests(): void {
   activeOperations.clear();

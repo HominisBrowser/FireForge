@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import * as prompts from '@clack/prompts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { loadState, saveState } from '../../core/config.js';
+import { loadState, updateState } from '../../core/config.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
@@ -150,12 +150,12 @@ describe('resolve integration', () => {
     const patchFilename = manifest?.patches[0]?.filename;
 
     // Set up pendingResolution manually (simulating a failed import)
-    const state = await loadState(projectRoot);
-    state.pendingResolution = {
-      patchFilename: patchFilename ?? '',
-      originalError: 'Simulated conflict',
-    };
-    await saveState(projectRoot, state);
+    await updateState(projectRoot, {
+      pendingResolution: {
+        patchFilename: patchFilename ?? '',
+        originalError: 'Simulated conflict',
+      },
+    });
 
     // Delete one of the affected files (simulating upstream removal)
     await runGit(engineDir, ['rm', '-f', 'browser/modules/sidebar.js']);

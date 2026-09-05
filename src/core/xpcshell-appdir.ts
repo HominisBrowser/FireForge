@@ -87,8 +87,7 @@ export function parseAppdirFromToml(
   const escapedKey = escapeRegex(key);
   const keyPattern = new RegExp('^\\s*' + escapedKey + '\\s*=\\s*(.+?)\\s*(?:[#;].*)?$');
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] ?? '';
+  for (const [i, line] of lines.entries()) {
     const sectionMatch = /^\s*\[([^\]]+)\]\s*$/.exec(line);
     if (sectionMatch) {
       sectionSeen = true;
@@ -339,8 +338,7 @@ export async function resolveXpcshellAppdirArg(
  * wins.
  */
 export function operatorAlreadySetAppPath(extraArgs: readonly string[]): boolean {
-  for (let i = 0; i < extraArgs.length; i += 1) {
-    const arg = extraArgs[i] ?? '';
+  for (const [i, arg] of extraArgs.entries()) {
     if (arg === '--app-path' && i + 1 < extraArgs.length) return true;
     if (arg.startsWith('--app-path=')) return true;
   }

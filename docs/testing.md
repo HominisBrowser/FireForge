@@ -102,7 +102,7 @@ silently wrong test.
 Every test run ends with one machine-readable line:
 
 ```
-FIREFORGE-VERDICT: PASS|FAIL reason=… [log=<path>]
+FIREFORGE-VERDICT: PASS|FAIL reason=… [note=<class>] [log=<path>]
 ```
 
 Automation should branch on it rather than on the raw process code, and must
@@ -110,6 +110,13 @@ treat a **missing** verdict as failure. The closed set of `reason=` values and
 the stdout rules around the line are in
 [`machine-output.md`](machine-output.md); `log=` names the run's own complete
 output, specified in [`run-logs.md`](run-logs.md).
+
+`reason=preflight` covers every gate before the harness, so a refusal that
+classifies itself adds an additive `note=<class>` (`stale-browser`,
+`coverage-replaced`, …) naming which gate fired. The refusal's full text is
+written to stdout before the verdict line and into the run log, so a
+redirected run keeps the reason as well as the verdict — see
+[`run-logs.md`](run-logs.md).
 
 Exit code 14 (`INCONCLUSIVE`) is not red: it means `engine/` moved while the
 harness ran and the result was thrown away. Exit 15 (`LOCK_TIMEOUT`) means the

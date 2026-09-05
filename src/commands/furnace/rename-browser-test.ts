@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { tagNameToClassName } from '../../core/furnace-constants.js';
 import { escapeRegex } from '../../utils/regex.js';
-
-function deriveTestStem(componentName: string, binaryName: string): string {
-  const strippedName = componentName.startsWith('moz-') ? componentName.slice(4) : componentName;
-  const withoutBinaryPrefix = strippedName.startsWith(binaryName + '-')
-    ? strippedName.slice(binaryName.length + 1)
-    : strippedName;
-  return withoutBinaryPrefix.replace(/-/g, '_');
-}
+import { deriveTestStem } from './test-file-name.js';
 
 /** Rewrites scaffolded browser-chrome test literals after a component rename. */
 export function updateBrowserChromeTestContent(

@@ -3,7 +3,6 @@
  * Re-exports all type definitions.
  */
 
-export type {} from './commands/index.js';
 export type {
   BuildConfig,
   FireForgeConfig,

@@ -5,7 +5,7 @@
 
 import { join } from 'node:path';
 
-import { getProjectPaths, updateState } from '../../core/config.js';
+import { getProjectPaths } from '../../core/config.js';
 import { getStagedDiffForFiles } from '../../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../../core/git-file-ops.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
@@ -24,6 +24,7 @@ import {
 } from '../../errors/rebase.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, success, warn } from '../../utils/logger.js';
+import { clearPendingResolution } from '../pending-resolution.js';
 import { runPatchLoop } from './patch-loop.js';
 
 /**
@@ -104,10 +105,15 @@ export async function handleContinue(
     // updatePatchMetadata sequence can interleave with a concurrent export /
     // re-export / patch reorder / patch compact and leave the manifest
     // disagreeing with the freshly-written patch body. Mirrors resolve.ts.
-    await updatePatchAndMetadata(paths.patches, currentPatch.filename, diffContent, {
-      sourceEsrVersion: session.toVersion,
-      sourceVersion: session.toVersion,
-      ...(session.toProduct !== undefined ? { sourceProduct: session.toProduct } : {}),
+    await updatePatchAndMetadata({
+      patchesDir: paths.patches,
+      filename: currentPatch.filename,
+      newContent: diffContent,
+      updates: {
+        sourceEsrVersion: session.toVersion,
+        sourceVersion: session.toVersion,
+        ...(session.toProduct !== undefined ? { sourceProduct: session.toProduct } : {}),
+      },
     });
   } finally {
     if (staged) {
@@ -132,12 +138,7 @@ export async function handleContinue(
 
     // Clear pending resolution transactionally so concurrent state-file
     // writes to unrelated keys are not clobbered by a stale reload.
-    await updateState(projectRoot, (current) => {
-      if (!current.pendingResolution) return current;
-      const next = { ...current };
-      delete next.pendingResolution;
-      return next;
-    });
+    await clearPendingResolution(projectRoot);
   });
 
   success(`Resolved ${currentPatch.filename}`);

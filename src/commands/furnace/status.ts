@@ -8,6 +8,7 @@ import {
   hasCustomEngineDrift,
   hasOverrideEngineDrift,
 } from '../../core/furnace-apply-helpers.js';
+import type { FurnacePaths } from '../../core/furnace-config.js';
 import {
   furnaceConfigExists,
   getFurnacePaths,
@@ -21,28 +22,34 @@ import {
   formatOverrideBaseVersionDriftWarning,
 } from '../../core/furnace-version-drift.js';
 import { FurnaceError } from '../../errors/furnace.js';
+import type { ProjectPaths } from '../../types/config.js';
+import type { FurnaceConfig, FurnaceState } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, outro, warn } from '../../utils/logger.js';
 
+interface DetailedComponentStatusOptions {
+  /** Component tag name to inspect. */
+  name: string;
+  /** Loaded Furnace configuration. */
+  config: FurnaceConfig;
+  /** Loaded furnace state, for applied/engine checksums. */
+  state: FurnaceState;
+  /** Root directory of the project. */
+  projectRoot: string;
+  /** Resolved project paths. */
+  paths: ProjectPaths;
+  /** Resolved Furnace-specific paths. */
+  furnacePaths: FurnacePaths;
+  /** Engine-relative directory localized components deploy their `.ftl` into. */
+  ftlDir: string;
+}
+
 /**
  * Displays detailed status for a single Furnace component, including registration drift.
- * @param name - Component tag name to inspect
- * @param config - Loaded Furnace configuration
- * @param state - Loaded furnace state, for applied/engine checksums
- * @param projectRoot - Root directory of the project
- * @param paths - Resolved project paths
- * @param furnacePaths - Resolved Furnace-specific paths
- * @param ftlDir - Engine-relative directory localized components deploy their `.ftl` into
+ * @param options - See {@link DetailedComponentStatusOptions}
  */
-async function showDetailedComponentStatus(
-  name: string,
-  config: Awaited<ReturnType<typeof loadFurnaceConfig>>,
-  state: Awaited<ReturnType<typeof loadFurnaceState>>,
-  projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
-  ftlDir: string
-): Promise<void> {
+async function showDetailedComponentStatus(options: DetailedComponentStatusOptions): Promise<void> {
+  const { name, config, state, projectRoot, paths, furnacePaths, ftlDir } = options;
   const customConfig = config.custom[name];
   const overrideConfig = config.overrides[name];
 
@@ -165,15 +172,15 @@ export async function furnaceStatusCommand(projectRoot: string, name?: string): 
   const ftlDir = resolveFtlDir(config.ftlBasePath);
 
   if (name) {
-    await showDetailedComponentStatus(
+    await showDetailedComponentStatus({
       name,
       config,
       state,
       projectRoot,
       paths,
       furnacePaths,
-      ftlDir
-    );
+      ftlDir,
+    });
     return;
   }
 

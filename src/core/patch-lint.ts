@@ -37,10 +37,11 @@ import { invokePatchLintPrettier } from './patch-lint-prettier.js';
 // The cross-patch lint infrastructure (queue context builder,
 // duplicate-creation and forward-import rules, ignore marker) lives in
 // `patch-lint-cross.ts` so the per-patch and cross-patch rule bodies each
-// stay within the per-file line budget. The public surface is re-exported
-// from `patch-lint-reexports.ts` so callers keep importing from one module.
+// stay within the per-file line budget. Its surface is re-exported here so
+// callers keep importing from one module.
 
-export * from './patch-lint-reexports.js';
+export * from './patch-lint-cross.js';
+export { buildModifiedFileAdditionsFromDiff, detectNewFilesInDiff } from './patch-lint-diff.js';
 
 // The CSS rule bodies live in `patch-lint-css.ts` (same per-file-budget
 // split as the other rule families); re-export the imported binding so
@@ -615,6 +616,14 @@ export function resolvePatchSizeTier(
   return { tier: 'general' };
 }
 
+/** Line and file-count thresholds governing one patch-size tier. */
+export interface PatchSizeThresholds {
+  /** Added-line counts at which notice/warning/error issues fire. */
+  lines: { notice: number; warning: number; error: number };
+  /** Maximum number of files a patch may touch before an issue fires. */
+  maxFiles: number;
+}
+
 /**
  * Read-only view of the size thresholds a tier enforces.
  * Public-API companion to {@link resolvePatchSizeTier} /
@@ -622,10 +631,7 @@ export function resolvePatchSizeTier(
  * checks against the SAME numbers `large-patch-lines` /
  * `large-patch-files` fire on instead of mirroring them.
  */
-export function getPatchSizeThresholds(tier: 'general' | 'test' | 'branding'): {
-  lines: { notice: number; warning: number; error: number };
-  maxFiles: number;
-} {
+export function getPatchSizeThresholds(tier: 'general' | 'test' | 'branding'): PatchSizeThresholds {
   return {
     lines: { ...PATCH_LINE_THRESHOLDS[tier] },
     maxFiles: PATCH_FILES_THRESHOLDS[tier],

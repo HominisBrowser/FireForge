@@ -8,13 +8,13 @@ import { join } from 'node:path';
 import type { ProjectPaths } from '../types/config.js';
 
 /** Name of the configuration file */
-export const CONFIG_FILENAME = 'fireforge.json';
+const CONFIG_FILENAME = 'fireforge.json';
 
 /** Name of the fireforge data directory */
 export const FIREFORGE_DIR = '.fireforge';
 
 /** Name of the state file */
-export const STATE_FILENAME = 'state.json';
+const STATE_FILENAME = 'state.json';
 
 /** Name of the engine directory */
 const ENGINE_DIR = 'engine';
@@ -36,6 +36,7 @@ export const SUPPORTED_CONFIG_ROOT_KEYS = [
   'binaryName',
   'firefox',
   'build',
+  'buildAudit',
   'test',
   'externalToolchains',
   'license',
@@ -58,6 +59,7 @@ export const SUPPORTED_CONFIG_PATHS = [
   'firefox.product',
   'firefox.sha256',
   'firefox.candidate',
+  'firefox.allowUnverifiedDownload',
   'build',
   'build.jobs',
   'test',

@@ -27,6 +27,7 @@ import { toError } from '../../utils/errors.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { info, success, warn } from '../../utils/logger.js';
 import { stripEnginePrefix } from '../../utils/paths.js';
+import { browserTestFileName, deriveTestStem } from './test-file-name.js';
 
 /**
  * Validates the `--test-dir` option against the resolved test style before
@@ -96,15 +97,9 @@ export async function scaffoldTestFiles(
   journal?: RollbackJournal,
   testDirOverride?: string
 ): Promise<string[]> {
-  const strippedName = componentName.startsWith('moz-') ? componentName.slice(4) : componentName;
-  // Avoid double-prefixing: strip binaryName prefix since the default test
-  // dir name already uses it
   const binaryName = forgeConfig.binaryName;
-  const withoutBinaryPrefix = strippedName.startsWith(binaryName + '-')
-    ? strippedName.slice(binaryName.length + 1)
-    : strippedName;
-  const underscored = withoutBinaryPrefix.replace(/-/g, '_');
-  const testFileName = `browser_${binaryName}_${underscored}.js`;
+  const underscored = deriveTestStem(componentName, binaryName);
+  const testFileName = browserTestFileName(componentName, binaryName);
   // --test-dir redirects the scaffold: the hardcoded
   // `.../test/<binaryName>/` target can collide with a test suite owned by a
   // different patch. The manifest-registration name is the path below

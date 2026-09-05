@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { ConfigError } from '../errors/config.js';
 import type { FireForgeConfig } from '../types/config.js';
-import { parseObject } from '../utils/parse.js';
+import type { ParsedRecord } from '../utils/parse.js';
 import { isContainedRelativePath } from '../utils/paths.js';
 import { isObject } from '../utils/validation.js';
 
-type ConfigRecord = ReturnType<typeof parseObject>;
+type ConfigRecord = ParsedRecord;
 
 function optionalConfigString(rec: ConfigRecord, key: string, label: string): string | undefined {
   const value = rec.raw(key);
@@ -68,21 +68,19 @@ export function parseExternalToolchainsBlock(rec: ConfigRecord, config: FireForg
 
   config.externalToolchains = raw.map((entry: unknown, index) => {
     if (!isObject(entry)) {
-      throw new ConfigError(
-        `Config field "externalToolchains[${String(index)}]" must be an object`
-      );
+      throw new ConfigError(`Config field "externalToolchains[${index}]" must be an object`);
     }
     const item = entry;
     const name = item['name'];
     if (typeof name !== 'string' || name.trim() === '') {
       throw new ConfigError(
-        `Config field "externalToolchains[${String(index)}].name" must be a non-empty string`
+        `Config field "externalToolchains[${index}].name" must be a non-empty string`
       );
     }
     const tools = item['tools'];
     if (!Array.isArray(tools) || tools.length === 0) {
       throw new ConfigError(
-        `Config field "externalToolchains[${String(index)}].tools" must be a non-empty array`
+        `Config field "externalToolchains[${index}].tools" must be a non-empty array`
       );
     }
 
@@ -100,7 +98,7 @@ function parseExternalToolRequirement(
   index: number,
   toolIndex: number
 ): NonNullable<FireForgeConfig['externalToolchains']>[number]['tools'][number] {
-  const label = `externalToolchains[${String(index)}].tools[${String(toolIndex)}]`;
+  const label = `externalToolchains[${index}].tools[${toolIndex}]`;
   if (!isObject(tool)) {
     throw new ConfigError(`Config field "${label}" must be an object`);
   }

@@ -21,8 +21,7 @@ import {
   restoreOverrideFileToBaseline,
 } from '../../core/furnace-apply-helpers.js';
 import { extractComponentChecksums } from '../../core/furnace-checksum-utils.js';
-import type { loadFurnaceConfig } from '../../core/furnace-config.js';
-import { getFurnacePaths } from '../../core/furnace-config.js';
+import type { FurnacePaths } from '../../core/furnace-config.js';
 import {
   removeCustomElementRegistration,
   removeJarMnEntries,
@@ -31,7 +30,7 @@ import type { RollbackJournal } from '../../core/furnace-rollback.js';
 import { snapshotDir, snapshotFile } from '../../core/furnace-rollback.js';
 import { isGitRepository } from '../../core/git.js';
 import { FurnaceError } from '../../errors/furnace.js';
-import type { FurnaceState, OverrideComponentConfig } from '../../types/furnace.js';
+import type { FurnaceConfig, FurnaceState, OverrideComponentConfig } from '../../types/furnace.js';
 import { pathExists, removeDir, removeFile } from '../../utils/fs.js';
 import { info } from '../../utils/logger.js';
 import { normalizePathSlashes } from '../../utils/paths.js';
@@ -110,8 +109,8 @@ async function restoreOverrideEngineFiles(
 export async function performOverrideRemovalMutations(args: {
   name: string;
   paths: { engine: string };
-  furnacePaths: ReturnType<typeof getFurnacePaths>;
-  freshConfig: Awaited<ReturnType<typeof loadFurnaceConfig>>;
+  furnacePaths: FurnacePaths;
+  freshConfig: FurnaceConfig;
   freshState: FurnaceState;
   ftlDir: string;
   journal: RollbackJournal;
@@ -163,8 +162,8 @@ export async function performCustomRemovalMutations(args: {
   projectRoot: string;
   name: string;
   paths: { engine: string };
-  furnacePaths: ReturnType<typeof getFurnacePaths>;
-  freshConfig: Awaited<ReturnType<typeof loadFurnaceConfig>>;
+  furnacePaths: FurnacePaths;
+  freshConfig: FurnaceConfig;
   ftlDir: string;
   journal: RollbackJournal;
 }): Promise<void> {

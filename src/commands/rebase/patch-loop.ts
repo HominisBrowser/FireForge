@@ -5,7 +5,6 @@
 
 import { join } from 'node:path';
 
-import type { getProjectPaths } from '../../core/config.js';
 import { updateState } from '../../core/config.js';
 import { stampFurnaceOverrideBaseVersions } from '../../core/furnace-config.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
@@ -23,11 +22,13 @@ import {
 } from '../../core/rebase-session.js';
 import { runInSignalCriticalSection } from '../../core/signal-critical.js';
 import { RebaseError } from '../../errors/rebase.js';
+import type { ProjectPaths } from '../../types/config.js';
 import { elapsedSince } from '../../utils/elapsed.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { error, info, outro, spinner, success, warn } from '../../utils/logger.js';
 import { isValidFirefoxVersion } from '../../utils/validation.js';
+import { clearPendingResolution } from '../pending-resolution.js';
 import { buildRebaseConflictSummary } from './conflict-summary.js';
 import { printSummary } from './summary.js';
 
@@ -73,7 +74,7 @@ function entryForApplyResult(
 export async function runPatchLoop(
   projectRoot: string,
   session: RebaseSession,
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   maxFuzz: number,
   waitLockSeconds?: number
 ): Promise<void> {
@@ -252,12 +253,7 @@ export async function runPatchLoop(
 
   // Clear pending resolution if any (transactionally, so a concurrent
   // state write to an unrelated key is not clobbered by a stale reload).
-  await updateState(projectRoot, (current) => {
-    if (!current.pendingResolution) return current;
-    const next = { ...current };
-    delete next.pendingResolution;
-    return next;
-  });
+  await clearPendingResolution(projectRoot);
 
   info('');
   success(`All patches re-exported with sourceVersion=${session.toVersion}`);
@@ -266,7 +262,7 @@ export async function runPatchLoop(
 
 async function reExportAppliedPatches(
   session: RebaseSession,
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   waitLockSeconds: number | undefined
 ): Promise<{
   failures: Array<{ filename: string; error: string }>;

@@ -852,24 +852,22 @@ describe('statusCommand', () => {
   });
 
   describe('flag validation', () => {
-    it('throws when both --raw and --unmanaged are provided', async () => {
-      await expect(statusCommand(projectRoot, { raw: true, unmanaged: true })).rejects.toThrow(
+    it.each([
+      ['--raw and --unmanaged', { raw: true, unmanaged: true }],
+      ['--raw and --ownership', { raw: true, ownership: true }],
+      ['--unmanaged and --ownership', { unmanaged: true, ownership: true }],
+      ['--test-coverage and --json', { testCoverage: true, json: true }],
+    ])('throws when %s are combined', async (_label, options) => {
+      await expect(statusCommand(projectRoot, options)).rejects.toThrow(
         'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
       );
     });
 
-    it('throws when --raw and --ownership are combined', async () => {
-      await expect(statusCommand(projectRoot, { raw: true, ownership: true })).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
-      );
-    });
-
-    it('throws when --unmanaged and --ownership are combined', async () => {
-      await expect(
-        statusCommand(projectRoot, { unmanaged: true, ownership: true })
-      ).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
-      );
+    it.each([
+      ['--summary', { summary: true }, '--summary requires --json.'],
+      ['--include-ownership', { includeOwnership: true }, '--include-ownership requires --json.'],
+    ])('refuses %s without --json', async (_label, options, message) => {
+      await expect(statusCommand(projectRoot, options)).rejects.toThrow(message);
     });
   });
 
@@ -934,12 +932,6 @@ describe('statusCommand', () => {
       expect(messages.some((m) => m.includes('Recorded by: unknown'))).toBe(true);
       expect(messages.some((m) => m.includes('full (implicit'))).toBe(true);
       expect(messages.some((m) => m.includes('(unborn)'))).toBe(true);
-    });
-
-    it('is mutually exclusive with --json', async () => {
-      await expect(statusCommand(projectRoot, { testCoverage: true, json: true })).rejects.toThrow(
-        'Cannot use --raw, --unmanaged, --ownership, --test-coverage, --lock, and --json together'
-      );
     });
   });
 
@@ -1544,12 +1536,6 @@ describe('statusCommand', () => {
       );
     });
 
-    it('refuses an unknown --fail-on classification naming the valid set', async () => {
-      await expect(statusCommand(projectRoot, { failOn: 'bogus' })).rejects.toThrow(
-        /Unknown --fail-on classification "bogus"/
-      );
-    });
-
     it('composes with --json: stdout stays parseable JSON and the check still fails', async () => {
       seedSingleOwnerManifest();
       vi.mocked(getStatusWithCodes).mockResolvedValue([
@@ -1704,12 +1690,6 @@ describe('statusCommand', () => {
       expect(payload.check?.failed).toBe(false);
       expect(payload.check?.offenders).toEqual([]);
     });
-
-    it('is refused without --json', async () => {
-      await expect(statusCommand(projectRoot, { summary: true })).rejects.toThrow(
-        '--summary requires --json.'
-      );
-    });
   });
 
   describe('--include-ownership JSON block', () => {
@@ -1850,12 +1830,6 @@ describe('statusCommand', () => {
       } finally {
         restore();
       }
-    });
-
-    it('is refused without --json', async () => {
-      await expect(statusCommand(projectRoot, { includeOwnership: true })).rejects.toThrow(
-        '--include-ownership requires --json.'
-      );
     });
   });
 

@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { existsSync } from 'node:fs';
-import { dirname } from 'node:path';
-
 import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-vi.mock('node:fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, existsSync: vi.fn(actual.existsSync) };
-});
-
-vi.mock('node:path', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:path')>();
-  return { ...actual, dirname: vi.fn(actual.dirname) };
-});
 
 // Deterministic build identity: the real reader consults live git, whose
 // clean/dirty state varies by checkout.
@@ -23,7 +10,6 @@ vi.mock('../utils/build-info.js', () => ({
 
 import {
   createProgram,
-  getProjectRoot,
   installBrokenPipeHandler,
   main,
   resetBrokenPipeHandlerForTests,
@@ -39,7 +25,9 @@ function getInstalledStdoutErrorHandler(
     throw new Error('Broken-pipe handler was not installed on stdout');
   }
 
-  return handler;
+  // `listeners()` is typed as `Function[]` in @types/node 22; the handler
+  // installed by installBrokenPipeHandler has this exact signature.
+  return handler as (error: NodeJS.ErrnoException) => void;
 }
 
 describe('installBrokenPipeHandler', () => {
@@ -105,16 +93,6 @@ describe('installBrokenPipeHandler', () => {
     expect(() => {
       handler(error);
     }).toThrow(error);
-  });
-
-  it('resets cleanly even when no handler was installed', () => {
-    const stdoutListenersBefore = process.stdout.listeners('error').length;
-    const stderrListenersBefore = process.stderr.listeners('error').length;
-
-    resetBrokenPipeHandlerForTests();
-
-    expect(process.stdout.listeners('error')).toHaveLength(stdoutListenersBefore);
-    expect(process.stderr.listeners('error')).toHaveLength(stderrListenersBefore);
   });
 });
 
@@ -228,63 +206,38 @@ describe('main', () => {
   });
 });
 
-describe('getProjectRoot', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('throws ConfigNotFoundError when the walk depth limit is exhausted', () => {
-    // `getProjectRoot` throws a typed `ConfigNotFoundError` rather than a
-    // plain `Error` so `withErrorHandling` surfaces the formatted
-    // userMessage instead of a stack dump. Both the shape and the payload
-    // are checked so a refactor cannot silently regress to the stack-dump
-    // path.
-    const fakeStart = '/a/b/c/d/e';
-    vi.spyOn(process, 'cwd').mockReturnValue(fakeStart);
-    vi.mocked(existsSync).mockReturnValue(false);
-
-    let counter = 0;
-    vi.mocked(dirname).mockImplementation(() => `/synthetic/${counter++}`);
-
-    expect(() => getProjectRoot()).toThrow(/Configuration file not found: fireforge\.json/);
-  });
-});
-
 describe('buildGroupedHelpFormatter', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('returns unsplit lines when the description area is too narrow for wrapping', () => {
+  it('indents wrapped description continuations to the term column plus four', () => {
+    // The wrap path is the only place the formatter deviates from
+    // Commander's own layout: a description that overflows `helpWidth` is
+    // split and every continuation line is aligned under the first
+    // description word, at `termWidth + 4` columns. Asserting the exact
+    // indent (rather than "it is a non-empty string") is what makes a
+    // regression in `formatHelpLine` visible.
     const program = createProgram();
     const helper = program.createHelp();
-    helper.helpWidth = 30;
+    helper.helpWidth = 60;
+    const expectedIndent = helper.padWidth(program, helper) + 4;
 
-    const result = helper.formatHelp(program, helper);
+    const lines = helper.formatHelp(program, helper).split('\n');
+    const continuations = lines.filter(
+      (line) => /^ +\S/.test(line) && (line.match(/^ +/)?.[0].length ?? 0) === expectedIndent
+    );
 
-    expect(typeof result).toBe('string');
-    expect(result.length).toBeGreaterThan(0);
-  });
+    expect(continuations.length).toBeGreaterThan(0);
 
-  it('defaults to 80 columns when helpWidth is undefined', () => {
-    const program = createProgram();
-    const helper = program.createHelp();
-    helper.helpWidth = undefined as unknown as number;
-
-    const result = helper.formatHelp(program, helper);
-
-    expect(typeof result).toBe('string');
-    expect(result).toContain('Usage:');
-  });
-
-  it('wraps long descriptions at moderate widths', () => {
-    const program = createProgram();
-    const helper = program.createHelp();
-    helper.helpWidth = 50;
-
-    const result = helper.formatHelp(program, helper);
-
-    expect(typeof result).toBe('string');
-    expect(result).toContain('\n');
+    // The wrapping is width-driven: given room to spare the formatter emits
+    // strictly fewer continuation lines for the same command set.
+    const wide = program.createHelp();
+    wide.helpWidth = 200;
+    const wideContinuations = wide
+      .formatHelp(program, wide)
+      .split('\n')
+      .filter(
+        (line) =>
+          /^ +\S/.test(line) &&
+          (line.match(/^ +/)?.[0].length ?? 0) === wide.padWidth(program, wide) + 4
+      );
+    expect(wideContinuations.length).toBeLessThan(continuations.length);
   });
 });

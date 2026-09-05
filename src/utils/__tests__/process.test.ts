@@ -8,6 +8,7 @@ vi.mock('../logger.js', () => ({
   warn: vi.fn(),
 }));
 
+import { ExecTimeoutError } from '../../errors/base.js';
 import { verbose, warn } from '../logger.js';
 import {
   exec,
@@ -191,6 +192,34 @@ describe('exec', () => {
       command: 'sleep',
       timeoutMs: 5,
     });
+  });
+
+  it('carries the output captured before the timeout on the ExecTimeoutError', async () => {
+    // A `git add -A` killed at its budget used to reject with nothing but the
+    // budget: the partial stdout/stderr that said what git was doing when it
+    // died had already been collected and was dropped on the floor.
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+
+    const promise = exec('git', ['add', '-A'], { timeout: 5 });
+    child.stdout.emit('data', Buffer.from('progress 1\nprogress 2\n'));
+    child.stderr.emit('data', Buffer.from('warning: slow disk\n'));
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    child.emit('error', abortError);
+
+    const error = await promise.then(
+      () => undefined,
+      (rejection: unknown) => rejection
+    );
+    expect(error).toBeInstanceOf(ExecTimeoutError);
+    const timeout = error as ExecTimeoutError;
+    expect(timeout.stdout).toBe('progress 1\nprogress 2\n');
+    expect(timeout.stderr).toBe('warning: slow disk\n');
+    expect(timeout.outputTruncated).toBe(false);
+    // The user-facing rendering shows the tail, so the timeout is diagnosable.
+    expect(timeout.userMessage).toContain('Output before the timeout (stderr)');
+    expect(timeout.userMessage).toContain('warning: slow disk');
   });
 });
 

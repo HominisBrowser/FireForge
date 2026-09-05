@@ -16,7 +16,6 @@ import {
   runPostBootstrapChecks,
 } from './bootstrap-checks.js';
 import { reportDoctorResults } from './doctor.js';
-import { resolveDoctorSeverity } from './doctor-check-core.js';
 
 /** One sentence per detected issue, keyed by the scanner's own tags. */
 const BOOTSTRAP_FAILURE_SENTENCES: Record<BootstrapIssue, string> = {
@@ -90,7 +89,7 @@ export async function bootstrapCommand(projectRoot: string): Promise<ExitCode> {
     // Shares one resolver with reportDoctorResults so the two consumers of
     // this same array cannot drift apart on how a check's severity is
     // derived.
-    const hasErrors = checks.some((c) => resolveDoctorSeverity(c) === 'error');
+    const hasErrors = checks.some((c) => c.severity === 'error');
 
     info('');
     if (hasErrors) {

@@ -17,13 +17,13 @@
  * subsequent run still audits against the last known-good tree.
  */
 
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { verbose } from '../utils/logger.js';
 import {
   isBuildInputPath,
@@ -60,7 +60,7 @@ const FINGERPRINT_IO_CONCURRENCY = 16;
 export type BaselineBuildKind = 'full' | 'faster';
 
 /** Name of the last-build marker file under `.fireforge/`. */
-export const BUILD_BASELINE_FILENAME = 'last-build.json';
+const BUILD_BASELINE_FILENAME = 'last-build.json';
 
 /**
  * Resolves the on-disk path of the build baseline marker.
@@ -91,48 +91,69 @@ export async function readBuildBaseline(projectRoot: string): Promise<BuildBasel
   }
 }
 
+export interface WriteBuildBaselineOptions {
+  /** Root directory of the project. */
+  projectRoot: string;
+  /** Path to the engine directory. */
+  engineDir: string;
+  /** Current `binaryName` from fireforge.json. */
+  binaryName: string;
+  /**
+   * Coverage claim of the packaged test runtime this build produced
+   * (`'full'`, or the scoped request paths of a `test --build` invocation).
+   * Omitted → field left off the marker.
+   */
+  testPackagingCoverage?: TestPackagingCoverage | undefined;
+  /**
+   * The baseline this write replaces, when the caller has it. A scoped
+   * (non-`'full'`) write carries its `staticComponentsBaseline` forward
+   * verbatim — `mach build faster` does not rebake `components.conf`
+   * registrations, so the last FULL build stays the honest anchor for the
+   * compiled StaticComponents table.
+   */
+  previousBaseline?: BuildBaseline | undefined;
+  /** Invocation shape that produced this baseline. */
+  recordedBy?: string | undefined;
+  /**
+   * `'auto'` (default) refreshes the static-components anchor whenever the
+   * coverage claim is `'full'` or absent. `'refresh'` records it even for a
+   * scoped coverage claim whose implementation escalated to a full build.
+   * `'carry-forward'` always keeps the previous anchor: needed by
+   * `--extend-coverage`, whose union can EVALUATE to `'full'` while the
+   * build that produced it was still a scoped `mach build faster` that did
+   * not rebake the compiled table.
+   */
+  staticComponentsHandling?: 'auto' | 'refresh' | 'carry-forward' | undefined;
+  /**
+   * Which mach build produced this baseline (default `'full'`). A
+   * `'faster'` write carries the previous record's `jar.mn` fingerprints
+   * forward instead of refreshing them — see
+   * {@link BuildBaseline.buildInputFingerprints}. Every caller that ran
+   * `mach build faster` MUST say so, or the next pre-test build skips an
+   * escalation no full build has honoured.
+   */
+  buildKind?: BaselineBuildKind | undefined;
+}
+
 /**
  * Records a successful build by writing a fresh baseline marker. Captures
  * engine HEAD SHA (or an empty string when the engine has no HEAD yet) and
  * the current binaryName. Caller is responsible for only invoking this
  * after the build exit code was zero.
  *
- * @param projectRoot - Root directory of the project
- * @param engineDir - Path to the engine directory
- * @param binaryName - Current `binaryName` from fireforge.json
- * @param testPackagingCoverage - Coverage claim of the packaged test
- *   runtime this build produced (`'full'`, or the scoped request paths of
- *   a `test --build` invocation). Omitted → field left off the marker.
- * @param previousBaseline - The baseline this write replaces, when the
- *   caller has it. A scoped (non-`'full'`) write carries its
- *   `staticComponentsBaseline` forward verbatim — `mach build faster`
- *   does not rebake `components.conf` registrations, so the last FULL
- *   build stays the honest anchor for the compiled StaticComponents table.
- * @param recordedBy - Invocation shape that produced this baseline.
- * @param staticComponentsHandling - `'auto'` (default) refreshes the
- *   static-components anchor whenever the coverage claim is `'full'` or
- *   absent. `'refresh'` records it even for a scoped coverage claim whose
- *   implementation escalated to a full build. `'carry-forward'` always
- *   keeps the previous anchor: needed by `--extend-coverage`, whose union
- *   can EVALUATE to `'full'` while the build that produced it was still a
- *   scoped `mach build faster` that did not rebake the compiled table.
- * @param buildKind - Which mach build produced this baseline (default
- *   `'full'`). A `'faster'` write carries the previous record's `jar.mn`
- *   fingerprints forward instead of refreshing them — see
- *   {@link BuildBaseline.buildInputFingerprints}. Every caller that ran
- *   `mach build faster` MUST say so, or the next pre-test build skips an
- *   escalation no full build has honoured.
+ * @param options - See {@link WriteBuildBaselineOptions}
  */
-export async function writeBuildBaseline(
-  projectRoot: string,
-  engineDir: string,
-  binaryName: string,
-  testPackagingCoverage?: TestPackagingCoverage,
-  previousBaseline?: BuildBaseline,
-  recordedBy?: string,
-  staticComponentsHandling: 'auto' | 'refresh' | 'carry-forward' = 'auto',
-  buildKind: BaselineBuildKind = 'full'
-): Promise<void> {
+export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Promise<void> {
+  const {
+    projectRoot,
+    engineDir,
+    binaryName,
+    testPackagingCoverage,
+    previousBaseline,
+    recordedBy,
+    staticComponentsHandling = 'auto',
+    buildKind = 'full',
+  } = options;
   let engineHeadSha = '';
   try {
     engineHeadSha = await getHead(engineDir);
@@ -294,7 +315,7 @@ async function collectDirtyFingerprints(
       async (relPath) => {
         try {
           const buffer = await readFile(join(engineDir, relPath));
-          return [relPath, createHash('sha256').update(buffer).digest('hex')] as const;
+          return [relPath, sha256Hex(buffer)] as const;
         } catch (fileError: unknown) {
           if (getNodeErrorCode(fileError) === 'ENOENT') {
             // A path reported by git but absent on disk is normally a tracked

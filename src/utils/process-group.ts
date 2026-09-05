@@ -10,6 +10,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 
 import { getNodeErrorCode } from './errors.js';
 import { verbose, warn } from './logger.js';
+import { sleep } from './sleep.js';
 
 /**
  * Sends `signal` to the child's whole tree: the process GROUP on POSIX
@@ -63,7 +64,7 @@ export function killProcessTree(
 }
 
 /** One process still alive in a swept group. */
-export interface ProcessGroupSurvivor {
+interface ProcessGroupSurvivor {
   /** PID, or -1 when pgrep was unavailable and only a liveness probe ran. */
   pid: number;
   /** Command line (pgrep -lf output), best-effort. */
@@ -72,19 +73,6 @@ export interface ProcessGroupSurvivor {
 
 const SWEEP_GRACE_MS = 2000;
 const MULTIPROCESSING_WORKER_PATTERN = /multiprocessing\.(?:spawn|forkserver)|resource_tracker/;
-
-function sweepDelay(ms: number): Promise<void> {
-  // Deliberately ref'd (no unref()): this promise is AWAITED between the
-  // group SIGTERM and the post-grace re-list/SIGKILL escalation, from a
-  // child 'close' handler after the signal forwarder is disposed — with an
-  // unref'd timer nothing kept the event loop alive, so Node could exit
-  // mid-grace and skip the escalation entirely. Healthy runs never reach
-  // this function (sweepProcessGroup early-returns on zero survivors), so
-  // the ref never holds a clean exit open.
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
 
 /**
  * Minimal spawn-based pgrep runner. exitCode -1 means pgrep itself was
@@ -142,7 +130,7 @@ function describeSurvivors(list: ProcessGroupSurvivor[]): string {
       const tag = MULTIPROCESSING_WORKER_PATTERN.test(s.command)
         ? ' [multiprocessing worker — the known busy-spin orphan shape]'
         : '';
-      return `PID ${String(s.pid)}: ${s.command}${tag}`;
+      return `PID ${s.pid}: ${s.command}${tag}`;
     })
     .join('; ');
 }
@@ -164,7 +152,7 @@ export async function sweepProcessGroup(
   if (survivors.length === 0) return { survivors };
 
   warn(
-    `Harness process group ${String(pgid)} left ${String(survivors.length)} surviving ` +
+    `Harness process group ${pgid} left ${survivors.length} surviving ` +
       `process(es) after exit — reaping the group. ${describeSurvivors(survivors)}`
   );
 
@@ -175,7 +163,13 @@ export async function sweepProcessGroup(
     // escalate against, so report the survivors collected so far.
     return { survivors };
   }
-  await sweepDelay(graceMs);
+  // Deliberately ref'd (sleep's default): this wait sits between the group
+  // SIGTERM and the post-grace re-list/SIGKILL escalation, awaited from a
+  // child 'close' handler after the signal forwarder is disposed. With an
+  // unref'd timer nothing keeps the event loop alive, so Node could exit
+  // mid-grace and skip the escalation entirely. Healthy runs never reach
+  // here (sweepProcessGroup early-returns on zero survivors).
+  await sleep(graceMs);
   let remaining = await listGroupSurvivors(pgid);
   if (remaining.length > 0) {
     try {
@@ -185,18 +179,24 @@ export async function sweepProcessGroup(
       // nothing to signal.
       return { survivors };
     }
-    await sweepDelay(Math.min(200, graceMs));
+    // Deliberately ref'd (sleep's default): this wait sits between the group
+    // SIGTERM and the post-grace re-list/SIGKILL escalation, awaited from a
+    // child 'close' handler after the signal forwarder is disposed. With an
+    // unref'd timer nothing keeps the event loop alive, so Node could exit
+    // mid-grace and skip the escalation entirely. Healthy runs never reach
+    // here (sweepProcessGroup early-returns on zero survivors).
+    await sleep(Math.min(200, graceMs));
     remaining = await listGroupSurvivors(pgid);
     if (remaining.length > 0) {
       warn(
-        `Process group ${String(pgid)} still has survivors after SIGKILL: ${describeSurvivors(remaining)}. ` +
+        `Process group ${pgid} still has survivors after SIGKILL: ${describeSurvivors(remaining)}. ` +
           'Inspect manually (ps -axo pid,ppid,time,command) and kill by PID.'
       );
     } else {
-      verbose(`Process group ${String(pgid)} reaped after SIGKILL escalation.`);
+      verbose(`Process group ${pgid} reaped after SIGKILL escalation.`);
     }
   } else {
-    verbose(`Process group ${String(pgid)} reaped cleanly with SIGTERM.`);
+    verbose(`Process group ${pgid} reaped cleanly with SIGTERM.`);
   }
   return { survivors };
 }

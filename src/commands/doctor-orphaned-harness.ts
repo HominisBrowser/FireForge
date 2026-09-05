@@ -48,15 +48,6 @@ const HARNESS_WORKER_COMMAND_PATTERN =
 const DEFAULT_MIN_CPU_SECONDS = 600;
 
 /**
- * Parses a `ps` TIME (accumulated CPU) value. Implemented in terms of
- * {@link parsePsDuration} — `time=` and `etime=` share one grammar, and a
- * second copy is how the two would drift.
- */
-export function parseCpuTime(time: string): number {
-  return parsePsDuration(time);
-}
-
-/**
  * Scans `ps -axo pid=,ppid=,time=,command=` output for orphaned harness
  * workers: PPID 1 (reparented to init/launchd), a multiprocessing
  * worker/tracker command line, and at least `minCpuSeconds` of accumulated
@@ -76,7 +67,7 @@ export function findOrphanedHarnessWorkers(
     const command = (match[4] ?? '').trim();
     if (ppid !== 1) continue;
     if (!HARNESS_WORKER_COMMAND_PATTERN.test(command)) continue;
-    const cpuSeconds = parseCpuTime(cpuTime);
+    const cpuSeconds = parsePsDuration(cpuTime);
     if (Number.isNaN(cpuSeconds) || cpuSeconds < minCpuSeconds) continue;
     workers.push({ pid, ppid, cpuTime, cpuSeconds, command });
   }
@@ -87,7 +78,7 @@ export function findOrphanedHarnessWorkers(
 async function listSystemProcesses(): Promise<string> {
   const result = await exec('ps', ['-axo', 'pid=,ppid=,time=,command='], { timeout: 10000 });
   if (result.exitCode !== 0) {
-    throw new Error(`ps exited ${String(result.exitCode)}`);
+    throw new Error(`ps exited ${result.exitCode}`);
   }
   return result.stdout;
 }
@@ -111,12 +102,12 @@ async function runOrphanedHarnessCheck(): Promise<DoctorCheck> {
   }
 
   const rows = orphans
-    .map((w) => `PID ${String(w.pid)} (CPU time ${w.cpuTime}): ${w.command.slice(0, 160)}`)
+    .map((w) => `PID ${w.pid} (CPU time ${w.cpuTime}): ${w.command.slice(0, 160)}`)
     .join('; ');
   const pids = orphans.map((w) => String(w.pid)).join(' ');
   return warning(
     CHECK_NAME,
-    `Found ${String(orphans.length)} orphaned Python multiprocessing worker(s) — PPID 1 with ` +
+    `Found ${orphans.length} orphaned Python multiprocessing worker(s) — PPID 1 with ` +
       `high accumulated CPU time, the shape a test harness that died at startup leaves behind ` +
       `(field incident: one such worker busy-spun for ~26 days). ${rows}`,
     `These look like workers orphaned by a crashed test harness. Verify each command line, ` +

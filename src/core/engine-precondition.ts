@@ -35,17 +35,6 @@ export interface EngineGitReadyOptions {
 }
 
 /**
- * Error factory for callers whose domain uses a class other than
- * `GeneralError`. The furnace family raises `FurnaceError`, which carries
- * its own `userMessage` and exit code 9, so a helper hardcoding
- * `GeneralError` would silently change both.
- */
-export type PreconditionErrorFactory = (message: string) => Error;
-
-/** Default factory: the message every non-furnace command already used. */
-const defaultErrorFactory: PreconditionErrorFactory = (message) => new GeneralError(message);
-
-/**
  * Asserts only that the engine checkout EXISTS.
  *
  * The first rung of {@link assertEngineGitReady}. Most callers want exactly
@@ -55,14 +44,10 @@ const defaultErrorFactory: PreconditionErrorFactory = (message) => new GeneralEr
  * would refuse runs that work today.
  *
  * @param engineDir - Absolute path to the engine checkout
- * @param errorFactory - Optional domain-specific error constructor
  */
-export async function assertEngineExists(
-  engineDir: string,
-  errorFactory: PreconditionErrorFactory = defaultErrorFactory
-): Promise<void> {
+export async function assertEngineExists(engineDir: string): Promise<void> {
   if (!(await pathExists(engineDir))) {
-    throw errorFactory('Firefox source not found. Run "fireforge download" first.');
+    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
   }
 }
 
@@ -78,9 +63,7 @@ export async function assertEngineGitReady(
   engineDir: string,
   options: EngineGitReadyOptions = {}
 ): Promise<void> {
-  if (!(await pathExists(engineDir))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
-  }
+  await assertEngineExists(engineDir);
 
   if (!(await isGitRepository(engineDir))) {
     throw new GeneralError(

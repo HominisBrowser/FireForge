@@ -4,6 +4,7 @@ import { basename, join } from 'node:path';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { escapeRegex } from '../utils/regex.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import type { RegisterResult } from './moz-manifest-register.js';
@@ -129,14 +130,36 @@ export function getRules(binaryName: string, createManifest = false): PatternRul
   ];
 }
 
-async function isSharedCSSRegistered(engineDir: string, fileName: string): Promise<boolean> {
-  const manifestPath = join(engineDir, 'browser/themes/shared/jar.inc.mn');
+/**
+ * Reads an engine manifest and reports whether it contains any of `needles`.
+ *
+ * The five registration probes below share this shape: resolve the manifest
+ * relative to the engine, refuse with the manifest's own path when it is
+ * missing, then substring-match the entry each registrar writes.
+ *
+ * @param engineDir - Path to the engine directory
+ * @param manifestRel - Engine-relative manifest path (forward slashes; also
+ *   the path named in the refusal message)
+ * @param needles - Entry forms that count as registered
+ * @returns True when the manifest contains at least one needle
+ * @throws GeneralError when the manifest does not exist
+ */
+async function manifestIncludes(
+  engineDir: string,
+  manifestRel: string,
+  needles: readonly string[]
+): Promise<boolean> {
+  const manifestPath = join(engineDir, manifestRel);
   if (!(await pathExists(manifestPath))) {
-    throw new GeneralError('Manifest not found: browser/themes/shared/jar.inc.mn');
+    throw new GeneralError(`Manifest not found: ${manifestRel}`);
   }
 
-  const name = basename(fileName, '.css');
   const content = await readText(manifestPath);
+  return needles.some((needle) => content.includes(needle));
+}
+
+async function isSharedCSSRegistered(engineDir: string, fileName: string): Promise<boolean> {
+  const name = basename(fileName, '.css');
   // `register` writes the canonical `skin/classic/browser/<name>.css` form;
   // `furnace chrome-doc create` writes a `content/browser/<name>.css` entry
   // because the CSS is loaded by a chrome document via a `chrome://browser/
@@ -144,30 +167,20 @@ async function isSharedCSSRegistered(engineDir: string, fileName: string): Promi
   // chrome-doc scaffolder are not flagged as "potentially unregistered" by
   // `status` and so a re-run of `register` against the same file recognises
   // the existing entry instead of proposing a duplicate.
-  return (
-    content.includes(`skin/classic/browser/${name}.css`) ||
-    content.includes(`content/browser/${name}.css`)
-  );
+  return manifestIncludes(engineDir, 'browser/themes/shared/jar.inc.mn', [
+    `skin/classic/browser/${name}.css`,
+    `content/browser/${name}.css`,
+  ]);
 }
 
 async function isBrowserContentRegistered(engineDir: string, fileName: string): Promise<boolean> {
-  const manifestPath = join(engineDir, 'browser/base/jar.mn');
-  if (!(await pathExists(manifestPath))) {
-    throw new GeneralError('Manifest not found: browser/base/jar.mn');
-  }
-
-  const content = await readText(manifestPath);
-  return content.includes(`content/browser/${fileName}`);
+  return manifestIncludes(engineDir, 'browser/base/jar.mn', [`content/browser/${fileName}`]);
 }
 
 async function isTestManifestRegistered(engineDir: string, testDir: string): Promise<boolean> {
-  const manifestPath = join(engineDir, 'browser/base/moz.build');
-  if (!(await pathExists(manifestPath))) {
-    throw new GeneralError('Manifest not found: browser/base/moz.build');
-  }
-
-  const content = await readText(manifestPath);
-  return content.includes(`content/test/${testDir}/browser.toml`);
+  return manifestIncludes(engineDir, 'browser/base/moz.build', [
+    `content/test/${testDir}/browser.toml`,
+  ]);
 }
 
 async function isFireForgeModuleRegistered(
@@ -175,13 +188,7 @@ async function isFireForgeModuleRegistered(
   fileName: string,
   moduleDir: string
 ): Promise<boolean> {
-  const manifestPath = join(engineDir, moduleDir, 'moz.build');
-  if (!(await pathExists(manifestPath))) {
-    throw new GeneralError(`Manifest not found: ${moduleDir}/moz.build`);
-  }
-
-  const content = await readText(manifestPath);
-  return content.includes(`"${fileName}"`);
+  return manifestIncludes(engineDir, `${moduleDir}/moz.build`, [`"${fileName}"`]);
 }
 
 async function isToolkitWidgetRegistered(
@@ -189,13 +196,9 @@ async function isToolkitWidgetRegistered(
   _tagName: string,
   fileName: string
 ): Promise<boolean> {
-  const manifestPath = join(engineDir, 'toolkit/content/jar.mn');
-  if (!(await pathExists(manifestPath))) {
-    throw new GeneralError('Manifest not found: toolkit/content/jar.mn');
-  }
-
-  const content = await readText(manifestPath);
-  return content.includes(`content/global/elements/${fileName}`);
+  return manifestIncludes(engineDir, 'toolkit/content/jar.mn', [
+    `content/global/elements/${fileName}`,
+  ]);
 }
 
 /**
@@ -205,7 +208,7 @@ async function isToolkitWidgetRegistered(
  * @returns True if the file matches a known registration pattern
  */
 export function matchesRegistrablePattern(filePath: string, binaryName: string): boolean {
-  const normalized = filePath.replace(/\\/g, '/');
+  const normalized = normalizePathSlashes(filePath);
   const rules = getRules(binaryName);
   return rules.some((rule) => rule.pattern.test(normalized));
 }
@@ -274,7 +277,7 @@ export async function isFileRegistered(root: string, filePath: string): Promise<
   const { engine: engineDir } = getProjectPaths(root);
   const config = await loadConfig(root);
   const rules = getRules(config.binaryName);
-  const normalizedPath = filePath.replace(/\\/g, '/');
+  const normalizedPath = normalizePathSlashes(filePath);
 
   for (const rule of rules) {
     const match = normalizedPath.match(rule.pattern);
@@ -331,7 +334,7 @@ export async function registerFile(
   const rules = getRules(config.binaryName, options.createManifest === true);
 
   // Normalize path separators
-  const normalizedPath = filePath.replace(/\\/g, '/');
+  const normalizedPath = normalizePathSlashes(filePath);
 
   for (const rule of rules) {
     const match = normalizedPath.match(rule.pattern);

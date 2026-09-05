@@ -16,8 +16,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createTempProject, initCommittedRepo, removeTempProject } from '../../test-utils/index.js';
 import { getAllDiff } from '../git-diff.js';
 import {
-  hasReadOnlyGitIndexScope,
   mintDisposableGitIndex,
+  readOnlyGitIndexEnv,
   withPrivateGitIndex,
 } from '../git-readonly-index.js';
 import { getWorkingTreeStatus } from '../git-status.js';
@@ -59,7 +59,7 @@ describe('withPrivateGitIndex', () => {
     const before = await stat(indexPath);
 
     await withPrivateGitIndex(repoDir, async () => {
-      expect(hasReadOnlyGitIndexScope()).toBe(true);
+      expect(readOnlyGitIndexEnv(repoDir)).toBeDefined();
       await getWorkingTreeStatus(repoDir);
       await getAllDiff(repoDir);
     });
@@ -98,7 +98,7 @@ describe('withPrivateGitIndex', () => {
     await expect(
       withPrivateGitIndex(repoDir, () => Promise.reject(new Error('boom')))
     ).rejects.toThrow('boom');
-    expect(hasReadOnlyGitIndexScope()).toBe(false);
+    expect(readOnlyGitIndexEnv(repoDir)).toBeUndefined();
   });
 
   it('fails open on a directory that is not a git checkout', async () => {
@@ -106,7 +106,7 @@ describe('withPrivateGitIndex', () => {
     await createTempProject('unused-');
     await writeFile(join(projectRoot, 'plain.txt'), 'x\n');
     await expect(withPrivateGitIndex(notARepo, () => Promise.resolve('ran'))).resolves.toBe('ran');
-    expect(hasReadOnlyGitIndexScope()).toBe(false);
+    expect(readOnlyGitIndexEnv(notARepo)).toBeUndefined();
   });
 });
 

@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { getProjectPaths } from '../../core/config.js';
+import type { FurnacePaths } from '../../core/furnace-config.js';
 import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { assertFurnaceReady } from '../../core/furnace-precondition.js';
 import {
@@ -14,6 +15,7 @@ import { validateAllComponents, validateComponent } from '../../core/furnace-val
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceValidateOptions } from '../../types/commands/index.js';
 import type { ComponentType, ValidationIssue } from '../../types/furnace.js';
+import type { FurnaceConfig } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, outro, success, warn } from '../../utils/logger.js';
@@ -284,8 +286,8 @@ export async function furnaceValidateCommand(
  */
 async function reValidateComponents(
   projectRoot: string,
-  config: Awaited<ReturnType<typeof loadFurnaceConfig>>,
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
+  config: FurnaceConfig,
+  furnacePaths: FurnacePaths,
   componentNames: Set<string>
 ): Promise<{ issues: ValidationIssue[]; totalErrors: number; totalWarnings: number }> {
   const issues: ValidationIssue[] = [];

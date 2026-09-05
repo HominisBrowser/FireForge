@@ -22,7 +22,6 @@
  *   anything.
  */
 
-import type { getProjectPaths, loadConfig } from '../core/config.js';
 import {
   type GroupedCheckJsResult,
   invokePatchLintCheckJsGrouped,
@@ -36,6 +35,7 @@ import {
   resolvePatchOwnedTestScripts,
 } from '../core/patch-lint-ownership.js';
 import type { PatchLintIssue } from '../types/commands/index.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 
 /**
  * Queue-wide checkJs program built once per run and sliced per patch, so a
@@ -77,8 +77,8 @@ export interface PerRunCheckJs {
  */
 export function buildPerRunCheckJs(
   projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  config: Awaited<ReturnType<typeof loadConfig>>,
+  paths: ProjectPaths,
+  config: FireForgeConfig,
   ctx: PatchQueueContext,
   rootScopePatches?: ReadonlySet<string>
 ): PerRunCheckJs | undefined {

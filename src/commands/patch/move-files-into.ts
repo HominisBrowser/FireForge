@@ -18,20 +18,19 @@
 import { join } from 'node:path';
 
 import {
-  appendHistory,
   assertConfirmationAvailable,
   confirmDestructive,
   type ConflictReport,
 } from '../../core/destructive.js';
-import { normalizePatchArtifact } from '../../core/patch-artifact-normalize.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import {
-  buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
   collectForwardImportEdges,
   formatPatchLintIssue,
   lintPatchQueue,
   type PatchQueueEntry,
 } from '../../core/patch-lint.js';
+import type { PatchQueueContext } from '../../core/patch-lint-cross.js';
 import { computeProjectedLintRegressions } from '../../core/patch-lint-projection.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
@@ -39,7 +38,6 @@ import {
   savePatchesManifest,
   validatePatchesManifest,
 } from '../../core/patch-manifest.js';
-import { buildNewFileTextProjection } from '../../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type {
   PatchMetadata,
@@ -51,7 +49,9 @@ import { toError } from '../../utils/errors.js';
 import { readText, writeText } from '../../utils/fs.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
 import { resolveWaitLockSeconds } from '../../utils/options.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
 import { runPatchLint } from '../export-shared.js';
+import { projectEntryBody } from './entry-projection.js';
 import {
   buildSplitDiff,
   findOwnerRewriteHolders,
@@ -74,13 +74,6 @@ export interface MoveIntoPlan {
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
 }
 
-function projectEntryBody(
-  diff: string
-): Pick<PatchQueueEntry, 'diff' | 'newFiles' | 'modifiedFileAdditions'> {
-  const newFiles = buildNewFileTextProjection(diff);
-  return { diff, newFiles, modifiedFileAdditions: buildModifiedFileAdditionsFromDiff(diff) };
-}
-
 /**
  * Projects the post-move queue through cross-patch lint, auto-declaring the
  * forward edges the move introduces into the target (an importer that used
@@ -89,7 +82,7 @@ function projectEntryBody(
  */
 function runProjectedMoveLint(
   plan: MoveIntoPlan,
-  baseCtx: Awaited<ReturnType<typeof buildPatchQueueContext>>
+  baseCtx: PatchQueueContext
 ): {
   conflicts: ConflictReport | null;
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
@@ -197,9 +190,9 @@ async function commitMoveInto(
       let targetWritten = false;
 
       try {
-        await writeText(sourcePath, normalizePatchArtifact(plan.sourceDiff));
+        await writeText(sourcePath, plan.sourceDiff);
         sourceWritten = true;
-        await writeText(targetPath, normalizePatchArtifact(plan.targetDiff));
+        await writeText(targetPath, plan.targetDiff);
         targetWritten = true;
 
         const updatedPatches = manifest.patches.map((patch) => {
@@ -222,8 +215,9 @@ async function commitMoveInto(
         const updated = validatePatchesManifest({ ...manifest, patches: updatedPatches });
         await savePatchesManifest(patchesDir, updated);
 
-        try {
-          await appendHistory(patchesDir, {
+        await appendHistoryBestEffort(
+          patchesDir,
+          {
             operation: 'patch-move-files',
             args: {
               source: plan.source.filename,
@@ -232,12 +226,9 @@ async function commitMoveInto(
               ownerRewrites: plan.ownerRewrites,
             },
             result: 'ok',
-          });
-        } catch (historyError: unknown) {
-          warn(
-            `History log append failed after patch move-files committed: ${toError(historyError).message}`
-          );
-        }
+          },
+          `patch move-files committed`
+        );
       } catch (error: unknown) {
         if (targetWritten) {
           try {
@@ -298,26 +289,26 @@ export async function runMoveFilesInto(args: {
   // parity) resolves cross-patch imports and sibling head.js harness roots
   // instead of linting each projected body blind.
   const patchQueueCtx = await buildPatchQueueContext(patchesDir, args.config);
-  await runPatchLint(
-    enginePath,
-    sourceAfter,
-    sourceDiff,
-    args.config,
-    options.skipLint,
+  await runPatchLint({
+    engineDir: enginePath,
+    filesAffected: sourceAfter,
+    diffContent: sourceDiff,
+    config: args.config,
+    skipLint: options.skipLint,
     patchQueueCtx,
-    source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined,
-    source.tier
-  );
-  await runPatchLint(
-    enginePath,
-    targetAfter,
-    targetDiff,
-    args.config,
-    options.skipLint,
+    ignoreChecks: source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined,
+    patchTier: source.tier,
+  });
+  await runPatchLint({
+    engineDir: enginePath,
+    filesAffected: targetAfter,
+    diffContent: targetDiff,
+    config: args.config,
+    skipLint: options.skipLint,
     patchQueueCtx,
-    target.lintIgnore ? new Set<string>(target.lintIgnore) : undefined,
-    target.tier
-  );
+    ignoreChecks: target.lintIgnore ? new Set<string>(target.lintIgnore) : undefined,
+    patchTier: target.tier,
+  });
 
   const manifest = await loadPatchesManifest(patchesDir);
   const plan: MoveIntoPlan = {
@@ -355,14 +346,7 @@ export async function runMoveFilesInto(args: {
     unsafeOverride: options.forceUnsafe === true,
     conflicts,
   });
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Move cancelled');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Move cancelled')) return;
 
   await commitMoveInto(patchesDir, plan, resolveWaitLockSeconds(options.waitLock));
 

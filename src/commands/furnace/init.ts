@@ -20,6 +20,7 @@ import type { FurnaceConfig } from '../../types/furnace.js';
 import { getNodeErrorCode, toError } from '../../utils/errors.js';
 import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, note, outro, success, warn } from '../../utils/logger.js';
+import { normalizePathSlashes } from '../../utils/paths.js';
 
 /**
  * File extensions that are definitely FTL resources (not locale
@@ -75,7 +76,7 @@ async function validateFtlBasePath(value: string, engineDir?: string): Promise<v
   // Normalize with the POSIX rules regardless of host: `normalize` on Windows
   // emits backslashes, so a `../`-prefix test against the platform `normalize`
   // silently passes every traversal attempt there.
-  const normalized = posix.normalize(value.replace(/\\/g, '/'));
+  const normalized = posix.normalize(normalizePathSlashes(value));
   if (normalized === '..' || normalized.startsWith('../')) {
     throw new FurnaceError(
       `ftlBasePath "${value}" must not escape the engine checkout via parent-directory segments.`

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { InconclusiveVerdictError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { info, warn } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
 import type { LockHolder, LockQueueState } from './file-lock.js';
 import { type LockStatusSnapshot, readLockStatus, withFileLock } from './file-lock.js';
 import { git } from './git-base.js';
@@ -41,20 +42,20 @@ function formatWaitProgressLine(
   holder: LockHolder | undefined,
   queue?: LockQueueState
 ): string {
-  const progress = `${String(Math.round(waitedMs / 1000))}s of up to ${String(Math.round(timeoutMs / 1000))}s`;
+  const progress = `${Math.round(waitedMs / 1000)}s of up to ${Math.round(timeoutMs / 1000)}s`;
   // Queue position: under several concurrent sessions the wait
   // line alone left operators inferring their place from `ps`.
   const position =
     queue === undefined || queue.depth === 0
       ? ''
       : queue.ahead === 0
-        ? ` You are next in a queue of ${String(queue.depth)}.`
-        : ` ${String(queue.ahead)} ahead of you (queue of ${String(queue.depth)}).`;
+        ? ` You are next in a queue of ${queue.depth}.`
+        : ` ${queue.ahead} ahead of you (queue of ${queue.depth}).`;
   if (holder === undefined) {
     return `Waiting for the FireForge engine lock — ${progress}.${position}`;
   }
   const details = holder.metadata.length > 0 ? ` (${holder.metadata.join(', ')})` : '';
-  return `Waiting for the FireForge engine lock held by PID ${String(holder.pid)}${details} — ${progress}.${position}`;
+  return `Waiting for the FireForge engine lock held by PID ${holder.pid}${details} — ${progress}.${position}`;
 }
 
 /**
@@ -71,11 +72,11 @@ export function formatWaitExtendedLine(
   budgetMs: number,
   requestedMs: number
 ): string {
-  const position = ahead === 0 ? 'you are now next' : `${String(ahead)} still ahead of you`;
+  const position = ahead === 0 ? 'you are now next' : `${ahead} still ahead of you`;
   return (
     `The queue advanced (${position}), so the engine-lock wait was extended to ` +
-    `${String(Math.round(budgetMs / 1000))}s total (you asked for ` +
-    `${String(Math.round(requestedMs / 1000))}s). A queue that stops moving still ` +
+    `${Math.round(budgetMs / 1000)}s total (you asked for ` +
+    `${Math.round(requestedMs / 1000)}s). A queue that stops moving still ` +
     `gives up on the budget you asked for.`
   );
 }
@@ -174,16 +175,16 @@ export function formatEngineSessionLockStatus(
   const elapsed =
     snapshot.heldForMs === undefined
       ? 'unknown duration'
-      : `${String(Math.round(snapshot.heldForMs / 1000))}s`;
+      : `${Math.round(snapshot.heldForMs / 1000)}s`;
   const holder = snapshot.holder;
   const identity =
     holder === undefined
       ? 'held by an unidentified process (no readable owner record)'
-      : `held by PID ${String(holder.pid)}${holder.alive ? '' : ' (NOT RUNNING — stale lock)'}` +
+      : `held by PID ${holder.pid}${holder.alive ? '' : ' (NOT RUNNING — stale lock)'}` +
         (holder.metadata.length > 0 ? ` (${holder.metadata.join(', ')})` : '');
   const lines = [
     `Engine session lock: ${identity}, for ${elapsed}.`,
-    `Queue depth: ${String(snapshot.queueDepth)} waiter(s).`,
+    `Queue depth: ${snapshot.queueDepth} waiter(s).`,
   ];
   // Liveness answers "does the process exist"; it does not answer "is it
   // getting anywhere". A holder alive for minutes having used a fraction of
@@ -230,7 +231,7 @@ export async function snapshotEngineGeneration(engineDir: string): Promise<strin
       // else — an unreadable `.git`, a non-git `engine/` — is a real state
       // and is reported immediately.
       if (!isIndexLockError(error) || attempt === GENERATION_PROBE_ATTEMPTS - 1) break;
-      await delay(GENERATION_PROBE_RETRY_MS);
+      await sleep(GENERATION_PROBE_RETRY_MS);
     }
   }
   return `${UNAVAILABLE_PREFIX}${toError(lastError).message}`;
@@ -241,12 +242,6 @@ const GENERATION_PROBE_ATTEMPTS = 3;
 
 /** Pause between generation-probe attempts. */
 const GENERATION_PROBE_RETRY_MS = 250;
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolveDelay) => {
-    setTimeout(resolveDelay, ms);
-  });
-}
 
 /**
  * True when a git failure is the transient index-lock contention shape
@@ -345,9 +340,7 @@ export function describeEngineGenerationDelta(before: string, after: string): st
     if (records.length === 0) return;
     const head = records.slice(0, DELTA_ENTRY_LIMIT);
     const truncated = records.length - head.length;
-    lines.push(
-      `${label}: ${head.join(', ')}${truncated > 0 ? `, … (+${String(truncated)} more)` : ''}`
-    );
+    lines.push(`${label}: ${head.join(', ')}${truncated > 0 ? `, … (+${truncated} more)` : ''}`);
   };
   render('Working-tree entries that appeared', appeared);
   render('Working-tree entries that went away', disappeared);

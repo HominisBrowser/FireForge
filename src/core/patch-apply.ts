@@ -19,7 +19,7 @@ import { pathExists, readText, writeFileAtomic, writeText } from '../utils/fs.js
 import { verbose } from '../utils/logger.js';
 import { isContainedRelativePath } from '../utils/paths.js';
 import { applyPatchIdempotent, reversePatch } from './git.js';
-import { getFileContentFromHead } from './git-file-ops.js';
+import { getFileContentAtRef } from './git-file-ops.js';
 import { discoverPatches } from './patch-files.js';
 import { loadPatchesManifest } from './patch-manifest.js';
 import {
@@ -32,16 +32,9 @@ import { applyPatchTextToContent, extractNewFileContentFromDiff } from './patch-
 
 // Re-export from split modules so existing import sites continue working
 export { PatchError } from '../errors/patch.js';
-export {
-  countPatches,
-  discoverPatches,
-  getAllTargetFilesFromPatch,
-  getTargetFileFromPatch,
-  isNewFilePatch,
-} from './patch-files.js';
+export { countPatches, discoverPatches } from './patch-files.js';
 export { withPatchDirectoryLock } from './patch-lock.js';
-export { extractAffectedFiles, extractOrder, isNewFileInPatch } from './patch-parse.js';
-export { applyPatchToContent, extractNewFileContent } from './patch-transform.js';
+export { extractAffectedFiles } from './patch-parse.js';
 
 /**
  * Applies a single patch.
@@ -330,20 +323,14 @@ export function matchesUntilFilename(patchFilename: string, needle: string): boo
  * on the first failure to keep the engine directory in a clean state.
  * @param patchesDir - Path to the patches directory
  * @param engineDir - Path to the engine directory
- * @param optionsOrContinue - Options object, or the legacy continueOnFailure boolean
+ * @param options - Application options
  * @returns Import summary with all results
  */
 export async function applyPatchesWithContinue(
   patchesDir: string,
   engineDir: string,
-  optionsOrContinue: ApplyPatchesOptions | boolean = false
+  options: ApplyPatchesOptions = {}
 ): Promise<ImportSummary> {
-  // Accept both the legacy boolean positional and the new options object so
-  // existing call sites (tests and rebase) keep working without a rewrite.
-  const options: ApplyPatchesOptions =
-    typeof optionsOrContinue === 'boolean'
-      ? { continueOnFailure: optionsOrContinue }
-      : optionsOrContinue;
   const continueOnFailure = options.continueOnFailure ?? false;
   const untilFilename = options.untilFilename;
 
@@ -504,7 +491,7 @@ export async function createPatchedContentContext(
     getAffectingPatches,
     readPatchBody,
     computePatched: async (filePath: string): Promise<string | null> => {
-      let content = await getFileContentFromHead(engineDir, filePath);
+      let content = await getFileContentAtRef(engineDir, filePath);
       for (const patch of getAffectingPatches(filePath)) {
         content = applyPatchTextToContent(content, await readPatchBody(patch), filePath);
       }

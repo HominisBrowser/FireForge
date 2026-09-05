@@ -68,11 +68,11 @@ export function formatFileTooLargeMessage(args: {
 }): string {
   const { label, lineCount, thresholds, band, verb } = args;
   if (band === 'error') {
-    return `${label} has ${String(lineCount)} lines (error threshold: ${String(thresholds.error)}). Consider ${verb}.`;
+    return `${label} has ${lineCount} lines (error threshold: ${thresholds.error}). Consider ${verb}.`;
   }
   return (
-    `${label} has ${String(lineCount)} lines (warning threshold: ${String(thresholds.warning)}, ` +
-    `error threshold: ${String(thresholds.error)}). Consider ${verb}. ` +
+    `${label} has ${lineCount} lines (warning threshold: ${thresholds.warning}, ` +
+    `error threshold: ${thresholds.error}). Consider ${verb}. ` +
     `Reported as a ${band}, which a gate running --max-warnings 0 treats as a failure; ` +
     `tune "patchLint.fileSizeThresholds" if these limits are wrong for this project.`
   );

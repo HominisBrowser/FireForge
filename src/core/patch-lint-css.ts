@@ -97,14 +97,23 @@ function buildAddedLinesScanSource(
  * Raw-color check for one patched CSS file, scoped to introduced lines
  * when diff context is available. Pushes onto `issues`.
  */
-function checkRawColorValues(
-  file: string,
-  rawCss: string,
-  addedLinesByFile: Map<string, string[]> | undefined,
-  addedLineNumbersByFile: Map<string, number[]> | undefined,
-  config: FireForgeConfig | undefined,
-  issues: PatchLintIssue[]
-): void {
+interface RawColorCheckInput {
+  /** Repo-relative path of the CSS file under check. */
+  file: string;
+  /** Full (uncommented-stripped) CSS source of that file. */
+  rawCss: string;
+  /** Added lines per file from the diff, when diff context is available. */
+  addedLinesByFile: Map<string, string[]> | undefined;
+  /** Added line numbers per file from the diff, aligned with `addedLinesByFile`. */
+  addedLineNumbersByFile: Map<string, number[]> | undefined;
+  /** Resolved config, for `patchLint.rawColorAllowlist`. */
+  config: FireForgeConfig | undefined;
+  /** Issue sink, appended to in place. */
+  issues: PatchLintIssue[];
+}
+
+function checkRawColorValues(input: RawColorCheckInput): void {
+  const { file, rawCss, addedLinesByFile, addedLineNumbersByFile, config, issues } = input;
   // Check only introduced raw color values when diff context is available.
   // Skip files on the raw-color allowlist (exact path or basename match) and
   // auto-exempt files under `browser/branding/` — those are the fork's
@@ -248,7 +257,14 @@ export async function lintPatchedCss(
     // Strip block comments before scanning
     const cssContent = rawCss.replace(/\/\*[\s\S]*?\*\//g, '');
 
-    checkRawColorValues(file, rawCss, addedLinesByFile, addedLineNumbersByFile, config, issues);
+    checkRawColorValues({
+      file,
+      rawCss,
+      addedLinesByFile,
+      addedLineNumbersByFile,
+      config,
+      issues,
+    });
     checkTokenPrefixViolations(file, cssContent, addedLinesByFile, tokenContext, issues);
   }
 

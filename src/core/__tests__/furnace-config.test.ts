@@ -21,7 +21,6 @@ import {
   createDefaultFurnaceConfig,
   ensureFurnaceConfig,
   furnaceConfigExists,
-  getFurnacePaths,
   loadFurnaceConfig,
   loadFurnaceState,
   saveFurnaceState,
@@ -40,17 +39,6 @@ describe('furnace-config helpers', () => {
     vi.clearAllMocks();
     mockWithStateFileLock.mockImplementation(async (_path, operation) => operation());
     mockQuarantineStateFile.mockResolvedValue(undefined);
-  });
-
-  it('builds the expected furnace-related paths', () => {
-    expect(getFurnacePaths('/project')).toEqual({
-      furnaceConfig: nativePath('/project/furnace.json'),
-      componentsDir: nativePath('/project/components'),
-      overridesDir: nativePath('/project/components/overrides'),
-      customDir: nativePath('/project/components/custom'),
-      sharedDir: nativePath('/project/components/shared'),
-      furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
-    });
   });
 
   it('validates a complete config with optional token and compose fields', () => {

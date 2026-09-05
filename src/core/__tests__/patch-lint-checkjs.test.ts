@@ -802,10 +802,10 @@ describe('runCheckJs', () => {
     });
 
     try {
-      const { byFile, global } = await runCheckJsGrouped(
-        tmpDir,
-        new Set(['good.sys.mjs', 'bad.sys.mjs'])
-      );
+      const { byFile, global } = await runCheckJsGrouped({
+        repoDir: tmpDir,
+        resolutionOwned: new Set(['good.sys.mjs', 'bad.sys.mjs']),
+      });
       expect(global).toHaveLength(0);
       // The error is attributed to bad.sys.mjs only — not duplicated, not on good.
       expect(byFile.has('good.sys.mjs')).toBe(false);

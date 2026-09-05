@@ -25,6 +25,7 @@ import { pathExists } from '../utils/fs.js';
 import { info, verbose, warn } from '../utils/logger.js';
 import { installGracefulShutdownForwarder, trackChildClosure } from '../utils/process.js';
 import { killProcessTree, sweepProcessGroup } from '../utils/process-group.js';
+import { sleep } from '../utils/sleep.js';
 import { ensureMach } from './mach.js';
 import { getPython } from './mach-python.js';
 
@@ -211,7 +212,7 @@ export async function runMarionettePreflight(
     const spawnedChild = child;
     closure = trackChildClosure();
     forwarder = installGracefulShutdownForwarder(spawnedChild, 500, (signal) => {
-      killProcessGroup(spawnedChild, signal);
+      killProcessTree(spawnedChild, signal, process.platform !== 'win32');
     });
 
     child.stderr?.on('data', (data: Buffer) => {
@@ -225,12 +226,12 @@ export async function runMarionettePreflight(
     // never come.
     const settleDeadline = Math.min(spawnSettleMs, Math.max(0, timeoutMs - elapsed()));
     if (settleDeadline > 0) {
-      await delay(settleDeadline);
+      await sleep(settleDeadline, { unref: true });
     }
     if (hasChildExited(spawnedChild)) {
       return fail(
         'browser-spawns',
-        `Browser process exited during spawn (exit code ${String(spawnedChild.exitCode)}, signal ${spawnedChild.signalCode ?? 'none'}). ` +
+        `Browser process exited during spawn (exit code ${spawnedChild.exitCode}, signal ${spawnedChild.signalCode ?? 'none'}). ` +
           `stderr tail: ${stderrTail.trim().slice(-2_000) || '(empty)'}`,
         elapsed()
       );
@@ -254,7 +255,7 @@ export async function runMarionettePreflight(
     if (hasChildExited(spawnedChild)) {
       return fail(
         'marionette-handshake',
-        `Browser process exited before marionette handshake (exit code ${String(spawnedChild.exitCode)}, signal ${spawnedChild.signalCode ?? 'none'}). ` +
+        `Browser process exited before marionette handshake (exit code ${spawnedChild.exitCode}, signal ${spawnedChild.signalCode ?? 'none'}). ` +
           `stderr tail: ${stderrTail.trim().slice(-2_000) || '(empty)'}`,
         elapsed()
       );
@@ -294,12 +295,12 @@ async function teardownPreflightChild(
   forwarder?.dispose();
   const groupPid = child?.pid;
   if (child && !hasChildExited(child)) {
-    killProcessGroup(child, 'SIGTERM');
+    killProcessTree(child, 'SIGTERM', process.platform !== 'win32');
     // Small escalation: if the child doesn't honour SIGTERM quickly, SIGKILL
     // so we don't leave a ghost mach process around after a failed probe.
-    await delay(500);
+    await sleep(500, { unref: true });
     if (!hasChildExited(child)) {
-      killProcessGroup(child, 'SIGKILL');
+      killProcessTree(child, 'SIGKILL', process.platform !== 'win32');
     }
   }
   // Reap anything that outlived the group signal. The file's own comments
@@ -327,20 +328,6 @@ async function teardownPreflightChild(
   }
 }
 
-/**
- * Sends `signal` to the child's whole process group when possible, falling
- * back to a direct `child.kill` for environments that don't support
- * `detached: true` (Windows in particular: Node still returns a pid, but
- * `kill(-pid, …)` is not a supported kernel primitive).
- */
-function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  // Delegates to the shared implementation, which is a strict superset of
-  // the hand-rolled one this replaced: same POSIX `kill(-pid)` with the same
-  // fall-through to a direct `child.kill`, plus a Windows `taskkill /T /F`
-  // branch and an already-exited early return.
-  killProcessTree(child, signal, process.platform !== 'win32');
-}
-
 function fail(layer: LayerName, message: string, durationMs: number): MarionettePreflightResult {
   return {
     ok: false,
@@ -364,7 +351,7 @@ async function waitForMarionetteSocket(
     if (result.ok) {
       return { ok: true };
     }
-    await delay(400);
+    await sleep(400, { unref: true });
   }
   return { ok: false };
 }
@@ -413,13 +400,6 @@ function attemptMarionetteConnect(
     socket.once('close', () => {
       finish(false);
     });
-  });
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref();
   });
 }
 

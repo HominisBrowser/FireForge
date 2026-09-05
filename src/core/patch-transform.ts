@@ -121,21 +121,6 @@ export async function extractNewFileContent(
 }
 
 /**
- * Applies a patch's changes to content.
- * @param content - Original content (null for new files)
- * @param patchPath - Path to the patch file
- * @param targetFile - The file path within the patch
- * @returns Modified content
- */
-export async function applyPatchToContent(
-  content: string | null,
-  patchPath: string,
-  targetFile: string
-): Promise<string> {
-  return applyPatchTextToContent(content, await readText(patchPath), targetFile);
-}
-
-/**
  * Applies an already-read patch body to content. Batched callers that hold
  * many (patch, file) pairs use this to read each patch body once instead of
  * once per pair.

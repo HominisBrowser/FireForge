@@ -623,7 +623,8 @@ describe('reExportCommand adjacency advisory', () => {
 
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining(
-        "found 1 unmanaged file(s) adjacent to this patch's ownership (comp/tests/browser/browser_b.js)"
+        "found 1 unmanaged file(s) adjacent to this patch's ownership " +
+          '(comp/tests/browser/browser_b.js (beside engine/comp/tests/browser))'
       )
     );
   });

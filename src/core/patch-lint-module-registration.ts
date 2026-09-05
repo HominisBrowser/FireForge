@@ -6,16 +6,11 @@ import { basename } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
 import { escapeRegex, stripJsComments } from '../utils/regex.js';
+import type { PatchQueueRegistrationEntry, PatchQueueView } from './patch-lint-queue-types.js';
 
-interface ModuleRegistrationQueueEntry {
-  filename: string;
-  newFiles: ReadonlyMap<string, string>;
-  modifiedFileAdditions: ReadonlyMap<string, string>;
-}
+type ModuleRegistrationQueueEntry = PatchQueueRegistrationEntry;
 
-interface ModuleRegistrationQueueContext {
-  entries: readonly ModuleRegistrationQueueEntry[];
-}
+type ModuleRegistrationQueueContext = PatchQueueView<PatchQueueRegistrationEntry>;
 
 const IMPORTABLE_EXTENSIONS = ['.mjs', '.sys.mjs', '.js', '.jsm'];
 

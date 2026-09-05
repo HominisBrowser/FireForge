@@ -51,9 +51,7 @@ vi.mock('../../core/mach.js', () => {
     ),
     buildArtifactMismatchMessage: vi.fn(() => undefined),
     runProtectedMachBuild: vi.fn(),
-    testWithOutput: captureDispatch,
-    xpcshellTestWithOutput: captureDispatch,
-    mochitestWithOutput: captureDispatch,
+    runMachTestSuite: captureDispatch,
     withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
   };
 });
@@ -151,7 +149,7 @@ vi.mock('../../core/tree-store.js', () => ({
 }));
 
 import { assertEngineGenerationUnchanged } from '../../core/engine-session-lock.js';
-import { testWithOutput } from '../../core/mach.js';
+import { runMachTestSuite } from '../../core/mach.js';
 import { GeneralError } from '../../errors/base.js';
 import { testCommand } from '../test.js';
 
@@ -188,7 +186,7 @@ describe('engine-generation guard verdict ordering', () => {
   });
 
   it('a green sharded run whose engine mutated emits FAIL reason=inconclusive, never PASS shards=', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue(GREEN);
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
     vi.mocked(assertEngineGenerationUnchanged).mockRejectedValue(GENERATION_ERROR);
 
     const capture = captureVerdictLines();
@@ -206,7 +204,7 @@ describe('engine-generation guard verdict ordering', () => {
   });
 
   it('a green single run whose engine mutated emits FAIL reason=inconclusive instead of nothing', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue(GREEN);
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
     vi.mocked(assertEngineGenerationUnchanged).mockRejectedValue(GENERATION_ERROR);
 
     const capture = captureVerdictLines();
@@ -221,7 +219,7 @@ describe('engine-generation guard verdict ordering', () => {
   });
 
   it('an unchanged engine leaves the sharded aggregate verdict intact', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue(GREEN);
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
 
     const capture = captureVerdictLines();
     try {

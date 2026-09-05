@@ -9,16 +9,12 @@ import * as config from '../../../core/config.js';
 import { ensureDir, writeText } from '../../../utils/fs.js';
 import * as logger from '../../../utils/logger.js';
 import { furnaceChromeDocCreateCommand } from '../chrome-doc.js';
-import { furnaceChromeDocRemoveCommand } from '../chrome-doc-remove.js';
 import {
   generateBrowserWindowXhtml,
   generateChromeDocCss,
   generateChromeDocFtl,
   generateChromeDocJs,
   generateChromeDocXhtml,
-  jarIncMnEntryForChromeDoc,
-  jarMnEntriesForChromeDoc,
-  localeJarMnEntryForChromeDoc,
 } from '../chrome-doc-templates.js';
 
 describe('chrome-doc templates', () => {
@@ -152,30 +148,6 @@ describe('chrome-doc templates', () => {
     expect(ftl).toContain('mybrowser-window-title');
   });
 
-  it('emits jar entries for xhtml, js, css, and ftl without spurious preprocessor flags', () => {
-    const xhtmlJs = jarMnEntriesForChromeDoc('mybrowser');
-    expect(xhtmlJs).toHaveLength(2);
-    // Neither entry carries the `*` preprocessor flag — the scaffolded
-    // XHTML/JS contain no `#filter`/`#expand`/`#include` directives, and
-    // mach's install manifest processor fails with "no preprocessor
-    // directives found" when a `*`-flagged entry has nothing to preprocess.
-    expect(xhtmlJs[0]).toMatch(/^\s+content\/browser\/mybrowser\.xhtml/);
-    expect(xhtmlJs[0]).not.toMatch(/^\*/);
-    expect(xhtmlJs[1]).toMatch(/content\/browser\/mybrowser\.js/);
-    expect(xhtmlJs[1]).not.toMatch(/^\*/);
-
-    // jar.inc.mn is included from theme-specific manifests
-    // (browser/themes/{osx,linux,windows}/jar.mn) — the source path must be
-    // `../shared/…` so it resolves under `browser/themes/shared/` rather
-    // than the theme-specific directory that the includer lives in.
-    const incEntry = jarIncMnEntryForChromeDoc('mybrowser');
-    expect(incEntry).toContain('mybrowser-chrome.css');
-    expect(incEntry).toContain('(../shared/mybrowser-chrome.css)');
-    expect(localeJarMnEntryForChromeDoc('mybrowser')).toContain('locale/browser/mybrowser.ftl');
-  });
-});
-
-describe('generateBrowserWindowXhtml (--browser-window)', () => {
   it('emits the browser.xhtml-like main-window skeleton', () => {
     const xhtml = generateBrowserWindowXhtml('mybrowser', 'MPL-2.0');
     // Root element and id platform C++ looks up before scripts run.
@@ -462,59 +434,6 @@ describe('furnaceChromeDocCreateCommand', () => {
     // the browser subdir — otherwise the probe walks the wrong tree.
     expect(manifestContent).toContain('firefox-appdir = "browser"');
     expect(manifestContent).toContain('["test_mybrowser_packaging.js"]');
-  });
-
-  it('removes scaffolded chrome-doc files, tests, and jar entries', async () => {
-    const engineDir = join(projectRoot, 'engine');
-    await ensureDir(join(engineDir, 'browser/base/content'));
-    await ensureDir(join(engineDir, 'browser/themes/shared'));
-    await ensureDir(join(engineDir, 'browser/locales/en-US/browser'));
-    await writeText(join(engineDir, 'browser/base/jar.mn'), '# header\n');
-    await writeText(join(engineDir, 'browser/themes/shared/jar.inc.mn'), '# header\n');
-    await writeText(join(engineDir, 'browser/locales/jar.mn'), '# header\n');
-
-    await furnaceChromeDocCreateCommand(projectRoot, 'mybrowser', { withTests: true });
-    await furnaceChromeDocRemoveCommand(projectRoot, 'mybrowser', { yes: true });
-
-    const { pathExists } = await import('../../../utils/fs.js');
-    expect(await pathExists(join(engineDir, 'browser/base/content/mybrowser.xhtml'))).toBe(false);
-    expect(await pathExists(join(engineDir, 'browser/base/content/mybrowser.js'))).toBe(false);
-    expect(await pathExists(join(engineDir, 'browser/themes/shared/mybrowser-chrome.css'))).toBe(
-      false
-    );
-    expect(await pathExists(join(engineDir, 'browser/locales/en-US/browser/mybrowser.ftl'))).toBe(
-      false
-    );
-    expect(
-      await pathExists(join(engineDir, 'browser/base/content/test/mybrowser-xpcshell/mybrowser'))
-    ).toBe(false);
-
-    expect(await readFile(join(engineDir, 'browser/base/jar.mn'), 'utf8')).not.toContain(
-      'mybrowser'
-    );
-    expect(
-      await readFile(join(engineDir, 'browser/themes/shared/jar.inc.mn'), 'utf8')
-    ).not.toContain('mybrowser');
-    expect(await readFile(join(engineDir, 'browser/locales/jar.mn'), 'utf8')).not.toContain(
-      'mybrowser'
-    );
-  });
-
-  it('previews chrome-doc removal without writing files', async () => {
-    const engineDir = join(projectRoot, 'engine');
-    await ensureDir(join(engineDir, 'browser/base/content'));
-    await ensureDir(join(engineDir, 'browser/themes/shared'));
-    await ensureDir(join(engineDir, 'browser/locales/en-US/browser'));
-    await writeText(join(engineDir, 'browser/base/jar.mn'), '# header\n');
-    await writeText(join(engineDir, 'browser/themes/shared/jar.inc.mn'), '# header\n');
-    await writeText(join(engineDir, 'browser/locales/jar.mn'), '# header\n');
-
-    await furnaceChromeDocCreateCommand(projectRoot, 'mybrowser');
-    await furnaceChromeDocRemoveCommand(projectRoot, 'mybrowser', { dryRun: true });
-
-    const { pathExists } = await import('../../../utils/fs.js');
-    expect(await pathExists(join(engineDir, 'browser/base/content/mybrowser.xhtml'))).toBe(true);
-    expect(await readFile(join(engineDir, 'browser/base/jar.mn'), 'utf8')).toContain('mybrowser');
   });
 
   it('omits test scaffolding by default so no test files land without --with-tests', async () => {

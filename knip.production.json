@@ -1,0 +1,10 @@
+{
+  "$schema": "https://unpkg.com/knip@latest/schema.json",
+  "entry": ["src/index.ts!", "bin/fireforge.ts!"],
+  "project": ["src/**/*.ts!", "bin/**/*.ts!"],
+  "ignore": ["src/test-utils/**", "**/__tests__/**", "**/*.test.ts", "src/utils/logger.ts"],
+  "ignoreBinaries": ["pgrep"],
+  "ignoreDependencies": ["husky"],
+  "ignoreExportsUsedInFile": true,
+  "tags": ["-internal"]
+}

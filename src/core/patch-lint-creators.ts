@@ -13,11 +13,10 @@
  */
 
 import { detectNewFilesInDiff } from './patch-lint-diff.js';
+import type { PatchQueueBodyEntry, PatchQueueView } from './patch-lint-queue-types.js';
 
 /** The slice of a queue context the creators map is derived from. */
-interface CreatorsContext {
-  entries: { filename: string; diff: string }[];
-}
+type CreatorsContext = PatchQueueView<PatchQueueBodyEntry>;
 
 const newFileCreatorsMemo = new WeakMap<CreatorsContext, Map<string, string[]>>();
 

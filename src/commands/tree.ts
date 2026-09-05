@@ -37,6 +37,7 @@ import {
   getTreeMarkerPath,
   getTreesDir,
   readTreeMarker,
+  type TreeMarker,
   withTreeLifecycleLock,
 } from '../core/tree-store.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -203,7 +204,7 @@ export async function treeCreateCommand(
       projectRoot,
       'tree create',
       async () => {
-        const clone = (objDir?: string): ReturnType<typeof cloneTree> =>
+        const clone = (objDir?: string): Promise<TreeMarker> =>
           cloneTree({
             primaryRoot: projectRoot,
             treeRoot,
@@ -377,9 +378,7 @@ async function treeExecCommand(projectRoot: string, name: string, args: string[]
     setStdoutSealed(true);
   });
   if (exitCode !== 0) {
-    throw new GeneralError(
-      `tree exec: fireforge ${args.join(' ')} exited with code ${String(exitCode)}.`
-    );
+    throw new GeneralError(`tree exec: fireforge ${args.join(' ')} exited with code ${exitCode}.`);
   }
 }
 
@@ -390,7 +389,12 @@ export function registerTree(program: Command, context: CommandContext): void {
     .command('tree')
     .description(
       'Manage copy-on-write verification clones of this project for concurrent read-mostly work (lint, typecheck, status, verify, export/re-export --dry-run; build-less test with create --with-objdir). Mutation commands are refused inside a tree.'
-    );
+    )
+    // No-subcommand contract shared with `patch`/`token`/`furnace`: help on
+    // stdout, exit 0 (see `handleParseError` for the groups without an action).
+    .action(() => {
+      tree.outputHelp();
+    });
 
   addWaitLockOption(
     tree

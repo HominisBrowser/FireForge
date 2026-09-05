@@ -16,6 +16,7 @@ import {
 } from '../core/discard-baseline.js';
 import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
+import type { GitStatusEntry } from '../core/git-base.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { GitError } from '../errors/git.js';
@@ -91,7 +92,7 @@ async function discardDirectoryEntries(
   engineDir: string,
   patchesDir: string,
   dirPath: string,
-  entries: ReadonlyArray<Awaited<ReturnType<typeof expandUntrackedDirectoryEntries>>[number]>,
+  entries: ReadonlyArray<GitStatusEntry>,
   options: DiscardOptions
 ): Promise<void> {
   const proceed = await confirmDiscard(

@@ -18,14 +18,15 @@ import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchMoveFilesOptions } from '../../types/commands/index.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, warn } from '../../utils/logger.js';
-import { addWaitLockOption, commanderArgParser, pickDefined } from '../../utils/options.js';
+import {
+  addWaitLockOption,
+  commanderArgParser,
+  pickDefined,
+  stringListOption,
+} from '../../utils/options.js';
+import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 import { patchMoveFilesCreateCommand } from './move-files-create.js';
 import { runMoveFilesInto } from './move-files-into.js';
-
-function collectOption(value: string, previous: string[]): string[] {
-  previous.push(value);
-  return previous;
-}
 
 function normalizeFileList(files: readonly string[] | undefined): string[] {
   const cleaned = (files ?? []).map((file) => file.trim()).filter((file) => file.length > 0);
@@ -242,23 +243,13 @@ export function registerPatchMoveFiles(parent: Command, context: CommandContext)
     .option(
       '--file <path>',
       'File path relative to engine/ to move (repeatable)',
-      collectOption,
-      []
+      ...stringListOption()
     )
     .option('--create', 'Create <to> as a new patch and move the files into it (requires --order)')
     .option(
       '--order <n>',
       'Exact sparse order for the created patch (only valid with --create)',
-      commanderArgParser((raw: string) => {
-        const n = Number.parseInt(raw, 10);
-        if (!Number.isInteger(n) || n <= 0) {
-          throw new InvalidArgumentError(
-            `--order must be a positive integer, got "${raw}".`,
-            '--order'
-          );
-        }
-        return n;
-      })
+      commanderArgParser((raw: string) => parsePositiveIntegerFlag('--order', raw))
     )
     .option('--category <category>', "Category for the created patch (default: the source patch's)")
     .option('-d, --description <desc>', 'Description for the created patch')

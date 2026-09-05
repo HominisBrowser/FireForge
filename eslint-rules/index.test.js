@@ -219,3 +219,45 @@ js.run('no-open-coded-tty-check', rules['no-open-coded-tty-check'], {
     },
   ],
 });
+
+ts.run('no-return-type-of-import', rules['no-return-type-of-import'], {
+  valid: [
+    // Named type imported instead of derived.
+    "import type { ProjectPaths } from '../types/config.js'; let p: ProjectPaths;",
+    // Package import: the author cannot export a name from node_modules.
+    "import { spinner } from '@clack/prompts'; let s: ReturnType<typeof spinner>;",
+    // Global, not imported.
+    'let t: ReturnType<typeof setTimeout>;',
+    // Local declaration, not imported.
+    'function f() { return 1; } let n: ReturnType<typeof f>;',
+    // Member expression query is not a bare imported identifier.
+    "import { vi } from 'vitest'; let m: ReturnType<typeof vi.fn>;",
+    // `typeof X` outside ReturnType is fine.
+    "import { getProjectPaths } from './config.js'; let g: typeof getProjectPaths;",
+  ],
+  invalid: [
+    {
+      code: "import { getProjectPaths } from './config.js'; let p: ReturnType<typeof getProjectPaths>;",
+      errors: [
+        {
+          messageId: 'returnTypeOfImport',
+          data: { name: 'getProjectPaths', source: './config.js' },
+        },
+      ],
+    },
+    {
+      // `import type` bindings count too.
+      code: "import type { loadConfig } from '../core/config.js'; type C = Awaited<ReturnType<typeof loadConfig>>;",
+      errors: [
+        {
+          messageId: 'returnTypeOfImport',
+          data: { name: 'loadConfig', source: '../core/config.js' },
+        },
+      ],
+    },
+    {
+      code: "import * as cfg from './config.js'; let p: ReturnType<typeof cfg>;",
+      errors: [{ messageId: 'returnTypeOfImport' }],
+    },
+  ],
+});

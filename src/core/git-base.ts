@@ -77,12 +77,33 @@ export interface GitStatusEntry {
 }
 
 /**
- * Ensures git is available in the system.
+ * In-flight or settled successful `git` availability probe.
+ *
+ * The probe spawns `which git` (or `where` on Windows), and every git wrapper
+ * in this layer used to run it before each command — dozens of extra spawns
+ * per `fireforge export`. Only SUCCESS is cached: a rejection clears the slot
+ * so a run that installs git mid-flight (or a test that flips the probe) sees
+ * the new answer instead of a sticky refusal.
+ */
+let gitAvailability: Promise<void> | undefined;
+
+/**
+ * Ensures git is available in the system. Memoised after the first successful
+ * probe; {@link git} calls it, so callers that go through that wrapper do not
+ * need to.
  * @throws GitNotFoundError if git is not installed
  */
 export async function ensureGit(): Promise<void> {
-  if (!(await executableExists('git'))) {
-    throw new GitNotFoundError();
+  gitAvailability ??= (async (): Promise<void> => {
+    if (!(await executableExists('git'))) {
+      throw new GitNotFoundError();
+    }
+  })();
+  try {
+    await gitAvailability;
+  } catch (error: unknown) {
+    gitAvailability = undefined;
+    throw error;
   }
 }
 
@@ -97,6 +118,7 @@ export async function git(
   cwd: string,
   options?: { timeout?: number; env?: Record<string, string> }
 ): Promise<string> {
+  await ensureGit();
   const execOptions: Parameters<typeof exec>[2] = { cwd };
   if (options?.timeout !== undefined) {
     execOptions.timeout = options.timeout;

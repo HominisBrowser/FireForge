@@ -19,7 +19,7 @@ import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { getHead, resetChanges } from '../../core/git.js';
 import { discoverPatches } from '../../core/patch-files.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
-import { getPatchSourceProduct, getPatchSourceVersion } from '../../core/patch-source-metadata.js';
+import { getPatchSourceVersion } from '../../core/patch-source-metadata.js';
 import type { RebaseSession } from '../../core/rebase-session.js';
 import {
   getRebaseSessionPath,
@@ -82,9 +82,7 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
 
   // Determine the "from" version from the patches
   const patchVersions = new Set(manifest.patches.map((p) => getPatchSourceVersion(p)));
-  const patchProducts = new Set(
-    manifest.patches.map((p) => getPatchSourceProduct(p)).filter(Boolean)
-  );
+  const patchProducts = new Set(manifest.patches.map((p) => p.sourceProduct).filter(Boolean));
   const sortedVersions = [...patchVersions].sort();
   const fromVersion = sortedVersions[0] ?? currentVersion;
   const fromProduct = [...patchProducts].sort()[0] ?? config.firefox.product;

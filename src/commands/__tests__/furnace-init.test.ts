@@ -200,44 +200,23 @@ describe('furnaceInitCommand', () => {
     );
   });
 
-  it('rejects path traversal in --ftlBasePath', async () => {
-    await expect(furnaceInitCommand('/project', { ftlBasePath: '../escape/path' })).rejects.toThrow(
-      /must not escape the engine checkout via parent-directory segments/
-    );
-  });
-
-  it('rejects absolute paths in --ftlBasePath', async () => {
-    await expect(furnaceInitCommand('/project', { ftlBasePath: '/absolute/path' })).rejects.toThrow(
-      /must be a relative path/
-    );
-  });
-
-  it('rejects Windows-drive absolute paths in --ftlBasePath', async () => {
-    await expect(
-      furnaceInitCommand('/project', { ftlBasePath: 'C:\\absolute\\path' })
-    ).rejects.toThrow(/must be a relative path/);
-  });
-
-  it('rejects null bytes in --ftlBasePath', async () => {
-    await expect(furnaceInitCommand('/project', { ftlBasePath: 'bad\0path' })).rejects.toThrow(
-      /must not contain null bytes/
-    );
-  });
-
-  it('rejects file-shaped --ftl-base-path values ending in .ftl', async () => {
-    // Passing a file-like path to --ftl-base-path must be refused up-front:
-    // accepting it makes the subsequent localized `furnace create` write an
-    // `.mjs` importing `<name>.ftl` while never registering the component in
-    // furnace.json, stranding the scaffold.
-    await expect(
-      furnaceInitCommand('/project', { ftlBasePath: 'browser/forgefresh.ftl' })
-    ).rejects.toThrow(/looks like a file/);
-  });
-
-  it('rejects file-shaped --ftl-base-path values ending in .properties', async () => {
-    await expect(
-      furnaceInitCommand('/project', { ftlBasePath: 'browser/strings.properties' })
-    ).rejects.toThrow(/looks like a file/);
+  // A file-shaped value must be refused up-front: accepting it makes the
+  // subsequent localized `furnace create` write an `.mjs` importing
+  // `<name>.ftl` while never registering the component in furnace.json,
+  // stranding the scaffold.
+  it.each<[string, string, RegExp]>([
+    [
+      'path traversal',
+      '../escape/path',
+      /must not escape the engine checkout via parent-directory segments/,
+    ],
+    ['an absolute path', '/absolute/path', /must be a relative path/],
+    ['a Windows-drive absolute path', 'C:\\absolute\\path', /must be a relative path/],
+    ['a null byte', 'bad\0path', /must not contain null bytes/],
+    ['a file-shaped .ftl value', 'browser/forgefresh.ftl', /looks like a file/],
+    ['a file-shaped .properties value', 'browser/strings.properties', /looks like a file/],
+  ])('rejects %s in --ftlBasePath', async (_label, ftlBasePath, expected) => {
+    await expect(furnaceInitCommand('/project', { ftlBasePath })).rejects.toThrow(expected);
   });
 
   it('accepts directory-shaped --ftl-base-path values', async () => {

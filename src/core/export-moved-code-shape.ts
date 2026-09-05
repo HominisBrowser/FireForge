@@ -137,14 +137,14 @@ export function formatAdoptThenSplitRemedy(
   const suggestedName = newPatchName.replace(/^\d+-/, '').replace(/\.patch$/, '');
   return [
     '',
-    `This looks like a new-file + moved-code slice: ${String(strongest.sharedLines)} substantive ` +
+    `This looks like a new-file + moved-code slice: ${strongest.sharedLines} substantive ` +
       `line(s) the new file(s) would add are still carried by ${strongest.sourcePatch}. ` +
       'Exporting them as their own patch cannot pass cross-patch lint while the source patch ' +
       'still owns the same code, and re-exporting cannot adopt them while they are unmanaged — ' +
       'each guard is right, and together they dead-end.',
     'Working sequence (adopt, then split):',
     `  1. fireforge re-export ${strongest.sourcePatch} --scan ${fileArgs}`,
-    `  2. fireforge patch move-files ${strongest.sourcePatch} ${suggestedName} --create --order ${String(insertionOrder)} ${moveArgs}`,
+    `  2. fireforge patch move-files ${strongest.sourcePatch} ${suggestedName} --create --order ${insertionOrder} ${moveArgs}`,
     'Step 1 adopts the new files into the patch that already owns the moved lines; step 2 ' +
       'splits them back out as one transaction, so the queue is never in a state where two ' +
       'patches own the same code.',

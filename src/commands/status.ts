@@ -18,6 +18,7 @@ import { type ClassifiedFile, classifyFiles, type StatusFile } from '../core/sta
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { StatusOptions } from '../types/commands/index.js';
+import type { ProjectPaths } from '../types/config.js';
 import { FIREFORGE_TMP_PATH_PATTERN, pathExists } from '../utils/fs.js';
 import {
   info,
@@ -28,7 +29,11 @@ import {
   warn,
 } from '../utils/logger.js';
 import { emitMachineError } from '../utils/machine-output.js';
-import { resolveStatusCheckPolicy, runStatusCheck } from './status-check.js';
+import {
+  resolveStatusCheckPolicy,
+  runStatusCheck,
+  type StatusCheckPolicy,
+} from './status-check.js';
 import { renderJsonStatus, renderJsonSummaryStatus } from './status-json.js';
 import {
   type ClassifiedBuckets,
@@ -142,7 +147,7 @@ function filterFireForgeTempFiles(files: StatusFile[]): StatusFile[] {
  */
 async function classifyStatusFiles(
   files: StatusFile[],
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   projectRoot: string,
   binaryName: string
 ): Promise<ClassifiedFile[]> {
@@ -193,9 +198,9 @@ async function scanEngineStatusFiles(
 async function renderJsonMode(
   classified: ClassifiedFile[],
   files: StatusFile[],
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   options: StatusOptions,
-  checkPolicy: ReturnType<typeof resolveStatusCheckPolicy>
+  checkPolicy: StatusCheckPolicy
 ): Promise<void> {
   const ownership =
     options.includeOwnership === true
@@ -354,7 +359,6 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
 
   // Shared envelope: see src/utils/machine-output.ts and
   // docs/machine-output.md. `status` was the only command that had one.
-  const emitJsonError = emitMachineError;
 
   // Ownership mode is a flat file→patch table; sources are the manifest's
   // filesAffected, any worktree drift, and the cross-patch
@@ -402,7 +406,10 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
   // message is kept identical to the helper's on purpose.
   if (!(await pathExists(paths.engine))) {
     if (options.json) {
-      emitJsonError('engine-missing', 'Firefox source not found. Run "fireforge download" first.');
+      emitMachineError(
+        'engine-missing',
+        'Firefox source not found. Run "fireforge download" first.'
+      );
     }
     throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
   }
@@ -410,7 +417,7 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
   // Check if it's a git repository
   if (!(await isGitRepository(paths.engine))) {
     if (options.json) {
-      emitJsonError(
+      emitMachineError(
         'engine-not-git',
         'Engine directory is not a git repository. Run "fireforge download" to initialize.'
       );

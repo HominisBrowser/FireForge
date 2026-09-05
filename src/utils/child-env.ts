@@ -7,7 +7,7 @@
  */
 
 /** The `env` / `envUnset` slice of exec options this module needs. */
-export interface ChildEnvOptions {
+interface ChildEnvOptions {
   /** Variables to add or overwrite on top of `process.env`. */
   env?: Record<string, string> | undefined;
   /** Variables to remove after the merge. */

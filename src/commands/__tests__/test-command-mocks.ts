@@ -50,12 +50,11 @@ export const configMock = (): MockModule => ({
 
 /** `vi.mock` factory for `../../core/mach.js`. */
 export const machMock = (): MockModule => {
-  // One shared dispatch mock backs all three capture entry points. The
-  // default classification (findNearestXpcshellManifest → null) routes runs
-  // to `mochitestWithOutput`; aliasing it (and the xpcshell variant) to the
-  // same fn as `testWithOutput` keeps every existing assertion valid no
-  // matter which suite a test's paths classify as. The dedicated E1 dispatch
-  // test uses its own module mock with distinct fns.
+  // One shared dispatch mock backs every capture dispatch: `runMachTestSuite`
+  // takes the mach command kind as its first argument, so assertions here
+  // stay valid no matter which suite a test's paths classify as (the default
+  // classification, findNearestXpcshellManifest → null, routes to
+  // `mochitest`). The dedicated E1 dispatch test asserts on the kind.
   const captureDispatch = vi.fn();
   return {
     hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
@@ -68,9 +67,7 @@ export const machMock = (): MockModule => {
     ),
     buildArtifactMismatchMessage: vi.fn(() => undefined),
     runProtectedMachBuild: vi.fn(),
-    testWithOutput: captureDispatch,
-    xpcshellTestWithOutput: captureDispatch,
-    mochitestWithOutput: captureDispatch,
+    runMachTestSuite: captureDispatch,
     withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
   };
 };

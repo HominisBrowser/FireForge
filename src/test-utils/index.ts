@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import type { GitStatusEntry } from '../core/git-base.js';
@@ -263,4 +264,62 @@ export function setInteractiveMode(isInteractive: boolean): () => void {
       Object.defineProperty(process.stdout, 'isTTY', stdoutDescriptor);
     }
   };
+}
+
+/** Absolute path to the tsx CLI shim the spawned-CLI tests run `bin/` through. */
+export const TSX_CLI = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../node_modules/tsx/dist/cli.mjs'
+);
+
+/** Absolute path to the real CLI entrypoint (`bin/fireforge.ts`). */
+export const FIREFORGE_BIN_ENTRY = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../bin/fireforge.ts'
+);
+
+/** Captured result of a spawned `fireforge` invocation. */
+export interface SpawnedCliResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Runs the real CLI in a child process and captures its streams.
+ *
+ * The exit code and the stdout/stderr split are only observable across a real
+ * process boundary, which is why these tests spawn instead of calling the
+ * command function; `env` extends (never replaces) the parent environment for
+ * cases that must inject a loader.
+ */
+export function runFireforgeCli(
+  cwd: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv
+): Promise<SpawnedCliResult> {
+  const child = spawn(process.execPath, [TSX_CLI, FIREFORGE_BIN_ENTRY, ...args], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
+  child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+  return new Promise<SpawnedCliResult>((resolve, reject) => {
+    // A spawn failure (tsx shim missing, EACCES) must fail the test with a
+    // message rather than leave the promise pending until vitest's timeout.
+    child.on('error', reject);
+    // 'close', not 'exit': the stdio pipes may still hold the final chunk
+    // when 'exit' fires, and the verdict-line assertions read the LAST line.
+    child.on('close', (code, signal) => {
+      const signalNumber = signal ? osConstants.signals[signal] : undefined;
+      resolve({
+        exitCode: code ?? (signalNumber === undefined ? -1 : 128 + signalNumber),
+        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+        stderr: Buffer.concat(stderrChunks).toString('utf8'),
+      });
+    });
+  });
 }

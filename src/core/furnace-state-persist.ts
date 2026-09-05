@@ -29,7 +29,7 @@ import {
   computeComponentChecksums,
   prefixChecksums,
 } from './furnace-apply.js';
-import { type getFurnacePaths, updateFurnaceState } from './furnace-config.js';
+import { type FurnacePaths, updateFurnaceState } from './furnace-config.js';
 import { countEntriesWithBlockingStepErrors } from './furnace-step-errors.js';
 
 /**
@@ -120,7 +120,7 @@ export function getPersistableAppliedEntry(
 export async function persistSingleComponentState(
   projectRoot: string,
   appliedEntry: { name: string; type: 'override' | 'custom' },
-  furnacePaths: ReturnType<typeof getFurnacePaths>
+  furnacePaths: FurnacePaths
 ): Promise<void> {
   const componentDir =
     appliedEntry.type === 'override'

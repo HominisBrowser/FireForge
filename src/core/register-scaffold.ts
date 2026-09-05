@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { getLicenseHeader } from './license-headers.js';
 import { findAlphabeticalMozBuildPosition } from './moz-manifest-helpers.js';
 import { tokenizeMozBuildList } from './moz-manifest-tokenizers.js';
@@ -85,7 +86,7 @@ export async function ensureParentDirsWiring(
 ): Promise<ScaffoldAction[]> {
   const actions: ScaffoldAction[] = [];
   let childName = childRelDir.split('/').at(-1) ?? childRelDir;
-  let parentRel = dirname(childRelDir).replace(/\\/g, '/');
+  let parentRel = normalizePathSlashes(dirname(childRelDir));
 
   for (;;) {
     if (parentRel === '.' || parentRel === '' || parentRel === '/') {
@@ -114,7 +115,7 @@ export async function ensureParentDirsWiring(
     if (!dryRun) await writeText(parentManifestPath, scaffold);
     actions.push({ manifest: parentManifestRel, change: `created with DIRS += ["${childName}"]` });
     childName = parentRel.split('/').at(-1) ?? parentRel;
-    parentRel = dirname(parentRel).replace(/\\/g, '/');
+    parentRel = normalizePathSlashes(dirname(parentRel));
   }
 }
 
@@ -156,7 +157,7 @@ export async function ensureXpcshellManifestWiring(
   manifestRelPath: string,
   dryRun: boolean
 ): Promise<ScaffoldAction[]> {
-  let dirRel = dirname(manifestRelPath).replace(/\\/g, '/');
+  let dirRel = normalizePathSlashes(dirname(manifestRelPath));
 
   for (;;) {
     if (dirRel === '.' || dirRel === '' || dirRel === '/') {
@@ -175,6 +176,6 @@ export async function ensureXpcshellManifestWiring(
       if (!dryRun) await writeText(mozBuildPath, updated);
       return [{ manifest: mozBuildRel, change: `XPCSHELL_TESTS_MANIFESTS += ["${relEntry}"]` }];
     }
-    dirRel = dirname(dirRel).replace(/\\/g, '/');
+    dirRel = normalizePathSlashes(dirname(dirRel));
   }
 }

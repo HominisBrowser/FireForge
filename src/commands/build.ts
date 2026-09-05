@@ -35,6 +35,7 @@ import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { BuildOptions } from '../types/commands/index.js';
+import { elapsedSince } from '../utils/elapsed.js';
 import { toError } from '../utils/errors.js';
 import { checkDiskSpace } from '../utils/fs.js';
 import { error, info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
@@ -365,10 +366,7 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
     );
   }
 
-  const duration = Date.now() - startTime;
-  const minutes = Math.floor(duration / 60000);
-  const seconds = Math.floor((duration % 60000) / 1000);
-  const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+  const timeStr = elapsedSince(startTime);
 
   if (result.exitCode !== 0) {
     error(`Build failed after ${timeStr}`);
@@ -419,7 +417,9 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
   // previous-build baseline. Never fails the build; the worst case is a
   // warning an operator chooses to investigate.
   try {
-    await auditBuildArtifacts(projectRoot, paths.engine, previousBaseline);
+    await auditBuildArtifacts(projectRoot, paths.engine, previousBaseline, {
+      ...(config.buildAudit?.unpackaged ? { unpackaged: config.buildAudit.unpackaged } : {}),
+    });
   } catch (auditError: unknown) {
     verbose(`Audit skipped: ${toError(auditError).message}`);
   }
@@ -452,16 +452,16 @@ async function recordFullBuildBaseline(
   previousBaseline: BuildBaseline | undefined
 ): Promise<void> {
   try {
-    await writeBuildBaseline(
+    await writeBuildBaseline({
       projectRoot,
       engineDir,
       binaryName,
-      'full',
+      testPackagingCoverage: 'full',
       previousBaseline,
-      ui ? 'fireforge build --ui' : 'fireforge build',
-      'auto',
-      ui ? 'faster' : 'full'
-    );
+      recordedBy: ui ? 'fireforge build --ui' : 'fireforge build',
+      staticComponentsHandling: 'auto',
+      buildKind: ui ? 'faster' : 'full',
+    });
   } catch (baselineError: unknown) {
     verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
   }

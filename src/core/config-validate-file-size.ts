@@ -55,7 +55,7 @@ export function parsePatchLintFileSizeThresholds(raw: unknown): PatchLintFileSiz
     if (merged.notice > merged.warning || merged.warning > merged.error) {
       throw new ConfigError(
         `Config field "patchLint.fileSizeThresholds.${tier}" must satisfy notice <= warning <= error ` +
-          `(resolved: ${String(merged.notice)}/${String(merged.warning)}/${String(merged.error)})`
+          `(resolved: ${merged.notice}/${merged.warning}/${merged.error})`
       );
     }
     out[tier] = parsed;

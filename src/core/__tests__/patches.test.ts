@@ -11,9 +11,10 @@ import {
   writeJson,
   writeText,
 } from '../../utils/fs.js';
-import { applyPatchToContent, extractNewFileContent } from '../patch-apply.js';
-import { findAllPatchesForFiles, isPatchFullyCovered } from '../patch-export.js';
+import { findAllPatchesForFiles } from '../patch-export.js';
+import { isPatchFullyCovered } from '../patch-export-coverage.js';
 import { getClaimedFiles } from '../patch-manifest.js';
+import { extractNewFileContent } from '../patch-transform.js';
 
 vi.mock('../patch-apply.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../patch-apply.js')>();
@@ -240,38 +241,27 @@ describe('extractNewFileContent', () => {
 });
 
 describe('isPatchFullyCovered', () => {
-  it('returns covered with byFiles when a new export exactly matches an existing patch', () => {
-    const result = isPatchFullyCovered(['a.js', 'b.js'], ['a.js', 'b.js']);
-    expect(result.covered).toBe(true);
-    expect(result.byFiles).toEqual(['a.js', 'b.js']);
-  });
-
-  it('returns not covered when a new export only partially overlaps an existing patch', () => {
-    const result = isPatchFullyCovered(['a.js', 'b.js'], ['a.js']);
-    expect(result.covered).toBe(false);
-    expect(result.byFiles).toEqual([]);
-  });
-
-  it('returns covered when target is a superset of the patch files', () => {
-    const result = isPatchFullyCovered(['a.js'], ['a.js', 'b.js']);
-    expect(result.covered).toBe(true);
-    expect(result.byFiles).toEqual(['a.js']);
-  });
-
-  it('returns covered for a single-file patch covered by target', () => {
-    expect(isPatchFullyCovered(['a.js'], ['a.js']).covered).toBe(true);
-  });
-
-  it('returns not covered when patch files is empty', () => {
-    expect(isPatchFullyCovered([], ['a.js']).covered).toBe(false);
-  });
-
-  it('returns not covered when target files is empty', () => {
-    expect(isPatchFullyCovered(['a.js'], []).covered).toBe(false);
-  });
-
-  it('returns not covered when both arrays are empty', () => {
-    expect(isPatchFullyCovered([], []).covered).toBe(false);
+  it.each([
+    {
+      label: 'target covers every file the patch touches',
+      patchFiles: ['a.js', 'b.js'],
+      targetFiles: ['a.js', 'b.js', 'c.js'],
+      expected: { covered: true, byFiles: ['a.js', 'b.js'] },
+    },
+    {
+      label: 'target only partially overlaps the patch',
+      patchFiles: ['a.js', 'b.js'],
+      targetFiles: ['a.js'],
+      expected: { covered: false, byFiles: [] },
+    },
+    {
+      label: 'the patch touches no files at all',
+      patchFiles: [],
+      targetFiles: ['a.js'],
+      expected: { covered: false, byFiles: [] },
+    },
+  ])('$label', ({ patchFiles, targetFiles, expected }) => {
+    expect(isPatchFullyCovered(patchFiles, targetFiles)).toEqual(expected);
   });
 });
 
@@ -297,191 +287,5 @@ describe('findAllPatchesForFiles', () => {
     const superseded = await findAllPatchesForFiles('/fake/patches', ['a.js', 'c.js']);
 
     expect(superseded.map((patch) => patch.filename)).toEqual(['001-ui-a.patch', '003-ui-c.patch']);
-  });
-});
-
-describe('applyPatchToContent (multi-file patch)', () => {
-  const MULTI_FILE_MODIFY_PATCH = [
-    'diff --git a/file-a.js b/file-a.js',
-    '--- a/file-a.js',
-    '+++ b/file-a.js',
-    '@@ -1,3 +1,3 @@',
-    ' line1',
-    '-line2',
-    '+line2-modified',
-    ' line3',
-    'diff --git a/file-b.js b/file-b.js',
-    '--- a/file-b.js',
-    '+++ b/file-b.js',
-    '@@ -1,3 +1,3 @@',
-    ' alpha',
-    '-beta',
-    '+beta-modified',
-    ' gamma',
-    '',
-  ].join('\n');
-
-  it('applies hunks for the first file in a multi-file patch', async () => {
-    mockedReadText.mockResolvedValue(MULTI_FILE_MODIFY_PATCH);
-
-    const result = await applyPatchToContent(
-      'line1\nline2\nline3\n',
-      '/fake/patch.patch',
-      'file-a.js'
-    );
-
-    expect(result).toBe('line1\nline2-modified\nline3\n');
-  });
-
-  it('applies hunks for the second file in a multi-file patch', async () => {
-    mockedReadText.mockResolvedValue(MULTI_FILE_MODIFY_PATCH);
-
-    const result = await applyPatchToContent(
-      'alpha\nbeta\ngamma\n',
-      '/fake/patch.patch',
-      'file-b.js'
-    );
-
-    expect(result).toBe('alpha\nbeta-modified\ngamma\n');
-  });
-});
-
-describe('applyPatchToContent — multi-hunk in single file', () => {
-  it('applies two non-overlapping hunks in the same file', async () => {
-    const patch = [
-      'diff --git a/app.js b/app.js',
-      '--- a/app.js',
-      '+++ b/app.js',
-      '@@ -1,3 +1,3 @@',
-      ' line1',
-      '-line2',
-      '+line2-modified',
-      ' line3',
-      '@@ -5,3 +5,3 @@',
-      ' line5',
-      '-line6',
-      '+line6-modified',
-      ' line7',
-      '',
-    ].join('\n');
-
-    mockedReadText.mockResolvedValue(patch);
-
-    const content = 'line1\nline2\nline3\nline4\nline5\nline6\nline7\n';
-    const result = await applyPatchToContent(content, '/fake/patch.patch', 'app.js');
-
-    expect(result).toBe('line1\nline2-modified\nline3\nline4\nline5\nline6-modified\nline7\n');
-  });
-
-  it('applies hunks in reverse order to preserve line numbers', async () => {
-    // Second hunk adds a line, which would shift the first hunk if applied first
-    const patch = [
-      'diff --git a/app.js b/app.js',
-      '--- a/app.js',
-      '+++ b/app.js',
-      '@@ -1,2 +1,2 @@',
-      '-line1',
-      '+line1-modified',
-      ' line2',
-      '@@ -4,2 +4,3 @@',
-      ' line4',
-      '-line5',
-      '+line5a',
-      '+line5b',
-      '',
-    ].join('\n');
-
-    mockedReadText.mockResolvedValue(patch);
-
-    const content = 'line1\nline2\nline3\nline4\nline5\n';
-    const result = await applyPatchToContent(content, '/fake/patch.patch', 'app.js');
-
-    expect(result).toBe('line1-modified\nline2\nline3\nline4\nline5a\nline5b\n');
-  });
-
-  it('throws on context mismatch', async () => {
-    const patch = [
-      'diff --git a/app.js b/app.js',
-      '--- a/app.js',
-      '+++ b/app.js',
-      '@@ -1,3 +1,3 @@',
-      ' line1',
-      '-WRONG',
-      '+replacement',
-      ' line3',
-      '',
-    ].join('\n');
-
-    mockedReadText.mockResolvedValue(patch);
-
-    const content = 'line1\nline2\nline3\n';
-    await expect(applyPatchToContent(content, '/fake/patch.patch', 'app.js')).rejects.toThrow(
-      'context mismatch'
-    );
-  });
-});
-
-describe('applyPatchToContent — no-newline-at-end-of-file', () => {
-  it('omits trailing newline when patch has no-newline marker', async () => {
-    const patch = [
-      'diff --git a/app.js b/app.js',
-      '--- a/app.js',
-      '+++ b/app.js',
-      '@@ -1,2 +1,2 @@',
-      ' line1',
-      '-line2',
-      '+line2-modified',
-      '\\ No newline at end of file',
-      '',
-    ].join('\n');
-
-    mockedReadText.mockResolvedValue(patch);
-
-    const content = 'line1\nline2\n';
-    const result = await applyPatchToContent(content, '/fake/patch.patch', 'app.js');
-
-    expect(result).toBe('line1\nline2-modified');
-  });
-
-  it('adds trailing newline when patch does not have no-newline marker', async () => {
-    const patch = [
-      'diff --git a/app.js b/app.js',
-      '--- a/app.js',
-      '+++ b/app.js',
-      '@@ -1,2 +1,2 @@',
-      ' line1',
-      '-line2',
-      '+line2-modified',
-      '',
-    ].join('\n');
-
-    mockedReadText.mockResolvedValue(patch);
-
-    const content = 'line1\nline2\n';
-    const result = await applyPatchToContent(content, '/fake/patch.patch', 'app.js');
-
-    expect(result).toBe('line1\nline2-modified\n');
-  });
-});
-
-describe('applyPatchToContent — hunk header mismatch', () => {
-  it('throws when hunk header count does not match body', async () => {
-    // Header says 3 old lines but body only has 2
-    const patch = [
-      'diff --git a/app.js b/app.js',
-      '--- a/app.js',
-      '+++ b/app.js',
-      '@@ -1,3 +1,2 @@',
-      ' line1',
-      '-line2',
-      '',
-    ].join('\n');
-
-    mockedReadText.mockResolvedValue(patch);
-
-    const content = 'line1\nline2\nline3\n';
-    await expect(applyPatchToContent(content, '/fake/patch.patch', 'app.js')).rejects.toThrow(
-      'header mismatch'
-    );
   });
 });

@@ -55,6 +55,9 @@ vi.mock('../../utils/fs.js', () => ({
   checkDiskSpace: vi.fn().mockResolvedValue(undefined),
 }));
 
+/** `expect.any()` returns `any`; naming the parameter type keeps the assertions typed. */
+type DownloadSourceArgs = Parameters<typeof downloadFirefoxSource>[0];
+
 const mockRename = vi.hoisted(() => vi.fn<() => Promise<void>>().mockResolvedValue(undefined));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -268,19 +271,17 @@ describe('downloadCommand', () => {
 
     await downloadCommand('/project', { force: true });
 
-    expect(downloadFirefoxSource).toHaveBeenCalledWith(
-      '140.9.0esr',
-      'firefox-esr',
-      expect.stringMatching(
+    expect(downloadFirefoxSource).toHaveBeenCalledWith({
+      version: '140.9.0esr',
+      product: 'firefox-esr',
+      destDir: expect.stringMatching(
         new RegExp(`^${escapeRegex(nativePath('/project/engine'))}\\.replacement-`)
-      ),
-      nativePath('/project/.fireforge/cache'),
-      expect.any(Function),
-      expect.any(Function),
-      undefined,
-      expect.any(Function),
-      undefined
-    );
+      ) as string,
+      cacheDir: nativePath('/project/.fireforge/cache'),
+      onProgress: expect.any(Function) as DownloadSourceArgs['onProgress'],
+      onPhase: expect.any(Function) as DownloadSourceArgs['onPhase'],
+      onPhaseProgress: expect.any(Function) as DownloadSourceArgs['onPhaseProgress'],
+    });
     expect(removeDir).not.toHaveBeenCalledWith(nativePath('/project/engine'));
     // pendingRepair preservation + wholesale clear is the shared helper's
     // contract, pinned by furnace-config tests.
@@ -312,28 +313,17 @@ describe('downloadCommand', () => {
     vi.mocked(spinner).mockReturnValueOnce(downloadSpinner).mockReturnValueOnce(gitSpinner);
     vi.mocked(pathExistsStrict).mockResolvedValue(false);
     vi.mocked(pathExists).mockResolvedValue(false);
-    vi.mocked(downloadFirefoxSource).mockImplementation(
-      (
-        _version,
-        _product,
-        _engineDir,
-        _cacheDir,
-        onProgress,
-        _onPhase,
-        _sha256,
-        onPhaseProgress
-      ) => {
-        onPhaseProgress?.('Validating source archive cache metadata for firefox.tar.xz...');
-        onPhaseProgress?.('Writing source archive cache metadata for firefox.tar.xz.json...');
-        onProgress?.(1, 0);
-        onProgress?.(1, 100);
-        onProgress?.(4, 100);
-        onProgress?.(5, 100);
-        onProgress?.(5, 100);
-        onProgress?.(10, 100);
-        return Promise.resolve();
-      }
-    );
+    vi.mocked(downloadFirefoxSource).mockImplementation(({ onProgress, onPhaseProgress }) => {
+      onPhaseProgress?.('Validating source archive cache metadata for firefox.tar.xz...');
+      onPhaseProgress?.('Writing source archive cache metadata for firefox.tar.xz.json...');
+      onProgress?.(1, 0);
+      onProgress?.(1, 100);
+      onProgress?.(4, 100);
+      onProgress?.(5, 100);
+      onProgress?.(5, 100);
+      onProgress?.(10, 100);
+      return Promise.resolve();
+    });
     vi.mocked(initRepository).mockResolvedValue(undefined);
     vi.mocked(getHead).mockResolvedValue('base-commit');
 
@@ -468,17 +458,16 @@ describe('downloadCommand', () => {
 
     await downloadCommand('/project', {});
 
-    expect(downloadFirefoxSource).toHaveBeenCalledWith(
-      '140.9.0esr',
-      'firefox-esr',
-      nativePath('/project/engine'),
-      nativePath('/project/.fireforge/cache'),
-      expect.any(Function),
-      expect.any(Function),
-      'a'.repeat(64),
-      expect.any(Function),
-      undefined
-    );
+    expect(downloadFirefoxSource).toHaveBeenCalledWith({
+      version: '140.9.0esr',
+      product: 'firefox-esr',
+      destDir: nativePath('/project/engine'),
+      cacheDir: nativePath('/project/.fireforge/cache'),
+      onProgress: expect.any(Function) as DownloadSourceArgs['onProgress'],
+      onPhase: expect.any(Function) as DownloadSourceArgs['onPhase'],
+      expectedSha256: 'a'.repeat(64),
+      onPhaseProgress: expect.any(Function) as DownloadSourceArgs['onPhaseProgress'],
+    });
   });
 
   it('passes a configured firefox.candidate through to the archive downloader', async () => {
@@ -501,17 +490,48 @@ describe('downloadCommand', () => {
 
     await downloadCommand('/project', {});
 
-    expect(downloadFirefoxSource).toHaveBeenCalledWith(
-      '141.0',
-      'firefox',
-      nativePath('/project/engine'),
-      nativePath('/project/.fireforge/cache'),
-      expect.any(Function),
-      expect.any(Function),
-      undefined,
-      expect.any(Function),
-      'build2'
-    );
+    expect(downloadFirefoxSource).toHaveBeenCalledWith({
+      version: '141.0',
+      product: 'firefox',
+      destDir: nativePath('/project/engine'),
+      cacheDir: nativePath('/project/.fireforge/cache'),
+      onProgress: expect.any(Function) as DownloadSourceArgs['onProgress'],
+      onPhase: expect.any(Function) as DownloadSourceArgs['onPhase'],
+      onPhaseProgress: expect.any(Function) as DownloadSourceArgs['onPhaseProgress'],
+      candidate: 'build2',
+    });
+  });
+
+  it('passes firefox.allowUnverifiedDownload through to the archive downloader', async () => {
+    const configMod = await import('../../core/config.js');
+    vi.mocked(configMod.loadConfig).mockResolvedValueOnce({
+      firefox: {
+        version: '141.0',
+        product: 'firefox',
+        allowUnverifiedDownload: true,
+      },
+      name: 'Fire',
+      vendor: 'Forge',
+      appId: 'org.example.fireforge',
+      binaryName: 'fireforge',
+    });
+    vi.mocked(pathExistsStrict).mockResolvedValue(false);
+    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(initRepository).mockResolvedValue(undefined);
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+
+    await downloadCommand('/project', {});
+
+    expect(downloadFirefoxSource).toHaveBeenCalledWith({
+      version: '141.0',
+      product: 'firefox',
+      destDir: nativePath('/project/engine'),
+      cacheDir: nativePath('/project/.fireforge/cache'),
+      onProgress: expect.any(Function) as DownloadSourceArgs['onProgress'],
+      onPhase: expect.any(Function) as DownloadSourceArgs['onPhase'],
+      onPhaseProgress: expect.any(Function) as DownloadSourceArgs['onPhaseProgress'],
+      integrity: { allowUnverifiedDownload: true },
+    });
   });
 
   describe('major-version-hop toolchain notice', () => {

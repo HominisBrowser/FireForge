@@ -642,22 +642,22 @@ describe('POSIX-only refusals', () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
   };
 
-  it('refuses tree create on Windows, naming copy-on-write as the reason', async () => {
+  it.each([
+    // `create` additionally names copy-on-write as the reason; the other two
+    // only need to refuse before touching the filesystem.
+    [
+      'create',
+      () => treeCreateCommand('/primary', 'shard-a'),
+      /tree is POSIX-only.*clonefile\/reflink/s,
+    ],
+    ['remove', () => treeRemoveCommand('/primary', 'shard-a'), /tree is POSIX-only/],
+    [
+      'exec',
+      () => treeProgram('/p').parseAsync(['node', 'ff', 'tree', 'exec', 'shard-a', 'status']),
+      /tree is POSIX-only/,
+    ],
+  ])('refuses tree %s on Windows', async (_label, invoke, pattern) => {
     onWindows();
-    await expect(treeCreateCommand('/primary', 'shard-a')).rejects.toThrow(
-      /tree is POSIX-only.*clonefile\/reflink/s
-    );
-  });
-
-  it('refuses tree remove on Windows', async () => {
-    onWindows();
-    await expect(treeRemoveCommand('/primary', 'shard-a')).rejects.toThrow(/tree is POSIX-only/);
-  });
-
-  it('refuses tree exec on Windows', async () => {
-    onWindows();
-    await expect(
-      treeProgram('/p').parseAsync(['node', 'ff', 'tree', 'exec', 'shard-a', 'status'])
-    ).rejects.toThrow(/tree is POSIX-only/);
+    await expect(invoke()).rejects.toThrow(pattern);
   });
 });

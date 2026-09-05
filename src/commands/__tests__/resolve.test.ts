@@ -13,6 +13,9 @@ import { pathExists } from '../../utils/fs.js';
 import { info } from '../../utils/logger.js';
 import { resolveCommand } from '../resolve.js';
 
+/** Options object `updatePatchAndMetadata` is called with, for matcher casts. */
+type UpdateArgs = Parameters<typeof updatePatchAndMetadata>[0];
+
 /**
  * Returns a minimal unified-diff body that `extractAffectedFiles` parses into
  * the supplied file list. `resolve` derives `filesAffected` from the diff
@@ -41,7 +44,6 @@ vi.mock('../../core/config.js', () => ({
     componentsDir: '/fake/root/src/components',
   }),
   loadState: vi.fn(),
-  saveState: vi.fn(),
   updateState: vi.fn(),
   loadConfig: vi.fn(),
 }));
@@ -133,20 +135,20 @@ describe('resolveCommand', () => {
     await resolveCommand(projectRoot);
 
     expect(stageFiles).toHaveBeenCalledWith(expect.any(String), ['file1.js']);
-    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      expect.any(String),
-      patchFilename,
-      diff,
-      expect.objectContaining({
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith({
+      patchesDir: expect.any(String) as string,
+      filename: patchFilename,
+      newContent: diff,
+      updates: expect.objectContaining({
         filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
-      }),
-      undefined,
-      undefined,
+      }) as UpdateArgs['updates'],
+      onCommitted: undefined,
+      policyGate: undefined,
       // `resolve` honours `--wait-lock`: it rewrites a patch body and its
       // metadata under the patch-directory lock.
-      expect.objectContaining({ command: 'resolve' })
-    );
+      lockOptions: expect.objectContaining({ command: 'resolve' }) as UpdateArgs['lockOptions'],
+    });
     // updateState is called with a transactional updater that deletes
     // pendingResolution; exercise the updater to confirm the delete.
     expect(updateState).toHaveBeenCalledWith(projectRoot, expect.any(Function));
@@ -223,20 +225,20 @@ describe('resolveCommand', () => {
 
     expect(stageFiles).toHaveBeenCalledWith(expect.any(String), ['file1.js']);
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
-    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      expect.any(String),
-      patchFilename,
-      diff,
-      expect.objectContaining({
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith({
+      patchesDir: expect.any(String) as string,
+      filename: patchFilename,
+      newContent: diff,
+      updates: expect.objectContaining({
         filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
-      }),
-      undefined,
-      undefined,
+      }) as UpdateArgs['updates'],
+      onCommitted: undefined,
+      policyGate: undefined,
       // `resolve` honours `--wait-lock`: it rewrites a patch body and its
       // metadata under the patch-directory lock.
-      expect.objectContaining({ command: 'resolve' })
-    );
+      lockOptions: expect.objectContaining({ command: 'resolve' }) as UpdateArgs['lockOptions'],
+    });
   });
 
   it('refuses to resolve when the patch file is missing on disk', async () => {
@@ -347,20 +349,20 @@ describe('resolveCommand', () => {
 
     await resolveCommand(projectRoot);
 
-    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      expect.any(String),
-      patchFilename,
-      diff,
-      expect.objectContaining({
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith({
+      patchesDir: expect.any(String) as string,
+      filename: patchFilename,
+      newContent: diff,
+      updates: expect.objectContaining({
         filesAffected: ['file1.js'],
         sourceEsrVersion: '140.9.0esr',
-      }),
-      undefined,
-      undefined,
+      }) as UpdateArgs['updates'],
+      onCommitted: undefined,
+      policyGate: undefined,
       // `resolve` honours `--wait-lock`: it rewrites a patch body and its
       // metadata under the patch-directory lock.
-      expect.objectContaining({ command: 'resolve' })
-    );
+      lockOptions: expect.objectContaining({ command: 'resolve' }) as UpdateArgs['lockOptions'],
+    });
   });
 
   describe('non-interactive --yes flag', () => {

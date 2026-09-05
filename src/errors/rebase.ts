@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { FireForgeError } from './base.js';
+import { FireForgeError, remedies } from './base.js';
 import { ExitCode } from './codes.js';
 
 /**
@@ -9,14 +9,14 @@ export class RebaseError extends FireForgeError {
   readonly code = ExitCode.PATCH_ERROR;
 
   override get userMessage(): string {
-    let msg = `Rebase Error: ${this.message}`;
-
-    msg += '\n\nTo fix this:\n';
-    msg += '  1. Check the error message above for specifics\n';
-    msg += '  2. Use "fireforge rebase --continue" to resume an interrupted rebase\n';
-    msg += '  3. Use "fireforge rebase --abort" to cancel and restore engine state';
-
-    return msg;
+    return (
+      `Rebase Error: ${this.message}` +
+      remedies([
+        'Check the error message above for specifics',
+        'Use "fireforge rebase --continue" to resume an interrupted rebase',
+        'Use "fireforge rebase --abort" to cancel and restore engine state',
+      ])
+    );
   }
 }
 

@@ -558,6 +558,24 @@ describe('furnace registration validation helpers', () => {
       expect(stale[0]?.message).toContain('old-helper.mjs');
     });
 
+    it('skips components with register=false', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue('');
+
+      const issues = await validateJarMnEntries('/project', {
+        ...baseConfig,
+        custom: { 'moz-dock': { ...COMPONENT_CONFIG, register: false } },
+      });
+
+      expect(issues).toHaveLength(0);
+    });
+
+    it('handles a missing jar.mn file gracefully', async () => {
+      vi.mocked(pathExists).mockResolvedValue(false);
+
+      await expect(validateJarMnEntries('/project', baseConfig)).resolves.toHaveLength(0);
+    });
+
     it('does not flag live registrations as stale', async () => {
       vi.mocked(pathExists).mockImplementation((filePath: string) => {
         if (filePath === nativePath('/engine/toolkit/content/jar.mn')) return Promise.resolve(true);
@@ -625,6 +643,112 @@ describe('furnace registration validation helpers', () => {
       const issues = await validateRegistrationPatterns('/project', baseConfig);
       expect(issues).toHaveLength(1);
       expect(issues[0]?.check).toBe('missing-custom-element-registration');
+    });
+
+    it('reports no issues when the .mjs entry sits in the DOMContentLoaded block', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue(`
+for (let [tag, script] of [
+    ["findbar", "chrome://global/content/elements/findbar.js"],
+]) {
+  customElements.setElementCreationCallback(tag, () => {
+    Services.scriptloader.loadSubScript(script, window);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  for (let [tag, script] of [
+      ["moz-dock", "chrome://global/content/elements/moz-dock.mjs"],
+  ]) {
+    customElements.setElementCreationCallback(tag, () => {
+      ChromeUtils.importESModule(script);
+    });
+  }
+});
+`);
+
+      await expect(validateRegistrationPatterns('/project', baseConfig)).resolves.toHaveLength(0);
+    });
+
+    it('reports an error when the .mjs entry sits in the loadSubScript array', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue(`
+for (let [tag, script] of [
+    ["findbar", "chrome://global/content/elements/findbar.js"],
+    ["moz-dock", "chrome://global/content/elements/moz-dock.mjs"],
+]) {
+  customElements.setElementCreationCallback(tag, () => {
+    Services.scriptloader.loadSubScript(script, window);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  for (let [tag, script] of [
+      ["moz-button", "chrome://global/content/elements/moz-button.mjs"],
+  ]) {
+    customElements.setElementCreationCallback(tag, () => {
+      ChromeUtils.importESModule(script);
+    });
+  }
+});
+`);
+
+      const issues = await validateRegistrationPatterns('/project', baseConfig);
+      expect(issues).toHaveLength(1);
+      expect(issues[0]?.check).toBe('wrong-registration-pattern');
+      expect(issues[0]?.severity).toBe('error');
+      expect(issues[0]?.message).toContain('Pattern A');
+      expect(issues[0]?.message).toContain('Pattern B');
+    });
+
+    it('handles the multi-line DOMContentLoaded format without false positives', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue(`
+for (let [tag, script] of [
+    ["findbar", "chrome://global/content/elements/findbar.js"],
+]) {
+  customElements.setElementCreationCallback(tag, () => {
+    Services.scriptloader.loadSubScript(script, window);
+  });
+}
+
+document.addEventListener(
+  "DOMContentLoaded",
+  () => {
+    for (let [tag, script] of [
+        ["moz-dock", "chrome://global/content/elements/moz-dock.mjs"],
+    ]) {
+      customElements.setElementCreationCallback(tag, () => {
+        ChromeUtils.importESModule(script);
+      });
+    }
+  }
+);
+`);
+
+      await expect(validateRegistrationPatterns('/project', baseConfig)).resolves.toHaveLength(0);
+    });
+
+    it('skips components with register=false even when placed in the wrong block', async () => {
+      vi.mocked(pathExists).mockResolvedValue(true);
+      vi.mocked(readText).mockResolvedValue(`
+for (let [tag, script] of [
+    ["moz-dock", "chrome://global/content/elements/moz-dock.mjs"],
+]) {
+  customElements.setElementCreationCallback(tag, () => {
+    Services.scriptloader.loadSubScript(script, window);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {});
+`);
+
+      const issues = await validateRegistrationPatterns('/project', {
+        ...baseConfig,
+        custom: { 'moz-dock': { ...COMPONENT_CONFIG, register: false } },
+      });
+
+      expect(issues).toHaveLength(0);
     });
 
     it('finds a component registered in the wrong (before-DCL) block', async () => {

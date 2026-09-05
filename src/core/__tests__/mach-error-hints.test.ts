@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it } from 'vitest';
 
-import { explainMachError, MACH_ERROR_HINTS } from '../mach-error-hints.js';
+import { explainMachError } from '../mach-error-hints.js';
 
 describe('explainMachError', () => {
   it('returns an empty array for empty or unknown stderr', () => {
@@ -28,15 +28,6 @@ describe('explainMachError', () => {
     ].join('\n');
     const hints = explainMachError(stderr);
     expect(hints).toHaveLength(1);
-  });
-
-  it('exposes its pattern table for inspection', () => {
-    expect(MACH_ERROR_HINTS.length).toBeGreaterThan(0);
-    for (const entry of MACH_ERROR_HINTS) {
-      expect(entry.pattern).toBeInstanceOf(RegExp);
-      expect(typeof entry.hint).toBe('string');
-      expect(entry.hint.length).toBeGreaterThan(20);
-    }
   });
 
   it('surfaces the packager NoneType hint when packager.py trips on None.open', () => {
@@ -74,8 +65,7 @@ describe('explainMachError', () => {
   it('does NOT fire the NoneType hint on unrelated AttributeErrors', () => {
     // Keep the pattern narrow so unrelated NoneType errors elsewhere in
     // mach (e.g. a preprocessor pass) don't train operators to ignore
-    // the hint. Maintaining this negative case also pins the branch
-    // count for the 100/95/100 coverage threshold.
+    // the hint.
     const stderr = [
       'Traceback (most recent call last):',
       '  File "/engine/python/mozbuild/mozbuild/config.py", line 42, in load',

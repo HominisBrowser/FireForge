@@ -30,6 +30,7 @@ import type { DownloadOptions } from '../types/commands/index.js';
 import type { FirefoxProduct } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { checkDiskSpace, ensureDir, pathExists, pathExistsStrict, removeDir } from '../utils/fs.js';
+import type { SpinnerHandle } from '../utils/logger.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 
@@ -140,10 +141,7 @@ async function noteUnappliedPatches(patchesDir: string): Promise<void> {
  * "Patch-touched files restored" success line. Always closing with the third
  * claims restore work that did not happen on a project with zero patches.
  */
-function closeRestoreSpinner(
-  restoreSpinner: ReturnType<typeof spinner>,
-  result: CleanPatchResult
-): void {
+function closeRestoreSpinner(restoreSpinner: SpinnerHandle, result: CleanPatchResult): void {
   if (!result.hadQueue) {
     restoreSpinner.stop('No patches in queue — nothing to restore');
     return;
@@ -153,12 +151,6 @@ function closeRestoreSpinner(
     return;
   }
   restoreSpinner.stop('Patch-touched files restored');
-}
-
-async function clearStaleFurnaceApplyState(projectRoot: string): Promise<void> {
-  // --force installs a new baseCommit, which invalidates every applied
-  // checksum in furnace-state.json.
-  await clearAppliedFurnaceState(projectRoot);
 }
 
 async function activateReplacementEngine(args: {
@@ -218,19 +210,21 @@ async function downloadAndExtractFirefox(args: {
   cacheDir: string;
   sha256?: string;
   candidate?: string;
+  allowUnverifiedDownload?: boolean;
 }): Promise<void> {
-  const { version, product, engineDir, cacheDir, sha256, candidate } = args;
+  const { version, product, engineDir, cacheDir, sha256, candidate, allowUnverifiedDownload } =
+    args;
   let s = spinner(`Downloading Firefox ${version}...`);
   let lastPercent = 0;
   const phaseState: { value: 'download' | 'extract' } = { value: 'download' };
 
   try {
-    await downloadFirefoxSource(
-      version,
-      product,
-      engineDir,
-      cacheDir,
-      (downloaded, total) => {
+    await downloadFirefoxSource({
+      version: version,
+      product: product,
+      destDir: engineDir,
+      cacheDir: cacheDir,
+      onProgress: (downloaded, total) => {
         if (total <= 0) return;
         const percent = Math.floor((downloaded / total) * 100);
         if (percent !== lastPercent && percent % 5 === 0) {
@@ -240,7 +234,7 @@ async function downloadAndExtractFirefox(args: {
           lastPercent = percent;
         }
       },
-      (phase) => {
+      onPhase: (phase) => {
         if (phase === 'extract' && phaseState.value === 'download') {
           s.stop(`Firefox ${version} downloaded`);
           phaseState.value = 'extract';
@@ -249,12 +243,13 @@ async function downloadAndExtractFirefox(args: {
           );
         }
       },
-      sha256,
-      (message) => {
+      expectedSha256: sha256,
+      onPhaseProgress: (message) => {
         s.message(message);
       },
-      candidate
-    );
+      candidate: candidate,
+      integrity: allowUnverifiedDownload === undefined ? undefined : { allowUnverifiedDownload },
+    });
 
     s.stop(
       phaseState.value === 'extract'
@@ -340,7 +335,9 @@ async function initializeDownloadedEngine(args: {
     }
 
     if (replacementActivated) {
-      await clearStaleFurnaceApplyState(projectRoot);
+      // --force installs a new baseCommit, which invalidates every applied
+      // checksum in furnace-state.json.
+      await clearAppliedFurnaceState(projectRoot);
     }
 
     await updateState(projectRoot, {
@@ -525,6 +522,9 @@ export async function downloadCommand(
           ...(config.firefox.sha256 !== undefined ? { sha256: config.firefox.sha256 } : {}),
           ...(config.firefox.candidate !== undefined
             ? { candidate: config.firefox.candidate }
+            : {}),
+          ...(config.firefox.allowUnverifiedDownload !== undefined
+            ? { allowUnverifiedDownload: config.firefox.allowUnverifiedDownload }
             : {}),
         });
 

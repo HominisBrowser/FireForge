@@ -18,6 +18,27 @@ is worth knowing when reverting that file: `git checkout -- fireforge.json`
 after an accidental reformat also reverts an **uncommitted** pin, and the tree
 is then building a different version than the config claims.
 
+### Archive integrity: `firefox.sha256` and `firefox.allowUnverifiedDownload`
+
+Every fresh download is checked against Mozilla's published `SHA256SUMS` for
+the release, and a mismatch fails the download and discards the archive. The
+check also **fails closed when the published digest cannot be obtained** — a
+404, a captive portal answering with an HTML page, a dropped connection or a
+timeout. TLS alone is thin trust for the artifact that becomes the git
+baseline every patch is built on, and "the checksum host was unreachable" is
+exactly the condition someone positioned on the network can arrange.
+
+- `firefox.sha256` pins the digest. It takes precedence over the published
+  file and is the right answer for reproducible builds and offline mirrors:
+  obtain it out of band and the download verifies with no network beyond the
+  archive itself.
+- `firefox.allowUnverifiedDownload: true` accepts a download when the
+  published digest is **unavailable**, with a loud warning. **This disables
+  the integrity check for that case** — the archive is trusted on TLS alone.
+  Use it only for a mirror you already trust, and prefer pinning `sha256`
+  instead. A digest that IS fetched and does not match is rejected regardless
+  of this setting. Ignored when `sha256` is set.
+
 `fireforge doctor` reports the pin beside what the checkout actually is — the
 engine's own `browser/config/version.txt` and the version the last download
 recorded — and warns when they disagree. It is a report, not a lock: a tree
@@ -91,9 +112,55 @@ gaps does not move a patch out of the band its category owns.
 `test.canaryPath` and `test.canaryTimeoutSeconds` supply the defaults for
 `fireforge test --canary`. See [`testing.md`](testing.md).
 
+## `buildAudit`
+
+The post-build packaging audit is warn-only. Most of what it would otherwise
+report as "missing packaged artifact" is classified away structurally — an
+unselected `--with-branding` tree read from the generated `engine/mozconfig`,
+a directory reached only through a platform-gated `DIRS +=` in an ancestor
+`moz.build`, a Storybook `*.stories.mjs`. One case cannot be derived from the
+tree: a source that is deliberately never packaged, such as a type-only
+mirror whose header says it is never loaded. Declare those:
+
+```json
+{
+  "buildAudit": {
+    "unpackaged": [
+      {
+        "path": "browser/base/content/hominis-tile-host-types.js",
+        "reason": "Type-only mirror of the tile host; never loaded, no jar.mn entry by design."
+      }
+    ]
+  }
+}
+```
+
+- `path` is engine-relative. A `*` may glob **within one path segment**;
+  `**` is refused, because a subtree carve-out is how a reviewed exception
+  quietly becomes a blanket one.
+- `reason` is required and must be non-empty. This is the one audit class
+  FireForge cannot verify against the tree, so the declaration is the
+  evidence; an unexplained carve-out is indistinguishable from a mistake by
+  the time someone reads it.
+- Admitted paths are **listed** in the audit output
+  (`admitted as unpackaged by buildAudit.unpackaged "<path>" — <reason>`),
+  never silenced.
+- A declared path that DOES resolve to a packaged artifact is reported as a
+  **stale carve-out** rather than suppressed: the declaration asserts a fact
+  about the tree that is no longer true.
+- A declaration matching nothing that changed in a given run says nothing.
+  Unlike `--expect-unmanaged`, whose unmet entries are reported because it
+  is a per-invocation flag list, this is a standing list checked only
+  against the files that happened to change — "not met" is the normal case.
+
+The `Packaged:` summary line names each non-zero skip class with its count,
+so a run that dismissed four unselected-branding files reads differently
+from one that dismissed four unregistered sources.
+
 ## Design tokens
 
-Tokens are managed with `fireforge token add`.
+Tokens are managed with `fireforge token add`; `fireforge token list` and
+`fireforge token show` report what is already there.
 
 - `--create-category` declares a new category banner and inserts the token in
   one step. It is incompatible with `--variant`; author the category with the
@@ -117,6 +184,27 @@ Tokens are managed with `fireforge token add`.
 - A token already present in the target block is reported with its location
   (`already exists in :root[…] (line N), unchanged`) rather than a bare
   no-op.
+
+### Reading the token file
+
+`token add --category` refuses a category the tokens CSS does not declare, so
+`token list` exists to name them without hand-parsing a `= Category =` banner
+out of the file.
+
+- `fireforge token list [--category <name>] [--json]` reports each category
+  banner with the tokens declared under it, in file order. Declarations above
+  the first banner are reported under `(no category)` rather than dropped, and
+  a banner with no tokens is still listed — `token add` accepts it. An unknown
+  `--category` is refused by naming the ones that exist, because a filter that
+  printed nothing would read as "this category is empty".
+- `fireforge token show <token-name> [--json]` reports the owning category and
+  the value the token takes in **every** block that declares it — the base
+  `:root`, the dark `@media` mirror, and each `:root[variant]` — with the line
+  of each. The leading `--` is optional; with it, pass the `--` separator
+  first (`fireforge token show -- --my-token`).
+
+Only the base `:root` block owns a token, so `token list` reports it once;
+the dark and variant blocks mirror it and appear in `token show`.
 
 ## Smoke runs
 

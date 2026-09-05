@@ -61,6 +61,7 @@ describe('per-patch lint cache', () => {
             '',
           ].join('\n'),
           newFiles: new Map([['browser/a.js', 'const a = 1;\n']]),
+          createdFiles: new Set<string>(),
           modifiedFileAdditions: new Map(),
         },
       ],
@@ -263,6 +264,7 @@ describe('per-patch lint cache', () => {
           metadata: null,
           diff: ctx.entries[0]?.diff ?? '',
           newFiles: new Map([['browser/a.js', 'const a = 1;\n']]),
+          createdFiles: new Set<string>(),
           modifiedFileAdditions: new Map(),
         },
       ],
@@ -274,11 +276,11 @@ describe('per-patch lint cache', () => {
   it('loads, reuses, and clears cached issues', async () => {
     const cacheKey = await key();
     const cache = await loadPerPatchLintCache(projectRoot);
-    setCachedPerPatchLintIssues(
+    setCachedPerPatchLintIssues({
       cache,
-      patch.filename,
-      cacheKey,
-      [
+      patchFilename: patch.filename,
+      key: cacheKey,
+      issues: [
         {
           file: 'browser/a.js',
           check: 'missing-modification-comment',
@@ -286,7 +288,7 @@ describe('per-patch lint cache', () => {
           severity: 'warning',
         },
       ],
-      [
+      suppressed: [
         {
           file: '(patch)',
           check: 'large-patch-lines',
@@ -294,8 +296,8 @@ describe('per-patch lint cache', () => {
           severity: 'error',
         },
       ],
-      4200
-    );
+      lineCount: 4200,
+    });
     await savePerPatchLintCache(projectRoot, cache);
 
     const loaded = await loadPerPatchLintCache(projectRoot);
@@ -321,7 +323,15 @@ describe('per-patch lint cache', () => {
       severity: 'error' as const,
     };
     // Entry computed with NO waiver in force.
-    setCachedPerPatchLintIssues(cache, patch.filename, cacheKey, [issue], [], 10, []);
+    setCachedPerPatchLintIssues({
+      cache,
+      patchFilename: patch.filename,
+      key: cacheKey,
+      issues: [issue],
+      suppressed: [],
+      lineCount: 10,
+      lintIgnore: [],
+    });
     await savePerPatchLintCache(projectRoot, cache);
     const loaded = await loadPerPatchLintCache(projectRoot);
 
@@ -335,7 +345,15 @@ describe('per-patch lint cache', () => {
       getCachedPerPatchLintIssues(loaded, patch.filename, cacheKey, ['checkjs-type-error'])
     ).toBeUndefined();
     // Order and duplicates are not significant.
-    setCachedPerPatchLintIssues(cache, patch.filename, cacheKey, [issue], [], 10, ['b', 'a', 'a']);
+    setCachedPerPatchLintIssues({
+      cache,
+      patchFilename: patch.filename,
+      key: cacheKey,
+      issues: [issue],
+      suppressed: [],
+      lineCount: 10,
+      lintIgnore: ['b', 'a', 'a'],
+    });
     expect(getCachedPerPatchLintIssues(cache, patch.filename, cacheKey, ['a', 'b'])).toBeDefined();
   });
 

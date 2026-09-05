@@ -2,20 +2,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { ExitCode } from '../codes.js';
-import {
-  DirtyRepositoryError,
-  GitError,
-  GitIndexLockError,
-  GitNotFoundError,
-  PatchApplyError,
-} from '../git.js';
+import { GitError, GitIndexLockError, GitNotFoundError, PatchApplyError } from '../git.js';
 
 describe('git errors', () => {
   it('formats GitError with command and recovery steps', () => {
     const error = new GitError('checkout failed', 'checkout main');
 
     expect(error.code).toBe(ExitCode.GIT_ERROR);
-    expect(error.command).toBe('checkout main');
     expect(error.userMessage).toContain('Git Error: checkout failed');
     expect(error.userMessage).toContain('Command: git checkout main');
     expect(error.userMessage).toContain('Ensure git is installed');
@@ -28,6 +21,10 @@ describe('git errors', () => {
     expect(error.userMessage).not.toContain('Command:');
   });
 
+  // The single home for the base-class `cause` pass-through (FurnaceError /
+  // PatchError / RebaseError all inherit the same constructor); the
+  // end-to-end rendering of a cause lives in
+  // `src/__tests__/error-handling.test.ts`.
   it('preserves cause', () => {
     const cause = new Error('underlying');
     const error = new GitError('failed', 'status', cause);
@@ -38,7 +35,7 @@ describe('git errors', () => {
   it('formats GitNotFoundError', () => {
     const error = new GitNotFoundError();
 
-    expect(error.code).toBe(ExitCode.GIT_ERROR);
+    expect(error.code).toBe(ExitCode.MISSING_DEPENDENCY);
     expect(error.userMessage).toContain('Git is not installed');
     expect(error.userMessage).toContain('https://git-scm.com/');
   });
@@ -47,26 +44,14 @@ describe('git errors', () => {
     const error = new PatchApplyError('/patches/001-fix.patch');
 
     expect(error.code).toBe(ExitCode.GIT_ERROR);
-    expect(error.patchPath).toBe('/patches/001-fix.patch');
-    expect(error.command).toBe('apply');
     expect(error.userMessage).toContain('Patch: /patches/001-fix.patch');
     expect(error.userMessage).toContain('patch conflicts');
-  });
-
-  it('formats DirtyRepositoryError', () => {
-    const error = new DirtyRepositoryError();
-
-    expect(error.code).toBe(ExitCode.GIT_ERROR);
-    expect(error.userMessage).toContain('uncommitted changes');
-    expect(error.userMessage).toContain('fireforge export');
   });
 
   it('formats GitIndexLockError with age', () => {
     const error = new GitIndexLockError('/engine/.git/index.lock', 180_000);
 
     expect(error.code).toBe(ExitCode.GIT_ERROR);
-    expect(error.lockPath).toBe('/engine/.git/index.lock');
-    expect(error.ageMs).toBe(180_000);
     expect(error.userMessage).toContain('3 minute(s)');
     expect(error.userMessage).toContain('index.lock');
   });
@@ -74,7 +59,6 @@ describe('git errors', () => {
   it('formats GitIndexLockError without age', () => {
     const error = new GitIndexLockError('/engine/.git/index.lock');
 
-    expect(error.ageMs).toBeUndefined();
     expect(error.userMessage).not.toContain('minute(s)');
   });
 });

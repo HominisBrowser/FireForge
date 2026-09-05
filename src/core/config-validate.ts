@@ -11,7 +11,7 @@ import type {
   TypecheckConfig,
 } from '../types/config.js';
 import { verbose } from '../utils/logger.js';
-import { parseObject } from '../utils/parse.js';
+import { type ParsedRecord, parseObject } from '../utils/parse.js';
 import { isContainedRelativePath, isExplicitAbsolutePath } from '../utils/paths.js';
 import {
   describeProductVersionIncompatibility,
@@ -25,6 +25,7 @@ import {
   PROJECT_LICENSES,
 } from '../utils/validation.js';
 import { SUPPORTED_CONFIG_ROOT_KEYS } from './config-paths.js';
+import { parseBuildAuditConfig } from './config-validate-build-audit.js';
 import { parsePatchLintFileSizeThresholds } from './config-validate-file-size.js';
 import { parsePatchPolicyBlock } from './config-validate-patch-policy.js';
 import { parseExternalToolchainsBlock, parseTestBlock } from './config-validate-test-toolchains.js';
@@ -36,7 +37,7 @@ import { parseExternalToolchainsBlock, parseTestBlock } from './config-validate-
  * `appId` required to be a reverse-domain identifier.
  */
 function parseIdentityFields(
-  rec: ReturnType<typeof parseObject>
+  rec: ParsedRecord
 ): Pick<FireForgeConfig, 'name' | 'vendor' | 'appId' | 'binaryName'> {
   // Empty strings would technically pass the
   // typeof-check below but are never valid for any of these identifier
@@ -86,9 +87,10 @@ function parseIdentityFields(
 /**
  * Parses and validates the required `firefox` block: version shape,
  * product allowlist, product/version cross-compatibility, and the
- * optional sha256 digest (normalized to lowercase).
+ * optional sha256 digest (normalized to lowercase), optional
+ * `allowUnverifiedDownload` opt-out, optional candidate directory.
  */
-function parseFirefoxBlock(rec: ReturnType<typeof parseObject>): FireForgeConfig['firefox'] {
+function parseFirefoxBlock(rec: ParsedRecord): FireForgeConfig['firefox'] {
   let firefoxRec;
   try {
     firefoxRec = rec.object('firefox');
@@ -127,6 +129,11 @@ function parseFirefoxBlock(rec: ReturnType<typeof parseObject>): FireForgeConfig
     );
   }
 
+  const allowUnverifiedDownload = firefoxRec.raw('allowUnverifiedDownload');
+  if (allowUnverifiedDownload !== undefined && typeof allowUnverifiedDownload !== 'boolean') {
+    throw new ConfigError('Config field "firefox.allowUnverifiedDownload" must be a boolean');
+  }
+
   const firefoxCandidate = optionalConfigString(firefoxRec, 'candidate', 'firefox.candidate');
   if (firefoxCandidate !== undefined && !isValidFirefoxCandidate(firefoxCandidate)) {
     throw new ConfigError(
@@ -138,12 +145,13 @@ function parseFirefoxBlock(rec: ReturnType<typeof parseObject>): FireForgeConfig
     version: firefoxVersion,
     product: firefoxProduct,
     ...(firefoxSha256 !== undefined ? { sha256: firefoxSha256.toLowerCase() } : {}),
+    ...(allowUnverifiedDownload !== undefined ? { allowUnverifiedDownload } : {}),
     ...(firefoxCandidate !== undefined ? { candidate: firefoxCandidate } : {}),
   };
 }
 
 /** Parses the optional `build` block (currently just `build.jobs`). */
-function parseBuildBlock(rec: ReturnType<typeof parseObject>, config: FireForgeConfig): void {
+function parseBuildBlock(rec: ParsedRecord, config: FireForgeConfig): void {
   const buildRec = optionalConfigObject(rec, 'build');
   if (buildRec) {
     config.build = {};
@@ -158,7 +166,7 @@ function parseBuildBlock(rec: ReturnType<typeof parseObject>, config: FireForgeC
 }
 
 /** Parses the optional `wire` block (currently just `wire.subscriptDir`). */
-function parseWireBlock(rec: ReturnType<typeof parseObject>, config: FireForgeConfig): void {
+function parseWireBlock(rec: ParsedRecord, config: FireForgeConfig): void {
   const wireRec = optionalConfigObject(rec, 'wire');
   if (wireRec) {
     config.wire = {};
@@ -173,7 +181,7 @@ function parseWireBlock(rec: ReturnType<typeof parseObject>, config: FireForgeCo
 }
 
 /** Parses the optional `license` field against the supported-license list. */
-function parseLicenseField(rec: ReturnType<typeof parseObject>, config: FireForgeConfig): void {
+function parseLicenseField(rec: ParsedRecord, config: FireForgeConfig): void {
   const licenseRaw = rec.raw('license');
   if (licenseRaw !== undefined) {
     if (typeof licenseRaw !== 'string') {
@@ -208,6 +216,10 @@ export function validateConfig(data: unknown): FireForgeConfig {
   const config: FireForgeConfig = { ...identity, firefox };
 
   parseBuildBlock(rec, config);
+  const buildAuditRaw = rec.raw('buildAudit');
+  if (buildAuditRaw !== undefined) {
+    config.buildAudit = parseBuildAuditConfig(buildAuditRaw);
+  }
   parseTestBlock(rec, config);
   parseExternalToolchainsBlock(rec, config);
   parseWireBlock(rec, config);
@@ -250,11 +262,7 @@ export function validateConfig(data: unknown): FireForgeConfig {
 
 // ── Internal helpers (wrap parseObject errors with ConfigError) ──
 
-function requireConfigString(
-  rec: ReturnType<typeof parseObject>,
-  key: string,
-  label?: string
-): string {
+function requireConfigString(rec: ParsedRecord, key: string, label?: string): string {
   const value = rec.raw(key);
   if (typeof value !== 'string') {
     throw new ConfigError(`Config field "${label ?? key}" must be a string`);
@@ -262,11 +270,7 @@ function requireConfigString(
   return value;
 }
 
-function optionalConfigString(
-  rec: ReturnType<typeof parseObject>,
-  key: string,
-  label: string
-): string | undefined {
+function optionalConfigString(rec: ParsedRecord, key: string, label: string): string | undefined {
   const value = rec.raw(key);
   if (value === undefined) return undefined;
   if (typeof value !== 'string') {
@@ -304,10 +308,7 @@ function parseMarkerComment(raw: unknown): string | undefined {
   return raw;
 }
 
-function optionalConfigObject(
-  rec: ReturnType<typeof parseObject>,
-  key: string
-): ReturnType<typeof parseObject> | undefined {
+function optionalConfigObject(rec: ParsedRecord, key: string): ParsedRecord | undefined {
   const value = rec.raw(key);
   if (value === undefined) return undefined;
   try {
@@ -403,10 +404,7 @@ function parseSeverityGate(raw: unknown, label: string): PatchLintSeverityGate |
  * the field-named message. Three identical inline copies of this shape were
  * part of what held `parsePatchLintBlock` at complexity 25/30.
  */
-function optionalPatchLintBoolean(
-  rec: ReturnType<typeof parseObject>,
-  key: string
-): boolean | undefined {
+function optionalPatchLintBoolean(rec: ParsedRecord, key: string): boolean | undefined {
   const value = rec.raw(key);
   if (value === undefined) return undefined;
   if (typeof value !== 'boolean') {
@@ -424,9 +422,7 @@ const PATCH_LINT_SEVERITY_GATE_KEYS = [
   'undefinedIdentifiers',
 ] as const;
 
-function parsePatchLintBlock(
-  rec: ReturnType<typeof parseObject>
-): NonNullable<FireForgeConfig['patchLint']> {
+function parsePatchLintBlock(rec: ParsedRecord): NonNullable<FireForgeConfig['patchLint']> {
   const out: NonNullable<FireForgeConfig['patchLint']> = {};
 
   const checkJs = optionalPatchLintBoolean(rec, 'checkJs');
@@ -527,7 +523,7 @@ function parseShimPath(raw: unknown, label: string): string {
  * project path must be a contained relative path so `--project` / CLI
  * scripts can't escape the project root.
  */
-function parseTypecheckBlock(rec: ReturnType<typeof parseObject>): TypecheckConfig {
+function parseTypecheckBlock(rec: ParsedRecord): TypecheckConfig {
   const projectsRaw = rec.raw('projects');
   if (projectsRaw === undefined) {
     throw new ConfigError('Config field "typecheck.projects" is required when "typecheck" is set');
@@ -542,13 +538,11 @@ function parseTypecheckBlock(rec: ReturnType<typeof parseObject>): TypecheckConf
   for (let i = 0; i < projectsRaw.length; i++) {
     const entry: unknown = projectsRaw[i];
     if (typeof entry !== 'string' || entry.trim() === '') {
-      throw new ConfigError(
-        `Config field "typecheck.projects[${String(i)}]" must be a non-empty string`
-      );
+      throw new ConfigError(`Config field "typecheck.projects[${i}]" must be a non-empty string`);
     }
     if (!isContainedRelativePath(entry)) {
       throw new ConfigError(
-        `Config field "typecheck.projects[${String(i)}]" must be a project-relative path`
+        `Config field "typecheck.projects[${i}]" must be a project-relative path`
       );
     }
     projects.push(entry);

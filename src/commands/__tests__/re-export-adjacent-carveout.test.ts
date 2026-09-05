@@ -32,6 +32,8 @@ import { reportAdjacentUnmanagedFiles } from '../re-export-adjacent.js';
 const OWNED = 'browser/themes/shared/hominis/fonts.css';
 const FONT = 'browser/themes/shared/hominis/nebula-sans-regular.woff2';
 const STRAY = 'browser/themes/shared/hominis/scratch.css';
+/** The directory OWNED lives in — the anchor every notice names. */
+const ANCHOR_DIR = 'browser/themes/shared/hominis';
 
 const patch: PatchMetadata = {
   filename: '101-fonts.patch',
@@ -76,7 +78,13 @@ describe('--expect-unmanaged carve-out', () => {
     });
 
     expect(refused).toBe(true);
-    expect(ctx.refusals).toEqual([{ patchFilename: '101-fonts.patch', files: [FONT] }]);
+    expect(ctx.refusals).toEqual([
+      {
+        patchFilename: '101-fonts.patch',
+        files: [FONT],
+        anchored: [`${FONT} (beside engine/${ANCHOR_DIR})`],
+      },
+    ]);
   });
 
   it('admits an approved path without refusing, and still reports it', async () => {
@@ -112,7 +120,51 @@ describe('--expect-unmanaged carve-out', () => {
     });
 
     expect(refused).toBe(true);
-    expect(ctx.refusals).toEqual([{ patchFilename: '101-fonts.patch', files: [STRAY] }]);
+    expect(ctx.refusals).toEqual([
+      {
+        patchFilename: '101-fonts.patch',
+        files: [STRAY],
+        anchored: [`${STRAY} (beside engine/${ANCHOR_DIR})`],
+      },
+    ]);
     expect(vi.mocked(warn).mock.calls.flat().join('\n')).toContain(STRAY);
+  });
+
+  it('names the owned directory that made each file adjacent', async () => {
+    // The case the anchor exists for: a patch owning files in two
+    // directories. Without the anchor the notice names the offender and the
+    // patch but not WHICH ownership it sits beside, so an unattended run
+    // cannot triage the refusal from its output alone.
+    const ownedA = 'browser/base/content/test/about/browser_a.js';
+    const ownedB = 'browser/base/content/test/contextMenu/browser_b.js';
+    const strayInB = 'browser/base/content/test/contextMenu/browser_peer.js';
+    const multi: PatchMetadata = { ...patch, filesAffected: [ownedA, ownedB] };
+    vi.mocked(getUntrackedFilesInDir).mockImplementation((_engine: string, dir: string) =>
+      Promise.resolve(dir === 'browser/base/content/test/contextMenu' ? [strayInB] : [])
+    );
+    const ctx = makeCtx([]);
+
+    const refused = await reportAdjacentUnmanagedFiles({
+      patch: multi,
+      paths,
+      manifest: { patches: [multi] } as PatchesManifest,
+      currentFilesAffected: [ownedA, ownedB],
+      ctx,
+    });
+
+    expect(refused).toBe(true);
+    expect(ctx.refusals).toEqual([
+      {
+        patchFilename: '101-fonts.patch',
+        files: [strayInB],
+        anchored: [`${strayInB} (beside engine/browser/base/content/test/contextMenu)`],
+      },
+    ]);
+    const warned = vi.mocked(warn).mock.calls.flat().join('\n');
+    expect(warned).toContain('beside engine/browser/base/content/test/contextMenu');
+    // The rule itself is stated, so a reader need not infer it from the example.
+    expect(warned).toContain('a directory this patch already owns a file in');
+    // The anchor is the OWNING directory, never the unrelated sibling.
+    expect(warned).not.toContain('beside engine/browser/base/content/test/about');
   });
 });

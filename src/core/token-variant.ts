@@ -45,26 +45,26 @@ const QUALIFIER_PATTERN = /^:[a-zA-Z][a-zA-Z0-9-]*(?:\(([^()]*)\))?$/;
 
 /**
  * Splits a run of consecutive attribute fragments into its groups, or
- * returns `null` when the run is not exactly that — a group that does not
+ * returns `undefined` when the run is not exactly that — a group that does not
  * open with `[`, an unclosed group, an empty run, or a group whose name or
  * value is not identifier-safe.
  *
  * @param run - The `[…][…]` text with no `:root` prefix
- * @returns The individual fragments, or null when the run is not valid
+ * @returns The individual fragments, or undefined when the run is not valid
  */
-function splitAttributeGroups(run: string): string[] | null {
+function splitAttributeGroups(run: string): string[] | undefined {
   const groups: string[] = [];
   let cursor = 0;
   while (cursor < run.length) {
-    if (run[cursor] !== '[') return null;
+    if (run[cursor] !== '[') return undefined;
     const close = run.indexOf(']', cursor);
-    if (close === -1) return null;
+    if (close === -1) return undefined;
     const group = run.slice(cursor, close + 1);
-    if (!ATTRIBUTE_FRAGMENT_PATTERN.test(group)) return null;
+    if (!ATTRIBUTE_FRAGMENT_PATTERN.test(group)) return undefined;
     groups.push(group);
     cursor = close + 1;
   }
-  return groups.length > 0 ? groups : null;
+  return groups.length > 0 ? groups : undefined;
 }
 
 /** Rewrites `=value` / `='value'` to the double-quoted Mozilla convention. */
@@ -109,10 +109,11 @@ export function validateVariantSelector(raw: unknown): VariantValidation {
   // The parse must have consumed the WHOLE fragment: anything it declined to
   // read (a stray space, a trailing combinator) is text the matcher would
   // not see either, so accepting it would author a block nothing can find.
-  if (parts === null || `${parts.attributes}${parts.qualifier}` !== `:root${value}`) return reject;
+  if (parts === undefined || `${parts.attributes}${parts.qualifier}` !== `:root${value}`)
+    return reject;
 
   const groups = splitAttributeGroups(parts.attributes.slice(':root'.length));
-  if (groups === null) return reject;
+  if (groups === undefined) return reject;
 
   let qualifier = '';
   if (parts.qualifier !== '') {
@@ -123,7 +124,7 @@ export function validateVariantSelector(raw: unknown): VariantValidation {
       qualifier = parts.qualifier;
     } else {
       const innerGroups = splitAttributeGroups(inner);
-      if (innerGroups === null) return reject;
+      if (innerGroups === undefined) return reject;
       const name = parts.qualifier.slice(0, parts.qualifier.indexOf('('));
       qualifier = `${name}(${innerGroups.map(normalizeAttributeFragment).join('')})`;
     }
@@ -157,7 +158,7 @@ interface RootSelectorParts {
 
 /**
  * Splits the `:root[…]` selector on `line` into its attribute run and any
- * trailing qualifier, or `null` when the line carries none.
+ * trailing qualifier, or `undefined` when the line carries none.
  *
  * Index arithmetic rather than `/:root\[[^{]*\]/`: `[^{]` also matches `]`,
  * so that pattern backtracks quadratically on a line repeating `:root[`
@@ -178,9 +179,9 @@ interface RootSelectorParts {
  * silently skipped the light one, which is precisely the half-finished
  * themed edit `THEME_ATTRIBUTE_VARIANTS` exists to prevent.
  */
-function rootAttributeSelector(line: string): RootSelectorParts | null {
+function rootAttributeSelector(line: string): RootSelectorParts | undefined {
   const start = line.indexOf(':root[');
-  if (start === -1) return null;
+  if (start === -1) return undefined;
   const brace = line.indexOf('{', start);
   const limit = brace === -1 ? line.length : brace;
 
@@ -192,7 +193,7 @@ function rootAttributeSelector(line: string): RootSelectorParts | null {
     cursor = close + 1;
     end = cursor;
   }
-  if (end === start + ':root'.length) return null;
+  if (end === start + ':root'.length) return undefined;
 
   return { attributes: line.slice(start, end), qualifier: line.slice(end, limit).trim() };
 }
@@ -211,13 +212,13 @@ interface VariantBlock {
 /**
  * Finds the top-level `:root<variant>` block whose attribute selector
  * matches `variant` (compared canonically). Returns the opening-brace and
- * closing-brace line indices, or `null` when no such block exists.
+ * closing-brace line indices, or `undefined` when no such block exists.
  *
  * Scans a comment-stripped mirror of `lines` so braces inside comments do
  * not offset the depth counter; the returned indices line up with the
  * original array.
  */
-function findVariantBlock(lines: string[], variant: string): VariantBlock | null {
+function findVariantBlock(lines: string[], variant: string): VariantBlock | undefined {
   const stripped = stripBlockCommentsInLines(lines);
   // The request goes through the same parse as the candidate lines, so a
   // variant carrying its own `:not(…)` tail is compared tail-to-tail rather
@@ -227,10 +228,9 @@ function findVariantBlock(lines: string[], variant: string): VariantBlock | null
   const want = canonicalSelector(requested?.attributes ?? `:root${variant}`);
   const wantQualifier = canonicalSelector(requested?.qualifier ?? '');
 
-  for (let i = 0; i < stripped.length; i++) {
-    const line = stripped[i] ?? '';
+  for (const [i, line] of stripped.entries()) {
     const selector = rootAttributeSelector(line);
-    if (selector === null || canonicalSelector(selector.attributes) !== want) continue;
+    if (selector === undefined || canonicalSelector(selector.attributes) !== want) continue;
     // An UNqualified request still matches a qualified block: that is the
     // 0.44.2 behaviour `variantBlockQualifier` exists to report, since
     // silently skipping the block is the worse failure. A request that names
@@ -254,7 +254,7 @@ function findVariantBlock(lines: string[], variant: string): VariantBlock | null
     if (close === -1) continue;
     return { open: openLine, close, qualifier: selector.qualifier };
   }
-  return null;
+  return undefined;
 }
 
 /**
@@ -265,8 +265,8 @@ function findVariantBlock(lines: string[], variant: string): VariantBlock | null
  */
 function findVariantBlockInsertionPoint(lines: string[]): number {
   const stripped = stripBlockCommentsInLines(lines);
-  for (let i = 0; i < stripped.length; i++) {
-    if (/^\s*:root\s*\{/.test(stripped[i] ?? '')) {
+  for (const [i, line] of stripped.entries()) {
+    if (/^\s*:root\s*\{/.test(line)) {
       const close = findBlockCloseIndex(stripped, i);
       if (close !== -1) return close + 1;
     }
@@ -281,7 +281,7 @@ function findVariantBlockInsertionPoint(lines: string[]): number {
  * the block, which is only wanted for the explicit `--variant` flow.
  */
 export function variantBlockExists(lines: string[], variant: string): boolean {
-  return findVariantBlock(lines, variant) !== null;
+  return findVariantBlock(lines, variant) !== undefined;
 }
 
 /**
@@ -342,8 +342,8 @@ export function findVariantBlockDeclaration(
     .join('\n')
     .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, ' '))
     .split('\n');
-  for (let i = 0; i < stripped.length; i++) {
-    if ((stripped[i] ?? '').includes(`${tokenName}:`)) return { line: block.open + i + 1 };
+  for (const [i, line] of stripped.entries()) {
+    if (line.includes(`${tokenName}:`)) return { line: block.open + i + 1 };
   }
   return undefined;
 }

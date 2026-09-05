@@ -86,13 +86,7 @@ export function stripBlockCommentsInLines(lines: string[]): string[] {
 export function findDarkRootInsertionIndex(lines: string[]): number | null {
   const stripped = stripBlockCommentsInLines(lines);
 
-  let darkMediaLine = -1;
-  for (let i = 0; i < stripped.length; i++) {
-    if (/prefers-color-scheme:\s*dark/.test(stripped[i] ?? '')) {
-      darkMediaLine = i;
-      break;
-    }
-  }
+  const darkMediaLine = stripped.findIndex((line) => /prefers-color-scheme:\s*dark/.test(line));
   if (darkMediaLine === -1) return null;
 
   // Walk the comment-stripped lines after the @media header and find
@@ -170,13 +164,7 @@ export function findBlockCloseIndex(stripped: string[], startLine: number): numb
  */
 export function findDarkMediaCloseIndex(lines: string[]): number {
   const stripped = stripBlockCommentsInLines(lines);
-  let darkMediaLine = -1;
-  for (let i = 0; i < stripped.length; i++) {
-    if (/prefers-color-scheme:\s*dark/.test(stripped[i] ?? '')) {
-      darkMediaLine = i;
-      break;
-    }
-  }
+  const darkMediaLine = stripped.findIndex((line) => /prefers-color-scheme:\s*dark/.test(line));
   if (darkMediaLine === -1) return -1;
 
   return findBlockCloseIndex(stripped, darkMediaLine);

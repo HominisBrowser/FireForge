@@ -22,7 +22,8 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
-import { appendHistory, confirmDestructive } from '../../core/destructive.js';
+import { confirmDestructive } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import { patchNameSlug } from '../../core/patch-export.js';
 import {
   buildPatchQueueContext,
@@ -54,6 +55,8 @@ import {
   pickDefined,
   resolveWaitLockSeconds,
 } from '../../utils/options.js';
+import { parsePositiveIntegerFlag } from '../../utils/validation.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 import { projectReorder } from './reorder.js';
 
@@ -156,7 +159,7 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
         );
         if (orderHolder) {
           throw new InvalidArgumentError(
-            `Order ${String(input.newOrder)} was claimed by ${orderHolder.filename} concurrently. Pick an unused order, or use "fireforge patch reorder" to renumber siblings.`,
+            `Order ${input.newOrder} was claimed by ${orderHolder.filename} concurrently. Pick an unused order, or use "fireforge patch reorder" to renumber siblings.`,
             '--order'
           );
         }
@@ -232,8 +235,9 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
         await savePatchesManifest(patchesDir, fresh);
       }
 
-      try {
-        await appendHistory(patchesDir, {
+      await appendHistoryBestEffort(
+        patchesDir,
+        {
           operation: 'patch-rename',
           args: {
             oldFilename: target.filename,
@@ -249,12 +253,9 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
           ...(input.yes === true ? { yes: true } : {}),
           ...(input.forceUnsafe === true ? { unsafeOverride: true } : {}),
           result: 'ok',
-        });
-      } catch (historyError: unknown) {
-        warn(
-          `History log append failed after patch rename committed (${newFilename}): ${toError(historyError).message}`
-        );
-      }
+        },
+        `patch rename committed (${newFilename})`
+      );
     },
     { waitLockSeconds: input.waitLockSeconds, command: 'patch rename' }
   );
@@ -365,7 +366,7 @@ async function assertRenamePreconditions(
     );
     if (holder) {
       throw new InvalidArgumentError(
-        `Order ${String(options.order)} is already used by ${holder.filename}. Pick an unused order, or use "fireforge patch reorder ${target.filename} --to ${String(options.order)}" to renumber siblings.`,
+        `Order ${options.order} is already used by ${holder.filename}. Pick an unused order, or use "fireforge patch reorder ${target.filename} --to ${options.order}" to renumber siblings.`,
         '--order'
       );
     }
@@ -378,7 +379,7 @@ async function assertRenamePreconditions(
       const projectedErrors = lintPatchQueue(projected).filter((i) => i.severity === 'error');
       if (projectedErrors.length > 0) {
         throw new InvalidArgumentError(
-          `Refusing to run patch rename: the order change would introduce ${String(projectedErrors.length)} cross-patch lint error(s):\n  ${projectedErrors
+          `Refusing to run patch rename: the order change would introduce ${projectedErrors.length} cross-patch lint error(s):\n  ${projectedErrors
             .map(formatPatchLintIssue)
             .join('\n  ')}\nPass --force-unsafe to override.`,
           '--force-unsafe'
@@ -419,7 +420,7 @@ function buildRenameSummary(
     );
   }
   if (plan.orderChanging && options.order !== undefined) {
-    summary.push(`order: ${String(target.order)} → ${String(options.order)}`);
+    summary.push(`order: ${target.order} → ${options.order}`);
   }
   if (plan.categoryChanging) {
     summary.push(`category: ${target.category} → ${plan.newCategory}`);
@@ -512,14 +513,7 @@ export async function patchRenameCommand(
     conflicts: null,
   });
 
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Rename cancelled');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Rename cancelled')) return;
 
   await commitRenameUnderLock({
     patchesDir: paths.patches,
@@ -572,16 +566,7 @@ export function registerPatchRename(parent: Command, context: CommandContext): v
     .option(
       '--order <n>',
       'Move the patch to this exact unused order; refuses on collision — use "patch reorder" to renumber siblings',
-      commanderArgParser((raw: string) => {
-        const n = Number.parseInt(raw, 10);
-        if (!Number.isInteger(n) || n <= 0) {
-          throw new InvalidArgumentError(
-            `--order must be a positive integer, got "${raw}".`,
-            '--order'
-          );
-        }
-        return n;
-      })
+      commanderArgParser((raw: string) => parsePositiveIntegerFlag('--order', raw))
     )
     .option(
       '-d, --description <text>',

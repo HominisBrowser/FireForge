@@ -95,13 +95,13 @@ describe('updatePatchAndMetadata onCommitted hook', () => {
     };
 
     await expect(
-      updatePatchAndMetadata(
+      updatePatchAndMetadata({
         patchesDir,
-        '001-infra-a.patch',
-        'new body',
-        { filesAffected: ['fake/a.txt', 'fake/b.txt'] },
-        hook
-      )
+        filename: '001-infra-a.patch',
+        newContent: 'new body',
+        updates: { filesAffected: ['fake/a.txt', 'fake/b.txt'] },
+        onCommitted: hook,
+      })
     ).resolves.toBe(true);
 
     // Patch body: the new content landed.
@@ -124,13 +124,13 @@ describe('updatePatchAndMetadata onCommitted hook', () => {
       return Promise.resolve();
     };
 
-    await updatePatchAndMetadata(
+    await updatePatchAndMetadata({
       patchesDir,
-      '001-infra-a.patch',
-      'new body',
-      { filesAffected: ['fake/a.txt'] },
-      hook
-    );
+      filename: '001-infra-a.patch',
+      newContent: 'new body',
+      updates: { filesAffected: ['fake/a.txt'] },
+      onCommitted: hook,
+    });
 
     expect(hookInvocations).toBe(1);
     expect(await readText(join(patchesDir, '001-infra-a.patch'))).toBe('new body');
@@ -139,13 +139,13 @@ describe('updatePatchAndMetadata onCommitted hook', () => {
   it('does not serialize fallback sourceVersion onto unrelated legacy rows', async () => {
     await seedLegacyManifest(patchesDir);
 
-    await updatePatchAndMetadata(
+    await updatePatchAndMetadata({
       patchesDir,
-      '002-infra-b.patch',
-      'new b body',
-      { filesAffected: ['fake/b.txt', 'fake/b2.txt'] },
-      undefined
-    );
+      filename: '002-infra-b.patch',
+      newContent: 'new b body',
+      updates: { filesAffected: ['fake/b.txt', 'fake/b2.txt'] },
+      onCommitted: undefined,
+    });
 
     const raw = JSON.parse(await readText(join(patchesDir, 'patches.json'))) as {
       patches: Array<{

@@ -5,12 +5,13 @@ import { validateBrandOverride } from '../core/brand-validation.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
-import { hasBuildArtifacts, machPackageCapture } from '../core/mach.js';
+import { hasBuildArtifacts, type MachCommandResult, machPackageCapture } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import { explainMachError } from '../core/mach-error-hints.js';
 import { BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PackageOptions } from '../types/commands/index.js';
+import { elapsedSince } from '../utils/elapsed.js';
 import { error, info, intro, outro, verbose } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 
@@ -53,7 +54,7 @@ export async function packageCommand(projectRoot: string, options: PackageOption
   info('This may take a while.\n');
 
   const startTime = Date.now();
-  let result: Awaited<ReturnType<typeof machPackageCapture>>;
+  let result: MachCommandResult;
 
   try {
     // `machPackageCapture` streams output live AND captures the tail for
@@ -70,10 +71,7 @@ export async function packageCommand(projectRoot: string, options: PackageOption
     );
   }
 
-  const duration = Date.now() - startTime;
-  const minutes = Math.floor(duration / 60000);
-  const seconds = Math.floor((duration % 60000) / 1000);
-  const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+  const timeStr = elapsedSince(startTime);
 
   if (result.exitCode !== 0) {
     error(`Packaging failed after ${timeStr}`);

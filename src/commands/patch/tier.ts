@@ -17,14 +17,15 @@
 
 import { Command, Option } from 'commander';
 
-import { appendHistory, confirmDestructive } from '../../core/destructive.js';
+import { confirmDestructive } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import { updatePatchMetadata } from '../../core/patch-export.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchTierOptions } from '../../types/commands/index.js';
-import { toError } from '../../utils/errors.js';
-import { info, intro, outro, warn } from '../../utils/logger.js';
+import { info, intro, outro } from '../../utils/logger.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /**
@@ -95,14 +96,7 @@ export async function patchTierCommand(
     yes: options.yes === true,
     dryRun: isDryRun,
   });
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Cancelled — no changes made');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Cancelled — no changes made')) return;
 
   // Single write under the patch directory lock (delegated inside
   // updatePatchMetadata). Setting routes through `updates`; clearing
@@ -117,8 +111,9 @@ export async function patchTierCommand(
     await updatePatchMetadata(paths.patches, target.filename, {}, ['tier']);
   }
 
-  try {
-    await appendHistory(paths.patches, {
+  await appendHistoryBestEffort(
+    paths.patches,
+    {
       operation: 'patch-tier',
       args: {
         filename: target.filename,
@@ -127,12 +122,9 @@ export async function patchTierCommand(
       },
       ...(options.yes === true ? { yes: true } : {}),
       result: 'ok',
-    });
-  } catch (historyError: unknown) {
-    warn(
-      `History log append failed after patch tier committed (${target.filename}): ${toError(historyError).message}`
-    );
-  }
+    },
+    `patch tier committed (${target.filename})`
+  );
 
   info(`${target.filename}: ${action}.`);
   outro('Patch tier complete');

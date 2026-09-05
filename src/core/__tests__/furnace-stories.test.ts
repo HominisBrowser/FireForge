@@ -26,15 +26,9 @@ vi.mock('../license-headers.js', () => ({
 
 import { readdir } from 'node:fs/promises';
 
-import { nativePath } from '../../test-utils/index.js';
 import { ensureDir, pathExists, removeDir, removeFile, writeText } from '../../utils/fs.js';
 import { loadFurnaceConfig } from '../furnace-config.js';
-import {
-  cleanStories,
-  generateStoryContent,
-  getStoriesDir,
-  syncStories,
-} from '../furnace-stories.js';
+import { cleanStories, generateStoryContent, syncStories } from '../furnace-stories.js';
 
 const mockReaddir = vi.mocked(readdir);
 const mockPathExists = vi.mocked(pathExists);
@@ -93,14 +87,6 @@ describe('generateStoryContent', () => {
   it('uses default elements path when no modulePath', () => {
     const content = generateStoryContent('moz-button', 'Button', 'stock');
     expect(content).toContain('chrome://global/content/elements/moz-button.mjs');
-  });
-});
-
-describe('getStoriesDir', () => {
-  it('returns the correct path', () => {
-    expect(getStoriesDir('/engine')).toBe(
-      nativePath('/engine/browser/components/storybook/stories')
-    );
   });
 });
 

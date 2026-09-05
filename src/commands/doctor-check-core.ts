@@ -103,15 +103,6 @@ export interface DoctorCheckDefinition {
 }
 
 /**
- * Resolves a {@link DoctorCheck} to its effective severity. `severity` is the
- * single source of truth; this exists so every consumer of a
- * `DoctorCheck[]` reads it the same way.
- */
-export function resolveDoctorSeverity(check: DoctorCheck): 'ok' | 'warning' | 'error' {
-  return check.severity;
-}
-
-/**
  * Builds a DoctorCheck object representing a successful "OK" check.
  */
 export function ok(name: string, message = 'OK'): DoctorCheck {

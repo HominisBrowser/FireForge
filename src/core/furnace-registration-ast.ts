@@ -74,11 +74,6 @@ function formatMarkerSuffix(markerComment: string | undefined): string {
   return `  // ${markerComment}:`;
 }
 
-// Re-export from split modules so existing import sites continue working
-export { removeCustomElementRegistration } from './furnace-registration-remove.js';
-
-// Re-export constants so existing import sites continue working
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

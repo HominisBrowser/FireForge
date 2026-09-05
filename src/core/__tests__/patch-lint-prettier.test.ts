@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { join } from 'node:path';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { pathExists } from '../../utils/fs.js';
@@ -10,6 +12,10 @@ vi.mock('../../utils/fs.js', () => ({ pathExists: vi.fn(() => Promise.resolve(fa
 vi.mock('../../utils/logger.js', () => ({ verbose: vi.fn() }));
 
 const FILES = ['browser/modules/a.sys.mjs', 'browser/modules/b.sys.mjs'];
+
+// The resolver builds this with the host's separator, so the expectation
+// must too or a Windows runner fails on `\` alone.
+const ENGINE_PRETTIER = join('/engine', 'node_modules', '.bin', 'prettier');
 
 function execResult(
   exitCode: number,
@@ -48,13 +54,11 @@ describe('invokePatchLintPrettier', () => {
   });
 
   it('prefers a prettier installed in the engine tree', async () => {
-    vi.mocked(pathExists).mockImplementation((p: string) =>
-      Promise.resolve(p === '/engine/node_modules/.bin/prettier')
-    );
+    vi.mocked(pathExists).mockImplementation((p: string) => Promise.resolve(p === ENGINE_PRETTIER));
     vi.mocked(exec).mockResolvedValue(execResult(0));
     await invokePatchLintPrettier('/engine', '/project', FILES, 'warning');
     expect(exec).toHaveBeenCalledWith(
-      '/engine/node_modules/.bin/prettier',
+      ENGINE_PRETTIER,
       ['--check', ...FILES],
       expect.objectContaining({ cwd: '/engine' })
     );

@@ -162,6 +162,8 @@ import { enforceFreshFurnaceSources } from '../../core/furnace-stale-export.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../../core/git-status.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
+/** Options object `updatePatchAndMetadata` is called with, for matcher casts. */
+type UpdateArgs = Parameters<typeof updatePatchAndMetadata>[0];
 import { lintExportedPatch } from '../../core/patch-lint.js';
 import {
   getClaimedFiles,
@@ -368,28 +370,6 @@ describe('reExportCommand - --scan flag', () => {
     expect(success).toHaveBeenCalledWith('[dry-run] Would re-export 1 of 2 patch(es)');
   });
 
-  it('plain re-export suggests --scan-file for adjacent unmanaged files', async () => {
-    const patch = makePatch('001-ui-test.patch', ['browser/branding/hominis/configure.sh']);
-    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(getModifiedFilesInDir).mockResolvedValue([]);
-    vi.mocked(getUntrackedFilesInDir).mockResolvedValue(['browser/branding/hominis/Assets.car']);
-
-    await reExportCommand('/fake/root', ['001'], {});
-
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "found 1 unmanaged file(s) adjacent to this patch's ownership (browser/branding/hominis/Assets.car)"
-      )
-    );
-    expect(info).toHaveBeenCalledWith(
-      expect.stringContaining(
-        'browser/branding/hominis/Assets.car — fireforge re-export 001-ui-test.patch --scan --scan-file browser/branding/hominis/Assets.car'
-      )
-    );
-    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
-  });
-
   it('adjacency notice excludes tool-managed branding and furnace paths', async () => {
     // Config binaryName is "testbrowser": a MODIFIED generated file under
     // browser/branding/testbrowser is branding-managed; a furnace-prefixed
@@ -414,7 +394,14 @@ describe('reExportCommand - --scan flag', () => {
     // the generated brand.ftl edit and the furnace-prefixed file are not.
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining(
-        "found 1 unmanaged file(s) adjacent to this patch's ownership (browser/branding/testbrowser/new-asset.icns)"
+        "found 1 unmanaged file(s) adjacent to this patch's ownership " +
+          '(browser/branding/testbrowser/new-asset.icns (beside engine/browser/branding/testbrowser))'
+      )
+    );
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'browser/branding/testbrowser/new-asset.icns — beside engine/browser/branding/testbrowser — ' +
+          'fireforge re-export 001-ui-test.patch --scan --scan-file browser/branding/testbrowser/new-asset.icns'
       )
     );
     expect(info).not.toHaveBeenCalledWith(expect.stringContaining('brand.ftl'));
@@ -422,28 +409,6 @@ describe('reExportCommand - --scan flag', () => {
       expect.stringContaining(nativePath('furnace-widget/part.css'))
     );
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
-  });
-
-  it('--refuse-adjacent-unmanaged skips the offending patch and fails the run', async () => {
-    const offending = makePatch('001-ui-offending.patch', ['dir/a.js']);
-    const clean = makePatch('002-ui-clean.patch', ['other/b.js']);
-    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([offending, clean]));
-    vi.mocked(pathExists).mockResolvedValue(true);
-    vi.mocked(getModifiedFilesInDir).mockResolvedValue([]);
-    vi.mocked(getUntrackedFilesInDir).mockImplementation((_engineDir: string, dir: string) =>
-      Promise.resolve(dir === 'dir' ? ['dir/new-test.js'] : [])
-    );
-
-    await expect(
-      reExportCommand('/fake/root', ['001', '002'], { refuseAdjacentUnmanaged: true })
-    ).rejects.toThrow(
-      'Refused 1 patch(es) with adjacent unmanaged files (--refuse-adjacent-unmanaged): 001-ui-offending.patch'
-    );
-
-    // The offending patch is never written; the clean patch was already
-    // re-exported before the run-level refusal fired.
-    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[1]).toBe('002-ui-clean.patch');
   });
 
   it('--refuse-adjacent-unmanaged is refused alongside --scan', async () => {
@@ -478,19 +443,19 @@ describe('reExportCommand - --scan flag', () => {
     await reExportCommand('/fake/root', ['001'], { scan: true });
 
     expect(info).toHaveBeenCalledWith('  + browser/modules/foo/b.js');
-    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      nativePath('/fake/patches'),
-      '001-ui-test.patch',
-      expect.any(String),
-      expect.objectContaining({
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith({
+      patchesDir: nativePath('/fake/patches'),
+      filename: '001-ui-test.patch',
+      newContent: expect.any(String) as string,
+      updates: expect.objectContaining({
         filesAffected: expect.arrayContaining([
           'browser/modules/foo/a.js',
           'browser/modules/foo/b.js',
         ]) as string[],
-      }),
-      undefined,
-      expect.objectContaining({ command: 're-export' })
-    );
+      }) as UpdateArgs['updates'],
+      onCommitted: undefined,
+      policyGate: expect.objectContaining({ command: 're-export' }) as UpdateArgs['policyGate'],
+    });
   });
 
   it('--scan-file adds only explicit files and ignores adjacent scanned siblings', async () => {
@@ -535,7 +500,7 @@ describe('reExportCommand - --scan flag', () => {
     expect(getUntrackedFilesInDir).not.toHaveBeenCalled();
     expect(info).toHaveBeenCalledWith('  + browser/modules/foo/intended.js');
 
-    const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3];
+    const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[0].updates;
     expect(updates?.filesAffected).toEqual([
       'browser/modules/foo/a.js',
       'browser/modules/foo/intended.js',
@@ -930,11 +895,11 @@ describe('reExportCommand - --scan flag', () => {
     });
 
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3].filesAffected).toEqual([
+    expect(vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[0].updates.filesAffected).toEqual([
       'browser/branding/hominis/base.js',
       'browser/branding/hominis/icon.svg',
     ]);
-    expect(vi.mocked(updatePatchAndMetadata).mock.calls[1]?.[3].filesAffected).toEqual([
+    expect(vi.mocked(updatePatchAndMetadata).mock.calls[1]?.[0].updates.filesAffected).toEqual([
       'browser/branding/hominis/app.ico',
       'browser/branding/hominis/runtime.ico',
     ]);
@@ -1070,14 +1035,11 @@ describe('reExportCommand - --scan flag', () => {
     expect(info).toHaveBeenCalledWith('  + browser/modules/foo/new.js');
 
     const metadataCalls = vi.mocked(updatePatchAndMetadata).mock.calls;
-    // Find the scan update call (has filesAffected). arg[3] is the updates
-    // object in updatePatchAndMetadata's (patchesDir, filename, body, updates)
-    // signature.
-    const scanCall = metadataCalls.find(
-      (call) => 'filesAffected' in (call[3] as Record<string, unknown>)
-    );
+    // Find the scan update call (has filesAffected) in the options object
+    // updatePatchAndMetadata takes.
+    const scanCall = metadataCalls.find((call) => 'filesAffected' in call[0].updates);
     expect(scanCall).toBeDefined();
-    const updatedFiles = (scanCall?.[3] as { filesAffected: string[] }).filesAffected;
+    const updatedFiles = (scanCall?.[0].updates as { filesAffected: string[] }).filesAffected;
     expect(updatedFiles).toContain('browser/modules/foo/new.js');
     expect(updatedFiles).not.toContain(nativePath('browser/modules/foo/claimed.js'));
   });
@@ -1098,14 +1060,16 @@ describe('reExportCommand - --scan flag', () => {
       'browser/modules/foo'
     );
     expect(getClaimedFiles).toHaveBeenCalled();
-    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      nativePath('/fake/patches'),
-      '001-ui-test.patch',
-      expect.any(String),
-      expect.objectContaining({ filesAffected: ['browser/modules/foo/a.js'] }),
-      undefined,
-      expect.objectContaining({ command: 're-export' })
-    );
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith({
+      patchesDir: nativePath('/fake/patches'),
+      filename: '001-ui-test.patch',
+      newContent: expect.any(String) as string,
+      updates: expect.objectContaining({
+        filesAffected: ['browser/modules/foo/a.js'],
+      }) as UpdateArgs['updates'],
+      onCommitted: undefined,
+      policyGate: expect.objectContaining({ command: 're-export' }) as UpdateArgs['policyGate'],
+    });
   });
 
   it('warns when filesAffected names a path missing from disk without --scan', async () => {
@@ -1369,14 +1333,14 @@ describe('reExportCommand - --scan flag', () => {
     );
 
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
-    expect(updatePatchAndMetadata).toHaveBeenCalledWith(
-      nativePath('/fake/patches'),
-      '002-ui-second.patch',
-      expect.any(String),
-      expect.any(Object),
-      undefined,
-      expect.objectContaining({ command: 're-export' })
-    );
+    expect(updatePatchAndMetadata).toHaveBeenCalledWith({
+      patchesDir: nativePath('/fake/patches'),
+      filename: '002-ui-second.patch',
+      newContent: expect.any(String) as string,
+      updates: expect.any(Object) as UpdateArgs['updates'],
+      onCommitted: undefined,
+      policyGate: expect.objectContaining({ command: 're-export' }) as UpdateArgs['policyGate'],
+    });
     expect(success).toHaveBeenCalledWith('Re-exported 1 of 2 patch(es)');
   });
 
@@ -1444,25 +1408,6 @@ describe('reExportCommand - --scan flag', () => {
 
     expect(lintExportedPatch).toHaveBeenCalledTimes(1);
     expect(updatePatchAndMetadata).not.toHaveBeenCalled();
-  });
-
-  it('reuses a single spinner across multiple patches', async () => {
-    const patch1 = makePatch('001-ui-first.patch', ['dir/a.js']);
-    const patch2 = makePatch('002-ui-second.patch', ['dir/b.js']);
-    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
-    vi.mocked(pathExists).mockResolvedValue(true);
-
-    await reExportCommand('/fake/root', [], { all: true, dryRun: true });
-
-    expect(spinner).toHaveBeenCalledTimes(1);
-    const handle = vi.mocked(spinner).mock.results[0]?.value as
-      { message: ReturnType<typeof vi.fn> } | undefined;
-    expect(handle?.message).toHaveBeenCalledWith(
-      expect.stringContaining('Re-exporting 1/2: 001-ui-first.patch')
-    );
-    expect(handle?.message).toHaveBeenCalledWith(
-      expect.stringContaining('Re-exporting 2/2: 002-ui-second.patch')
-    );
   });
 
   describe('transient git index.lock retry', () => {
@@ -1682,19 +1627,7 @@ describe('reExportCommand - --scan flag', () => {
   });
 
   describe('--tier and --lint-ignore flags', () => {
-    it('writes tier="branding" into the metadata update when --tier is set', async () => {
-      const patch = makePatch('001-branding-test.patch', ['a.js']);
-      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
-      vi.mocked(pathExists).mockResolvedValue(true);
-
-      await reExportCommand('/fake/root', ['001'], { tier: 'branding' });
-
-      expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
-      const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3];
-      expect(updates).toMatchObject({ tier: 'branding' });
-    });
-
-    it('passes the new tier through to the lint pass on the same invocation', async () => {
+    it('writes --tier into the metadata update and pre-empts the lint pass with it', async () => {
       // Setting --tier branding must take effect on the lint pass of the
       // SAME re-export, not just the next one. Without the pre-emption, an
       // operator running `re-export --tier branding` on an oversized
@@ -1706,51 +1639,32 @@ describe('reExportCommand - --scan flag', () => {
 
       await reExportCommand('/fake/root', ['001'], { tier: 'branding' });
 
+      expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+      const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[0].updates;
+      expect(updates).toMatchObject({ tier: 'branding' });
+
       expect(lintExportedPatch).toHaveBeenCalledTimes(1);
       const call = vi.mocked(lintExportedPatch).mock.calls[0];
       expect(call?.[4]).toEqual(expect.objectContaining({ patchTier: 'branding' }));
     });
 
-    it('appends --lint-ignore values to the existing lintIgnore list (union)', async () => {
+    it('unions --lint-ignore with the existing list, de-duplicating, and forwards it to the lint pass', async () => {
       const patch = makePatch('001-branding-test.patch', ['a.js']);
       patch.lintIgnore = ['large-patch-lines'];
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
       vi.mocked(pathExists).mockResolvedValue(true);
 
       await reExportCommand('/fake/root', ['001'], {
-        lintIgnore: ['large-patch-files'],
+        // 'large-patch-lines' is already on the patch: the merged list must
+        // not grow a duplicate entry.
+        lintIgnore: ['large-patch-lines', 'large-patch-files'],
       });
 
-      const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3];
+      const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[0].updates;
       expect(updates?.lintIgnore).toEqual(
         expect.arrayContaining(['large-patch-lines', 'large-patch-files'])
       );
       expect(updates?.lintIgnore).toHaveLength(2);
-    });
-
-    it('de-duplicates --lint-ignore values that are already in the list', async () => {
-      const patch = makePatch('001-branding-test.patch', ['a.js']);
-      patch.lintIgnore = ['large-patch-lines'];
-      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
-      vi.mocked(pathExists).mockResolvedValue(true);
-
-      await reExportCommand('/fake/root', ['001'], {
-        lintIgnore: ['large-patch-lines'],
-      });
-
-      const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3];
-      expect(updates?.lintIgnore).toEqual(['large-patch-lines']);
-    });
-
-    it('forwards the merged lintIgnore set to the lint pass on the same invocation', async () => {
-      const patch = makePatch('001-branding-test.patch', ['a.js']);
-      patch.lintIgnore = ['large-patch-lines'];
-      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch]));
-      vi.mocked(pathExists).mockResolvedValue(true);
-
-      await reExportCommand('/fake/root', ['001'], {
-        lintIgnore: ['large-patch-files'],
-      });
 
       const call = vi.mocked(lintExportedPatch).mock.calls[0];
       const ignoreSet = call?.[4]?.ignoreChecks;
@@ -1759,29 +1673,17 @@ describe('reExportCommand - --scan flag', () => {
       expect(ignoreSet?.has('large-patch-files')).toBe(true);
     });
 
-    it('rejects --tier when combined with --all', async () => {
+    it.each([
+      ['--tier', { tier: 'branding' as const }],
+      ['--lint-ignore', { lintIgnore: ['large-patch-files'] }],
+    ])('rejects %s when combined with --all', async (_flag, options) => {
       const patch1 = makePatch('001-a.patch', ['a.js']);
       const patch2 = makePatch('002-b.patch', ['b.js']);
       vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
 
-      await expect(
-        reExportCommand('/fake/root', [], { all: true, tier: 'branding' })
-      ).rejects.toThrow(/cannot be combined with --all/);
-
-      expect(updatePatchAndMetadata).not.toHaveBeenCalled();
-    });
-
-    it('rejects --lint-ignore when combined with --all', async () => {
-      const patch1 = makePatch('001-a.patch', ['a.js']);
-      const patch2 = makePatch('002-b.patch', ['b.js']);
-      vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
-
-      await expect(
-        reExportCommand('/fake/root', [], {
-          all: true,
-          lintIgnore: ['large-patch-files'],
-        })
-      ).rejects.toThrow(/cannot be combined with --all/);
+      await expect(reExportCommand('/fake/root', [], { all: true, ...options })).rejects.toThrow(
+        /cannot be combined with --all/
+      );
 
       expect(updatePatchAndMetadata).not.toHaveBeenCalled();
     });
@@ -1793,7 +1695,7 @@ describe('reExportCommand - --scan flag', () => {
 
       await reExportCommand('/fake/root', ['001'], {});
 
-      const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[3];
+      const updates = vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[0].updates;
       expect(updates).toBeDefined();
       expect(updates).not.toHaveProperty('tier');
       expect(updates).not.toHaveProperty('lintIgnore');

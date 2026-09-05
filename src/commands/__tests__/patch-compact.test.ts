@@ -201,10 +201,8 @@ describe('patchCompactCommand', () => {
     expect(renumberPatchesInManifest).not.toHaveBeenCalled();
   });
 
-  it('renumbers gaps in lock-time manifest order and writes history', async () => {
-    vi.mocked(loadPatchesManifest)
-      .mockResolvedValueOnce(manifest([1, 3, 7]))
-      .mockResolvedValueOnce(manifest([2, 4]));
+  it('renumbers gaps from the lock-time manifest and writes history', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValue(manifest([2, 4]));
 
     await patchCompactCommand('/project', { yes: true });
 
@@ -225,6 +223,20 @@ describe('patchCompactCommand', () => {
         yes: true,
       })
     );
+  });
+
+  it('refuses when the queue changed between confirmation and the lock', async () => {
+    // Confirmed plan: 3→2, 7→3. Under the lock a concurrent export has
+    // landed patch 10, whose rename (10→4) the operator never saw.
+    vi.mocked(loadPatchesManifest)
+      .mockResolvedValueOnce(manifest([1, 3, 7]))
+      .mockResolvedValueOnce(manifest([1, 3, 7, 10]));
+
+    await expect(patchCompactCommand('/project', { yes: true })).rejects.toThrow(
+      'Patch queue changed while waiting for confirmation'
+    );
+    expect(renumberPatchesInManifest).not.toHaveBeenCalled();
+    expect(appendHistory).not.toHaveBeenCalled();
   });
 
   it('skips renumbering when another process compacts before the lock', async () => {

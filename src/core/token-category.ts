@@ -24,8 +24,8 @@ function multiLineBlockNameMatches(blockLine: string, category: string): boolean
 }
 
 /**
- * Body of the first `/* … *\/` comment on `line`, or `null` when the line
- * carries no closed block comment.
+ * Body of the first `/* … *\/` comment on `line`, or `undefined` when the
+ * line carries no closed block comment.
  *
  * Deliberately index arithmetic rather than a regex: every regex spelling of
  * "banner comment" this module used to carry was super-linear on a line that
@@ -33,11 +33,11 @@ function multiLineBlockNameMatches(blockLine: string, category: string): boolean
  * is a file FireForge reads out of a consumer's engine tree, so a
  * pathological line needs no attacker to arrive.
  */
-function blockCommentBody(line: string): string | null {
+function blockCommentBody(line: string): string | undefined {
   const open = line.indexOf('/*');
-  if (open === -1) return null;
+  if (open === -1) return undefined;
   const close = line.indexOf('*/', open + 2);
-  if (close === -1) return null;
+  if (close === -1) return undefined;
   return line.slice(open + 2, close);
 }
 
@@ -53,28 +53,29 @@ function isSingleLineBannerLine(line: string): boolean {
 }
 
 /**
- * Name declared by a single-line banner (`/* = Foo = *\/` → `Foo`), or `null`
- * when the line is not a named banner. The `=` runs on both sides are
- * required; a decorative all-`=` rule carries no name and yields `null`.
+ * Name declared by a single-line banner (`/* = Foo = *\/` → `Foo`), or
+ * `undefined` when the line is not a named banner. The `=` runs on both sides
+ * are required; a decorative all-`=` rule carries no name and yields
+ * `undefined`.
  */
-function singleLineBannerName(line: string): string | null {
+function singleLineBannerName(line: string): string | undefined {
   const body = blockCommentBody(line);
-  if (body === null) return null;
+  if (body === undefined) return undefined;
 
   let start = 0;
   let end = body.length;
   while (start < end && /\s/.test(body[start] ?? '')) start++;
   const leadingEqStart = start;
   while (start < end && body[start] === '=') start++;
-  if (start === leadingEqStart) return null;
+  if (start === leadingEqStart) return undefined;
 
   while (end > start && /\s/.test(body[end - 1] ?? '')) end--;
   const trailingEqEnd = end;
   while (end > start && body[end - 1] === '=') end--;
-  if (end === trailingEqEnd) return null;
+  if (end === trailingEqEnd) return undefined;
 
   const name = body.slice(start, end).trim();
-  return name.length > 0 ? name : null;
+  return name.length > 0 ? name : undefined;
 }
 
 /**
@@ -86,9 +87,7 @@ function singleLineBannerName(line: string): string | null {
 export function categoryHeaderExists(lines: string[], category: string): boolean {
   const singleLinePattern = singleLineBannerPattern(category);
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-
+  for (const [i, line] of lines.entries()) {
     if (singleLinePattern.test(line)) {
       return true;
     }
@@ -119,30 +118,42 @@ export function categoryHeaderExists(lines: string[], category: string): boolean
  * This helper exists as a pure inspector; it never throws on malformed
  * headers and silently skips shapes it cannot parse.
  */
-function discoverCategoryHeaders(lines: string[]): string[] {
-  const categories = new Set<string>();
+/**
+ * Category name declared by the banner STARTING at `index`, or `undefined`
+ * when that line opens no banner.
+ *
+ * The single reader for both banner shapes, so the inventory walk, the
+ * "available categories" error body and the section finder cannot drift on
+ * what counts as a header.
+ *
+ * @param lines - Tokens CSS split into lines
+ * @param index - 0-based line index to test
+ * @returns The declared category name, or undefined
+ */
+export function categoryBannerNameAt(lines: string[], index: number): string | undefined {
+  const line = lines[index] ?? '';
+  const extracted = singleLineBannerName(line);
+  if (extracted !== undefined) return extracted;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const extracted = singleLineBannerName(line);
-    if (extracted !== null) {
-      categories.add(extracted);
-      continue;
-    }
-
-    if (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) {
-      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
-        const blockLine = lines[j] ?? '';
-        if (/\*\//.test(blockLine)) break;
-        const trimmed = blockLine.replace(/^\s*\*\s*/, '').trim();
-        if (trimmed.length === 0) continue;
-        if (/^=+$/.test(trimmed)) continue;
-        categories.add(trimmed);
-        break;
-      }
+  if (/^\s*\/\*\s*=+/.test(line) && !/\*\//.test(line)) {
+    for (let j = index + 1; j < Math.min(index + 6, lines.length); j++) {
+      const blockLine = lines[j] ?? '';
+      if (/\*\//.test(blockLine)) break;
+      const trimmed = blockLine.replace(/^\s*\*\s*/, '').trim();
+      if (trimmed.length === 0) continue;
+      if (/^=+$/.test(trimmed)) continue;
+      return trimmed;
     }
   }
+  return undefined;
+}
 
+function discoverCategoryHeaders(lines: string[]): string[] {
+  const categories = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    const name = categoryBannerNameAt(lines, i);
+    if (name !== undefined) categories.add(name);
+  }
   return [...categories];
 }
 
@@ -197,7 +208,7 @@ export function declareCategoryBanner(
   tokensCssPath: string
 ): void {
   const bounds = findBaseRootBounds(lines);
-  if (bounds === null) {
+  if (bounds === undefined) {
     throw new GeneralError(
       `Cannot create category "${category}": no :root block found in ${tokensCssPath}. ` +
         'Run "fireforge furnace init --force" to re-scaffold the tokens CSS file.'
@@ -220,9 +231,7 @@ export function findCategorySection(
   const singleLinePattern = singleLineBannerPattern(category);
 
   let categoryLine = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-
+  for (const [i, line] of lines.entries()) {
     // Check single-line format: /* = Category = */
     if (singleLinePattern.test(line)) {
       categoryLine = i;
@@ -286,15 +295,9 @@ export function findCategorySection(
 }
 
 /** 0-based open/close line indices of the base `:root {` block. */
-function findBaseRootBounds(lines: string[]): { open: number; close: number } | null {
-  let open = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/:root\s*\{/.test(lines[i] ?? '')) {
-      open = i;
-      break;
-    }
-  }
-  if (open === -1) return null;
+export function findBaseRootBounds(lines: string[]): { open: number; close: number } | undefined {
+  const open = lines.findIndex((line) => /:root\s*\{/.test(line));
+  if (open === -1) return undefined;
   for (let i = open + 1; i < lines.length; i++) {
     if (/^\s*\}/.test(lines[i] ?? '')) {
       return { open, close: i };
@@ -304,7 +307,7 @@ function findBaseRootBounds(lines: string[]): { open: number; close: number } | 
 }
 
 /** Masks block-comment content per line so declarations inside comments never match. */
-function maskCommentLines(lines: string[]): string[] {
+export function maskCommentLines(lines: string[]): string[] {
   const masked = lines.join('\n').replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
   return masked.split('\n');
 }
@@ -329,7 +332,7 @@ export function findTokenDeclarationInRoot(
   tokenName: string
 ): TokenDeclarationLocation | undefined {
   const bounds = findBaseRootBounds(lines);
-  if (bounds === null || bounds.close === -1) return undefined;
+  if (bounds === undefined || bounds.close === -1) return undefined;
 
   const masked = maskCommentLines(lines);
   const declPattern = new RegExp(`^\\s*${escapeRegex(tokenName)}\\s*:`);

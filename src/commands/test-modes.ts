@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { loadConfig } from '../core/config.js';
 import { findNearestXpcshellManifest } from '../core/xpcshell-appdir.js';
 import { GeneralError } from '../errors/base.js';
 import type { TestOptions } from '../types/commands/index.js';
+import type { FireForgeConfig } from '../types/config.js';
 import { info, success } from '../utils/logger.js';
 import type { TestRunOutcome } from './test-run.js';
 import { emitHarnessVerdict } from './test-verdict.js';
 
-type ProjectConfig = Awaited<ReturnType<typeof loadConfig>>;
+type ProjectConfig = FireForgeConfig;
 
 /** Rejects pathless `fireforge test` unless the operator selected a pathless mode. */
 export function assertPathlessTestMode(testPaths: readonly string[], options: TestOptions): void {

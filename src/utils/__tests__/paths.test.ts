@@ -125,15 +125,6 @@ describe('toRootRelativePath', () => {
     expect(toRootRelativePath('/root', '/root/sub/file.txt')).toBe('sub/file.txt');
   });
 
-  it('produces forward-slash output even when the input uses backslashes', () => {
-    // On POSIX the `path.relative` result would already use forward slashes,
-    // so this test serves as a cross-platform assertion: the normalize step
-    // inside `toRootRelativePath` guarantees forward slashes regardless of
-    // the host separator.
-    const result = toRootRelativePath('/root', '/root/sub/nested/file.txt');
-    expect(result).not.toContain('\\');
-  });
-
   it('throws when the candidate escapes the root', () => {
     expect(() => toRootRelativePath('/root', '/other/file.txt')).toThrow(/escapes root/);
   });

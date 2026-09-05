@@ -18,7 +18,7 @@ import {
   formatStaticComponentsRefusal,
   formatTestCoverageRefusal,
 } from '../core/test-stale-check.js';
-import { GeneralError } from '../errors/base.js';
+import { PreflightRefusalError } from '../errors/base.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { warn } from '../utils/logger.js';
 
@@ -61,12 +61,13 @@ export async function enforceStaleBuildGate(
         stale.baseline,
         uncovered
       );
-      throw new GeneralError(
+      throw new PreflightRefusalError(
         formatTestCoverageRefusal(
           uncovered,
           Array.isArray(recordedCoverage) ? recordedCoverage : [],
           changedManifests
-        )
+        ),
+        'coverage-replaced'
       );
     }
   }
@@ -87,7 +88,7 @@ export async function enforceStaleBuildGate(
     if (options.allowStaleBuild === true) {
       warn(staleMessage);
     } else {
-      throw new GeneralError(staleMessage);
+      throw new PreflightRefusalError(staleMessage, 'stale-build');
     }
   }
 }
@@ -117,5 +118,5 @@ export async function enforceStaticComponentsGate(
     warn(message);
     return;
   }
-  throw new GeneralError(message);
+  throw new PreflightRefusalError(message, 'stale-components');
 }

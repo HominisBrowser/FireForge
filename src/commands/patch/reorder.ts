@@ -13,11 +13,11 @@ import { Command, Option } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
 import {
-  appendHistory,
   confirmDestructive,
   type ConflictReport,
   type HistoryEntry,
 } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import {
   buildPatchQueueContext,
   formatPatchLintIssue,
@@ -37,8 +37,8 @@ import { applyRenameMapToManifest, enforcePatchPolicy } from '../../core/patch-p
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchReorderOptions } from '../../types/commands/index.js';
-import { toError } from '../../utils/errors.js';
-import { info, intro, outro, warn } from '../../utils/logger.js';
+import type { FireForgeConfig } from '../../types/config.js';
+import { info, intro, outro } from '../../utils/logger.js';
 import {
   addWaitLockOption,
   commanderArgParser,
@@ -46,6 +46,8 @@ import {
   resolveWaitLockSeconds,
 } from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
+import { getSortedRenameEntries, renameMapsEqual } from '../patch-rename-map.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /** Zero-pads an ordinal number to the given width. */
@@ -134,34 +136,6 @@ function computeRenameMap(
   return renames;
 }
 
-function getSortedRenameEntries(
-  renameMap: Map<string, PatchRenameEntry>
-): Array<[string, PatchRenameEntry]> {
-  return Array.from(renameMap.entries()).sort((a, b) => a[1].newOrder - b[1].newOrder);
-}
-
-function renameMapsEqual(
-  left: Map<string, PatchRenameEntry>,
-  right: Map<string, PatchRenameEntry>
-): boolean {
-  const leftEntries = getSortedRenameEntries(left);
-  const rightEntries = getSortedRenameEntries(right);
-  if (leftEntries.length !== rightEntries.length) {
-    return false;
-  }
-
-  return leftEntries.every(([leftFilename, leftEntry], index) => {
-    const rightTuple = rightEntries[index];
-    if (!rightTuple) return false;
-    const [rightFilename, rightEntry] = rightTuple;
-    return (
-      leftFilename === rightFilename &&
-      leftEntry.newFilename === rightEntry.newFilename &&
-      leftEntry.newOrder === rightEntry.newOrder
-    );
-  });
-}
-
 /**
  * Applies a rename map to a {@link PatchQueueContext} so cross-patch lint
  * can run against the projected state without touching disk. Exported for
@@ -213,10 +187,7 @@ function resolveDestination(
     // integers, but the function is reachable from tests that may pass
     // `{ to: NaN }` directly.
     if (!Number.isInteger(options.to) || options.to <= 0) {
-      throw new InvalidArgumentError(
-        `--to must be a positive integer, got ${String(options.to)}.`,
-        '--to'
-      );
+      throw new InvalidArgumentError(`--to must be a positive integer, got ${options.to}.`, '--to');
     }
     return { destinationOrder: options.to, anchorFilename: undefined };
   }
@@ -261,15 +232,32 @@ function resolveDestination(
   return { destinationOrder: anchor.order + 1, anchorFilename: anchor.filename };
 }
 
-async function commitReorderPlan(
-  patchesDir: string,
-  target: PatchMetadata,
-  renameMap: Map<string, PatchRenameEntry>,
-  anchorFilename: string | undefined,
-  options: PatchReorderOptions,
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  buildHistoryEntry: (finalRenameMap: Map<string, PatchRenameEntry>) => HistoryEntry
-): Promise<void> {
+interface CommitReorderPlanOptions {
+  /** Patch directory holding the queue and its manifest. */
+  patchesDir: string;
+  /** Manifest row for the patch being moved. */
+  target: PatchMetadata;
+  /** Planned filename renames, keyed by current filename. */
+  renameMap: Map<string, PatchRenameEntry>;
+  /** Filename of the `--before`/`--after` anchor, when one was given. */
+  anchorFilename: string | undefined;
+  /** Parsed reorder options. */
+  options: PatchReorderOptions;
+  /** Project configuration. */
+  config: FireForgeConfig;
+  /** Builds the history entry from the rename map recomputed under the lock. */
+  buildHistoryEntry: (finalRenameMap: Map<string, PatchRenameEntry>) => HistoryEntry;
+}
+
+/**
+ * Re-validates the reorder against the freshly-loaded manifest and commits
+ * it, all under the patch directory lock.
+ *
+ * @param commitOptions - See {@link CommitReorderPlanOptions}
+ */
+async function commitReorderPlan(commitOptions: CommitReorderPlanOptions): Promise<void> {
+  const { patchesDir, target, renameMap, anchorFilename, options, config, buildHistoryEntry } =
+    commitOptions;
   await withPatchDirectoryLock(
     patchesDir,
     async () => {
@@ -351,13 +339,11 @@ async function commitReorderPlan(
       // permissions) is warned but not re-thrown: the mutation has already
       // succeeded and is not reversible, so surfacing it as a command
       // failure would mislead.
-      try {
-        await appendHistory(patchesDir, buildHistoryEntry(currentRenameMap));
-      } catch (historyError: unknown) {
-        warn(
-          `History log append failed after patch reorder committed: ${toError(historyError).message}`
-        );
-      }
+      await appendHistoryBestEffort(
+        patchesDir,
+        buildHistoryEntry(currentRenameMap),
+        `patch reorder committed`
+      );
     },
     { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch reorder' }
   );
@@ -461,14 +447,7 @@ export async function patchReorderCommand(
     conflicts,
   });
 
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Reorder cancelled');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Reorder cancelled')) return;
 
   // The history entry is built inside commitReorderPlan (still under the
   // lock) from the *final* rename map, not the pre-confirmation one, so
@@ -493,15 +472,15 @@ export async function patchReorderCommand(
     };
   };
 
-  await commitReorderPlan(
-    paths.patches,
+  await commitReorderPlan({
+    patchesDir: paths.patches,
     target,
     renameMap,
     anchorFilename,
     options,
     config,
-    buildHistoryEntry
-  );
+    buildHistoryEntry,
+  });
 
   info(`Reordered ${renameMap.size} patch(es).`);
   outro('Reorder complete');

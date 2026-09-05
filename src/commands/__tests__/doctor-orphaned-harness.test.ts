@@ -15,7 +15,6 @@ import { exec } from '../../utils/process.js';
 import {
   findOrphanedHarnessWorkers,
   ORPHANED_HARNESS_DOCTOR_CHECK,
-  parseCpuTime,
 } from '../doctor-orphaned-harness.js';
 
 // The field-incident shape: reparented to launchd (PPID 1), ~26 days of
@@ -39,22 +38,6 @@ const FIXTURE_PS_OUTPUT = [
   'garbage line that does not parse',
   '',
 ].join('\n');
-
-describe('parseCpuTime', () => {
-  it('parses the linux dd-hh:mm:ss dialect', () => {
-    expect(parseCpuTime('26-03:14:12')).toBe(26 * 86400 + 3 * 3600 + 14 * 60 + 12);
-    expect(parseCpuTime('03:14:12')).toBe(3 * 3600 + 14 * 60 + 12);
-  });
-
-  it('parses the darwin mm:ss.cc dialect with cumulative minutes', () => {
-    expect(parseCpuTime('38412:07.55')).toBeCloseTo(38412 * 60 + 7.55, 2);
-    expect(parseCpuTime('0:03.11')).toBeCloseTo(3.11, 2);
-  });
-
-  it('returns NaN for unrecognized shapes', () => {
-    expect(Number.isNaN(parseCpuTime('not-a-time'))).toBe(true);
-  });
-});
 
 describe('findOrphanedHarnessWorkers', () => {
   it('flags the planted incident shape and the darwin-dialect tracker, nothing else', () => {

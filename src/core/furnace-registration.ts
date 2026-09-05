@@ -5,26 +5,34 @@ import { FurnaceError } from '../errors/furnace.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 
 /**
+ * Returns the leading whitespace of the first line matching `pattern`, whose
+ * first capture group must be that indentation. `undefined` when no line
+ * matches, so callers can chain progressively looser patterns before falling
+ * back to a convention default.
+ */
+function detectIndent(lines: string[], pattern: RegExp): string | undefined {
+  for (const line of lines) {
+    const match = pattern.exec(line);
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
+}
+
+/**
  * Detects the indentation used by existing `content/global/elements/` lines
  * in jar.mn. Falls back to 3 spaces (the historical Firefox convention) when
  * no reference line is found.
  */
 function detectJarMnIndent(lines: string[]): string {
-  for (const line of lines) {
-    const match = /^(\s+)content\/global\/elements\//.exec(line);
-    if (match?.[1]) {
-      return match[1];
-    }
-  }
-  return '   ';
+  return detectIndent(lines, /^(\s+)content\/global\/elements\//) ?? '   ';
 }
 
 // Re-export everything from the AST module so existing imports keep working
 export {
   addCustomElementRegistration,
-  removeCustomElementRegistration,
   validateCustomElementRegistration,
 } from './furnace-registration-ast.js';
+export { removeCustomElementRegistration } from './furnace-registration-remove.js';
 import { escapeRegex } from '../utils/regex.js';
 import { JAR_MN } from './furnace-constants.js';
 
@@ -94,9 +102,7 @@ export async function addJarMnEntries(
   const elementLinePattern = /^\s+content\/global\/elements\/([^.]+)\./;
   let insertIndex = -1;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line === undefined) continue;
+  for (const [i, line] of lines.entries()) {
     const match = elementLinePattern.exec(line);
     if (match) {
       const existingTag = match[1] ?? '';
@@ -196,9 +202,7 @@ export async function addLocaleFtlJarMnEntry(
   );
   let insertIndex = -1;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line === undefined) continue;
+  for (const [i, line] of lines.entries()) {
     const match = sectionPattern.exec(line);
     if (match) {
       const existingTag = match[2] ?? '';
@@ -224,17 +228,9 @@ export async function addLocaleFtlJarMnEntry(
 /** Detects locale jar.mn indentation by sampling an existing matching entry. */
 function detectLocaleJarMnIndent(lines: string[], chromeSubPath: string): string {
   const escapedChrome = escapeRegex(chromeSubPath);
-  const pattern = new RegExp(`^(\\s+)locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapedChrome}\\/`);
-  for (const line of lines) {
-    const match = pattern.exec(line);
-    if (match?.[1]) return match[1];
-  }
-  // Fall back to detecting any existing `locale/...` indent before giving up.
-  for (const line of lines) {
-    const match = /^(\s+)locale\//.exec(line);
-    if (match?.[1]) return match[1];
-  }
-  return '  ';
+  const exact = new RegExp(`^(\\s+)locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapedChrome}\\/`);
+  // Fall back to any existing `locale/...` indent before giving up.
+  return detectIndent(lines, exact) ?? detectIndent(lines, /^(\s+)locale\//) ?? '  ';
 }
 
 /**

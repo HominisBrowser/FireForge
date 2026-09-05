@@ -9,7 +9,6 @@ import type { PatchInfo } from '../../types/commands/index.js';
 const {
   loadConfigMock,
   loadStateMock,
-  saveStateMock,
   updateStateMock,
   getProjectPathsMock,
   getHeadMock,
@@ -40,7 +39,6 @@ const {
 } = vi.hoisted(() => ({
   loadConfigMock: vi.fn(),
   loadStateMock: vi.fn(() => Promise.resolve({})),
-  saveStateMock: vi.fn(() => Promise.resolve()),
   updateStateMock: vi.fn<
     (
       root: string,
@@ -94,7 +92,6 @@ const {
 vi.mock('../../core/config.js', () => ({
   loadConfig: loadConfigMock,
   loadState: loadStateMock,
-  saveState: saveStateMock,
   updateState: updateStateMock,
   getProjectPaths: getProjectPathsMock,
 }));
@@ -210,7 +207,7 @@ import { Command } from 'commander';
 
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import { NoRebaseSessionError, RebaseSessionExistsError } from '../../errors/rebase.js';
-import { rebaseCommand, registerRebase } from '../rebase.js';
+import { rebaseCommand, registerRebase } from '../rebase/index.js';
 
 const defaultPaths = {
   root: '/project',
@@ -792,12 +789,12 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
 
     await rebaseCommand('/project', { continue: true });
 
-    expect(updatePatchAndMetadataMock).toHaveBeenCalledWith(
-      '/project/patches',
-      '001-branding.patch',
-      'diff --git a/browser/file.txt b/browser/file.txt\n',
-      { sourceEsrVersion: '140.9.0esr', sourceVersion: '140.9.0esr' }
-    );
+    expect(updatePatchAndMetadataMock).toHaveBeenCalledWith({
+      patchesDir: '/project/patches',
+      filename: '001-branding.patch',
+      newContent: 'diff --git a/browser/file.txt b/browser/file.txt\n',
+      updates: { sourceEsrVersion: '140.9.0esr', sourceVersion: '140.9.0esr' },
+    });
     expect(applyPatchWithFuzzMock).toHaveBeenCalledWith(
       '/project/patches/002-ui.patch',
       '/project/engine',

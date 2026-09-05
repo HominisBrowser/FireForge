@@ -6,7 +6,7 @@
 
 import { Command } from 'commander';
 
-import { appendHistory } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import { mutatePatchMetadata } from '../../core/patch-export.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
@@ -16,8 +16,7 @@ import type {
   PatchStagedForwardImport,
   PatchStagedRegistration,
 } from '../../types/commands/index.js';
-import { toError } from '../../utils/errors.js';
-import { info, intro, outro, warn } from '../../utils/logger.js';
+import { info, intro, outro } from '../../utils/logger.js';
 import { addWaitLockOption, resolveWaitLockSeconds } from '../../utils/options.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 import { validateStagedDependencyAdd } from './staged-dependency-validate.js';
@@ -162,7 +161,7 @@ function resolveImportRemovalTarget(
       .map((entry) => `  - ${dependencyLabel('import', importView(entry))}`)
       .join('\n');
     throw new GeneralError(
-      `--remove matches ${String(candidates.length)} staged forward-imports on this patch; ` +
+      `--remove matches ${candidates.length} staged forward-imports on this patch; ` +
         `pass --creates to pick one:\n${list}`
     );
   }
@@ -203,7 +202,7 @@ function resolveRegistrationRemovalTarget(
       .map((entry) => `  - ${dependencyLabel('registration', registrationView(entry))}`)
       .join('\n');
     throw new GeneralError(
-      `--remove matches ${String(candidates.length)} staged registrations on this patch; ` +
+      `--remove matches ${candidates.length} staged registrations on this patch; ` +
         `pass --creates to pick one:\n${list}`
     );
   }
@@ -425,8 +424,9 @@ export async function patchStagedDependencyCommand(
     )}.`
   );
 
-  try {
-    await appendHistory(paths.patches, {
+  await appendHistoryBestEffort(
+    paths.patches,
+    {
       operation: 'patch-staged-dependency',
       args: {
         filename: targetPatch.filename,
@@ -437,12 +437,9 @@ export async function patchStagedDependencyCommand(
       },
       ...(options.yes === true ? { yes: true } : {}),
       result: 'ok',
-    });
-  } catch (historyError: unknown) {
-    warn(
-      `History log append failed after patch staged-dependency committed (${targetPatch.filename}): ${toError(historyError).message}`
-    );
-  }
+    },
+    `patch staged-dependency committed (${targetPatch.filename})`
+  );
 
   outro('Patch staged-dependency complete');
 }

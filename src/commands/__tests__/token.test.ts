@@ -52,19 +52,26 @@ vi.mock('../token-coverage.js', () => ({
   tokenCoverageCommand: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('../token-list.js', () => ({
+  tokenListCommand: vi.fn(() => Promise.resolve()),
+  tokenShowCommand: vi.fn(() => Promise.resolve()),
+}));
+
 import { loadConfig } from '../../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { addToken, validateTokenAdd } from '../../core/token-manager.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
 import { registerToken, tokenAddCommand } from '../token.js';
-import { tokenCoverageCommand } from '../token-coverage.js';
+import { tokenListCommand, tokenShowCommand } from '../token-list.js';
 
 const mockedAddToken = vi.mocked(addToken);
 const mockedValidateTokenAdd = vi.mocked(validateTokenAdd);
 const mockedLoadConfig = vi.mocked(loadConfig);
 const mockedLoadFurnaceConfig = vi.mocked(loadFurnaceConfig);
 const mockedFurnaceConfigExists = vi.mocked(furnaceConfigExists);
-const mockedTokenCoverageCommand = vi.mocked(tokenCoverageCommand);
+
+const mockedTokenListCommand = vi.mocked(tokenListCommand);
+const mockedTokenShowCommand = vi.mocked(tokenShowCommand);
 
 function createProgram(): Command {
   const program = new Command();
@@ -467,7 +474,6 @@ describe('registerToken', () => {
       countUpdated: true,
       skipped: false,
     });
-    mockedTokenCoverageCommand.mockResolvedValue();
   });
 
   it('routes token add through the registered CLI action', async () => {
@@ -502,12 +508,30 @@ describe('registerToken', () => {
     });
   });
 
-  it('routes token coverage through the registered CLI action', async () => {
+  it('routes token list through the registered CLI action', async () => {
     const program = createProgram();
 
-    await program.parseAsync(['node', 'fireforge', 'token', 'coverage']);
+    await program.parseAsync(['node', 'fireforge', 'token', 'list', '--category', 'Colors']);
 
-    expect(mockedTokenCoverageCommand).toHaveBeenCalledWith('/project');
+    expect(mockedTokenListCommand).toHaveBeenCalledWith('/project', { category: 'Colors' });
+  });
+
+  it('omits absent token list flags rather than passing them as undefined', async () => {
+    // `exactOptionalPropertyTypes` is on: an explicitly-undefined `json` is
+    // a different value from an absent one, and the command branches on it.
+    const program = createProgram();
+
+    await program.parseAsync(['node', 'fireforge', 'token', 'list']);
+
+    expect(mockedTokenListCommand).toHaveBeenCalledWith('/project', {});
+  });
+
+  it('routes token show through the registered CLI action', async () => {
+    const program = createProgram();
+
+    await program.parseAsync(['node', 'fireforge', 'token', 'show', '--json', 'canvas-gap']);
+
+    expect(mockedTokenShowCommand).toHaveBeenCalledWith('/project', 'canvas-gap', { json: true });
   });
 
   it('prints help and exits cleanly when invoked without a subcommand', async () => {

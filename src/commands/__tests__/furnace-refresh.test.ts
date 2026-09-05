@@ -280,7 +280,7 @@ describe('furnace refresh', () => {
     expect(refreshOverrideFile).toHaveBeenCalled();
     const calls = vi.mocked(refreshOverrideFile).mock.calls;
     for (const call of calls) {
-      expect(call[5]).toBe(true); // dryRun argument (6th positional, index 5)
+      expect(call[0].dryRun).toBe(true);
     }
 
     // Config should not be written during dry-run
@@ -313,7 +313,7 @@ describe('furnace refresh', () => {
     // Should use the per-override baseCommit, not the global state one
     const calls = vi.mocked(refreshOverrideFile).mock.calls;
     for (const call of calls) {
-      expect(call[3]).toBe('override-specific-sha');
+      expect(call[0].baseCommit).toBe('override-specific-sha');
     }
   });
 
@@ -426,24 +426,28 @@ describe('furnace refresh', () => {
       /Failed to refresh 1 override\(s\): moz-button: merge helper exploded/
     );
 
-    expect(refreshOverrideFile).toHaveBeenCalledWith(
-      nativePath('/project/engine'),
-      expect.stringContaining(nativePath('/components/overrides/moz-button/')),
-      expect.any(String),
-      expect.any(String),
-      expect.any(String),
-      false,
-      undefined
-    );
-    expect(refreshOverrideFile).toHaveBeenCalledWith(
-      nativePath('/project/engine'),
-      expect.stringContaining(nativePath('/components/overrides/moz-card/')),
-      expect.any(String),
-      expect.any(String),
-      expect.any(String),
-      false,
-      undefined
-    );
+    expect(refreshOverrideFile).toHaveBeenCalledWith({
+      engineDir: nativePath('/project/engine'),
+      overridePath: expect.stringContaining(
+        nativePath('/components/overrides/moz-button/')
+      ) as string,
+      engineRelPath: expect.any(String) as string,
+      baseCommit: expect.any(String) as string,
+      fileName: expect.any(String) as string,
+      dryRun: false,
+      strategy: undefined,
+    });
+    expect(refreshOverrideFile).toHaveBeenCalledWith({
+      engineDir: nativePath('/project/engine'),
+      overridePath: expect.stringContaining(
+        nativePath('/components/overrides/moz-card/')
+      ) as string,
+      engineRelPath: expect.any(String) as string,
+      baseCommit: expect.any(String) as string,
+      fileName: expect.any(String) as string,
+      dryRun: false,
+      strategy: undefined,
+    });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('moz-button: merge helper exploded'));
   });
 });

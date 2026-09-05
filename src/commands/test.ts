@@ -24,7 +24,12 @@ import {
   runMarionettePreflight,
 } from '../core/marionette-preflight.js';
 import { ensureMochitestServerPortAvailable } from '../core/mochitest-server-port.js';
-import { closeActiveRunLog, openRunLog, setActiveRunLog } from '../core/run-log.js';
+import {
+  closeActiveRunLog,
+  openRunLog,
+  setActiveRunLog,
+  writeToActiveRunLog,
+} from '../core/run-log.js';
 import { createPostRebuildFailureContext } from '../core/test-harness-output.js';
 import {
   analyzeTestPathScopes,
@@ -32,9 +37,10 @@ import {
   type TestPathScope,
 } from '../core/test-path-scope.js';
 import { assertObjdirMatchesTreeMarker } from '../core/tree-store.js';
-import { GeneralError } from '../errors/base.js';
+import { FireForgeError, GeneralError, PreflightRefusalError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, notice, outro, verbose } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
@@ -397,11 +403,50 @@ export async function testCommand(
   try {
     await runTestCommandBody(projectRoot, testPaths, options);
   } catch (error: unknown) {
-    if (!verdictEmitted()) emitFailVerdict('preflight');
+    if (!verdictEmitted()) {
+      renderPreflightRefusal(error);
+      emitFailVerdict('preflight', refusalNote(error));
+    }
     throw error;
   } finally {
     await closeActiveRunLog();
   }
+}
+
+/** The refusal class a preflight gate named, when it named one. */
+function refusalNote(error: unknown): string | undefined {
+  return error instanceof PreflightRefusalError ? error.note : undefined;
+}
+
+/**
+ * Puts a preflight refusal's own text on the operator's channel BEFORE the
+ * verdict line, and into the run log.
+ *
+ * Both halves are load-bearing, and neither happened before:
+ *
+ *  - `withErrorHandling` renders `error.userMessage` back in `cli.ts`, but
+ *    by then `emitFailVerdict` has called `setStdoutSealed(true)` — the seal
+ *    that keeps the verdict the LAST stdout write — so `logError` routes to
+ *    stderr. A run captured with `> file` therefore kept the verdict and
+ *    dropped the reason.
+ *  - That same rendering happens after this function's caller returns, and
+ *    the `finally` below has already closed the run log. So the artifact the
+ *    verdict's own `log=` key points at did not contain the refusal either,
+ *    which is what left `.fireforge/logs/test-*.log` holding only the
+ *    pre-test build.
+ *
+ * Writing here, before the seal, fixes both without trading away the
+ * contract: the refusal lands on stdout and in the log, and the verdict
+ * line still comes last.
+ */
+function renderPreflightRefusal(error: unknown): void {
+  const text = error instanceof FireForgeError ? error.userMessage : toError(error).message;
+  const block = `Preflight refused:\n${text}\n`;
+  // Raw stdout rather than the clack logger: this must land on the captured
+  // stream verbatim, and clack's renderer can drop output under non-TTY
+  // capture — the same reason the verdict line is written this way.
+  process.stdout.write(block);
+  writeToActiveRunLog(block);
 }
 
 /**
@@ -533,7 +578,7 @@ async function runTestCommandBody(
     extraArgs.push('--auto');
   }
   if (canaryPath !== undefined) {
-    extraArgs.push(`--timeout=${String(canaryTimeoutSeconds(projectConfig))}`);
+    extraArgs.push(`--timeout=${canaryTimeoutSeconds(projectConfig)}`);
   }
 
   // --mach-arg is a verbatim passthrough for upstream mach/xpcshell/mochitest

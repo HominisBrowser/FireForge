@@ -88,7 +88,7 @@ import type { FireForgeConfig, ProjectPaths } from '../../types/config.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { info, notice, spinner, warn } from '../../utils/logger.js';
 import { isBrandingSetup, setupBranding } from '../branding.js';
-import { prepareBuildEnvironment, requiresFullBuildForIncrementalTest } from '../build-prepare.js';
+import { prepareBuildEnvironment } from '../build-prepare.js';
 import { hashEngineFile } from '../coverage-extend.js';
 import { applyAllComponents } from '../furnace-apply.js';
 import { furnaceConfigExists, loadFurnaceConfig, loadFurnaceState } from '../furnace-config.js';
@@ -161,16 +161,15 @@ describe('prepareBuildEnvironment', () => {
     );
   });
 
-  it('proceeds when furnace state has no pendingRepair', async () => {
-    mockPathExists.mockResolvedValue(false);
-
+  it('cleans stories and writes the mozconfig on the happy path', async () => {
     await prepareBuildEnvironment('/project', paths, config);
-    expect(mockCleanStories).toHaveBeenCalledWith('/project/engine');
-  });
 
-  it('calls cleanStories first', async () => {
-    await prepareBuildEnvironment('/project', paths, config);
     expect(mockCleanStories).toHaveBeenCalledWith('/project/engine');
+    expect(mockGenerateMozconfig).toHaveBeenCalledWith(
+      '/project/configs',
+      '/project/engine',
+      config
+    );
   });
 
   it('sets up branding when not already configured', async () => {
@@ -250,15 +249,6 @@ describe('prepareBuildEnvironment', () => {
 
     await expect(prepareBuildEnvironment('/project', paths, config)).rejects.toThrow(
       'apply failed'
-    );
-  });
-
-  it('always calls generateMozconfig', async () => {
-    await prepareBuildEnvironment('/project', paths, config);
-    expect(mockGenerateMozconfig).toHaveBeenCalledWith(
-      '/project/configs',
-      '/project/engine',
-      config
     );
   });
 
@@ -622,11 +612,6 @@ describe('prepareBuildEnvironment auto-configure', () => {
     expect(hashEngineFile).not.toHaveBeenCalledWith('/project/engine', 'browser/base/browser.js');
   });
 
-  it('limits full-build escalation to jar.mn manifests', () => {
-    expect(requiresFullBuildForIncrementalTest('browser/base/jar.mn')).toBe(true);
-    expect(requiresFullBuildForIncrementalTest('browser/base/moz.build')).toBe(false);
-    expect(requiresFullBuildForIncrementalTest('browser/base/content/existing.svg')).toBe(false);
-  });
   it('runs mach configure when moz.build changed since the baseline', async () => {
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');

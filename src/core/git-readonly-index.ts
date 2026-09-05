@@ -68,11 +68,6 @@ export function readOnlyGitIndexEnv(cwd: string): Record<string, string> | undef
   return { GIT_INDEX_FILE: activeScope.indexFile };
 }
 
-/** True while a private-index scope is installed (diagnostics and tests). */
-export function hasReadOnlyGitIndexScope(): boolean {
-  return activeScope !== undefined;
-}
-
 /**
  * Resolves a repository's git directory. Returns undefined for anything
  * that is not a readable git checkout — `engine/` is not always one

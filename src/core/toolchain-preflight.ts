@@ -155,7 +155,7 @@ export function formatMajorVersionHopNotice(
   if (previousMajor === undefined || newMajor === undefined) return undefined;
   if (previousMajor === newMajor) return undefined;
   return (
-    `Firefox major version changed (${String(previousMajor)} → ${String(newMajor)}): ` +
+    `Firefox major version changed (${previousMajor} → ${newMajor}): ` +
     'upstream toolchain minimums (cbindgen, Rust, …) may have moved with it. ' +
     'Consider running "fireforge bootstrap" before the next build.'
   );

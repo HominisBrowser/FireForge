@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { Command } from 'commander';
 
-import {
-  configExists,
-  getProjectPaths,
-  loadConfig,
-  loadState,
-  updateState,
-} from '../core/config.js';
+import { configExists, getProjectPaths, loadConfig, loadState } from '../core/config.js';
 import { furnaceConfigExists as checkFurnaceConfigExists } from '../core/furnace-config.js';
 import { getCurrentBranch, getHead, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { ensureGit } from '../core/git-base.js';
@@ -24,7 +18,7 @@ import { error, info, intro, outro, success, warn } from '../utils/logger.js';
 import { addWaitLockOption } from '../utils/options.js';
 import { findExecutable } from '../utils/process.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
-import { failure, ok, resolveDoctorSeverity, warning } from './doctor-check-core.js';
+import { failure, ok, warning } from './doctor-check-core.js';
 import { EXTERNAL_TOOLCHAIN_DOCTOR_CHECK } from './doctor-external-toolchains.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 import { ORPHANED_HARNESS_DOCTOR_CHECK } from './doctor-orphaned-harness.js';
@@ -32,6 +26,7 @@ import { PATCH_MANIFEST_CONSISTENCY_CHECK } from './doctor-patch-manifest.js';
 import { POST_REBASE_AUDIT_CHECK } from './doctor-post-rebase-audit.js';
 import { SOURCE_PIN_DOCTOR_CHECK } from './doctor-source-pin.js';
 import { inspectEngineWorkingTree } from './doctor-working-tree.js';
+import { clearPendingResolution } from './pending-resolution.js';
 import { collectPatchQueueHealth } from './verify.js';
 
 /**
@@ -260,11 +255,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
           );
         }
 
-        await updateState(ctx.projectRoot, (current) => {
-          const next = { ...current };
-          delete next.pendingResolution;
-          return next;
-        });
+        await clearPendingResolution(ctx.projectRoot);
         return ok('Pending Resolution');
       }
 
@@ -401,6 +392,8 @@ validateCheckDependencies(DOCTOR_CHECKS);
  * context-population dependency chain (see {@link DOCTOR_CHECKS}) must
  * also update this list, which gives us a single place to notice and
  * think through the consequences.
+ *
+ * @internal Exported only so tests can reach it; not part of the public surface.
  */
 export const DOCTOR_CHECK_ORDER: readonly string[] = DOCTOR_CHECKS.map((check) => check.name);
 
@@ -421,7 +414,7 @@ export function reportDoctorResults(
   let failedCount = 0;
 
   for (const check of checks) {
-    const severity = resolveDoctorSeverity(check);
+    const severity = check.severity;
 
     if (severity === 'warning') {
       warn(`! ${check.name}: ${check.message}`);

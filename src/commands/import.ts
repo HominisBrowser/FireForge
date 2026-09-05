@@ -29,7 +29,8 @@ import { getPatchSourceVersion } from '../core/patch-source-metadata.js';
 import { warnIfStaticComponentsStale } from '../core/test-stale-check.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
-import type { ImportOptions, PatchesManifest } from '../types/commands/index.js';
+import type { ImportOptions, ImportSummary, PatchesManifest } from '../types/commands/index.js';
+import type { ProjectPaths } from '../types/config.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
@@ -168,10 +169,7 @@ async function checkUncommittedPatchFiles(
   }
 }
 
-async function handlePatchFailures(
-  summary: Awaited<ReturnType<typeof applyPatchesWithContinue>>,
-  projectRoot: string
-): Promise<void> {
+async function handlePatchFailures(summary: ImportSummary, projectRoot: string): Promise<void> {
   const firstFailed = summary.failed[0];
 
   if (firstFailed) {
@@ -382,7 +380,7 @@ async function warnVersionCompatibility(
  * stop (the cancel outro has been printed).
  */
 async function gateImportIntegrity(
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   untilFilenameSet: Set<string>,
   until: string | undefined,
   forceImport: boolean
@@ -608,11 +606,7 @@ export function registerImport(
       '-y, --yes',
       'Answer the drift prompt non-interactively. Unlike --force, this does NOT waive the patch-integrity gate.'
     )
-    .option(
-      '--until <patch>',
-      'Apply patches only up to and including this patch (alias: --stop-at)'
-    )
-    .option('--stop-at <patch>', 'Alias for --until')
+    .option('--until <patch>', 'Apply patches only up to and including this patch')
     .option('--dry-run', 'Preview which patches would be applied without modifying the engine')
     .action(
       withErrorHandling(
@@ -621,16 +615,9 @@ export function registerImport(
           force?: boolean;
           yes?: boolean;
           until?: string;
-          stopAt?: string;
           dryRun?: boolean;
         }) => {
-          // Accept both spellings; --until wins when both are passed.
-          const merged: typeof options = { ...options };
-          if (merged.until === undefined && merged.stopAt !== undefined) {
-            merged.until = merged.stopAt;
-          }
-          delete merged.stopAt;
-          await importCommand(getProjectRoot(), pickDefined(merged));
+          await importCommand(getProjectRoot(), pickDefined(options));
         }
       )
     );

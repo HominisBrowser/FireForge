@@ -29,7 +29,7 @@ import type { PatchLintSeverityGate } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
-import { exec } from '../utils/process.js';
+import { exec, type ExecResult } from '../utils/process.js';
 
 /** How long prettier gets before the pass gives up (ms). */
 const PRETTIER_TIMEOUT_MS = 120_000;
@@ -88,7 +88,7 @@ export async function invokePatchLintPrettier(
   const severity = gate === 'error' ? ('error' as const) : ('warning' as const);
 
   const invocation = await resolvePrettier(engineDir, projectRoot);
-  let result: Awaited<ReturnType<typeof exec>>;
+  let result: ExecResult;
   try {
     result = await exec(invocation.command, [...invocation.prefixArgs, '--check', ...files], {
       cwd: engineDir,
@@ -118,7 +118,7 @@ export async function invokePatchLintPrettier(
         file: '(prettier)',
         check: 'prettier-format',
         message:
-          `prettier exited ${String(result.exitCode)} without completing the check: ` +
+          `prettier exited ${result.exitCode} without completing the check: ` +
           output.trim().split('\n').slice(-5).join(' ').slice(0, 400),
         severity,
       },

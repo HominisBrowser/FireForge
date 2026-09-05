@@ -7,7 +7,7 @@ vi.mock('../../utils/fs.js', () => createFsMock());
 
 import { PatchError } from '../../errors/patch.js';
 import { readText } from '../../utils/fs.js';
-import { applyPatchToContent, extractNewFileContent } from '../patch-transform.js';
+import { applyPatchTextToContent, extractNewFileContent } from '../patch-transform.js';
 
 const NEW_FILE_MULTI_PATCH = [
   'diff --git a/browser/new-file.js b/browser/new-file.js',
@@ -26,10 +26,18 @@ const NEW_FILE_MULTI_PATCH = [
   '',
 ].join('\n');
 
-describe('patch transform helper coverage', () => {
+describe('patch transform — new-file extraction and hunk application', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+
+  // Mirrors the read-then-apply pairing every caller performs, so the
+  // fixtures below can keep expressing a patch as file content.
+  const applyPatchToContent = async (
+    content: string | null,
+    patchPath: string,
+    targetFile: string
+  ): Promise<string> => applyPatchTextToContent(content, await readText(patchPath), targetFile);
 
   it('extracts only the requested file content from a multi-file new-file patch', async () => {
     vi.mocked(readText).mockResolvedValue(NEW_FILE_MULTI_PATCH);
@@ -58,7 +66,7 @@ describe('patch transform helper coverage', () => {
     ).resolves.toBe('export const bare = true;');
   });
 
-  it('extracts new file content when applyPatchToContent is given null content for a new file patch', async () => {
+  it('extracts new file content when applying a new-file patch to null content', async () => {
     vi.mocked(readText).mockResolvedValue(
       [
         'diff --git a/browser/created.js b/browser/created.js',

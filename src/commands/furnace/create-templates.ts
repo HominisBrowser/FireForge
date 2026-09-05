@@ -5,6 +5,23 @@
  * command file stays under the per-file LOC budget.
  */
 
+export interface GenerateMjsContentOptions {
+  /** Custom element tag name. */
+  name: string;
+  /** Generated component class name. */
+  className: string;
+  /** Human-readable component description. */
+  description: string;
+  /** Whether to emit the Fluent wiring. */
+  localized: boolean;
+  /** License header prepended to the module. */
+  header: string;
+  /** chrome:// sub-path for the generated FTL reference, when localized. */
+  ftlChromeSubPath: string | undefined;
+  /** Explicit shared FTL path, used verbatim when supplied. */
+  sharedFtl: string | undefined;
+}
+
 /**
  * Generates the .mjs file content for a custom component.
  *
@@ -25,15 +42,8 @@
  *      matching the locale jar.mn entry that `furnace apply` writes.
  *   3. `<name>.ftl` — fallback when no chrome sub-path was resolvable.
  */
-export function generateMjsContent(
-  name: string,
-  className: string,
-  description: string,
-  localized: boolean,
-  header: string,
-  ftlChromeSubPath: string | undefined,
-  sharedFtl: string | undefined
-): string {
+export function generateMjsContent(options: GenerateMjsContentOptions): string {
+  const { name, className, description, localized, header, ftlChromeSubPath, sharedFtl } = options;
   // A `*/` in the operator-supplied description would close the JSDoc block
   // early and leave the remainder as stray code. Escaped here rather than
   // rejected at input, because the same text is also rendered by

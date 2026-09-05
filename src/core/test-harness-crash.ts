@@ -722,14 +722,14 @@ function evaluateGreenTeardownOverride(
     return reject('summary printed no "Unexpected results:" line');
   }
   if (counts.unexpected !== 0) {
-    return reject(`summary reported unexpected=${String(counts.unexpected)}`);
+    return reject(`summary reported unexpected=${counts.unexpected}`);
   }
   if (NONZERO_UNEXPECTED_SUMMARY_PATTERN.test(output)) {
     return reject('a non-zero "Unexpected results:" line is present somewhere in the output');
   }
   if (realFailures.length > 0) {
     return reject(
-      `${String(realFailures.length)} matched failure line(s), first: ${truncateEvidence(realFailures[0] ?? '')}`
+      `${realFailures.length} matched failure line(s), first: ${truncateEvidence(realFailures[0] ?? '')}`
     );
   }
   const crashLine = findCrashMarkerLine(output);

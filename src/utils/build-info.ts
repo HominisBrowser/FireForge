@@ -25,7 +25,7 @@ import { getPackageRoot, getPackageVersion } from './package-root.js';
 import { isObject } from './validation.js';
 
 /** Source identity of the running build. */
-export interface BuildIdentity {
+interface BuildIdentity {
   shortCommit: string;
   dirty: boolean;
   /**

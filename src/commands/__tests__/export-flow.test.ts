@@ -153,22 +153,15 @@ describe('computePlacementPlan validation', () => {
   // lives here too.
   const oneMeta = [makeMetadata('001-infra-a.patch', 1, ['foo/A.sys.mjs'])];
 
-  it('throws on NaN', () => {
-    expect(() => computePlacementPlan(oneMeta, 'infra', 'foo', Number.NaN)).toThrow(
+  it.each([
+    ['NaN', Number.NaN],
+    ['zero', 0],
+    ['a negative', -5],
+    ['a non-integer', 1.5],
+  ])('throws on %s', (_label, requestedOrder) => {
+    expect(() => computePlacementPlan(oneMeta, 'infra', 'foo', requestedOrder)).toThrow(
       InvalidArgumentError
     );
-  });
-
-  it('throws on zero', () => {
-    expect(() => computePlacementPlan(oneMeta, 'infra', 'foo', 0)).toThrow(InvalidArgumentError);
-  });
-
-  it('throws on negatives', () => {
-    expect(() => computePlacementPlan(oneMeta, 'infra', 'foo', -5)).toThrow(InvalidArgumentError);
-  });
-
-  it('throws on non-integers', () => {
-    expect(() => computePlacementPlan(oneMeta, 'infra', 'foo', 1.5)).toThrow(InvalidArgumentError);
   });
 
   it('accepts 1 and produces a valid filename', () => {

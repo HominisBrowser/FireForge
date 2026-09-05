@@ -2,6 +2,7 @@
 /** Path to customElements.js within the engine source tree */
 export const CUSTOM_ELEMENTS_JS = 'toolkit/content/customElements.js';
 
+import { normalizePathSlashes } from '../utils/paths.js';
 /** Path to jar.mn within the engine source tree (toolkit global) */
 export const JAR_MN = 'toolkit/content/jar.mn';
 
@@ -94,7 +95,7 @@ export function resolveFtlDir(configuredPath?: string): string {
  * degrade gracefully rather than inventing a path.
  */
 export function resolveFtlChromeSubPath(ftlBasePath?: string): string | undefined {
-  const path = (ftlBasePath ?? FTL_DIR).replace(/\\/g, '/');
+  const path = normalizePathSlashes(ftlBasePath ?? FTL_DIR);
   const match = /^(.*?)\/locales\/[^/]+\/(.+?)\/?$/.exec(path);
   if (!match?.[2]) return undefined;
   return match[2];
@@ -109,7 +110,7 @@ export function resolveFtlChromeSubPath(ftlBasePath?: string): string | undefine
  * callers must treat that as "cannot locate" and degrade gracefully.
  */
 export function resolveFtlLocaleJarMnPath(ftlBasePath?: string): string | undefined {
-  const path = (ftlBasePath ?? FTL_DIR).replace(/\\/g, '/');
+  const path = normalizePathSlashes(ftlBasePath ?? FTL_DIR);
   const match = /^(.*?)\/locales\/[^/]+\//.exec(path);
   if (!match?.[1]) return undefined;
   return `${match[1]}/locales/jar.mn`;

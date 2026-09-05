@@ -7,6 +7,7 @@ import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { insertMozBuildListEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 
@@ -43,7 +44,7 @@ export async function registerTestManifest(
     throw new GeneralError(`Manifest not found: ${manifest}`);
   }
 
-  const entry = `    "content/test/${testDir}/browser.toml",`.replace(/\\/g, '/');
+  const entry = normalizePathSlashes(`    "content/test/${testDir}/browser.toml",`);
 
   const content = await readText(manifestPath);
 

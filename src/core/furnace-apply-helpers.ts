@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { createHash } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
@@ -13,6 +12,7 @@ import type {
 } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { copyFile, ensureDir, pathExists, readText, removeFile } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { verbose } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import { buildCustomDryRunActions } from './furnace-apply-dry-run.js';
@@ -24,32 +24,12 @@ import {
 import { normalizeForChecksum } from './furnace-checksum-utils.js';
 import { CUSTOM_ELEMENTS_JS, JAR_MN } from './furnace-constants.js';
 import { deployFileWithFragments, SHARED_FRAGMENTS_DIR } from './furnace-css-fragments.js';
+import { isRegularFile } from './furnace-dir-entry.js';
 import { addCustomElementRegistration, addJarMnEntries } from './furnace-registration.js';
 import { recordCreatedDir, type RollbackJournal, snapshotFile } from './furnace-rollback.js';
 import { checkRegistrationConsistency } from './furnace-validate-registration.js';
 import { isGitRepository } from './git.js';
 import { fileExistsInHead, restoreTrackedPath } from './git-file-ops.js';
-
-interface DirectoryEntry {
-  isFile(): boolean;
-  isSymbolicLink?(): boolean;
-  name: string;
-}
-
-/**
- * True for a plain-file directory entry — symlinks and directories are
- * never copy candidates. Exported for the patch-owned overwrite probe,
- * which walks the same override copy-candidate set as apply.
- */
-export function isRegularFile(entry: DirectoryEntry): boolean {
-  if (!entry.isFile()) return false;
-  if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) return false;
-  return true;
-}
-
-function isChecksummedComponentFile(name: string): boolean {
-  return name.endsWith('.mjs') || name.endsWith('.css') || name.endsWith('.ftl');
-}
 
 /**
  * Filter deciding which files in an override workspace directory are candidates
@@ -143,10 +123,14 @@ export async function computeComponentChecksums(
   for (const entry of entries) {
     if (!isRegularFile(entry)) continue;
     if (entry.name === 'override.json') continue;
-    if (!isChecksummedComponentFile(entry.name)) continue;
+    // The three extensions a component can deploy; anything else in the
+    // workspace directory is not part of the component's checksum identity.
+    const { name: entryName } = entry;
+    if (!entryName.endsWith('.mjs') && !entryName.endsWith('.css') && !entryName.endsWith('.ftl'))
+      continue;
 
     const content = await readText(join(componentDir, entry.name));
-    const hash = createHash('sha256').update(normalizeForChecksum(content)).digest('hex');
+    const hash = sha256Hex(normalizeForChecksum(content));
     checksums[entry.name] = hash;
   }
 
@@ -315,7 +299,7 @@ export async function hasOverrideEngineDrift(
 
     // Fast path: compare engine content hash against cached value from last apply
     if (cachedEngineChecksums) {
-      const engineHash = createHash('sha256').update(engineContent).digest('hex');
+      const engineHash = sha256Hex(engineContent);
       const cachedHash = cachedEngineChecksums[entry.name];
       if (cachedHash && engineHash !== cachedHash) {
         return true;

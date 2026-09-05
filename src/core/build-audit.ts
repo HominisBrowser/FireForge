@@ -41,7 +41,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, verbose, warn } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
-import { detectPlatformGate } from './build-audit-platform.js';
+import { detectAncestorDirsGate, detectPlatformGate } from './build-audit-platform.js';
 import {
   collectSameBasenameCandidates,
   findRegisteredTarget,
@@ -53,6 +53,15 @@ import {
   isTestPath,
   resolveBestArtifact,
 } from './build-audit-resolve.js';
+import {
+  AUDIT_SKIP_REASONS,
+  type AuditSkipReason,
+  isStorybookStoryPath,
+  isUnselectedBrandingPath,
+  matchUnpackagedDeclaration,
+  resolveSelectedBranding,
+  type UnpackagedDeclaration,
+} from './build-audit-skip.js';
 import { resolveArtifactByKnownTransform } from './build-audit-transforms.js';
 import type { BuildBaseline } from './build-baseline-types.js';
 import { collectChangedEnginePaths } from './engine-changes.js';
@@ -135,9 +144,17 @@ export interface AuditEntry {
    * updated: an artifact exists and is at least as new as the source.
    * stale:   artifact exists but is older than the source (probable packaging drop).
    * missing: no artifact with a matching basename was found anywhere under dist/.
-   * skipped: the file extension / path does not imply packaging; not counted.
+   * skipped: the file was not audited; `skipReason` says why.
    */
   status: 'updated' | 'stale' | 'missing' | 'skipped';
+  /**
+   * Why a `skipped` entry was skipped. Present only for `skipped`; the
+   * reasons used to exist only as verbose log strings, so the summary line
+   * could report `4 missing` on a run with zero real misses and nothing in
+   * the counts distinguished a structural non-input from an unregistered
+   * file an operator must act on.
+   */
+  skipReason?: AuditSkipReason;
 }
 
 /** Summary counts for the "Packaged:" end-of-build line. */
@@ -146,7 +163,17 @@ export interface AuditSummary {
   stale: number;
   missing: number;
   skipped: number;
+  /** Per-class skip counts, so the summary can name what it dismissed. */
+  skippedByReason: Record<AuditSkipReason, number>;
   entries: AuditEntry[];
+}
+
+/** Zeroed per-class skip counters. */
+function emptySkipCounts(): Record<AuditSkipReason, number> {
+  return Object.fromEntries(AUDIT_SKIP_REASONS.map((reason) => [reason, 0])) as Record<
+    AuditSkipReason,
+    number
+  >;
 }
 
 /**
@@ -191,7 +218,7 @@ export function isPackageablePath(sourcePath: string): boolean {
  * @returns True when the path is a `components.conf` manifest.
  */
 export function isXpcomManifestPath(sourcePath: string): boolean {
-  return basename(sourcePath.replace(/\\/g, '/')) === 'components.conf';
+  return basename(normalizePathSlashes(sourcePath)) === 'components.conf';
 }
 
 /*
@@ -280,6 +307,15 @@ interface AuditEvalContext {
   testsRoot: string | undefined;
   /** True when `_tests/all-tests.json` exists for the active obj dir. */
   testsPackaged: boolean;
+  /**
+   * Engine-relative branding path this objdir was configured with, or
+   * undefined when the generated mozconfig could not be read. Undefined
+   * keeps the pre-0.46.0 behaviour deliberately: a skip that cannot name
+   * its evidence is a masked warning.
+   */
+  selectedBranding: string | undefined;
+  /** `buildAudit.unpackaged` carve-outs from fireforge.json. */
+  unpackaged: readonly UnpackagedDeclaration[];
 }
 
 /**
@@ -329,22 +365,104 @@ function isConfidentMatch(source: string, candidate: string): boolean {
 }
 
 /**
+ * A classified entry plus the operator-facing line it produces, if any.
+ * `warning` names something to act on; `notice` records something the audit
+ * dismissed on the operator's own instructions, which must be visible
+ * rather than silent.
+ */
+type AuditResult = AuditEntry & { warning?: string; notice?: string };
+
+/**
+ * Applies a `buildAudit.unpackaged` carve-out to a classified result.
+ *
+ * Two behaviours, both mirroring the `--expect-unmanaged` model:
+ *
+ *  - An admitted path is LISTED, not silenced. A carve-out nobody can see
+ *    is how one quietly widens, so the run says which paths it admitted and
+ *    on what stated reason.
+ *  - An admitted path that DOES resolve to a packaged artifact is a STALE
+ *    carve-out: the declaration asserts a fact about the tree that is no
+ *    longer true, and suppressing on it would hide a real packaging change.
+ *    That is reported as a warning, not accepted.
+ *
+ * A declaration matching nothing that changed this run says nothing —
+ * unlike `--expect-unmanaged`, whose unseen entries are reported. The
+ * difference is deliberate: that is a per-invocation flag list, where an
+ * unmet entry is probably a typo in the command just typed. This is a
+ * standing config list checked against only the files that happened to
+ * change, so "not met" is the normal case and reporting it would put a
+ * warning on every build.
+ */
+function applyUnpackagedCarveOut(result: AuditResult, ctx: AuditEvalContext): AuditResult {
+  // Already skipped for a more specific structural reason — the carve-out
+  // is redundant there and reporting it would be noise.
+  if (result.status === 'skipped') return result;
+  const declaration = matchUnpackagedDeclaration(result.source, ctx.unpackaged);
+  if (declaration === undefined) return result;
+
+  if (result.artifact !== undefined) {
+    return {
+      source: result.source,
+      artifact: result.artifact,
+      status: 'skipped',
+      skipReason: 'declared-unpackaged',
+      warning:
+        `Audit: engine/${result.source} is declared unpackaged in fireforge.json ` +
+        `("${declaration.reason}") but a packaged artifact exists at ${result.artifact}. ` +
+        'The declaration is stale — remove it, or correct its path.',
+    };
+  }
+
+  return {
+    source: result.source,
+    artifact: undefined,
+    status: 'skipped',
+    skipReason: 'declared-unpackaged',
+    notice:
+      `Audit: engine/${result.source} admitted as unpackaged by ` +
+      `buildAudit.unpackaged "${declaration.path}" — ${declaration.reason}`,
+  };
+}
+
+/**
  * Audits one engine source path and returns its entry. Pure orchestration
  * helper kept separate so `auditBuildArtifacts` stays under the per-function
  * line budget.
  */
-async function auditSinglePath(
-  source: string,
-  ctx: AuditEvalContext
-): Promise<AuditEntry & { warning?: string }> {
+async function auditSinglePath(source: string, ctx: AuditEvalContext): Promise<AuditResult> {
   if (!isPackageablePath(source)) {
-    return { source, artifact: undefined, status: 'skipped' };
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'not-packageable' };
+  }
+
+  if (isStorybookStoryPath(source)) {
+    verbose(`Audit: skipping engine/${source} — Storybook story, never packaged.`);
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'storybook-story' };
+  }
+
+  if (isUnselectedBrandingPath(source, ctx.selectedBranding)) {
+    verbose(
+      `Audit: skipping engine/${source} — branding tree is not the selected ${ctx.selectedBranding ?? '?'}, so it is not an input to this objdir.`
+    );
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'branding-not-selected' };
   }
 
   const gate = await detectPlatformGate(ctx.engineDir, source);
   if (gate.gatedOff) {
     verbose(`Audit: skipping engine/${source} — gated off by "${gate.gateExpression ?? '?'}".`);
-    return { source, artifact: undefined, status: 'skipped' };
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'platform-gated' };
+  }
+
+  const ancestorGate = await detectAncestorDirsGate(ctx.engineDir, source);
+  if (ancestorGate.gatedOff) {
+    verbose(
+      `Audit: skipping engine/${source} — its directory is reached through a DIRS entry in engine/${ancestorGate.gateFile ?? '?'} gated by "${ancestorGate.gateExpression ?? '?'}".`
+    );
+    return {
+      source,
+      artifact: undefined,
+      status: 'skipped',
+      skipReason: 'platform-gated-ancestor',
+    };
   }
 
   // Tests only end up under `_tests/` after `mach package-tests` (or a
@@ -356,7 +474,7 @@ async function auditSinglePath(
     verbose(
       `Audit: skipping engine/${source} — _tests/${PACKAGED_TESTS_MARKER} not present; full test packaging has not run for this build.`
     );
-    return { source, artifact: undefined, status: 'skipped' };
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'tests-not-packaged' };
   }
 
   const sourcePath = join(ctx.engineDir, source);
@@ -366,7 +484,7 @@ async function auditSinglePath(
     sourceMtime = sourceStat.mtimeMs;
   } catch {
     // Deletion that didn't propagate — distinct class of bug, not audited yet.
-    return { source, artifact: undefined, status: 'skipped' };
+    return { source, artifact: undefined, status: 'skipped', skipReason: 'source-unreadable' };
   }
 
   const roots = searchRootsFor(source, ctx.distRoot, ctx.testsRoot);
@@ -424,7 +542,7 @@ async function reportRegistrationMiss(
   engineDir: string,
   source: string,
   roots: readonly string[]
-): Promise<(AuditEntry & { warning?: string }) | undefined> {
+): Promise<AuditResult | undefined> {
   const hit = await findRegisteredTarget(engineDir, source);
   if (!hit) return undefined;
   const where = isTestPath(source) ? '_tests/' : 'dist/';
@@ -457,7 +575,7 @@ async function evaluateArtifactMtime(
   artifact: string,
   sourceMtime: number,
   mode: { registered: true } | { registered: false; roots: readonly string[] }
-): Promise<AuditEntry & { warning?: string }> {
+): Promise<AuditResult> {
   let artifactMtime: number;
   try {
     const artifactStat = await stat(artifact);
@@ -572,13 +690,15 @@ function describeOwnership(ownersByPath: ReadonlyMap<string, string[]>, source: 
 export async function auditBuildArtifacts(
   projectRoot: string,
   engineDir: string,
-  baseline: BuildBaseline | undefined
+  baseline: BuildBaseline | undefined,
+  options: { unpackaged?: readonly UnpackagedDeclaration[] } = {}
 ): Promise<AuditSummary> {
   const summary: AuditSummary = {
     updated: 0,
     stale: 0,
     missing: 0,
     skipped: 0,
+    skippedByReason: emptySkipCounts(),
     entries: [],
   };
 
@@ -603,21 +723,50 @@ export async function auditBuildArtifacts(
   // it here turns a three-line mystery into three dismissible lines.
   const ownersByPath = await resolveAuditOwnership(projectRoot);
 
-  const ctx: AuditEvalContext = { engineDir, distRoot, testsRoot, testsPackaged };
+  const ctx: AuditEvalContext = {
+    engineDir,
+    distRoot,
+    testsRoot,
+    testsPackaged,
+    selectedBranding: await resolveSelectedBranding(engineDir),
+    unpackaged: options.unpackaged ?? [],
+  };
   for (const source of changed) {
-    const result = await auditSinglePath(source, ctx);
+    const result = applyUnpackagedCarveOut(await auditSinglePath(source, ctx), ctx);
     summary[result.status] += 1;
+    if (result.status === 'skipped' && result.skipReason !== undefined) {
+      summary.skippedByReason[result.skipReason] += 1;
+    }
     summary.entries.push({
       source: result.source,
       artifact: result.artifact,
       status: result.status,
+      ...(result.skipReason === undefined ? {} : { skipReason: result.skipReason }),
     });
     if (result.warning) warn(`${result.warning}${describeOwnership(ownersByPath, result.source)}`);
+    if (result.notice) info(result.notice);
   }
 
   info(
-    `Packaged: ${summary.updated} updated, ${summary.stale} stale, ${summary.missing} missing, ${summary.skipped} skipped`
+    `Packaged: ${summary.updated} updated, ${summary.stale} stale, ${summary.missing} missing, ` +
+      `${summary.skipped} skipped${describeSkipBreakdown(summary)}`
   );
 
   return summary;
+}
+
+/**
+ * Renders the per-class skip breakdown appended to the `Packaged:` line.
+ *
+ * Without it the summary reported one undifferentiated `skipped` count, so
+ * a run that dismissed four unselected-branding files and one
+ * ancestor-gated directory looked identical to one that dismissed five
+ * unregistered sources — and the four false `missing` entries downstream
+ * reported had no counterpart in the counts an operator could check.
+ */
+function describeSkipBreakdown(summary: AuditSummary): string {
+  const parts = AUDIT_SKIP_REASONS.filter((reason) => summary.skippedByReason[reason] > 0).map(
+    (reason) => `${reason} ${String(summary.skippedByReason[reason])}`
+  );
+  return parts.length === 0 ? '' : ` (${parts.join(', ')})`;
 }

@@ -2,7 +2,7 @@
 import { loadConfig } from '../../core/config.js';
 import { applyAllComponents, type ApplyAllComponentsResult } from '../../core/furnace-apply.js';
 import { logApplyResult } from '../../core/furnace-apply-output.js';
-import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
+import { getFurnacePaths } from '../../core/furnace-config.js';
 import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
 import {
   type FurnaceOperationContext,
@@ -17,6 +17,7 @@ import {
   shouldPersistSingleComponentState,
 } from '../../core/furnace-state-persist.js';
 import { hasBlockingStepErrors } from '../../core/furnace-step-errors.js';
+import type { OverrideVersionDrift } from '../../core/furnace-version-drift.js';
 import {
   findOverrideBaseVersionDrift,
   formatOverrideBaseVersionDriftError,
@@ -24,6 +25,7 @@ import {
 } from '../../core/furnace-version-drift.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceDeployOptions } from '../../types/commands/index.js';
+import type { FurnaceConfig } from '../../types/furnace.js';
 import { info, intro, note, outro, spinner, warn } from '../../utils/logger.js';
 import { runDeployValidation } from './validation-output.js';
 
@@ -91,7 +93,7 @@ function getFailedComponentNames(result: ApplyAllComponentsResult): Set<string> 
  */
 async function applyNamedComponent(
   name: string,
-  config: Awaited<ReturnType<typeof loadFurnaceConfig>>,
+  config: FurnaceConfig,
   isDryRun: boolean,
   projectRoot: string,
   operationContext?: FurnaceOperationContext
@@ -167,7 +169,7 @@ function printDeploymentSummary(
 }
 
 function enforceScopedOverrideVersionDriftPreflight(
-  scopedDrift: ReturnType<typeof findOverrideBaseVersionDrift>,
+  scopedDrift: OverrideVersionDrift[],
   force: boolean
 ): void {
   for (const entry of scopedDrift) {
@@ -300,7 +302,7 @@ export async function furnaceDeployCommand(
 
   const validateSpinner = spinner(isDryRun ? 'Validating (read-only)...' : 'Validating...');
   const failedComponents = getFailedComponentNames(result);
-  const validation = await runDeployValidation(
+  const validation = await runDeployValidation({
     validateSpinner,
     name,
     config,
@@ -308,8 +310,8 @@ export async function furnaceDeployCommand(
     failedComponents,
     isDryRun,
     projectRoot,
-    result.actions
-  );
+    dryRunActions: result.actions,
+  });
   if (validation.done) return;
   const { totalErrors, totalWarnings, componentCount, skippedValidationCount } = validation;
 

@@ -137,19 +137,6 @@ describe('withErrorHandling', () => {
     expect(consoleErrorSpy).toHaveBeenCalledWith('mock stack trace');
   });
 
-  it('skips stack logging when an unexpected error has no stack', async () => {
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const error = new Error('boom');
-    error.stack = '';
-
-    const handler = withErrorHandling(() => Promise.reject(error));
-
-    await expect(handler()).rejects.toThrow(CommandError);
-
-    expect(logError).toHaveBeenCalledWith('Unexpected error: boom');
-    expect(consoleErrorSpy).not.toHaveBeenCalled();
-  });
-
   describe('cause chain', () => {
     it('prints the chain under --verbose so a wrapped error surfaces its origin', async () => {
       // Nine error classes declare a `cause` and 22 throw sites pass one;

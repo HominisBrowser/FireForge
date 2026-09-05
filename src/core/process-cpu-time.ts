@@ -34,7 +34,7 @@ export async function readProcessCpuSeconds(pid: number): Promise<number | undef
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        `(Get-Process -Id ${String(pid)} -ErrorAction SilentlyContinue).CPU`,
+        `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).CPU`,
       ]);
       const seconds = Number.parseFloat(result.stdout.trim());
       return Number.isFinite(seconds) ? seconds : undefined;

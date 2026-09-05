@@ -14,6 +14,7 @@ import {
   resolveXpcshellTestDir,
 } from '../../core/furnace-constants.js';
 import type { ResolvedTestStyle } from '../../types/furnace.js';
+import { deriveTestStem } from './test-file-name.js';
 
 export interface DryRunPlanInput {
   componentName: string;
@@ -56,11 +57,7 @@ function formatTestSection(args: {
   const { testStyle, componentName, binaryName, testDir } = args;
   if (testStyle === 'none') return '';
 
-  const strippedName = componentName.startsWith('moz-') ? componentName.slice(4) : componentName;
-  const withoutBinaryPrefix = strippedName.startsWith(binaryName + '-')
-    ? strippedName.slice(binaryName.length + 1)
-    : strippedName;
-  const underscored = withoutBinaryPrefix.replace(/-/g, '_');
+  const underscored = deriveTestStem(componentName, binaryName);
 
   if (testStyle === 'browser-chrome') {
     // Same resolver as scaffoldTestFiles: the registration name is the

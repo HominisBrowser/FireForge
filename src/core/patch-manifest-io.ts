@@ -143,18 +143,22 @@ export async function mutatePatchRowsInManifest(
   if (!(await pathExistsStrict(manifestPath))) return null;
 
   const rawManifest = await readJson<unknown>(manifestPath);
+  // `validatePatchesManifest` has already rejected a manifest that is not an
+  // object with an array of object rows (it throws the corruption error the
+  // caller expects), so the shape re-checks below are FireForge's own
+  // invariants, not input validation: failing them means the validator and
+  // this walker disagree about the manifest schema, which is a bug here.
   const beforeManifest = validatePatchesManifest(rawManifest);
-  if (!isObject(rawManifest) || !isArray(rawManifest['patches'])) {
-    throw new Error('patches.json must be a JSON object with a patches array');
-  }
+  assert(
+    isObject(rawManifest) && isArray(rawManifest['patches']),
+    'validated patches.json is a JSON object with a patches array'
+  );
 
   const filenameSet = new Set(filenames);
   if (filenameSet.size === 0) return [];
 
-  const rawPatches = rawManifest['patches'].map((entry) => {
-    if (!isObject(entry)) {
-      throw new Error('patches.json patches entries must be objects');
-    }
+  const rawPatches = rawManifest['patches'].map((entry, index) => {
+    assert(isObject(entry), () => `validated patches.json row ${index} is an object`);
     return { ...entry };
   });
 

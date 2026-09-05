@@ -183,7 +183,7 @@ export function tokenizeXhtml(lines: string[]): XhtmlToken[] {
 
 // ---------------------------------------------------------------------------
 // Legacy (line-based) helpers — shared by fallback implementations in
-// wire-targets.ts.  Extracted to reduce duplication and make the brace-
+// the wire target modules.  Extracted to reduce duplication and make the brace-
 // walking logic independently testable.
 // ---------------------------------------------------------------------------
 
@@ -207,24 +207,12 @@ export function findMethodBraceIndex(
   pattern: RegExp,
   options?: { requireBrace?: boolean }
 ): { methodLine: number; braceIndex: number } | null {
-  let methodLine = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (pattern.test(lines[i] ?? '')) {
-      methodLine = i;
-      break;
-    }
-  }
+  const methodLine = lines.findIndex((line) => pattern.test(line));
   if (methodLine === -1) return null;
 
-  let braceIndex = methodLine;
-  let braceFound = false;
-  for (let i = methodLine; i < lines.length; i++) {
-    if (lines[i]?.includes('{')) {
-      braceIndex = i;
-      braceFound = true;
-      break;
-    }
-  }
+  const braceOffset = lines.slice(methodLine).findIndex((line) => line.includes('{'));
+  const braceFound = braceOffset !== -1;
+  const braceIndex = braceFound ? methodLine + braceOffset : methodLine;
 
   if (!braceFound && options?.requireBrace) {
     return null;

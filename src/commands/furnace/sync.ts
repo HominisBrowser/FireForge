@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { loadConfig } from '../../core/config.js';
 import { applyAllComponents } from '../../core/furnace-apply.js';
 import { logApplyResult } from '../../core/furnace-apply-output.js';
+import type { FurnacePaths } from '../../core/furnace-config.js';
 import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
 import { runFurnaceMutation, waitLockMutationOptions } from '../../core/furnace-operation.js';
@@ -17,6 +18,7 @@ import {
 } from '../../core/furnace-version-drift.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceSyncOptions } from '../../types/commands/index.js';
+import type { FurnaceConfig } from '../../types/furnace.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { info, intro, outro, spinner, warn } from '../../utils/logger.js';
 import { furnaceRefreshCommand } from './refresh.js';
@@ -27,8 +29,8 @@ import { furnaceRefreshCommand } from './refresh.js';
  * (sorted, unique) that must be resolved before an apply may run.
  */
 async function findComponentsWithConflictMarkers(
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
-  config: Awaited<ReturnType<typeof loadFurnaceConfig>>
+  furnacePaths: FurnacePaths,
+  config: FurnaceConfig
 ): Promise<string[]> {
   const conflicted = new Set<string>();
 

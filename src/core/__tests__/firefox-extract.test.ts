@@ -28,7 +28,7 @@ describe('findUnsafeArchiveEntryName', () => {
         'firefox-140.0/some..file/with..dots.txt',
         '',
       ])
-    ).toBeNull();
+    ).toBeUndefined();
   });
 
   it('rejects absolute POSIX names', () => {
@@ -46,6 +46,29 @@ describe('findUnsafeArchiveEntryName', () => {
     expect(findUnsafeArchiveEntryName(['dir\\..\\evil.txt'])).toBe('dir\\..\\evil.txt');
     expect(findUnsafeArchiveEntryName(['..'])).toBe('..');
   });
+
+  it('rejects .git members at any depth, in either separator style', () => {
+    expect(findUnsafeArchiveEntryName(['.git/config'])).toBe('.git/config');
+    expect(findUnsafeArchiveEntryName(['firefox-140.0/.git/hooks/pre-commit'])).toBe(
+      'firefox-140.0/.git/hooks/pre-commit'
+    );
+    expect(findUnsafeArchiveEntryName(['firefox-140.0/.git'])).toBe('firefox-140.0/.git');
+    expect(findUnsafeArchiveEntryName(['firefox-140.0\\.GIT\\config'])).toBe(
+      'firefox-140.0\\.GIT\\config'
+    );
+  });
+
+  it('keeps legitimate upstream dotfiles such as .gitmodules and .gitignore', () => {
+    expect(
+      findUnsafeArchiveEntryName([
+        'firefox-140.0/.gitmodules',
+        'firefox-140.0/.gitignore',
+        'firefox-140.0/.gitattributes',
+        'firefox-140.0/tools/.github/workflows/x.yml',
+        'firefox-140.0/mygit/config',
+      ])
+    ).toBeUndefined();
+  });
 });
 
 describe('findUnsafeArchiveLink', () => {
@@ -57,7 +80,7 @@ describe('findUnsafeArchiveLink', () => {
         'lrwxr-xr-x  0 user group  0 Jan  1  2026 dir/deep -> sub/other.txt',
         'hrw-r--r--  0 user group  0 Jan  1  2026 dir/hard link to dir/file.txt',
       ])
-    ).toBeNull();
+    ).toBeUndefined();
   });
 
   it('rejects absolute symlink targets', () => {
@@ -155,6 +178,20 @@ describe('extractTarXz preflight (real tar)', () => {
       'dir/../../evil.txt'
     );
     expect(await pathExists(join(tempRoot, 'evil.txt'))).toBe(false);
+  });
+
+  it('rejects a member that would seed .git before extracting anything', async () => {
+    const archivePath = join(tempRoot, 'git-seed.tar');
+    await writeFile(
+      archivePath,
+      buildTarWithMemberName('firefox-140.0/.git/hooks/post-checkout', '#!/bin/sh\necho pwned')
+    );
+
+    const destDir = join(tempRoot, 'out');
+    expect(await causeMessageOf(extractTarXz(archivePath, destDir))).toContain(
+      'firefox-140.0/.git/hooks/post-checkout'
+    );
+    expect(await pathExists(join(destDir, 'firefox-140.0', '.git'))).toBe(false);
   });
 
   it.skipIf(process.platform === 'win32')(

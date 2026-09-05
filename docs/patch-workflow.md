@@ -74,7 +74,8 @@ Every queue-mutating patch command accepts `--wait-lock [seconds]`; see
 ## Linting the queue
 
 `lint --per-patch --patches` accepts repeated flags, comma lists, full
-filenames/stems, manifest names, category-prefixed slugs, and bare slugs.
+filenames/stems, bare order numbers, manifest names, category-prefixed slugs,
+and bare slugs.
 
 `lint --per-patch --max-warnings 0` is the warning-clean form for a release
 gate.

@@ -102,7 +102,12 @@ describe('runPatchLint', () => {
 
   it('does nothing when no issues found', async () => {
     vi.mocked(lintExportedPatch).mockResolvedValueOnce([]);
-    await runPatchLint('/engine', ['a.js'], 'diff', mockConfig);
+    await runPatchLint({
+      engineDir: '/engine',
+      filesAffected: ['a.js'],
+      diffContent: 'diff',
+      config: mockConfig,
+    });
 
     expect(warn).not.toHaveBeenCalled();
   });
@@ -116,7 +121,12 @@ describe('runPatchLint', () => {
         severity: 'warning',
       },
     ]);
-    await runPatchLint('/engine', ['a.js'], 'diff', mockConfig);
+    await runPatchLint({
+      engineDir: '/engine',
+      filesAffected: ['a.js'],
+      diffContent: 'diff',
+      config: mockConfig,
+    });
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('too many files'));
   });
@@ -126,9 +136,15 @@ describe('runPatchLint', () => {
       { check: 'relative-import', file: 'a.mjs', message: 'bad import', severity: 'error' },
     ]);
 
-    await expect(runPatchLint('/engine', ['a.mjs'], 'diff', mockConfig, false)).rejects.toThrow(
-      GeneralError
-    );
+    await expect(
+      runPatchLint({
+        engineDir: '/engine',
+        filesAffected: ['a.mjs'],
+        diffContent: 'diff',
+        config: mockConfig,
+        skipLint: false,
+      })
+    ).rejects.toThrow(GeneralError);
   });
 
   it('downgrades errors to warnings when skipLint is true', async () => {
@@ -136,7 +152,13 @@ describe('runPatchLint', () => {
       { check: 'relative-import', file: 'a.mjs', message: 'bad import', severity: 'error' },
     ]);
 
-    await runPatchLint('/engine', ['a.mjs'], 'diff', mockConfig, true);
+    await runPatchLint({
+      engineDir: '/engine',
+      filesAffected: ['a.mjs'],
+      diffContent: 'diff',
+      config: mockConfig,
+      skipLint: true,
+    });
 
     expect(warn).toHaveBeenCalled();
     expect(info).toHaveBeenCalledWith(expect.stringContaining('downgraded'));

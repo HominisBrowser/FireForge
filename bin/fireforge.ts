@@ -16,6 +16,7 @@ import {
   isSignalRollbackInFlight,
   rollbackActiveOperationsForSignal,
 } from '../src/core/furnace-operation.js';
+import { closeActiveRunLog } from '../src/core/run-log.js';
 import { waitForActiveCriticalSections } from '../src/core/signal-critical.js';
 import { CommandError } from '../src/errors/base.js';
 import { waitForActiveChildShutdown } from '../src/utils/process.js';
@@ -119,6 +120,11 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
       // ownership checks see a settled tree.
       .then(() => forceReleaseHeldLocksForSignal())
       .then(() => forceReleaseFurnaceLocksForActiveOperations())
+      // The run log's held partial line and queued writes do not survive
+      // `process.exit`; the command's own `finally` that would close it is
+      // racing this handler and usually loses. Best-effort like the log
+      // itself — a diagnostic must never keep the process from exiting.
+      .then(() => closeActiveRunLog().catch(() => undefined))
       .finally(() => {
         exitAfterStdioFlush(exitCode);
       });

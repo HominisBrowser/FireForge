@@ -25,6 +25,7 @@ import {
   lintExportedPatch,
   lintPatchQueue,
   lintPatchSize,
+  type PatchQueueContext,
 } from '../core/patch-lint.js';
 import { clearPerPatchLintCache } from '../core/patch-lint-cache.js';
 import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
@@ -229,7 +230,7 @@ function buildMaxWarningsMessage(count: number, maxWarnings: number, scope?: str
  */
 export function applyAggregateLintIgnoreSuppression(
   issues: PatchLintIssue[],
-  ctx: import('../core/patch-lint.js').PatchQueueContext
+  ctx: PatchQueueContext
 ): AggregateLintIgnoreResult {
   const suppressionsByFile = new Map<string, Set<string>>();
   for (const entry of ctx.entries) {
@@ -304,7 +305,7 @@ function validateLintFlags(options: LintCommandOptions): void {
 function downgradeAggregateSizeRules(
   issues: PatchLintIssue[],
   files: string[],
-  ctx: import('../core/patch-lint.js').PatchQueueContext | undefined
+  ctx: PatchQueueContext | undefined
 ): void {
   const aggregateHintApplicable = files.length === 0 && ctx !== undefined && ctx.entries.length > 1;
   if (
@@ -349,7 +350,7 @@ function downgradeAggregateSizeRules(
 async function lintOwningPatchSizes(
   engineDir: string,
   filesAffected: string[],
-  ctx: import('../core/patch-lint.js').PatchQueueContext
+  ctx: PatchQueueContext
 ): Promise<PatchLintIssue[]> {
   const listed = new Set(filesAffected);
   const owners = new Map<string, (typeof ctx.entries)[number]>();
@@ -540,7 +541,7 @@ export async function lintCommand(
 
   // Build patch queue context once so it can be shared between the
   // per-patch ownership resolver and the cross-patch rules.
-  let ctx: import('../core/patch-lint.js').PatchQueueContext | undefined;
+  let ctx: PatchQueueContext | undefined;
   if (await pathExists(paths.patches)) {
     ctx = await buildPatchQueueContext(paths.patches, config);
   }
@@ -619,7 +620,7 @@ export function registerLint(
     )
     .option(
       '--patches <names...>',
-      'With --per-patch, lint only the named patches. Accepts repeated flags, comma lists, full filenames/stems, manifest names, category-prefixed slugs, or bare slugs. Positional arguments after --per-patch are treated the same way.'
+      'With --per-patch, lint only the named patches. Accepts repeated flags, comma lists, full filenames/stems, bare order numbers, manifest names, category-prefixed slugs, or bare slugs. Positional arguments after --per-patch are treated the same way.'
     )
     .option(
       '--max-warnings <n>',

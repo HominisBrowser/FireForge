@@ -21,12 +21,8 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
-import {
-  appendHistory,
-  assertConfirmationAvailable,
-  confirmDestructive,
-} from '../../core/destructive.js';
-import { normalizePatchArtifact } from '../../core/patch-artifact-normalize.js';
+import { assertConfirmationAvailable, confirmDestructive } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import { buildPatchQueueContext } from '../../core/patch-lint.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
@@ -51,7 +47,8 @@ import {
   pickDefined,
   resolveWaitLockSeconds,
 } from '../../utils/options.js';
-import { normalizePatchDisplayName } from '../../utils/validation.js';
+import { normalizePatchDisplayName, parsePositiveIntegerFlag } from '../../utils/validation.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
 import { placementPlansEqual, resolvePlacementPlan } from '../export-flow.js';
 import { runPatchLint } from '../export-shared.js';
 import {
@@ -123,9 +120,9 @@ export async function commitPatchSplit(
           await renumberPatchesInManifest(patchesDir, plan.placement.renameMap);
           renumberApplied = true;
         }
-        await writeText(newPatchPath, normalizePatchArtifact(plan.movedDiff));
+        await writeText(newPatchPath, plan.movedDiff);
         newPatchWritten = true;
-        await writeText(sourcePathAfter, normalizePatchArtifact(plan.remainingDiff));
+        await writeText(sourcePathAfter, plan.remainingDiff);
         sourceRewritten = true;
 
         const fresh = await loadPatchesManifest(patchesDir);
@@ -151,8 +148,9 @@ export async function commitPatchSplit(
         const updated = validatePatchesManifest({ ...fresh, patches: updatedPatches });
         await savePatchesManifest(patchesDir, updated);
 
-        try {
-          await appendHistory(patchesDir, {
+        await appendHistoryBestEffort(
+          patchesDir,
+          {
             operation: 'patch-split',
             args: {
               source: effectiveSourceFilename,
@@ -168,12 +166,9 @@ export async function commitPatchSplit(
             ...(options.yes === true ? { yes: true } : {}),
             ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
             result: 'ok',
-          });
-        } catch (historyError: unknown) {
-          warn(
-            `History log append failed after patch split committed: ${toError(historyError).message}`
-          );
-        }
+          },
+          `patch split committed`
+        );
       } catch (error: unknown) {
         // Reverse-order rollback; each step warns on its own failure so the
         // original error stays visible.
@@ -323,26 +318,26 @@ export async function patchSplitCommand(
   // instead of linting each projected body blind.
   const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
   const ignoreChecks = source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined;
-  await runPatchLint(
-    paths.engine,
-    remainingFiles,
-    remainingDiff,
+  await runPatchLint({
+    engineDir: paths.engine,
+    filesAffected: remainingFiles,
+    diffContent: remainingDiff,
     config,
-    options.skipLint,
+    skipLint: options.skipLint,
     patchQueueCtx,
     ignoreChecks,
-    source.tier
-  );
-  await runPatchLint(
-    paths.engine,
-    movedFiles,
-    movedDiff,
+    patchTier: source.tier,
+  });
+  await runPatchLint({
+    engineDir: paths.engine,
+    filesAffected: movedFiles,
+    diffContent: movedDiff,
     config,
-    options.skipLint,
+    skipLint: options.skipLint,
     patchQueueCtx,
     ignoreChecks,
-    source.tier
-  );
+    patchTier: source.tier,
+  });
 
   const { conflicts, stagedDependencyAdditions } = runProjectedSplitLint(plan, patchQueueCtx);
   plan.stagedDependencyAdditions = stagedDependencyAdditions;
@@ -363,14 +358,7 @@ export async function patchSplitCommand(
     unsafeOverride: options.forceUnsafe === true,
     conflicts,
   });
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Split cancelled');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Split cancelled')) return;
 
   await commitPatchSplit(paths.patches, plan, newMetadata, options, config);
 
@@ -403,16 +391,7 @@ export function registerPatchSplit(parent: Command, context: CommandContext): vo
     .option(
       '--order <n>',
       'Exact sparse order for the new patch',
-      commanderArgParser((raw: string) => {
-        const n = Number.parseInt(raw, 10);
-        if (!Number.isInteger(n) || n <= 0) {
-          throw new InvalidArgumentError(
-            `--order must be a positive integer, got "${raw}".`,
-            '--order'
-          );
-        }
-        return n;
-      })
+      commanderArgParser((raw: string) => parsePositiveIntegerFlag('--order', raw))
     )
     .option('--before <patch>', 'Place the new patch before this patch')
     .option('--after <patch>', 'Place the new patch after this patch (default: the source patch)')

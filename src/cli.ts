@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { Command, Help } from 'commander';
 
+import { handleParseError, machineErrorCode, wantsMachineOutput } from './cli-usage-error.js';
 import { COMMAND_MANIFEST, type CommandManifestEntry } from './commands/manifest.js';
 import { runTreeGuardHook } from './core/tree-guard.js';
 import {
@@ -61,23 +62,6 @@ function getBrokenPipeHandler(state: FireForgeProcess): (error: NodeJS.ErrnoExce
 }
 
 /**
- * Stable machine-readable tag for an error class, for the `--json` envelope.
- *
- * Derived from the class name rather than hand-mapped: a new error class gets
- * a sensible tag automatically, and the mapping cannot drift out of sync with
- * the taxonomy. `ConfigNotFoundError` becomes `config-not-found`.
- *
- * @param error - The error being rendered
- * @returns A kebab-case tag with the `Error` suffix stripped
- */
-function machineErrorCode(error: FireForgeError): string {
-  return error.name
-    .replace(/Error$/, '')
-    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-    .toLowerCase();
-}
-
-/**
  * Prints an error's `cause` chain under `--verbose`.
  *
  * Nine error classes declare a `cause` and twenty-two throw sites pass one;
@@ -124,7 +108,11 @@ export function installBrokenPipeHandler(): void {
   state[brokenPipeInstalledKey] = true;
 }
 
-/** Removes the broken-pipe handler installed for CLI tests. */
+/**
+ * Removes the broken-pipe handler installed for CLI tests.
+ *
+ * @internal Exported only so tests can reach it; not part of the public surface.
+ */
 export function resetBrokenPipeHandlerForTests(): void {
   const state = getProcessState();
   const handleStreamError = state[brokenPipeListenerKey];
@@ -191,8 +179,8 @@ export function withErrorHandling<T extends unknown[]>(
     // un-parseable output. Reading the flag from argv is blunt but exact: if
     // the invocation asked for machine output, stdout belongs to the payload
     // from the first byte.
-    const wantsMachineOutput = process.argv.includes('--json') || process.argv.includes('--raw');
-    if (wantsMachineOutput) {
+    const machineOutput = wantsMachineOutput();
+    if (machineOutput) {
       setMachineOutputMode(true);
     }
     try {
@@ -234,7 +222,7 @@ export function withErrorHandling<T extends unknown[]>(
         // Not when a payload already owns stdout: `status --json --fail-on`
         // writes its full document and THEN refuses, and appending an
         // envelope would make that two JSON documents.
-        if (wantsMachineOutput && !isStdoutSealed()) {
+        if (machineOutput && !isStdoutSealed()) {
           emitMachineError(machineErrorCode(error), error.message, error.code);
         }
         throw new CommandError(error.code);
@@ -413,6 +401,11 @@ export function createProgram(): Command {
 
   program
     .name('fireforge')
+    // Usage errors must NOT let commander call process.exit(1) itself: the
+    // documented code is INVALID_ARGUMENT (8) and `--json` owes a refusal
+    // envelope. Installed before any subcommand registers, because
+    // `.command()` copies the override into the child at creation time.
+    .exitOverride()
     .description('A build tool for customizing Firefox')
     .option('-v, --verbose', 'Enable debug output')
     .option(
@@ -472,5 +465,9 @@ export async function main(): Promise<void> {
   }
 
   const program = createProgram();
-  await program.parseAsync(process.argv);
+  try {
+    await program.parseAsync(process.argv);
+  } catch (error: unknown) {
+    handleParseError(error, wantsMachineOutput());
+  }
 }

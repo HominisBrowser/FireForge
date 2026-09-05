@@ -56,13 +56,13 @@ export function parsePsDuration(value: string): number {
  */
 export function formatPsDuration(seconds: number): string | undefined {
   if (Number.isNaN(seconds) || seconds < 0) return undefined;
-  if (seconds < 60) return `${String(Math.floor(seconds))}s`;
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
   if (seconds < 3600) {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
-    return `${String(m)}m${String(s).padStart(2, '0')}s`;
+    return `${m}m${String(s).padStart(2, '0')}s`;
   }
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  return `${String(h)}h${String(m).padStart(2, '0')}m`;
+  return `${h}h${String(m).padStart(2, '0')}m`;
 }

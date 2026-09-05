@@ -7,6 +7,7 @@ import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { insertJarMnEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 
@@ -48,8 +49,8 @@ export async function registerBrowserContent(
     throw new GeneralError(`Manifest not found: ${manifest}`);
   }
 
-  const source = (sourcePath ?? `content/${fileName}`).replace(/\\/g, '/');
-  const entry = `        content/browser/${fileName}    (${source})`.replace(/\\/g, '/');
+  const source = normalizePathSlashes(sourcePath ?? `content/${fileName}`);
+  const entry = normalizePathSlashes(`        content/browser/${fileName}    (${source})`);
 
   const content = await readText(manifestPath);
 

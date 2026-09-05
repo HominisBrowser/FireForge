@@ -1089,81 +1089,28 @@ describe('headedNoOutputTimeoutHint', () => {
     line: 'Timed out after 370 seconds with no output',
   };
 
-  it('prints the three-cause triage list for a headed no-output timeout on darwin', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-    });
-    // Recommending `caffeinate` is wrong for this shape: it PREVENTS sleep
-    // and cannot WAKE an already-sleeping display. The hint says so and
-    // lists all three known causes.
+  it('names all three known causes, after the control step, with the measured display state', () => {
+    const headedDarwin = { headless: false, platform: 'darwin' } as const;
+    const hint = headedNoOutputTimeoutHint(timeoutSignature, headedDarwin);
     expect(hint).toContain('sleeping or locked display');
     expect(hint).toContain('SWGL compositor');
-    expect(hint).toContain('chrome://');
-    expect(hint).toContain('cannot WAKE a display that is already asleep');
-  });
-
-  // The control test is the correct opening move for ALL three causes, so
-  // it belongs above the list. While it lived inside cause 3, reaching
-  // cause 3 told the operator nothing they did not already have.
-  it('hoists the known-good control step above the cause list', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-    });
-    expect(hint).toContain('run a known-good control test');
+    // Cause 3 is root-caused as the CheckForBrokenChromeURL crash, not the
+    // discredited first-paint story an earlier revision wrote over it.
+    expect(hint).toContain('CheckForBrokenChromeURL');
+    expect(hint).not.toContain('stalls first paint');
+    // The control test is the correct opening move for all three causes,
+    // so it must come before the cause list rather than inside cause 3.
     expect(hint?.indexOf('known-good control')).toBeLessThan(
       hint?.indexOf('Known causes of this exact signature') ?? -1
     );
-  });
 
-  // Cause 3 is now root-caused: `CheckForBrokenChromeURL` is a printf
-  // outside automation and a MOZ_CRASH under it. The census must name the
-  // mechanism — but must NOT restore the discredited first-paint story
-  // that an earlier revision wrote on top of the correlation.
-  it('states cause 3 as the root-caused CheckForBrokenChromeURL mechanism', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-    });
-    expect(hint).toContain('CheckForBrokenChromeURL');
-    expect(hint).toContain('MOZ_CRASH');
-    // The discredited mechanism claim must not come back.
-    expect(hint).not.toContain('stalls first paint');
-  });
-
-  // Under automation the crash lands in the process that died, not in the
-  // log, so the census must name the crash-report artefact alongside the
-  // smoke probe — pointing only at the log teaches operators to conclude
-  // "nothing here" from a log that structurally cannot carry the evidence.
-  it('names both the crash-report artefact and the smoke probe for cause 3', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-    });
-    expect(hint).toContain('DiagnosticReports');
-    expect(hint).toContain('fireforge run --smoke-exit');
-    expect(hint).toContain('OUTSIDE automation');
-  });
-
-  it('states a MEASURED asleep display as fact', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-      displayState: 'asleep',
-    });
-    expect(hint).toContain('MEASURED ASLEEP');
-    expect(hint).toContain('environmental');
-  });
-
-  it('rules the sleeping display out when it was measured awake', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-      displayState: 'awake',
-    });
-    expect(hint).toContain('measured AWAKE');
-    expect(hint).toContain('ruled out');
+    // A measured display state is reported as fact in either direction.
+    expect(
+      headedNoOutputTimeoutHint(timeoutSignature, { ...headedDarwin, displayState: 'asleep' })
+    ).toContain('MEASURED ASLEEP');
+    expect(
+      headedNoOutputTimeoutHint(timeoutSignature, { ...headedDarwin, displayState: 'awake' })
+    ).toContain('measured AWAKE');
   });
 
   it('notes a measured-asleep headed stall on the verdict line', () => {

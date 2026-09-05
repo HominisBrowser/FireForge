@@ -14,11 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ClassifiedFile, StatusFile } from '../../core/status-classify.js';
 import type { PatchMetadata } from '../../types/commands/index.js';
-import {
-  buildOwnershipJsonBlock,
-  collectOwnershipRows,
-  summarizeOwnership,
-} from '../status-ownership.js';
+import { collectOwnershipRows, summarizeOwnership } from '../status-ownership.js';
 
 const OWNED = 'browser/base/content/browser.js';
 const STRAY = 'browser/base/content/stray.js';
@@ -97,7 +93,7 @@ describe('collectOwnershipRows', () => {
   });
 });
 
-describe('summarizeOwnership / buildOwnershipJsonBlock', () => {
+describe('summarizeOwnership', () => {
   const rows = [
     {
       path: 'a',
@@ -128,11 +124,5 @@ describe('summarizeOwnership / buildOwnershipJsonBlock', () => {
   it('counts managed, unmanaged, and conflicted rows independently', () => {
     // A conflicted row is still managed — it has owners, just too many.
     expect(summarizeOwnership(rows)).toEqual({ managed: 2, unmanaged: 1, conflicts: 1 });
-  });
-
-  it('carries the rows verbatim into the JSON block', () => {
-    const block = buildOwnershipJsonBlock([...rows]);
-    expect(block.rows).toEqual(rows);
-    expect(block.summary.conflicts).toBe(1);
   });
 });

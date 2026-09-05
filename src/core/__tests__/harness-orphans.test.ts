@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { warn } from '../../utils/logger.js';
 import { exec } from '../../utils/process.js';
@@ -80,8 +80,31 @@ describe('findOrphanedHarnessProcesses', () => {
 describe('reportOrphanedHarnessProcesses', () => {
   const LIVE = `  411     1 01:02:11 ${OBJ}/dist/bin/xpcshell -f ${OBJ}/_tests/testing/mochitest/server.js`;
 
+  // The census branches on `process.platform` directly and skips itself on
+  // Windows, so the `ps`-driven expectations below only hold when the
+  // branch is pinned to a POSIX host rather than inherited from the runner.
+  const originalPlatform = process.platform;
+
+  function stubPlatform(value: NodeJS.Platform): void {
+    Object.defineProperty(process, 'platform', { value, configurable: true });
+  }
+
+  afterAll(() => {
+    stubPlatform(originalPlatform);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    stubPlatform('darwin');
+  });
+
+  // There is no `ps -axo` on Windows; the preflight must step aside without
+  // even trying, because a failed probe there would be noise on every run.
+  it('skips the census on Windows without probing', async () => {
+    stubPlatform('win32');
+    expect(await reportOrphanedHarnessProcesses(OBJ)).toEqual([]);
+    expect(exec).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('warns with the census when survivors are found', async () => {

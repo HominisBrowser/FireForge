@@ -25,13 +25,12 @@
 
 import { toError } from '../utils/errors.js';
 import { verbose, warn } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { isPackageablePath, isXpcomManifestPath } from './build-audit.js';
 import { readBuildBaseline } from './build-baseline.js';
 import type { BuildBaseline, TestPackagingCoverage } from './build-baseline-types.js';
 import { hashEngineFile } from './coverage-extend.js';
 import { collectChangedEnginePaths, dropPathsMatchingFingerprints } from './engine-changes.js';
-
-export { isXpcomManifestPath };
 
 /** Result of the stale-build preflight probe. */
 export interface StaleBuildResult {
@@ -191,7 +190,7 @@ function toManifestGranule(path: string): string {
 
 /** Normalizes a path for coverage comparison: forward slashes, no trailing slash. */
 function normalizeCoveragePath(path: string): string {
-  return path.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  return normalizePathSlashes(path.trim()).replace(/\/+$/, '');
 }
 
 /**

@@ -18,7 +18,7 @@ import { InvalidArgumentError } from '../errors/base.js';
 import type { ExportOptions, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import type { SpinnerHandle } from '../utils/logger.js';
-import { outro } from '../utils/logger.js';
+import { proceedAfterDecision } from './destructive-decision.js';
 import {
   type PlacementPlan,
   placementSummary,
@@ -136,14 +136,7 @@ export async function gatePlacementPlan(args: {
       unsafeOverride: options.forceUnsafe === true,
       conflicts,
     });
-    if (decision === 'dry-run') {
-      outro('Dry run complete — no changes made');
-      return 'stop';
-    }
-    if (decision === 'declined') {
-      outro('Export cancelled');
-      return 'stop';
-    }
+    if (!proceedAfterDecision(decision, 'Export cancelled')) return 'stop';
   } else if (conflicts && options.forceUnsafe !== true) {
     s.stop();
     throw new InvalidArgumentError(

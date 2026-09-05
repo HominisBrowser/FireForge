@@ -5,6 +5,7 @@ import { GeneralError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { toRootRelativePath } from '../utils/paths.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import {
   assertSnapshotted,
@@ -14,13 +15,10 @@ import {
 } from './furnace-rollback.js';
 import type { RegisterResult } from './moz-manifest-register.js';
 import { registerBrowserContent } from './moz-manifest-register.js';
-import { DEFAULT_DOM_TARGET } from './wire-dom-fragment.js';
-import {
-  addDestroyToBrowserInit,
-  addDomFragment,
-  addInitToBrowserInit,
-  addSubscriptToBrowserMain,
-} from './wire-targets.js';
+import { addDestroyToBrowserInit } from './wire-destroy.js';
+import { addDomFragment, DEFAULT_DOM_TARGET } from './wire-dom-fragment.js';
+import { addInitToBrowserInit } from './wire-init.js';
+import { addSubscriptToBrowserMain } from './wire-subscript.js';
 
 export const DEFAULT_BROWSER_SUBSCRIPT_DIR = 'browser/base/content';
 const BROWSER_BASE_DIR = 'browser/base';
@@ -86,10 +84,9 @@ export async function wireSubscript(
   // Compute jar.mn source path relative to browser/base/
   let jarMnSourcePath: string | undefined;
   if (subscriptDir !== DEFAULT_BROWSER_SUBSCRIPT_DIR) {
-    const relPath = relative(
-      join(engineDir, BROWSER_BASE_DIR),
-      join(engineDir, subscriptDir)
-    ).replace(/\\/g, '/');
+    const relPath = normalizePathSlashes(
+      relative(join(engineDir, BROWSER_BASE_DIR), join(engineDir, subscriptDir))
+    );
     jarMnSourcePath = `${relPath}/${name}.js`;
   }
 

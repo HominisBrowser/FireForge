@@ -8,7 +8,6 @@
 import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
 import type { TestPackagingCoverage } from '../core/build-baseline-types.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
-import type { getProjectPaths, loadConfig } from '../core/config.js';
 import {
   checkExtendCoverageAnchor,
   checkExtendMozconfigAnchor,
@@ -20,6 +19,7 @@ import { buildHarnessCrashMessage } from '../core/test-harness-crash.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { info, notice, spinner, verbose } from '../utils/logger.js';
 import type { HarnessClassification } from './test-modes.js';
@@ -27,15 +27,39 @@ import { reportBuildOnlyCompletion } from './test-modes.js';
 import { enforceStaleBuildGate, enforceStaticComponentsGate } from './test-stale-gate.js';
 import { emitPassVerdict } from './test-verdict.js';
 
-async function runPreTestBuild(
-  projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  projectConfig: Awaited<ReturnType<typeof loadConfig>>,
-  harnessRetries: number,
-  testPackagingCoverage: TestPackagingCoverage,
-  refuseUnexportedDrift: boolean,
-  extend?: { requestedPaths: string[] }
-): Promise<void> {
+interface RunPreTestBuildOptions {
+  /** Root directory of the project. */
+  projectRoot: string;
+  /** Resolved project paths. */
+  paths: ProjectPaths;
+  /** Loaded project configuration. */
+  projectConfig: FireForgeConfig;
+  /** Harness-crash retry budget for the build. */
+  harnessRetries: number;
+  /** Coverage claim to record on the baseline this build writes. */
+  testPackagingCoverage: TestPackagingCoverage;
+  /** Whether unexported engine drift must refuse the build. */
+  refuseUnexportedDrift: boolean;
+  /** `--extend-coverage` request paths, when the flag is in force. */
+  extend?: { requestedPaths: string[] } | undefined;
+}
+
+/**
+ * Runs the incremental pre-test build under the build lock and records the
+ * baseline it produced.
+ *
+ * @param options - See {@link RunPreTestBuildOptions}
+ */
+async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
+  const {
+    projectRoot,
+    paths,
+    projectConfig,
+    harnessRetries,
+    testPackagingCoverage,
+    refuseUnexportedDrift,
+    extend,
+  } = options;
   await withBuildLock(projectRoot, async () => {
     // Pass the previous baseline exactly like `fireforge build` does, so
     // auto-configure runs under the same conditions on both paths. The
@@ -112,20 +136,20 @@ async function runPreTestBuild(
                 extend.requestedPaths
               )
             : testPackagingCoverage;
-        await writeBuildBaseline(
+        await writeBuildBaseline({
           projectRoot,
-          paths.engine,
-          projectConfig.binaryName,
-          recordedCoverage,
+          engineDir: paths.engine,
+          binaryName: projectConfig.binaryName,
+          testPackagingCoverage: recordedCoverage,
           previousBaseline,
-          describeBuildInvocation(extend !== undefined, testPackagingCoverage),
-          preparation.fullBuildRequired
+          recordedBy: describeBuildInvocation(extend !== undefined, testPackagingCoverage),
+          staticComponentsHandling: preparation.fullBuildRequired
             ? 'refresh'
             : extend !== undefined
               ? 'carry-forward'
               : 'auto',
-          buildKind
-        );
+          buildKind,
+        });
       } catch (baselineError: unknown) {
         verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
       }
@@ -195,8 +219,8 @@ function describeBuildInvocation(extending: boolean, coverage: TestPackagingCove
  */
 export async function runTestBuildPhase(
   projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  projectConfig: Awaited<ReturnType<typeof loadConfig>>,
+  paths: ProjectPaths,
+  projectConfig: FireForgeConfig,
   harnessRetries: number,
   options: TestOptions,
   request: { classification: HarnessClassification; normalizedPaths: string[] }
@@ -226,15 +250,15 @@ export async function runTestBuildPhase(
         }
       }
     }
-    await runPreTestBuild(
+    await runPreTestBuild({
       projectRoot,
       paths,
       projectConfig,
       harnessRetries,
-      coverage,
-      options.refuseUnexportedDrift === true,
-      extending ? { requestedPaths: normalizedPaths } : undefined
-    );
+      testPackagingCoverage: coverage,
+      refuseUnexportedDrift: options.refuseUnexportedDrift === true,
+      extend: extending ? { requestedPaths: normalizedPaths } : undefined,
+    });
     info('');
     if (options.buildOnly) {
       // Union build for mixed harnesses: the coverage claim

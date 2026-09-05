@@ -26,7 +26,7 @@ import { buildPatchSourceMetadata } from '../core/patch-source-metadata.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ExportOptions, PatchMetadata } from '../types/commands/index.js';
-import type { FireForgeConfig } from '../types/config.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
@@ -41,6 +41,7 @@ import { stripEnginePrefix } from '../utils/paths.js';
 import { parsePositiveIntegerFlag } from '../utils/validation.js';
 import { commitPlacementExport, type PlacementPlan, renderDryRunPreview } from './export-flow.js';
 import { gatePlacementPlan, patchMetadataExtras } from './export-placement-gate.js';
+import type { ExportPatchMetadata } from './export-shared.js';
 import {
   autoFixLicenseHeaders,
   promptExportPatchMetadata,
@@ -56,7 +57,7 @@ interface CollectedExportFiles {
 }
 
 async function collectExportFiles(
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   files: string[]
 ): Promise<CollectedExportFiles> {
   const collectedFiles = new Set<string>();
@@ -202,12 +203,12 @@ async function generatePatchDiff(engineDir: string, allFiles: string[]): Promise
 
 /** Everything `exportCommand` resolves before the spinner starts. */
 interface ExportPreparation {
-  paths: ReturnType<typeof getProjectPaths>;
+  paths: ProjectPaths;
   placementFlagCount: number;
   diff: string;
   config: FireForgeConfig;
   isInteractive: boolean;
-  metadata: NonNullable<Awaited<ReturnType<typeof promptExportPatchMetadata>>>;
+  metadata: ExportPatchMetadata;
 }
 
 /**
@@ -364,16 +365,16 @@ export async function exportCommand(
     const patchQueueCtx = (await pathExists(paths.patches))
       ? await buildPatchQueueContext(paths.patches)
       : undefined;
-    await runPatchLint(
-      paths.engine,
+    await runPatchLint({
+      engineDir: paths.engine,
       filesAffected,
-      diff,
+      diffContent: diff,
       config,
-      options.skipLint,
+      skipLint: options.skipLint,
       patchQueueCtx,
-      exportIgnoreChecks,
-      options.tier
-    );
+      ignoreChecks: exportIgnoreChecks,
+      patchTier: options.tier,
+    });
 
     // Resolve placement (if any flag was given). Placement is mutually
     // exclusive with supersede — the semantics overlap confusingly.

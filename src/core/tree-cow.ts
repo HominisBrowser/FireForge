@@ -29,13 +29,13 @@ const defaultExecutor: CloneExecutor = async (command, args) => {
   const result = await exec(command, args);
   if (result.exitCode !== 0) {
     throw new Error(
-      `${command} ${args.join(' ')} failed (exit ${String(result.exitCode)}): ${result.stderr}`
+      `${command} ${args.join(' ')} failed (exit ${result.exitCode}): ${result.stderr}`
     );
   }
 };
 
 /** Per-platform `cp` argv prefix for a CoW copy of one entry. */
-export function cowCopyArgs(capability: Exclude<CowCapability, 'none'>): string[] {
+function cowCopyArgs(capability: Exclude<CowCapability, 'none'>): string[] {
   return capability === 'clonefile' ? ['-c', '-R', '-p'] : ['--reflink=always', '-a'];
 }
 

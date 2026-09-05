@@ -2,7 +2,13 @@
 import { join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
-import type { ApplyResult, CustomComponentConfig, DryRunAction } from '../types/furnace.js';
+import type {
+  ApplyResult,
+  CustomComponentConfig,
+  DryRunAction,
+  FurnaceConfig,
+  FurnaceState,
+} from '../types/furnace.js';
 import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
@@ -30,6 +36,7 @@ import {
   buildCustomUndeployActions,
   buildOverrideUndeployActions,
 } from './furnace-apply-undeploy-actions.js';
+import type { FurnacePaths } from './furnace-config.js';
 import {
   getFurnacePaths,
   loadFurnaceConfig,
@@ -55,14 +62,27 @@ import {
 import { blockingStepErrors, hasBlockingStepErrors } from './furnace-step-errors.js';
 import { runPostApplyConsistencyChecks } from './furnace-validate-registration.js';
 
-export {
-  computeComponentChecksums,
-  hasComponentChanged,
-  prefixChecksums,
-} from './furnace-apply-helpers.js';
+export { computeComponentChecksums, prefixChecksums } from './furnace-apply-helpers.js';
 
-type FurnaceConfigData = Awaited<ReturnType<typeof loadFurnaceConfig>>;
-type FurnaceStateData = Awaited<ReturnType<typeof loadFurnaceState>>;
+/**
+ * Records one component's checksums into the run-wide accumulator, under the
+ * flattened `type/name/file` keys the state file stores. A Map keeps the
+ * accumulation explicit — the previous `Object.assign` merges read as if they
+ * replaced the accumulator rather than adding to it.
+ */
+function recordComponentChecksums(
+  accumulator: Map<string, string>,
+  checksums: Record<string, string>,
+  type: string,
+  name: string
+): void {
+  for (const [key, value] of Object.entries(prefixChecksums(checksums, type, name))) {
+    accumulator.set(key, value);
+  }
+}
+
+type FurnaceConfigData = FurnaceConfig;
+type FurnaceStateData = FurnaceState;
 type ApplyAccumulator = ApplyResult & {
   actions?: DryRunAction[];
   rollbackJournal?: RollbackJournal;
@@ -117,7 +137,7 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
         );
         if (!drifted) {
           result.skipped.push({ name, reason: 'No changes since last apply' });
-          Object.assign(newChecksums, prefixChecksums(previous, 'override', name));
+          recordComponentChecksums(newChecksums, previous, 'override', name);
           continue;
         }
       }
@@ -179,7 +199,7 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
       result.applied.push({ name, type: 'override', filesAffected: filesAffectedTotal });
 
       if (!dryRun) {
-        Object.assign(newChecksums, prefixChecksums(currentChecksums, 'override', name));
+        recordComponentChecksums(newChecksums, currentChecksums, 'override', name);
       }
     } catch (error: unknown) {
       result.errors.push({
@@ -198,15 +218,25 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
  * the customElements.js registration. Snapshots are taken under the same
  * journal so the undo path is symmetric with apply.
  */
-async function reconcileCustomRegistrationAfterUndeploy(
-  engineDir: string,
-  name: string,
-  config: CustomComponentConfig,
-  deletedFiles: string[],
-  currentChecksums: Record<string, string>,
-  rollbackJournal: RollbackJournal | undefined,
-  filesAffected: string[]
-): Promise<void> {
+async function reconcileCustomRegistrationAfterUndeploy(args: {
+  engineDir: string;
+  name: string;
+  config: CustomComponentConfig;
+  deletedFiles: string[];
+  currentChecksums: Record<string, string>;
+  rollbackJournal: RollbackJournal | undefined;
+  /** Mutated: receives every engine path this reconciliation touched. */
+  filesAffected: string[];
+}): Promise<void> {
+  const {
+    engineDir,
+    name,
+    config,
+    deletedFiles,
+    currentChecksums,
+    rollbackJournal,
+    filesAffected,
+  } = args;
   if (!config.register || deletedFiles.length === 0) return;
 
   const deletedRegistrationFiles = deletedFiles.filter(
@@ -327,7 +357,7 @@ async function applyCustomBatch(
         );
         if (!drifted) {
           result.skipped.push({ name, reason: 'No changes since last apply' });
-          Object.assign(newChecksums, prefixChecksums(previous, 'custom', name));
+          recordComponentChecksums(newChecksums, previous, 'custom', name);
           continue;
         }
       }
@@ -391,15 +421,15 @@ async function applyCustomBatch(
       }
 
       if (!dryRun && deletedFiles.length > 0 && blockingStepErrors(stepErrors).length === 0) {
-        await reconcileCustomRegistrationAfterUndeploy(
+        await reconcileCustomRegistrationAfterUndeploy({
           engineDir,
           name,
-          customConfig,
+          config: customConfig,
           deletedFiles,
           currentChecksums,
           rollbackJournal,
-          filesAffectedTotal
-        );
+          filesAffected: filesAffectedTotal,
+        });
       }
 
       filesAffectedTotal.push(...filesAffected);
@@ -415,7 +445,7 @@ async function applyCustomBatch(
       // the next run. Advisory errors (FTL degradation) still persist —
       // re-applying cannot fix a fork that has no locale jar.mn.
       if (!dryRun && blockingStepErrors(stepErrors).length === 0) {
-        Object.assign(newChecksums, prefixChecksums(currentChecksums, 'custom', name));
+        recordComponentChecksums(newChecksums, currentChecksums, 'custom', name);
       }
     } catch (error: unknown) {
       result.errors.push({
@@ -507,7 +537,7 @@ export async function applyAllComponents(
     errors: [],
   };
   const allActions: DryRunAction[] = [];
-  const newChecksums: Record<string, string> = {};
+  const newChecksums = new Map<string, string>();
 
   const componentName = options?.componentName;
 
@@ -597,8 +627,8 @@ export async function applyAllComponents(
       // instead of byte-comparing against workspace sources.
       await updateFurnaceState(root, {
         lastApply: new Date().toISOString(),
-        appliedChecksums: newChecksums,
-        engineChecksums: { ...newChecksums },
+        appliedChecksums: Object.fromEntries(newChecksums),
+        engineChecksums: Object.fromEntries(newChecksums),
       });
     } else if (rollbackJournal) {
       // Caller owns the journal and will restore on teardown.
@@ -619,7 +649,7 @@ export async function applyAllComponents(
  */
 interface ApplyBatchContext {
   config: FurnaceConfigData;
-  furnacePaths: ReturnType<typeof getFurnacePaths>;
+  furnacePaths: FurnacePaths;
   state: FurnaceStateData;
   engineDir: string;
   ftlDir: string;
@@ -627,7 +657,7 @@ interface ApplyBatchContext {
   /** Mutated by both loops: results, dry-run actions, run checksums. */
   result: ApplyAccumulator;
   allActions: DryRunAction[];
-  newChecksums: Record<string, string>;
+  newChecksums: Map<string, string>;
   rollbackJournal?: RollbackJournal | undefined;
   componentName?: string | undefined;
   /** File → owning patch filenames, for the overwrite warning. */

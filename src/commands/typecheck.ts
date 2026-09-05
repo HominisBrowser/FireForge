@@ -81,8 +81,8 @@ export function resolveTypecheckProjects(
  */
 function formatIssue(projectRoot: string, issue: TypecheckIssue): string {
   const file = relativeForDisplay(projectRoot, issue.file);
-  const codeLabel = issue.code > 0 ? ` TS${String(issue.code)}` : '';
-  return `[${issue.project}] ${file}:${String(issue.line)}:${String(issue.column)}${codeLabel} ${issue.message}`;
+  const codeLabel = issue.code > 0 ? ` TS${issue.code}` : '';
+  return `[${issue.project}] ${file}:${issue.line}:${issue.column}${codeLabel} ${issue.message}`;
 }
 
 /**
@@ -125,9 +125,7 @@ async function runTypecheckCommandBody(
   // use so typecheck checks against the current workspace.
   await regenerateStaleGeneratedJsconfig(projectRoot);
 
-  info(
-    `Running typecheck across ${String(cfg.projects.length)} project(s): ${cfg.projects.join(', ')}`
-  );
+  info(`Running typecheck across ${cfg.projects.length} project(s): ${cfg.projects.join(', ')}`);
 
   const results = await runTypecheck(projectRoot, cfg);
   // Fold the EXPORT-TIME authority into this pass. Per-patch lint runs
@@ -181,8 +179,8 @@ async function regenerateStaleGeneratedJsconfig(projectRoot: string): Promise<vo
 
   info(
     `Regenerating stale generated jsconfig ${furnaceConfig.typecheckJsconfig} before typecheck ` +
-      `(+${String(drift.added.length)} added, ~${String(drift.updated.length)} updated, ` +
-      `-${String(drift.pruned.length)} pruned).`
+      `(+${drift.added.length} added, ~${drift.updated.length} updated, ` +
+      `-${drift.pruned.length} pruned).`
   );
   await syncFurnaceJsconfigPaths(projectRoot, furnaceConfig);
 }
@@ -218,10 +216,10 @@ export function reportResults(
   }
 
   const summary =
-    `Typecheck: ${String(totalErrors)} error(s), ${String(totalWarnings)} warning(s) across ` +
-    `${String(results.length)} project(s)` +
+    `Typecheck: ${totalErrors} error(s), ${totalWarnings} warning(s) across ` +
+    `${results.length} project(s)` +
     (patchLintIssues.length > 0
-      ? ` (including ${String(patchLintIssues.length)} per-patch checkJs finding(s))`
+      ? ` (including ${patchLintIssues.length} per-patch checkJs finding(s))`
       : '');
   if (totalErrors === 0) {
     success(summary);
@@ -232,7 +230,7 @@ export function reportResults(
   info(summary);
   outro('Typecheck failed');
   throw new GeneralError(
-    `Typecheck found ${String(totalErrors)} error(s) across ${String(results.length)} project(s).`
+    `Typecheck found ${totalErrors} error(s) across ${results.length} project(s).`
   );
 }
 

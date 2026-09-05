@@ -361,6 +361,63 @@ const noOpenCodedTtyCheck = {
   },
 };
 
+/**
+ * Reports `ReturnType<typeof X>` where `X` is imported from a local module.
+ *
+ * The structural spelling hides the real contract: the reader has to open
+ * the function to learn what the parameter is, and the type silently changes
+ * when the function's return type does. Every local function whose return
+ * type is worth naming in a signature should export that type (or already
+ * does — `ProjectPaths`, `RollbackJournal`, `FireForgeConfig`, ...), and
+ * callers should import it. Package imports are left alone: the author
+ * cannot export a name from `node_modules`, and the derived form is the
+ * only spelling for e.g. `ReturnType<typeof spinner>`.
+ */
+const noReturnTypeOfImport = {
+  meta: {
+    type: 'suggestion',
+    docs: {
+      description:
+        'Use the exported named type instead of ReturnType<typeof X> for a locally imported X.',
+    },
+    schema: [],
+    messages: {
+      returnTypeOfImport:
+        'Do not derive a type with `ReturnType<typeof {{name}}>`; import (or export from ' +
+        '`{{source}}`) the named type that `{{name}}` returns instead.',
+    },
+  },
+  create(context) {
+    /** Imported local binding name → module source. */
+    const localImports = new Map();
+    return {
+      ImportDeclaration(node) {
+        const source = node.source.value;
+        if (typeof source !== 'string' || !source.startsWith('.')) return;
+        for (const specifier of node.specifiers) {
+          localImports.set(specifier.local.name, source);
+        }
+      },
+      'TSTypeReference[typeName.type="Identifier"][typeName.name="ReturnType"]'(node) {
+        const [argument] = node.typeArguments?.params ?? node.typeParameters?.params ?? [];
+        if (
+          argument?.type !== 'TSTypeQuery' ||
+          argument.exprName.type !== 'Identifier' ||
+          !localImports.has(argument.exprName.name)
+        ) {
+          return;
+        }
+        const name = argument.exprName.name;
+        context.report({
+          node,
+          messageId: 'returnTypeOfImport',
+          data: { name, source: localImports.get(name) },
+        });
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     'no-open-coded-to-error': noOpenCodedToError,
@@ -369,5 +426,6 @@ export default {
     'no-empty-jsdoc': noEmptyJsdoc,
     'no-untyped-json-document': noUntypedJsonDocument,
     'no-open-coded-tty-check': noOpenCodedTtyCheck,
+    'no-return-type-of-import': noReturnTypeOfImport,
   },
 };

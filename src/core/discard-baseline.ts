@@ -294,20 +294,20 @@ export function summarizeDiscardBaselines(
   const deleted = plans.filter((p) => p.kind === 'patch-deleted').length;
   const unmanaged = plans.filter((p) => p.kind === 'unmanaged').length;
   if (patchBacked + created + deleted === 0) {
-    return `${String(succeeded)} file(s) restored to upstream state`;
+    return `${succeeded} file(s) restored to upstream state`;
   }
   const parts: string[] = [];
-  if (patchBacked > 0) parts.push(`${String(patchBacked)} to patch baseline`);
-  if (created > 0) parts.push(`${String(created)} re-materialized`);
-  if (deleted > 0) parts.push(`${String(deleted)} removed per patch baseline`);
-  if (unmanaged > 0) parts.push(`${String(unmanaged)} to upstream state`);
-  return `${String(succeeded)} file(s) restored: ${parts.join(', ')}`;
+  if (patchBacked > 0) parts.push(`${patchBacked} to patch baseline`);
+  if (created > 0) parts.push(`${created} re-materialized`);
+  if (deleted > 0) parts.push(`${deleted} removed per patch baseline`);
+  if (unmanaged > 0) parts.push(`${unmanaged} to upstream state`);
+  return `${succeeded} file(s) restored: ${parts.join(', ')}`;
 }
 
 /** Warn text for a multi-owner (conflicted) restore. */
 export function describeConflictWarning(plan: DiscardBaselinePlan): string {
   return (
-    `${plan.entry.file} is claimed by ${String(plan.owners.length)} patches ` +
+    `${plan.entry.file} is claimed by ${plan.owners.length} patches ` +
     `(${plan.owners.join(', ')}). Restored the cumulative baseline; run ` +
     '"fireforge status --ownership" to resolve ownership.'
   );

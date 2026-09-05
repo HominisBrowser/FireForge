@@ -13,6 +13,7 @@ import { mapWithConcurrency } from '../utils/concurrency.js';
 import { toError } from '../utils/errors.js';
 import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { isBrandingManagedPath } from './branding.js';
 import type { PatchedContentContext } from './patch-apply.js';
 import { createPatchedContentContext } from './patch-apply.js';
@@ -128,7 +129,7 @@ export function getPrimaryStatusCode(status: string): string {
  * visible as unmanaged (the Assets.car precedent).
  */
 export function isGeneratedBrandingPath(file: string, binaryName: string): boolean {
-  const normalized = file.replace(/\\/g, '/');
+  const normalized = normalizePathSlashes(file);
   const brandingRoot = `browser/branding/${binaryName}`;
   return (
     normalized === 'browser/moz.configure' ||

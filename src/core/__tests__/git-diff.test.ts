@@ -8,7 +8,7 @@ import { createFsMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, writeFile: vi.fn(), mkdtemp: vi.fn(), rm: vi.fn(), stat: vi.fn() };
+  return { ...actual, stat: vi.fn() };
 });
 
 vi.mock('../../utils/process.js', () => ({
@@ -36,6 +36,21 @@ vi.mock('../git-status.js', () => ({
   getUntrackedFilesInDir: vi.fn(),
 }));
 
+// The new-file classifier reads real bytes; here it is re-expressed over the
+// mocked `isBinaryFile` + `readText` pair so every case below keeps driving
+// the classification through those two stubs. The classifier's own
+// (UTF-8 vs Latin-1) behaviour is tested against real files in
+// `git-diff-new-file.test.ts` and `git-diff-latin1-roundtrip.test.ts`.
+vi.mock('../git-diff-new-file.js', () => ({
+  readNewFileContent: vi.fn(),
+  // No temp attributes file at this level: the cases below pin the exact git
+  // argv, and the forced `-diff` attribute is pinned against real git in
+  // `git-diff-latin1-roundtrip.test.ts`.
+  withForcedBinaryAttribute: vi.fn((_filePath: string, task: (args: string[]) => unknown) =>
+    task([])
+  ),
+}));
+
 // The private-index path is exercised against a real repository in
 // `binary-patch-index-isolation.test.ts`, where the whole point — that a
 // concurrent `git status` never observes the staging — is observable. These
@@ -46,7 +61,7 @@ vi.mock('../git-readonly-index.js', () => ({
   mintDisposableGitIndex: vi.fn(() => Promise.resolve(undefined)),
 }));
 
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 
 import { pathExists, readText } from '../../utils/fs.js';
 import { exec } from '../../utils/process.js';
@@ -54,13 +69,13 @@ import { git } from '../git-base.js';
 import {
   generateBinaryFilePatch,
   generateFullFilePatch,
-  generateModificationDiff,
   generateNewFileDiff,
   getAllDiff,
   getDiffForFilesAgainstHead,
   getFileDiff,
   getStagedDiffForFiles,
 } from '../git-diff.js';
+import { readNewFileContent } from '../git-diff-new-file.js';
 import {
   fileExistsInHead,
   hashObjectBatch,
@@ -80,9 +95,6 @@ const mockListTrackedInHead = vi.mocked(listTrackedInHead);
 const mockHashObjectBatch = vi.mocked(hashObjectBatch);
 const mockGetUntrackedFiles = vi.mocked(getUntrackedFiles);
 const mockGetUntrackedFilesInDir = vi.mocked(getUntrackedFilesInDir);
-const mockMkdtemp = vi.mocked(mkdtemp);
-const mockWriteFile = vi.mocked(writeFile);
-const mockRm = vi.mocked(rm);
 const mockStat = vi.mocked(stat);
 
 const makeStat = (isDir: boolean): Stats => ({ isDirectory: () => isDir }) as unknown as Stats;
@@ -93,6 +105,11 @@ beforeEach(() => {
   // that exercise the directory-detection paths override this.
   mockStat.mockResolvedValue(makeStat(false));
   mockIsBinaryFile.mockResolvedValue(false);
+  vi.mocked(readNewFileContent).mockImplementation(async (repoDir, file) =>
+    (await isBinaryFile(repoDir, file))
+      ? { binary: true }
+      : { binary: false, content: await readText(join(repoDir, file)) }
+  );
   // Batched git helpers default to "nothing tracked" + a stable blob hash per
   // path, so a test that only cares about the new-file path need not wire them.
   mockListTrackedInHead.mockResolvedValue(new Set());
@@ -184,72 +201,6 @@ describe('generateFullFilePatch', () => {
 
     const result = await generateFullFilePatch('/repo', 'new.txt');
     expect(result).toContain('new file mode 100644');
-  });
-});
-
-describe('generateModificationDiff', () => {
-  it('returns empty string when contents are identical', async () => {
-    mockReadText.mockResolvedValue('same content');
-
-    const result = await generateModificationDiff('/repo', 'file.txt', 'same content');
-    expect(result).toBe('');
-  });
-
-  it('generates diff and fixes header paths', async () => {
-    mockReadText.mockResolvedValue('new content');
-    mockMkdtemp.mockResolvedValue('/tmp/fireforge-diff-xxx');
-    mockWriteFile.mockResolvedValue(undefined);
-    mockExec.mockResolvedValue({
-      stdout:
-        'diff --git a//tmp/fireforge-diff-xxx/file.txt b//repo/file.txt\n--- a//tmp/fireforge-diff-xxx/file.txt\n+++ b//repo/file.txt\n@@ -1 +1 @@\n-old content\n+new content\n',
-      stderr: '',
-      exitCode: 1,
-    });
-
-    const result = await generateModificationDiff('/repo', 'file.txt', 'old content');
-    expect(result).toContain('diff --git a/file.txt b/file.txt');
-    expect(result).toContain('--- a/file.txt');
-    expect(result).toContain('+++ b/file.txt');
-  });
-
-  it('cleans up temp dir even when diff throws', async () => {
-    mockReadText.mockResolvedValue('new content');
-    mockMkdtemp.mockResolvedValue('/tmp/fireforge-diff-xxx');
-    mockWriteFile.mockResolvedValue(undefined);
-    mockExec.mockRejectedValue(new Error('git failed'));
-
-    await expect(generateModificationDiff('/repo', 'file.txt', 'old content')).rejects.toThrow(
-      'git failed'
-    );
-    expect(mockRm).toHaveBeenCalledWith('/tmp/fireforge-diff-xxx', {
-      recursive: true,
-      force: true,
-    });
-  });
-
-  it('returns empty string when diff stdout is empty', async () => {
-    mockReadText.mockResolvedValue('new content');
-    mockMkdtemp.mockResolvedValue('/tmp/fireforge-diff-xxx');
-    mockWriteFile.mockResolvedValue(undefined);
-    mockExec.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
-
-    const result = await generateModificationDiff('/repo', 'file.txt', 'old content');
-    expect(result).toBe('');
-  });
-
-  it('throws when git diff --no-index fails unexpectedly', async () => {
-    mockReadText.mockResolvedValue('new content');
-    mockMkdtemp.mockResolvedValue('/tmp/fireforge-diff-xxx');
-    mockWriteFile.mockResolvedValue(undefined);
-    mockExec.mockResolvedValue({
-      stdout: '',
-      stderr: 'fatal: not a git repository',
-      exitCode: 128,
-    });
-
-    await expect(generateModificationDiff('/repo', 'file.txt', 'old content')).rejects.toThrow(
-      'not a git repository'
-    );
   });
 });
 
@@ -425,29 +376,20 @@ describe('getDiffForFilesAgainstHead', () => {
     mockListTrackedInHead.mockResolvedValue(new Set());
     mockPathExists.mockResolvedValue(true);
     mockIsBinaryFile.mockResolvedValue(true);
-    mockExec.mockImplementation((_cmd: string, args: string[]) => {
+    mockGit.mockImplementation((args: string[]) => {
       // Tracked binary probe returns empty → fall through to the staged path.
-      if (args[0] === 'diff' && args.includes('HEAD')) {
-        return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
-      }
-      if (args[0] === 'diff') {
-        return Promise.resolve({
-          stdout: 'GIT binary patch\nliteral 1\nA\n',
-          stderr: '',
-          exitCode: 0,
-        });
-      }
-      return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 }); // add / reset
+      if (args[0] === 'diff' && args.includes('HEAD')) return Promise.resolve('');
+      if (args[0] === 'diff') return Promise.resolve('GIT binary patch\nliteral 1\nA\n');
+      return Promise.resolve(''); // add / reset
     });
 
     const result = await getDiffForFilesAgainstHead('/repo', ['brand/icon.png']);
 
     expect(result).toContain('GIT binary patch');
     expect(mockReadText).not.toHaveBeenCalled();
-    expect(mockExec).toHaveBeenCalledWith(
-      'git',
+    expect(mockGit).toHaveBeenCalledWith(
       ['add', '--intent-to-add', '--', 'brand/icon.png'],
-      { cwd: '/repo' }
+      '/repo'
     );
   });
 
@@ -593,13 +535,11 @@ describe('getStagedDiffForFiles', () => {
 
 describe('generateBinaryFilePatch', () => {
   it('returns diff for tracked binary file', async () => {
-    mockExec.mockResolvedValue({ stdout: 'binary diff\n', stderr: '', exitCode: 0 });
+    mockGit.mockResolvedValue('binary diff\n');
 
     const result = await generateBinaryFilePatch('/repo', 'image.png');
     expect(result).toBe('binary diff\n');
-    expect(mockExec).toHaveBeenCalledWith('git', ['diff', '--binary', 'HEAD', '--', 'image.png'], {
-      cwd: '/repo',
-    });
+    expect(mockGit).toHaveBeenCalledWith(['diff', '--binary', 'HEAD', '--', 'image.png'], '/repo');
   });
 
   it('stages into a PRIVATE index when one can be minted, and restores nothing', async () => {
@@ -612,28 +552,22 @@ describe('generateBinaryFilePatch', () => {
       env: { GIT_INDEX_FILE: '/tmp/private/index' },
       dispose,
     });
-    mockExec
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
-      .mockResolvedValueOnce({ stdout: 'untracked binary diff\n', stderr: '', exitCode: 0 });
+    mockGit
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('untracked binary diff\n');
 
     const result = await generateBinaryFilePatch('/repo', 'new.png');
 
     expect(result).toBe('untracked binary diff\n');
-    expect(mockExec).toHaveBeenCalledWith('git', ['add', '--intent-to-add', '--', 'new.png'], {
-      cwd: '/repo',
+    expect(mockGit).toHaveBeenCalledWith(['add', '--intent-to-add', '--', 'new.png'], '/repo', {
       env: { GIT_INDEX_FILE: '/tmp/private/index' },
     });
-    expect(mockExec).not.toHaveBeenCalledWith(
-      'git',
+    expect(mockGit).not.toHaveBeenCalledWith(
       ['ls-files', '--stage', '--', 'new.png'],
       expect.anything()
     );
-    expect(mockExec).not.toHaveBeenCalledWith(
-      'git',
-      ['reset', 'HEAD', '--', 'new.png'],
-      expect.anything()
-    );
+    expect(mockGit).not.toHaveBeenCalledWith(['reset', 'HEAD', '--', 'new.png'], expect.anything());
     expect(dispose).toHaveBeenCalledOnce();
   });
 
@@ -643,9 +577,9 @@ describe('generateBinaryFilePatch', () => {
       env: { GIT_INDEX_FILE: '/tmp/private/index' },
       dispose,
     });
-    mockExec
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+    mockGit
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('')
       .mockRejectedValueOnce(new Error('diff failed'));
 
     await expect(generateBinaryFilePatch('/repo', 'new.png')).rejects.toThrow('diff failed');
@@ -654,95 +588,77 @@ describe('generateBinaryFilePatch', () => {
 
   it('stages untracked file with intent-to-add and cleans up (shared-index fallback)', async () => {
     // First call: tracked diff returns empty
-    mockExec
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+    mockGit
+      .mockResolvedValueOnce('')
       // Second call: git ls-files --stage (no prior index entry)
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce('')
       // Third call: git add --intent-to-add
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce('')
       // Fourth call: git diff --binary (untracked)
-      .mockResolvedValueOnce({ stdout: 'untracked binary diff\n', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce('untracked binary diff\n')
       // Fifth call: git reset HEAD
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+      .mockResolvedValueOnce('');
 
     const result = await generateBinaryFilePatch('/repo', 'new.png');
     expect(result).toBe('untracked binary diff\n');
-    expect(mockExec).toHaveBeenCalledWith('git', ['add', '--intent-to-add', '--', 'new.png'], {
-      cwd: '/repo',
-    });
-    expect(mockExec).toHaveBeenCalledWith('git', ['reset', 'HEAD', '--', 'new.png'], {
-      cwd: '/repo',
-    });
+    expect(mockGit).toHaveBeenCalledWith(['add', '--intent-to-add', '--', 'new.png'], '/repo');
+    expect(mockGit).toHaveBeenCalledWith(['reset', 'HEAD', '--', 'new.png'], '/repo');
   });
 
   it('unstages in finally even when diff throws', async () => {
-    mockExec
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+    mockGit
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('')
       .mockRejectedValueOnce(new Error('diff failed'))
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+      .mockResolvedValueOnce('');
 
     await expect(generateBinaryFilePatch('/repo', 'new.png')).rejects.toThrow('diff failed');
-    expect(mockExec).toHaveBeenCalledWith('git', ['reset', 'HEAD', '--', 'new.png'], {
-      cwd: '/repo',
-    });
+    expect(mockGit).toHaveBeenCalledWith(['reset', 'HEAD', '--', 'new.png'], '/repo');
   });
 
   it('restores a pre-existing stage-0 index entry instead of resetting to HEAD', async () => {
-    mockExec
+    mockGit
       // Tracked diff returns empty (the race shape: the entry appeared after,
       // or the staged path's worktree file is gone so `diff HEAD` sees nothing)
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce('')
       // ls-files --stage: a prior staged entry exists
-      .mockResolvedValueOnce({
-        stdout: '100644 0123456789abcdef0123456789abcdef01234567 0\tnew.png\n',
-        stderr: '',
-        exitCode: 0,
-      })
+      .mockResolvedValueOnce('100644 0123456789abcdef0123456789abcdef01234567 0\tnew.png\n')
       // add --intent-to-add
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce('')
       // diff --binary
-      .mockResolvedValueOnce({ stdout: 'untracked binary diff\n', stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce('untracked binary diff\n')
       // update-index restore
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+      .mockResolvedValueOnce('');
 
     await generateBinaryFilePatch('/repo', 'new.png');
 
-    expect(mockExec).toHaveBeenCalledWith(
-      'git',
+    expect(mockGit).toHaveBeenCalledWith(
       [
         'update-index',
         '--add',
         '--cacheinfo',
         '100644,0123456789abcdef0123456789abcdef01234567,new.png',
       ],
-      { cwd: '/repo' }
+      '/repo'
     );
-    expect(mockExec).not.toHaveBeenCalledWith('git', ['reset', 'HEAD', '--', 'new.png'], {
-      cwd: '/repo',
-    });
+    expect(mockGit).not.toHaveBeenCalledWith(['reset', 'HEAD', '--', 'new.png'], '/repo');
   });
 
   it('falls back to reset HEAD for an unmerged prior entry that --cacheinfo cannot rebuild', async () => {
-    mockExec
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+    mockGit
+      .mockResolvedValueOnce('')
       // ls-files --stage: conflict stages, not a stage-0 entry
-      .mockResolvedValueOnce({
-        stdout:
-          '100644 0123456789abcdef0123456789abcdef01234567 1\tnew.png\n' +
-          '100644 89abcdef0123456789abcdef0123456789abcdef 2\tnew.png\n',
-        stderr: '',
-        exitCode: 0,
-      })
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
-      .mockResolvedValueOnce({ stdout: 'untracked binary diff\n', stderr: '', exitCode: 0 })
-      .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 });
+      .mockResolvedValueOnce(
+        '100644 0123456789abcdef0123456789abcdef01234567 1\tnew.png\n' +
+          '100644 89abcdef0123456789abcdef0123456789abcdef 2\tnew.png\n'
+      )
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('untracked binary diff\n')
+      .mockResolvedValueOnce('');
 
     await generateBinaryFilePatch('/repo', 'new.png');
 
-    expect(mockExec).toHaveBeenCalledWith('git', ['reset', 'HEAD', '--', 'new.png'], {
-      cwd: '/repo',
-    });
+    expect(mockGit).toHaveBeenCalledWith(['reset', 'HEAD', '--', 'new.png'], '/repo');
   });
 });

@@ -64,7 +64,7 @@ export async function applyPatchWithFuzz(
 ): Promise<FuzzyApplyResult> {
   if (!Number.isInteger(maxFuzz) || maxFuzz < 0) {
     throw new InvalidArgumentError(
-      `maxFuzz must be a non-negative integer, got ${String(maxFuzz)}.`,
+      `maxFuzz must be a non-negative integer, got ${maxFuzz}.`,
       'maxFuzz'
     );
   }
@@ -74,7 +74,7 @@ export async function applyPatchWithFuzz(
   // Try exact match first, then escalate context reduction.
   const maxSteps = Math.min(maxFuzz, GIT_DEFAULT_CONTEXT);
   for (let step = 0; step <= maxSteps; step++) {
-    const contextArgs = step > 0 ? [`-C${String(GIT_DEFAULT_CONTEXT - step)}`] : [];
+    const contextArgs = step > 0 ? [`-C${GIT_DEFAULT_CONTEXT - step}`] : [];
 
     const check = await exec('git', ['apply', '--check', ...contextArgs, '--', patchPath], {
       cwd: engineDir,
@@ -89,7 +89,7 @@ export async function applyPatchWithFuzz(
       if (apply.exitCode === 0) {
         if (step > 0) {
           verbose(
-            `Patch applied with reduced context (-C${String(GIT_DEFAULT_CONTEXT - step)}): ${patchPath}`
+            `Patch applied with reduced context (-C${GIT_DEFAULT_CONTEXT - step}): ${patchPath}`
           );
         }
         return { success: true, fuzzFactor: step };
@@ -97,7 +97,7 @@ export async function applyPatchWithFuzz(
 
       // Unlikely: --check passed but apply failed; fall through to next step
       verbose(
-        `git apply -C${String(GIT_DEFAULT_CONTEXT - step)} --check passed but apply failed: ${apply.stderr.trim()}`
+        `git apply -C${GIT_DEFAULT_CONTEXT - step} --check passed but apply failed: ${apply.stderr.trim()}`
       );
     }
   }

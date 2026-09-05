@@ -32,25 +32,62 @@ describe('tokenizeJarMn', () => {
     ]);
   });
 
-  it('handles a truncated entry line without closing parenthesis', () => {
-    const lines = [
-      'toolkit.jar:',
-      '   content/global/elements/findbar.js  (widgets/findbar/findbar.js',
-    ];
+  const LINE_CLASSIFICATIONS: ReadonlyArray<{
+    label: string;
+    line: string;
+    type: string;
+    parsed?: { target: string; source: string };
+  }> = [
+    {
+      label: 'a truncated entry with no closing parenthesis',
+      line: '   content/global/elements/findbar.js  (widgets/findbar/findbar.js',
+      type: 'entry',
+    },
+    {
+      label: 'an entry with no parenthesized source at all',
+      line: '   content/global/elements/findbar.js',
+      type: 'entry',
+    },
+    { label: 'an indented bare path', line: '   some/path/file.js', type: 'entry' },
+    {
+      label: 'extra spaces between target and source',
+      line: '   content/global/elements/findbar.js      (widgets/findbar/findbar.js)',
+      type: 'entry',
+      parsed: {
+        target: 'content/global/elements/findbar.js',
+        source: 'widgets/findbar/findbar.js',
+      },
+    },
+    {
+      // The source capture stops at the first `)`, so a nested paren is
+      // truncated rather than parsed — callers must not rely on it.
+      label: 'nested parentheses in the source path',
+      line: '   content/global/elements/findbar.js  (widgets/findbar/findbar(1).js)',
+      type: 'entry',
+      parsed: {
+        target: 'content/global/elements/findbar.js',
+        source: 'widgets/findbar/findbar(1',
+      },
+    },
+    { label: 'a moz.build-style list opener', line: 'EXTRA_JS_MODULES += [', type: 'header' },
+    { label: 'a plain comment', line: '# top comment', type: 'comment' },
+    { label: 'a double-hash comment', line: '## double hash', type: 'comment' },
+    { label: 'a shebang-style comment', line: '#! shebang-style', type: 'comment' },
+    { label: 'an empty line', line: '', type: 'empty' },
+    { label: 'a spaces-only line', line: '   ', type: 'empty' },
+    { label: 'a tab-only line', line: '\t', type: 'empty' },
+  ];
 
-    const tokens = tokenizeJarMn(lines);
+  it.each(LINE_CLASSIFICATIONS)('classifies $label as $type', ({ line, type, parsed }) => {
+    const tokens = tokenizeJarMn([line]);
 
-    expect(tokens[1]?.type).toBe('entry');
-    expect(tokens[1]?.parsed).toBeUndefined();
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0]?.type).toBe(type);
+    expect(tokens[0]?.parsed).toEqual(parsed);
   });
 
-  it('handles an entry with missing source parenthesis entirely', () => {
-    const lines = ['toolkit.jar:', '   content/global/elements/findbar.js'];
-
-    const tokens = tokenizeJarMn(lines);
-
-    expect(tokens[1]?.type).toBe('entry');
-    expect(tokens[1]?.parsed).toBeUndefined();
+  it('handles empty input', () => {
+    expect(tokenizeJarMn([])).toEqual([]);
   });
 
   it('handles lines with unexpected whitespace patterns', () => {
@@ -69,67 +106,6 @@ describe('tokenizeJarMn', () => {
       target: 'content/global/elements/findbar.js',
       source: 'widgets/findbar/findbar.js',
     });
-  });
-
-  it('handles empty input', () => {
-    expect(tokenizeJarMn([])).toEqual([]);
-  });
-
-  it('handles whitespace-only input', () => {
-    const tokens = tokenizeJarMn(['', '   ', '\t']);
-
-    expect(tokens.every((t) => t.type === 'empty')).toBe(true);
-    expect(tokens).toHaveLength(3);
-  });
-
-  it('handles entry with extra spaces between target and source', () => {
-    const lines = ['   content/global/elements/findbar.js      (widgets/findbar/findbar.js)'];
-
-    const tokens = tokenizeJarMn(lines);
-
-    expect(tokens[0]?.type).toBe('entry');
-    expect(tokens[0]?.parsed).toEqual({
-      target: 'content/global/elements/findbar.js',
-      source: 'widgets/findbar/findbar.js',
-    });
-  });
-
-  it('handles entry with nested parentheses in source path', () => {
-    const lines = ['   content/global/elements/findbar.js  (widgets/findbar/findbar(1).js)'];
-
-    const tokens = tokenizeJarMn(lines);
-
-    // The regex stops at first ), so this is a partial parse
-    expect(tokens[0]?.type).toBe('entry');
-    expect(tokens[0]?.parsed?.source).toBe('widgets/findbar/findbar(1');
-  });
-
-  it('handles a line that looks like a header but uses +=', () => {
-    const lines = ['EXTRA_JS_MODULES += ['];
-
-    const tokens = tokenizeJarMn(lines);
-
-    expect(tokens[0]?.type).toBe('header');
-  });
-
-  it('handles a mix of comment styles and empty lines', () => {
-    const lines = ['# top comment', '', '## double hash', '#! shebang-style'];
-
-    const tokens = tokenizeJarMn(lines);
-
-    expect(tokens[0]?.type).toBe('comment');
-    expect(tokens[1]?.type).toBe('empty');
-    expect(tokens[2]?.type).toBe('comment');
-    expect(tokens[3]?.type).toBe('comment');
-  });
-
-  it('treats indented lines without parenthesized source as entries', () => {
-    const lines = ['   some/path/file.js'];
-
-    const tokens = tokenizeJarMn(lines);
-
-    expect(tokens[0]?.type).toBe('entry');
-    expect(tokens[0]?.parsed).toBeUndefined();
   });
 
   it('handles multiple jar sections', () => {

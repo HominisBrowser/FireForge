@@ -169,7 +169,7 @@ export async function runTypecheck(
  */
 function resolveProjectExtraShim(cfg: TypecheckConfig, projectPath: string): string | undefined {
   const overrides = cfg.projectOverrides;
-  if (overrides && Object.prototype.hasOwnProperty.call(overrides, projectPath)) {
+  if (overrides && Object.hasOwn(overrides, projectPath)) {
     const value = overrides[projectPath];
     return value === null ? undefined : value;
   }
@@ -340,7 +340,7 @@ async function runTypecheckForProject(
   }
 
   verbose(
-    `typecheck: ${projectPath} — analyzed ${String(parsed.fileNames.length)} file(s), found ${String(issues.length)} issue(s)`
+    `typecheck: ${projectPath} — analyzed ${parsed.fileNames.length} file(s), found ${issues.length} issue(s)`
   );
 
   return {

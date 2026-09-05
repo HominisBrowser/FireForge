@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join } from 'node:path';
 
-import { getProjectPaths } from '../core/config.js';
 import {
   appendHistory,
   confirmDestructive,
@@ -14,7 +13,6 @@ import { listTrackedInHead } from '../core/git-file-ops.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
 import {
-  buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
   formatPatchLintIssue,
   lintPatchQueue,
@@ -23,13 +21,13 @@ import {
 import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy.js';
-import { buildNewFileTextProjection } from '../core/patch-transform.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { PatchMetadata, ReExportOptions } from '../types/commands/index.js';
-import type { FireForgeConfig } from '../types/config.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { pathExists } from '../utils/fs.js';
 import { info, outro, success, warn } from '../utils/logger.js';
 import { runPatchLint } from './export-shared.js';
+import { projectEntryBody } from './patch/entry-projection.js';
 
 /**
  * Computes the effective `tier` and `lintIgnore` carrying both the patch's
@@ -69,16 +67,10 @@ async function runProjectedCrossPatchLint(
   projectedDiff: string
 ): Promise<ConflictReport | null> {
   const baseCtx = await buildPatchQueueContext(patchesDir);
-  const projectedNewFiles = buildNewFileTextProjection(projectedDiff);
-  const projectedModifiedFileAdditions = buildModifiedFileAdditionsFromDiff(projectedDiff);
+  const projection = projectEntryBody(projectedDiff);
   const projectedEntries: PatchQueueEntry[] = baseCtx.entries.map((entry) => {
     if (entry.filename !== targetFilename) return entry;
-    return {
-      ...entry,
-      diff: projectedDiff,
-      newFiles: projectedNewFiles,
-      modifiedFileAdditions: projectedModifiedFileAdditions,
-    };
+    return { ...entry, ...projection };
   });
 
   const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
@@ -259,7 +251,7 @@ async function classifyRequestedPaths(
  * the current (unchanged) queue instead of the projected state.
  */
 export async function reExportFilesInPlace(
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   selectedPatches: PatchMetadata[],
   options: ReExportOptions,
   config: FireForgeConfig
@@ -344,16 +336,16 @@ export async function reExportFilesInPlace(
   const patchQueueCtx = (await pathExists(paths.patches))
     ? await buildPatchQueueContext(paths.patches)
     : undefined;
-  await runPatchLint(
-    paths.engine,
-    actualProjectedFiles,
-    projectedDiff,
+  await runPatchLint({
+    engineDir: paths.engine,
+    filesAffected: actualProjectedFiles,
+    diffContent: projectedDiff,
     config,
-    options.skipLint,
+    skipLint: options.skipLint,
     patchQueueCtx,
     ignoreChecks,
-    effectiveTier
-  );
+    patchTier: effectiveTier,
+  });
 
   const conflicts = await runProjectedCrossPatchLint(paths.patches, target.filename, projectedDiff);
   const filesUpdates = buildFilesModeMetadataUpdates(
@@ -405,12 +397,12 @@ export async function reExportFilesInPlace(
   // as the mutation (via the onCommitted hook) so two concurrent re-exports
   // cannot interleave records and a crash between mutation and append cannot
   // orphan the audit trail.
-  await updatePatchAndMetadata(
-    paths.patches,
-    target.filename,
-    projectedDiff,
-    filesUpdates,
-    async () => {
+  await updatePatchAndMetadata({
+    patchesDir: paths.patches,
+    filename: target.filename,
+    newContent: projectedDiff,
+    updates: filesUpdates,
+    onCommitted: async () => {
       await appendHistory(paths.patches, {
         operation: 're-export-files',
         args: {
@@ -424,12 +416,12 @@ export async function reExportFilesInPlace(
         result: 'ok',
       });
     },
-    {
+    policyGate: {
       config,
       command: 're-export --files',
       forceUnsafe: options.forceUnsafe === true,
-    }
-  );
+    },
+  });
 
   success(`Re-exported ${target.filename}`);
   outro('Re-export complete');

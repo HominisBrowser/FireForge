@@ -87,7 +87,8 @@ describe('withXpcshellProfileDir', () => {
       // Force a REAL cleanup failure: a child file inside a directory whose
       // permission bits forbid unlinking (no write/execute on the dir).
       const { chmod, writeFile } = await import('node:fs/promises');
-      const { join } = await import('node:path');
+      const pathMod = await import('node:path');
+      const join = (...parts: string[]): string => pathMod.join(...parts);
       let seenDir = '';
       await expect(
         withXpcshellProfileDir(undefined, async (env) => {

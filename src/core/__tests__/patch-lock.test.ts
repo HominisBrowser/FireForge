@@ -5,7 +5,7 @@
  * with the wait remedy instead of `rm -rf`, and the default (no options)
  * path stays untouched for existing callers.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -42,6 +42,19 @@ describe('withPatchDirectoryLock', () => {
 
   it('runs the operation and returns its value with no options (default path)', async () => {
     await expect(withPatchDirectoryLock(patchesDir, () => Promise.resolve(42))).resolves.toBe(42);
+  });
+
+  it('re-throws non-EEXIST errors from mkdir', async () => {
+    // A path beneath a REGULAR FILE: mkdir cannot create the parent, so the
+    // helper must surface the error rather than treating it as a held lock.
+    const regularFile = join(patchesDir, 'not-a-directory');
+    await writeFile(regularFile, 'x');
+
+    await expect(
+      withPatchDirectoryLock(join(regularFile, 'fireforge-lock-test'), () =>
+        Promise.resolve('nope')
+      )
+    ).rejects.toThrow();
   });
 
   it('times out a contended lock within the waitLockSeconds budget and names --wait-lock', async () => {

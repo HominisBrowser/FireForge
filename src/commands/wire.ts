@@ -3,7 +3,11 @@ import { join, relative } from 'node:path';
 
 import { Command } from 'commander';
 
-import { DEFAULT_BROWSER_SUBSCRIPT_DIR, wireSubscript } from '../core/browser-wire.js';
+import {
+  DEFAULT_BROWSER_SUBSCRIPT_DIR,
+  type WireResult,
+  wireSubscript,
+} from '../core/browser-wire.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import {
   furnaceConfigExists as checkFurnaceConfigExists,
@@ -26,6 +30,7 @@ import {
   stripEnginePrefix,
   toRootRelativePath,
 } from '../utils/paths.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 
 const BROWSER_BASE_DIR = 'browser/base';
 
@@ -50,16 +55,14 @@ function printWireDryRun(
     info(`  browser-init.js onUnload(): ${coerceToCall(options.destroy)}`);
   }
   if (domFilePath) {
-    const includePath = relative(
-      join(engineDir, subscriptDir),
-      join(engineDir, domFilePath)
-    ).replace(/\\/g, '/');
+    const includePath = normalizePathSlashes(
+      relative(join(engineDir, subscriptDir), join(engineDir, domFilePath))
+    );
     info(`  ${domTargetPath}: #include ${includePath}`);
   }
-  const relPath = relative(
-    join(engineDir, BROWSER_BASE_DIR),
-    join(engineDir, subscriptDir)
-  ).replace(/\\/g, '/');
+  const relPath = normalizePathSlashes(
+    relative(join(engineDir, BROWSER_BASE_DIR), join(engineDir, subscriptDir))
+  );
   info(`  jar.mn: content/browser/${name}.js (${relPath}/${name}.js)`);
   outro('Dry run complete');
 }
@@ -296,7 +299,7 @@ function reportParserFallbacks(): void {
  * wire invocation.
  */
 function reportWireResult(
-  result: Awaited<ReturnType<typeof wireSubscript>>,
+  result: WireResult,
   name: string,
   options: WireOptions,
   domFilePath: string | undefined,

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { FireForgeError } from './base.js';
+import { FireForgeError, remedies } from './base.js';
 import { ExitCode } from './codes.js';
 
 /**
  * Error thrown when a git operation fails.
  */
 export class GitError extends FireForgeError {
-  readonly code = ExitCode.GIT_ERROR;
+  readonly code: ExitCode = ExitCode.GIT_ERROR;
 
   constructor(
     message: string,
@@ -17,25 +17,29 @@ export class GitError extends FireForgeError {
   }
 
   override get userMessage(): string {
-    let msg = `Git Error: ${this.message}`;
-
-    if (this.command) {
-      msg += `\n\nCommand: git ${this.command}`;
-    }
-
-    msg += '\n\nTo fix this:\n';
-    msg += '  1. Ensure git is installed and in your PATH\n';
-    msg += '  2. Check if the repository is in a valid state\n';
-    msg += '  3. Try running "fireforge reset" to start fresh';
-
-    return msg;
+    return (
+      `Git Error: ${this.message}` +
+      (this.command ? `\n\nCommand: git ${this.command}` : '') +
+      remedies([
+        'Ensure git is installed and in your PATH',
+        'Check if the repository is in a valid state',
+        'Try running "fireforge reset" to start fresh',
+      ])
+    );
   }
 }
 
 /**
  * Error thrown when git is not installed.
+ *
+ * MISSING_DEPENDENCY, not GIT_ERROR: the fact is "a required tool is
+ * absent", the same fact `PythonNotFoundError` and `MachNotFoundError`
+ * report, and a consumer should install something rather than inspect a
+ * repository.
  */
 export class GitNotFoundError extends GitError {
+  override readonly code = ExitCode.MISSING_DEPENDENCY;
+
   constructor() {
     super('Git is not installed or not found in PATH');
   }
@@ -66,30 +70,12 @@ export class PatchApplyError extends GitError {
     return (
       `Git Error: Failed to apply patch.\n\n` +
       `Patch: ${this.patchPath}\n\n` +
-      'This usually means the patch conflicts with existing changes.\n\n' +
-      'To fix this:\n' +
-      '  1. Check if the Firefox version matches the patch\n' +
-      '  2. Use "fireforge reset" to start with clean source\n' +
-      '  3. Update the patch to match the current Firefox version'
-    );
-  }
-}
-
-/**
- * Error thrown when the repository is in a dirty state.
- */
-export class DirtyRepositoryError extends GitError {
-  constructor() {
-    super('Repository has uncommitted changes');
-  }
-
-  override get userMessage(): string {
-    return (
-      'Git Error: The Firefox source has uncommitted changes.\n\n' +
-      'To fix this:\n' +
-      '  1. Export your changes with "fireforge export"\n' +
-      '  2. Use "fireforge reset" to restore clean state\n' +
-      '  3. Then run "fireforge import" to reapply patches'
+      'This usually means the patch conflicts with existing changes.' +
+      remedies([
+        'Check if the Firefox version matches the patch',
+        'Use "fireforge reset" to start with clean source',
+        'Update the patch to match the current Firefox version',
+      ])
     );
   }
 }

@@ -14,6 +14,7 @@ import { dirname, join, relative } from 'node:path';
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { toRootRelativePath } from '../utils/paths.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { escapeRegex } from '../utils/regex.js';
 import { tokenizeXhtml } from './wire-utils.js';
 
@@ -27,24 +28,16 @@ export function addDomFragmentTokenized(content: string, includeDirective: strin
   const tokens = tokenizeXhtml(lines);
 
   // Find the #include browser-sets.inc token
-  let insertIndex = -1;
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    if (token && token.type === 'macro' && token.raw.includes('browser-sets.inc')) {
-      insertIndex = i;
-      break;
-    }
-  }
+  let insertIndex = tokens.findIndex(
+    (token) => token.type === 'macro' && token.raw.includes('browser-sets.inc')
+  );
 
   if (insertIndex === -1) {
     // Fallback: after <html:body>
-    for (let i = 0; i < tokens.length; i++) {
-      const token = tokens[i];
-      if (token && token.type === 'xml' && /<html:body/.test(token.raw)) {
-        insertIndex = i + 1;
-        break;
-      }
-    }
+    const bodyIndex = tokens.findIndex(
+      (token) => token.type === 'xml' && /<html:body/.test(token.raw)
+    );
+    insertIndex = bodyIndex === -1 ? -1 : bodyIndex + 1;
   }
 
   if (insertIndex === -1) {
@@ -83,7 +76,7 @@ export async function probeDomFragmentInsertionPoint(
 
   const safeDomFilePath = toRootRelativePath(engineDir, domFilePath);
   const targetDir = dirname(targetPath);
-  const includePath = relative(targetDir, safeDomFilePath).replace(/\\/g, '/');
+  const includePath = normalizePathSlashes(relative(targetDir, safeDomFilePath));
   const includeDirective = `#include ${includePath}`;
 
   const content = await readText(targetAbsPath);
@@ -132,7 +125,7 @@ export async function addDomFragment(
   // contains it, so this must track the chrome doc's location, not a
   // hardcoded `browser/base/content/`.
   const targetDir = dirname(targetPath);
-  const includePath = relative(targetDir, safeDomFilePath).replace(/\\/g, '/');
+  const includePath = normalizePathSlashes(relative(targetDir, safeDomFilePath));
   const includeDirective = `#include ${includePath}`;
 
   let content = await readText(targetAbsPath);

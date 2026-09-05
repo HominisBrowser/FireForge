@@ -8,7 +8,6 @@ import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 import { withPatchDirectoryLock } from './patch-apply.js';
-import { normalizePatchArtifact } from './patch-artifact-normalize.js';
 import type { PatchDirectoryLockOptions } from './patch-lock.js';
 import { loadPatchesManifestForWrite, mutatePatchRowsInManifest } from './patch-manifest.js';
 import { buildProjectedManifest, enforcePatchPolicy } from './patch-policy.js';
@@ -27,6 +26,23 @@ export interface UpdatePatchPolicyGate {
   forceUnsafe?: boolean;
 }
 
+export interface UpdatePatchAndMetadataOptions {
+  /** Patch directory holding the body and `patches.json`. */
+  patchesDir: string;
+  /** Patch file to rewrite. */
+  filename: string;
+  /** New patch body; an identical body skips the write. */
+  newContent: string;
+  /** Manifest-row fields to merge into the patch's metadata. */
+  updates: Partial<PatchMetadata>;
+  /** Hook run under the lock after the mutation succeeds. */
+  onCommitted?: UpdatePatchCommittedHook | undefined;
+  /** Policy gate run against the under-lock projected manifest. */
+  policyGate?: UpdatePatchPolicyGate | undefined;
+  /** Wait budget and command name for the patch directory lock. */
+  lockOptions?: PatchDirectoryLockOptions | undefined;
+}
+
 /**
  * Updates a patch file body and its manifest row under the same patch
  * directory lock. Intended for commands like `re-export --files` where the
@@ -40,18 +56,22 @@ export interface UpdatePatchPolicyGate {
  * unexpected rewrite in `git status`. Metadata still moves either way — only
  * the redundant byte-for-byte write is elided.
  *
+ * @param options - See {@link UpdatePatchAndMetadataOptions}
  * @returns True when the patch body on disk changed, false when it was
  *   already byte-identical to the new content.
  */
 export async function updatePatchAndMetadata(
-  patchesDir: string,
-  filename: string,
-  newContent: string,
-  updates: Partial<PatchMetadata>,
-  onCommitted?: UpdatePatchCommittedHook,
-  policyGate?: UpdatePatchPolicyGate,
-  lockOptions: PatchDirectoryLockOptions = {}
+  options: UpdatePatchAndMetadataOptions
 ): Promise<boolean> {
+  const {
+    patchesDir,
+    filename,
+    newContent,
+    updates,
+    onCommitted,
+    policyGate,
+    lockOptions = {},
+  } = options;
   return withPatchDirectoryLock(
     patchesDir,
     async () => {
@@ -89,7 +109,7 @@ export async function updatePatchAndMetadata(
         });
       }
 
-      const normalized = normalizePatchArtifact(newContent);
+      const normalized = newContent;
       const bodyChanged = normalized !== originalContent;
 
       let patchWritten = false;

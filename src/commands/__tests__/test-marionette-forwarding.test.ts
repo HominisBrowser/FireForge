@@ -75,9 +75,8 @@ import {} from '../../core/coverage-extend.js';
 import {
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
+  runMachTestSuite,
   runProtectedMachBuild,
-  testWithOutput,
-  xpcshellTestWithOutput,
 } from '../../core/mach.js';
 import {
   assertMarionettePortAvailable,
@@ -121,7 +120,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/browser/base/content/test/xpcshell/xpcshell.toml'
     );
-    vi.mocked(xpcshellTestWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -135,7 +134,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
 
     expect(assertMarionettePortAvailable).not.toHaveBeenCalled();
     expect(ensureLaunchableBrowserNotRunning).not.toHaveBeenCalled();
-    const [, , extraArgs] = vi.mocked(xpcshellTestWithOutput).mock.calls[0] ?? [];
+    const extraArgs = vi.mocked(runMachTestSuite).mock.calls[0]?.[1]?.args;
     expect(extraArgs).not.toEqual(
       expect.arrayContaining([expect.stringContaining('--setpref=marionette.port')])
     );
@@ -152,7 +151,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/browser/base/content/test/xpcshell/xpcshell.toml'
     );
-    vi.mocked(xpcshellTestWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -183,7 +182,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/browser/base/content/test/xpcshell/xpcshell.toml'
     );
-    vi.mocked(xpcshellTestWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -205,7 +204,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
       '/project/engine/browser/base/content/test/xpcshell/xpcshell.toml'
     );
-    vi.mocked(xpcshellTestWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -221,7 +220,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
   });
 
   it('ignores an empty --mach-arg array without appending anything', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -233,11 +232,11 @@ describe('testCommand Marionette and appdir forwarding', () => {
       })
     ).resolves.toBeUndefined();
 
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/components/tests/unit/test_distribution.js'],
-      []
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser/components/tests/unit/test_distribution.js'],
+      args: [],
+    });
   });
 
   it('auto-injects --app-path when the resolver returns an "injected" outcome', async () => {
@@ -246,7 +245,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     // absolute path it computed against obj-debug/dist/, and the test
     // command must append `--app-path=<abs>` to the mach test args so
     // the harness uses the right root rather than falling back to xrePath.
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -270,18 +269,18 @@ describe('testCommand Marionette and appdir forwarding', () => {
       ['browser/base/content/test/foo/test_x.js'],
       'obj-debug'
     );
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/base/content/test/foo/test_x.js'],
-      ['--app-path=/project/engine/obj-debug/dist/bin/browser']
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser/base/content/test/foo/test_x.js'],
+      args: ['--app-path=/project/engine/obj-debug/dist/bin/browser'],
+    });
   });
 
   it('does not auto-inject when the operator already passed --app-path via --mach-arg', async () => {
     // Operator override takes precedence: the resolver must not even be
     // consulted to compute its outcome. The recorded call confirms the
     // skip path runs before resolution.
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -295,15 +294,15 @@ describe('testCommand Marionette and appdir forwarding', () => {
     ).resolves.toBeUndefined();
 
     expect(resolveXpcshellAppdirArg).not.toHaveBeenCalled();
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/base/content/test/foo/test_x.js'],
-      ['--app-path=/custom/path']
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser/base/content/test/foo/test_x.js'],
+      args: ['--app-path=/custom/path'],
+    });
   });
 
   it('warns and skips injection when the resolver reports a mismatch across paths', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -327,15 +326,15 @@ describe('testCommand Marionette and appdir forwarding', () => {
       expect.stringMatching(/multiple test paths resolved to different app dirs/)
     );
     // No --app-path injected.
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/base/content/test/A/test_a.js', 'browser/base/content/test/B/test_b.js'],
-      []
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser/base/content/test/A/test_a.js', 'browser/base/content/test/B/test_b.js'],
+      args: [],
+    });
   });
 
   it('warns and skips injection when the resolver cannot find the appdir under dist', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -368,7 +367,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
         relativeAppdir: 'browser',
       },
     });
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout: '',
       stderr: 'Error: Failed to load resource:///modules/Something.sys.mjs',
@@ -384,7 +383,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     // hint must keep its pre-injection wording so the operator sees the
     // appname-key explanation that points at the underlying upstream
     // behaviour rather than at FireForge's auto-injection path.
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 1,
       stdout: '',
       stderr: 'Error: Failed to load resource:///modules/Something.sys.mjs',
@@ -398,7 +397,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
   // ── --marionette-port option ──────────────────────────────────────────
 
   it('passes --marionette-port through to the stale-browser probe', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -421,7 +420,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
   });
 
   it('auto-forwards setpref and mochitest --marionette client for browser-chrome paths', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -433,15 +432,15 @@ describe('testCommand Marionette and appdir forwarding', () => {
       })
     ).resolves.toBeUndefined();
 
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/base/content/test/general/browser_focus.js'],
-      ['--setpref=marionette.port=2912', '--marionette=127.0.0.1:2912']
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser/base/content/test/general/browser_focus.js'],
+      args: ['--setpref=marionette.port=2912', '--marionette=127.0.0.1:2912'],
+    });
   });
 
   it('auto-forwards --setpref=marionette.port=N for toolkit widget HTML paths', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -453,15 +452,15 @@ describe('testCommand Marionette and appdir forwarding', () => {
       })
     ).resolves.toBeUndefined();
 
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['toolkit/content/tests/widgets/test_moz-example.html'],
-      ['--setpref=marionette.port=2838', '--marionette=127.0.0.1:2838']
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['toolkit/content/tests/widgets/test_moz-example.html'],
+      args: ['--setpref=marionette.port=2838', '--marionette=127.0.0.1:2838'],
+    });
   });
 
   it('auto-forwards --setpref for xpcshell filesystem paths without --flavor=xpcshell', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -473,18 +472,18 @@ describe('testCommand Marionette and appdir forwarding', () => {
       })
     ).resolves.toBeUndefined();
 
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['toolkit/components/tests/xpcshell/test_observer.js'],
-      ['--setpref=marionette.port=2838', '--marionette=127.0.0.1:2838']
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['toolkit/components/tests/xpcshell/test_observer.js'],
+      args: ['--setpref=marionette.port=2838', '--marionette=127.0.0.1:2838'],
+    });
   });
 
   it('does not auto-forward when the operator already passed the port via --mach-arg', async () => {
     // The forwarded mach-arg is recognised by extractForwardedMarionettePort;
     // the wrapper preflight then targets 2838 too, but the auto-forward must
     // not duplicate the operator's arg in extraArgs.
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -501,15 +500,15 @@ describe('testCommand Marionette and appdir forwarding', () => {
       2838,
       expect.objectContaining({ binaryName: 'mybrowser' })
     );
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/base/content/test/general/browser_focus.js'],
-      ['--marionette-port=2838', '--marionette=127.0.0.1:2838']
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser/base/content/test/general/browser_focus.js'],
+      args: ['--marionette-port=2838', '--marionette=127.0.0.1:2838'],
+    });
   });
 
   it('does not add a second --marionette when --mach-arg already sets the client endpoint', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -522,11 +521,11 @@ describe('testCommand Marionette and appdir forwarding', () => {
       })
     ).resolves.toBeUndefined();
 
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['browser/base/content/test/general/browser_focus.js'],
-      ['--marionette=127.0.0.1:2912', '--setpref=marionette.port=2912']
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['browser/base/content/test/general/browser_focus.js'],
+      args: ['--marionette=127.0.0.1:2912', '--setpref=marionette.port=2912'],
+    });
   });
 
   it('parses a forwarded --mach-arg --marionette-port=N as the effective port (no first-class option)', async () => {
@@ -534,7 +533,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     // Pre-fix, the wrapper preflight checked the default 2828 before the
     // forwarded arg ever reached mach. Now extractForwardedMarionettePort
     // surfaces the value to the probe so the workaround actually works.
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -553,7 +552,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
   });
 
   it('does not auto-forward to mach for an explicit xpcshell flavor', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',
@@ -570,15 +569,15 @@ describe('testCommand Marionette and appdir forwarding', () => {
       2838,
       expect.objectContaining({ binaryName: 'mybrowser' })
     );
-    expect(testWithOutput).toHaveBeenCalledWith(
-      '/project/engine',
-      ['toolkit/components/tests/xpcshell/test_observer.js'],
-      ['--flavor=xpcshell']
-    );
+    expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      engineDir: '/project/engine',
+      testPaths: ['toolkit/components/tests/xpcshell/test_observer.js'],
+      args: ['--flavor=xpcshell'],
+    });
   });
 
   it('passes --marionette-port through to the doctor preflight', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue({
+    vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
       stderr: '',

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { spawn } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
 
-import { ExecTimeoutError } from '../errors/base.js';
+import { ExecTimeoutError, type ExecTimeoutOutput } from '../errors/base.js';
 import { buildChildEnv } from './child-env.js';
+import { dispatchCompleteLines } from './line-dispatch.js';
 import { killProcessTree, sweepProcessGroup } from './process-group.js';
 
 // 50 MB cap per stream to prevent OOM — large toolchain builds (e.g. Firefox, Chromium)
@@ -73,7 +74,12 @@ export interface ExecResult {
 }
 
 /**
- * Options for command execution.
+ * Options for plain `exec()` — the pipe-capturing, non-grouped, non-mirrored
+ * path. The other wrappers extend this with the fields they actually read:
+ * `processGroup` lives in {@link ProcessGroupOptions}, `mirror` in
+ * {@link MirrorOptions}. Neither belongs here because `exec()` reads
+ * neither — a field the type accepts but the function ignores is a trap
+ * (the caller believes it got a process group, and never did).
  */
 export interface ExecOptions {
   /** Working directory for the command */
@@ -92,15 +98,31 @@ export interface ExecOptions {
    * that must not have any.
    */
   envUnset?: readonly string[];
+  /** Timeout in milliseconds */
+  timeout?: number;
+}
+
+/**
+ * Output mirroring for the wrappers that capture through a collector
+ * ({@link execInheritCapture}, {@link execSmokeRun}).
+ */
+export interface MirrorOptions {
   /**
    * Streams to mirror the child's output into, replacing the default
    * `process.stdout` / `process.stderr` on the stdio-inheriting capture
+   * path, or an operator-supplied `--capture-console` file on the smoke
    * path. Lets a caller tee the live output somewhere else (a run log)
-   * without a second per-chunk hook.
+   * without a second per-chunk hook. Writes happen inline with capture and
+   * the stream is NOT closed here — the caller owns its lifecycle.
    */
   mirror?: { stdout?: NodeJS.WritableStream; stderr?: NodeJS.WritableStream };
-  /** Timeout in milliseconds */
-  timeout?: number;
+}
+
+/**
+ * Process-group reaping for the long-lived wrappers ({@link execStream},
+ * {@link execInherit}, {@link execInheritCapture}).
+ */
+export interface ProcessGroupOptions {
   /**
    * POSIX: spawn the child as a process-group leader and route every kill
    * (parent-signal forwarding, abort, escalation) to the whole GROUP, then
@@ -133,12 +155,30 @@ function toExecRejection(
   error: Error,
   command: string,
   args: readonly string[],
-  timeout: number | undefined
+  timeout: number | undefined,
+  output?: ExecTimeoutOutput
 ): Error {
   if (timeout !== undefined && error.name === 'AbortError') {
-    return new ExecTimeoutError(command, args, timeout, error);
+    return new ExecTimeoutError(command, args, timeout, error, output);
   }
   return error;
+}
+
+/**
+ * Snapshot of what two collectors hold, for carrying onto a timeout
+ * rejection. Without it a `git add -A` killed at its budget rejected with
+ * nothing but the budget — the partial stdout/stderr that said what git was
+ * doing when it died was already collected and simply dropped.
+ */
+function collectedOutput(
+  out: ReturnType<typeof createStreamCollector>,
+  err: ReturnType<typeof createStreamCollector>
+): ExecTimeoutOutput {
+  return {
+    stdout: out.getText(),
+    stderr: err.getText(),
+    truncated: out.wasTruncated() || err.wasTruncated(),
+  };
 }
 
 function exitCodeFromClose(code: number | null, signal: NodeJS.Signals | null): number {
@@ -182,7 +222,7 @@ export async function exec(
     child.stderr.on('data', err.onData);
 
     child.on('error', (error) => {
-      reject(toExecRejection(error, command, args, options.timeout));
+      reject(toExecRejection(error, command, args, options.timeout, collectedOutput(out, err)));
     });
 
     child.on('close', (code, signal) => {
@@ -200,16 +240,126 @@ export async function exec(
 /**
  * Callback for streaming output.
  */
-export type StreamCallback = (data: string) => void;
+type StreamCallback = (data: string) => void;
 
 /**
  * Options for streaming command execution.
  */
-export interface StreamOptions extends ExecOptions {
+interface StreamOptions extends ExecOptions, ProcessGroupOptions {
   /** Callback for stdout data */
   onStdout?: StreamCallback;
   /** Callback for stderr data */
   onStderr?: StreamCallback;
+}
+
+/** The spawn options {@link spawnTracked} decides for every tracked variant. */
+interface TrackedSpawnBase {
+  cwd: string | undefined;
+  env: NodeJS.ProcessEnv;
+  signal: AbortSignal | undefined;
+  detached: boolean;
+}
+
+/** How one tracked wrapper differs from the others. See {@link spawnTracked}. */
+interface TrackedSpawnSpec<C extends ChildProcess, T> {
+  /** Command name, carried into the timeout rejection. */
+  command: string;
+  /** Command arguments, carried into the timeout rejection. */
+  args: string[];
+  /** Caller options; only `cwd`, `timeout` and `processGroup` are read here. */
+  options: ExecOptions & ProcessGroupOptions;
+  /** Grace between the forwarded SIGTERM and the SIGKILL escalation. */
+  graceMs: number;
+  /**
+   * Whether a child that is NOT a process-group leader still gets the
+   * shutdown forwarder. A detached leader always gets one — it no longer
+   * receives the terminal's Ctrl+C, so forwarding is what keeps it killable.
+   */
+  forwardWithoutProcessGroup: boolean;
+  /** Performs the spawn, adding the variant's `stdio` to the shared base. */
+  spawnChild: (base: TrackedSpawnBase) => C;
+  /** Wires stream handlers, before any exit handler can fire. */
+  attach?: (child: C) => void;
+  /** Builds the resolved value from the child's `close` arguments. */
+  result: (code: number | null, signal: NodeJS.Signals | null) => T;
+  /** Partial output to carry onto a timeout rejection, when the variant captures any. */
+  rejectionOutput?: () => ExecTimeoutOutput;
+}
+
+/**
+ * The shared body of every spawn wrapper that outlives its call: detach
+ * decision, shutdown forwarding, closure tracking, process-group sweep and
+ * typed timeout rejection.
+ *
+ * `execStream`, `execInherit` and `execInheritCapture` each hand-rolled this
+ * sequence, and the copies drifted: `execStream` was the one that omitted
+ * {@link trackChildClosure}, so the bin signal handler did not wait for
+ * `runMachStream`'s children on Ctrl+C and the forwarder's SIGTERM → grace →
+ * SIGKILL escalation could not finish before the parent exited — the exact
+ * failure the tracking set was introduced to fix, left unwired in one copy.
+ * Keeping the sequence in one place is what stops that recurring.
+ *
+ * `exec` deliberately stays outside: it neither forwards signals nor tracks
+ * closure, because it is for short-lived helpers that no one Ctrl+Cs through.
+ * `execSmokeRun` also stays outside: its deadline owns the SIGTERM → grace →
+ * SIGKILL escalation directly, so it shares no forwarder with the others.
+ *
+ * @param spec - The variant's stdio, stream wiring, grace budget and result shape
+ * @returns Whatever `spec.result` builds from the child's `close` event
+ */
+async function spawnTracked<C extends ChildProcess, T>(spec: TrackedSpawnSpec<C, T>): Promise<T> {
+  const { command, args, options } = spec;
+  return new Promise<T>((resolve, reject) => {
+    const usesProcessGroup = options.processGroup === true && process.platform !== 'win32';
+    const child = spec.spawnChild({
+      cwd: options.cwd,
+      env: buildChildEnv(options),
+      signal: buildSignalFromTimeout(options.timeout),
+      detached: usesProcessGroup,
+    });
+    const groupPid = usesProcessGroup ? child.pid : undefined;
+
+    spec.attach?.(child);
+
+    // Group-aware kills route to the whole tree; a non-group child is killed
+    // directly by the forwarder's own `child.kill`.
+    const killTarget =
+      options.processGroup === true
+        ? (signal: NodeJS.Signals): void => {
+            killProcessTree(child, signal, usesProcessGroup);
+          }
+        : undefined;
+    const forwarder =
+      spec.forwardWithoutProcessGroup || options.processGroup === true
+        ? installGracefulShutdownForwarder(child, spec.graceMs, killTarget)
+        : undefined;
+    const closure = trackChildClosure();
+
+    child.on('error', (error) => {
+      // Abort/startup failure: make sure a partially-started tree does not
+      // outlive the dispatch (a mach dying at startup used to strand
+      // multiprocessing workers).
+      if (options.processGroup === true) {
+        killProcessTree(child, 'SIGKILL', usesProcessGroup);
+      }
+      forwarder?.dispose();
+      closure.settle();
+      reject(toExecRejection(error, command, args, options.timeout, spec.rejectionOutput?.()));
+    });
+
+    child.on('close', (code, signal) => {
+      forwarder?.dispose();
+      const finish = (): void => {
+        closure.settle();
+        resolve(spec.result(code, signal));
+      };
+      if (groupPid !== undefined) {
+        sweepProcessGroup(groupPid).then(finish, finish);
+      } else {
+        finish();
+      }
+    });
+  });
 }
 
 /**
@@ -224,71 +374,31 @@ export async function execStream(
   args: string[],
   options: StreamOptions = {}
 ): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const usesProcessGroup = options.processGroup === true && process.platform !== 'win32';
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: buildChildEnv(options),
-      stdio: ['ignore', 'pipe', 'pipe'],
-      signal: buildSignalFromTimeout(options.timeout),
-      detached: usesProcessGroup,
-    });
-    const groupPid = usesProcessGroup ? child.pid : undefined;
-
-    const stdoutDecoder = new StringDecoder('utf8');
-    const stderrDecoder = new StringDecoder('utf8');
-
-    child.stdout.on('data', (data: Buffer) => {
-      const chunk = stdoutDecoder.write(data);
-      if (chunk.length > 0) options.onStdout?.(chunk);
-    });
-
-    child.stderr.on('data', (data: Buffer) => {
-      const chunk = stderrDecoder.write(data);
-      if (chunk.length > 0) options.onStderr?.(chunk);
-    });
-
+  return spawnTracked({
+    command,
+    args,
+    options,
+    graceMs: 1500,
     // A detached group leader no longer receives the terminal's Ctrl+C, so
     // the forwarder is mandatory (not just graceful-UX) when processGroup
-    // is set. Group-aware: kills route to the whole tree.
-    const forwarder =
-      options.processGroup === true
-        ? installGracefulShutdownForwarder(child, 1500, (signal) => {
-            killProcessTree(child, signal, usesProcessGroup);
-          })
-        : undefined;
+    // is set — but a plain streamed child does not get one.
+    forwardWithoutProcessGroup: false,
+    spawnChild: (base) => spawn(command, args, { ...base, stdio: ['ignore', 'pipe', 'pipe'] }),
+    attach: (child) => {
+      const stdoutDecoder = new StringDecoder('utf8');
+      const stderrDecoder = new StringDecoder('utf8');
 
-    // Closure tracking: this was the one wrapper that omitted it, so the bin
-    // signal handler did not wait for `runMachStream`'s children on Ctrl+C
-    // and the forwarder's SIGTERM → grace → SIGKILL escalation above could
-    // not finish before the parent exited — the exact failure the tracking
-    // set was introduced to fix, left unwired here.
-    const closure = trackChildClosure();
+      child.stdout.on('data', (data: Buffer) => {
+        const chunk = stdoutDecoder.write(data);
+        if (chunk.length > 0) options.onStdout?.(chunk);
+      });
 
-    child.on('error', (error) => {
-      // Abort/startup failure: make sure a partially-started tree does not
-      // outlive the dispatch (a mach dying at startup used to strand
-      // multiprocessing workers).
-      if (options.processGroup === true) {
-        killProcessTree(child, 'SIGKILL', usesProcessGroup);
-      }
-      forwarder?.dispose();
-      closure.settle();
-      reject(toExecRejection(error, command, args, options.timeout));
-    });
-
-    child.on('close', (code, signal) => {
-      forwarder?.dispose();
-      const finish = (): void => {
-        closure.settle();
-        resolve(exitCodeFromClose(code, signal));
-      };
-      if (groupPid !== undefined) {
-        sweepProcessGroup(groupPid).then(finish, finish);
-      } else {
-        finish();
-      }
-    });
+      child.stderr.on('data', (data: Buffer) => {
+        const chunk = stderrDecoder.write(data);
+        if (chunk.length > 0) options.onStderr?.(chunk);
+      });
+    },
+    result: exitCodeFromClose,
   });
 }
 
@@ -353,6 +463,15 @@ export async function waitForActiveChildShutdown(timeoutMs: number): Promise<voi
   ]);
 }
 
+/** Options for {@link execInherit}. */
+export interface InheritOptions extends ExecOptions, ProcessGroupOptions {
+  /** Grace period between the forwarded SIGTERM and the SIGKILL escalation (default 1500 ms). */
+  shutdownGraceMs?: number;
+}
+
+/** Options for {@link execInheritCapture}: the inherit path plus output mirroring. */
+export interface InheritCaptureOptions extends InheritOptions, MirrorOptions {}
+
 /**
  * Executes a command and inherits stdio (shows output directly).
  *
@@ -372,52 +491,16 @@ export async function waitForActiveChildShutdown(timeoutMs: number): Promise<voi
 export async function execInherit(
   command: string,
   args: string[],
-  options: ExecOptions & { shutdownGraceMs?: number } = {}
+  options: InheritOptions = {}
 ): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const usesProcessGroup = options.processGroup === true && process.platform !== 'win32';
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: buildChildEnv(options),
-      stdio: 'inherit',
-      signal: buildSignalFromTimeout(options.timeout),
-      detached: usesProcessGroup,
-    });
-    const groupPid = usesProcessGroup ? child.pid : undefined;
-
-    const graceMs = options.shutdownGraceMs ?? 1500;
-    const { dispose } = installGracefulShutdownForwarder(
-      child,
-      graceMs,
-      options.processGroup === true
-        ? (signal) => {
-            killProcessTree(child, signal, usesProcessGroup);
-          }
-        : undefined
-    );
-    const closure = trackChildClosure();
-
-    child.on('error', (error) => {
-      if (options.processGroup === true) {
-        killProcessTree(child, 'SIGKILL', usesProcessGroup);
-      }
-      dispose();
-      closure.settle();
-      reject(toExecRejection(error, command, args, options.timeout));
-    });
-
-    child.on('close', (code, signal) => {
-      dispose();
-      const finish = (): void => {
-        closure.settle();
-        resolve(exitCodeFromClose(code, signal));
-      };
-      if (groupPid !== undefined) {
-        sweepProcessGroup(groupPid).then(finish, finish);
-      } else {
-        finish();
-      }
-    });
+  return spawnTracked({
+    command,
+    args,
+    options,
+    graceMs: options.shutdownGraceMs ?? 1500,
+    forwardWithoutProcessGroup: true,
+    spawnChild: (base) => spawn(command, args, { ...base, stdio: 'inherit' }),
+    result: exitCodeFromClose,
   });
 }
 
@@ -503,63 +586,29 @@ export function installGracefulShutdownForwarder(
 export async function execInheritCapture(
   command: string,
   args: string[],
-  options: ExecOptions & { shutdownGraceMs?: number } = {}
+  options: InheritCaptureOptions = {}
 ): Promise<ExecResult> {
-  return new Promise((resolve, reject) => {
-    const usesProcessGroup = options.processGroup === true && process.platform !== 'win32';
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: buildChildEnv(options),
-      stdio: ['inherit', 'pipe', 'pipe'],
-      signal: buildSignalFromTimeout(options.timeout),
-      detached: usesProcessGroup,
-    });
-    const groupPid = usesProcessGroup ? child.pid : undefined;
-
-    const out = createStreamCollector(options.mirror?.stdout ?? process.stdout);
-    const err = createStreamCollector(options.mirror?.stderr ?? process.stderr);
-    child.stdout.on('data', out.onData);
-    child.stderr.on('data', err.onData);
-
-    const graceMs = options.shutdownGraceMs ?? 1500;
-    const { dispose } = installGracefulShutdownForwarder(
-      child,
-      graceMs,
-      options.processGroup === true
-        ? (signal) => {
-            killProcessTree(child, signal, usesProcessGroup);
-          }
-        : undefined
-    );
-    const closure = trackChildClosure();
-
-    child.on('error', (error) => {
-      if (options.processGroup === true) {
-        killProcessTree(child, 'SIGKILL', usesProcessGroup);
-      }
-      dispose();
-      closure.settle();
-      reject(toExecRejection(error, command, args, options.timeout));
-    });
-
-    child.on('close', (code, signal) => {
-      dispose();
-      const finish = (): void => {
-        closure.settle();
-        resolve({
-          stdout: out.getText(),
-          stderr: err.getText(),
-          exitCode: exitCodeFromClose(code, signal),
-          stdoutTruncated: out.wasTruncated(),
-          stderrTruncated: err.wasTruncated(),
-        });
-      };
-      if (groupPid !== undefined) {
-        sweepProcessGroup(groupPid).then(finish, finish);
-      } else {
-        finish();
-      }
-    });
+  const out = createStreamCollector(options.mirror?.stdout ?? process.stdout);
+  const err = createStreamCollector(options.mirror?.stderr ?? process.stderr);
+  return spawnTracked({
+    command,
+    args,
+    options,
+    graceMs: options.shutdownGraceMs ?? 1500,
+    forwardWithoutProcessGroup: true,
+    spawnChild: (base) => spawn(command, args, { ...base, stdio: ['inherit', 'pipe', 'pipe'] }),
+    attach: (child) => {
+      child.stdout.on('data', out.onData);
+      child.stderr.on('data', err.onData);
+    },
+    result: (code, signal) => ({
+      stdout: out.getText(),
+      stderr: err.getText(),
+      exitCode: exitCodeFromClose(code, signal),
+      stdoutTruncated: out.wasTruncated(),
+      stderrTruncated: err.wasTruncated(),
+    }),
+    rejectionOutput: () => collectedOutput(out, err),
   });
 }
 
@@ -574,11 +623,11 @@ export type SmokeLineCallback = (line: string) => void;
  * group. Inheriting `timeout` is a leaky trap — accepted by the type but
  * silently ignored, so a caller setting it gets no deadline at all.
  *
- * `processGroup` is omitted for the same reason: a smoke run is ALWAYS
- * detached on POSIX (`usesProcessGroup` is derived from `process.platform`
- * alone), so the field would be accepted and never read.
+ * {@link ProcessGroupOptions} is not mixed in for the same reason: a smoke
+ * run is ALWAYS detached on POSIX (`usesProcessGroup` is derived from
+ * `process.platform` alone), so the field would be accepted and never read.
  */
-export interface SmokeRunOptions extends Omit<ExecOptions, 'processGroup' | 'timeout'> {
+interface SmokeRunOptions extends Omit<ExecOptions, 'timeout'>, MirrorOptions {
   /**
    * Hard deadline in milliseconds. When it elapses the child process
    * group is sent SIGTERM and, after `killGraceMs`, SIGKILL. The returned
@@ -598,13 +647,6 @@ export interface SmokeRunOptions extends Omit<ExecOptions, 'processGroup' | 'tim
   onStdoutLine?: SmokeLineCallback;
   /** Invoked once per complete line of stderr. Final partial line is flushed on close. */
   onStderrLine?: SmokeLineCallback;
-  /**
-   * Optional writable stream to mirror captured output to (e.g. an
-   * operator-supplied `--capture-console` file). Writes happen inline
-   * with line dispatch and the stream is NOT closed here — the caller
-   * owns its lifecycle.
-   */
-  mirror?: { stdout?: NodeJS.WritableStream; stderr?: NodeJS.WritableStream };
 }
 
 /** Result of {@link execSmokeRun}. */
@@ -761,49 +803,6 @@ export async function execSmokeRun(
 }
 
 /**
- * Cap on the partial-line tail kept between chunks. A child emitting one
- * enormous line with no terminator (minified JS dumped to stderr, a raw
- * binary blob) would otherwise grow the buffer without bound — the 50 MB cap
- * guards the collector, not these line buffers. When the tail exceeds the
- * cap it is dispatched as a synthetic (oversized) line so the matchers still
- * see its content, then the buffer resets.
- */
-const MAX_PARTIAL_LINE_SIZE = 1024 * 1024;
-
-/**
- * Drains complete lines from `buffer`, dispatching each to `cb`. Treats
- * `\n`, `\r\n`, and lone `\r` as line terminators — the lone-`\r` case
- * matters for progress-bar style output (mach, cargo) that repaints a line
- * with carriage returns and never sends a newline, which otherwise
- * accumulates indefinitely. A single trailing `\r` is held back since it may
- * be the first half of a `\r\n` pair split across chunks. Returns the
- * remaining partial line — callers keep accumulating into it.
- */
-function dispatchCompleteLines(buffer: string, cb: SmokeLineCallback | undefined): string {
-  let searchFrom = 0;
-  for (;;) {
-    const nl = buffer.indexOf('\n', searchFrom);
-    const cr = buffer.indexOf('\r', searchFrom);
-    const idx = nl === -1 ? cr : cr === -1 ? nl : Math.min(nl, cr);
-    if (idx === -1) break;
-    if (buffer[idx] === '\r' && idx === buffer.length - 1) {
-      // Possible first half of a chunk-split \r\n — wait for the next chunk.
-      break;
-    }
-    const line = buffer.slice(0, idx);
-    const terminatorLength = buffer[idx] === '\r' && buffer[idx + 1] === '\n' ? 2 : 1;
-    buffer = buffer.slice(idx + terminatorLength);
-    searchFrom = 0;
-    cb?.(line);
-  }
-  if (buffer.length > MAX_PARTIAL_LINE_SIZE) {
-    cb?.(buffer);
-    return '';
-  }
-  return buffer;
-}
-
-/**
  * Finds an executable in the system PATH.
  * @param name - Name of the executable
  * @returns Full path to the executable, or undefined if not found
@@ -820,8 +819,7 @@ export async function findExecutable(name: string): Promise<string | undefined> 
         .find((line) => line.length > 0);
     }
     return undefined;
-  } catch (error: unknown) {
-    void error;
+  } catch {
     return undefined;
   }
 }

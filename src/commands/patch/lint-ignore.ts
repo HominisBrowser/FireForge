@@ -22,18 +22,19 @@
 
 import { Command } from 'commander';
 
-import { appendHistory, confirmDestructive } from '../../core/destructive.js';
+import { confirmDestructive } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import { mutatePatchMetadata } from '../../core/patch-export.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchLintIgnoreOptions } from '../../types/commands/index.js';
-import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import {
   addWaitLockOption,
   resolveWaitLockSeconds,
   stringListOption,
 } from '../../utils/options.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 type LintIgnoreMode = 'add' | 'remove' | 'clear';
@@ -84,7 +85,7 @@ function applyMode(
  * `info()` / dry-run / history args. Exported for unit-testing the
  * message format directly without mocking the logger transport.
  */
-export function describeChange(
+function describeChange(
   before: ReadonlyArray<string>,
   after: ReadonlyArray<string>,
   mode: LintIgnoreMode,
@@ -175,17 +176,10 @@ export async function patchLintIgnoreCommand(
     yes: options.yes === true,
     dryRun: isDryRun,
   });
-  if (decision === 'dry-run') {
-    if (addsNewIds) {
-      warn(LINT_IGNORE_REVIEW_WARNING);
-    }
-    outro('Dry run complete — no changes made');
-    return;
+  if (decision === 'dry-run' && addsNewIds) {
+    warn(LINT_IGNORE_REVIEW_WARNING);
   }
-  if (decision === 'declined') {
-    outro('Cancelled — no changes made');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Cancelled — no changes made')) return;
 
   const result = await mutatePatchMetadata(
     paths.patches,
@@ -218,8 +212,9 @@ export async function patchLintIgnoreCommand(
     warn(LINT_IGNORE_REVIEW_WARNING);
   }
 
-  try {
-    await appendHistory(paths.patches, {
+  await appendHistoryBestEffort(
+    paths.patches,
+    {
       operation: 'patch-lint-ignore',
       args: {
         filename: target.filename,
@@ -230,12 +225,9 @@ export async function patchLintIgnoreCommand(
       },
       ...(options.yes === true ? { yes: true } : {}),
       result: 'ok',
-    });
-  } catch (historyError: unknown) {
-    warn(
-      `History log append failed after patch lint-ignore committed (${target.filename}): ${toError(historyError).message}`
-    );
-  }
+    },
+    `patch lint-ignore committed (${target.filename})`
+  );
 
   outro('Patch lint-ignore complete');
 }

@@ -13,6 +13,7 @@ import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-
 import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
 import { createRollbackJournal, snapshotFile } from '../../core/furnace-rollback.js';
 import { DEEP_SCAN_PATHS, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
+import type { ScannedComponent } from '../../types/furnace.js';
 import {
   cancel,
   info,
@@ -32,7 +33,7 @@ import { furnaceOverrideCommand } from './override.js';
  * @param projectRoot - Root directory of the project
  */
 async function promptAddComponents(
-  components: Awaited<ReturnType<typeof scanWidgetsDirectory>>,
+  components: ScannedComponent[],
   tracked: Map<string, 'stock' | 'override' | 'custom'>,
   projectRoot: string
 ): Promise<void> {

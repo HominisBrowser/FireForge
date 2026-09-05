@@ -206,6 +206,32 @@ describe('snapshotDir', () => {
     expect(journal.skippedSymlinks.has(join(nested, 'link.txt'))).toBe(true);
   });
 
+  it('does not traverse symlinked directories', async () => {
+    const { symlink } = await import('node:fs/promises');
+    const tempDir = await makeTempDir('fireforge-furnace-rollback-symlink-dir-');
+    const componentDir = join(tempDir, 'component');
+    const deepDir = join(tempDir, 'deep');
+    await mkdir(componentDir);
+    await mkdir(deepDir);
+    await writeFile(join(componentDir, 'root.css'), ':host { display: block; }');
+    await writeFile(join(deepDir, 'secret.txt'), 'should not be snapshotted');
+    await symlink(deepDir, join(componentDir, 'symlinked-subdir'));
+
+    const journal = createRollbackJournal();
+    await snapshotDir(journal, componentDir);
+
+    await writeFile(join(deepDir, 'secret.txt'), 'modified secret');
+    await writeFile(join(componentDir, 'root.css'), ':host { display: flex; }');
+    await restoreRollbackJournal(journal);
+
+    expect(await readFile(join(componentDir, 'root.css'), 'utf-8')).toBe(
+      ':host { display: block; }'
+    );
+    // The symlinked directory was never descended into, so its contents are
+    // untouched by the restore.
+    expect(await readFile(join(deepDir, 'secret.txt'), 'utf-8')).toBe('modified secret');
+  });
+
   it('returns without recording anything when the path does not exist', async () => {
     const journal = createRollbackJournal();
     await snapshotDir(journal, '/nonexistent/path/that/does/not/exist');

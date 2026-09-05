@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { createHash } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -8,6 +7,7 @@ import type * as estree from 'estree';
 import type { ScannedComponent } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { verbose, warn } from '../utils/logger.js';
 import type { AcornESTreeNode } from './ast-utils.js';
 import { asEstree, getNodeSource, parseScript, walkAST } from './ast-utils.js';
@@ -61,7 +61,7 @@ export async function scanCustomElementsRegistrations(
   }
 
   const content = await readText(filePath);
-  const contentHash = createHash('sha256').update(content).digest('hex');
+  const contentHash = sha256Hex(content);
 
   // Return cached result if file hasn't changed since last parse.
   if (registrationCache && registrationCache.hash === contentHash) {
@@ -149,10 +149,7 @@ export async function scanCustomElementsRegistrations(
     verbose(`Scanner regex fallback activated due to parse error: ${reason}`);
     const lines = content.split('\n');
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (line === undefined) continue;
-
+    for (const [i, line] of lines.entries()) {
       const callbackMatch = /setElementCreationCallback\(\s*"([^"]+)"/.exec(line);
       if (!callbackMatch?.[1]) continue;
 

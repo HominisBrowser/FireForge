@@ -154,7 +154,7 @@ function summarizeForeignHunks(
       }
       if (added > 0 || removed > 0) {
         summaries.push(
-          `@@ -${String(hunk.oldStart)},${String(hunk.oldCount)} +${String(hunk.newStart)},${String(hunk.newCount)} @@ (+${String(added)}/-${String(removed)})`
+          `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ (+${added}/-${removed})`
         );
       }
     }
@@ -266,7 +266,7 @@ export async function reportForeignDrift(args: {
   const totalLines = drift.reduce((sum, d) => sum + d.addedLines + d.removedLines, 0);
   const lineNoun = totalLines === 1 ? 'line' : 'lines';
   warn(
-    `${patch.filename}: refreshed body absorbs ${String(totalLines)} ${lineNoun} not present in the old patch body (${String(drift.length)} file(s)):`
+    `${patch.filename}: refreshed body absorbs ${totalLines} ${lineNoun} not present in the old patch body (${drift.length} file(s)):`
   );
   for (const entry of drift.slice(0, MAX_FILES_REPORTED)) {
     const expectedTag = ctx.expectedDriftFiles.has(entry.file) ? ' (expected via --expect)' : '';
@@ -278,14 +278,14 @@ export async function reportForeignDrift(args: {
       continue;
     }
     info(
-      `  ${entry.file}: +${String(entry.addedLines)}/-${String(entry.removedLines)} newly captured line(s)${expectedTag}${authorshipTag}`
+      `  ${entry.file}: +${entry.addedLines}/-${entry.removedLines} newly captured line(s)${expectedTag}${authorshipTag}`
     );
     for (const summary of entry.hunkSummaries) {
       info(`    ${summary}`);
     }
   }
   if (drift.length > MAX_FILES_REPORTED) {
-    info(`  +${String(drift.length - MAX_FILES_REPORTED)} more file(s)`);
+    info(`  +${drift.length - MAX_FILES_REPORTED} more file(s)`);
   }
 
   if (ctx.refuseForeignDrift) {

@@ -15,17 +15,13 @@ import {
   detectMovedCodeOverlaps,
   formatAdoptThenSplitRemedy,
 } from '../core/export-moved-code-shape.js';
-import { normalizePatchArtifact } from '../core/patch-artifact-normalize.js';
 import {
+  buildPlanExportInput,
   findAllPatchesForFilesWithDetails,
   patchNameSlug,
   planExport,
 } from '../core/patch-export.js';
-import {
-  buildModifiedFileAdditionsFromDiff,
-  buildPatchQueueContext,
-  lintPatchQueue,
-} from '../core/patch-lint.js';
+import { buildPatchQueueContext, lintPatchQueue } from '../core/patch-lint.js';
 import { withPatchDirectoryLock } from '../core/patch-lock.js';
 import {
   addPatchToManifest,
@@ -36,13 +32,12 @@ import {
   resolvePatchIdentifier,
   savePatchesManifest,
 } from '../core/patch-manifest.js';
-import { requirePatchOrder } from '../core/patch-parse.js';
+import { formatPatchOrder, requirePatchOrder } from '../core/patch-parse.js';
 import {
   applyRenameMapToManifest,
   buildProjectedManifest,
   enforcePatchPolicy,
 } from '../core/patch-policy.js';
-import { buildNewFileTextProjection } from '../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { ExportOptions, PatchCategory, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
@@ -52,6 +47,8 @@ import { info, warn } from '../utils/logger.js';
 import { groupProjectedPlacementErrors } from './export-placement-conflicts.js';
 import { assertPlacementAvoidsReservedRanges } from './export-placement-policy.js';
 import { findPartialOwnershipOverlap } from './export-shared.js';
+import { projectEntryBody } from './patch/entry-projection.js';
+import { getSortedRenameEntries, renameMapsEqual } from './patch-rename-map.js';
 
 function buildFilenameForPlacement(
   category: PatchCategory,
@@ -80,12 +77,6 @@ function prefixWidthForPatches(manifestPatches: PatchMetadata[], requestedOrder:
   }, 3);
 }
 
-function getSortedRenameEntries(
-  renameMap: Map<string, PatchRenameEntry>
-): Array<[string, PatchRenameEntry]> {
-  return Array.from(renameMap.entries()).sort((a, b) => a[1].newOrder - b[1].newOrder);
-}
-
 /**
  * Structural equality for placement plans — used by placement-mode export
  * and `patch split` to verify the queue did not change between the
@@ -96,22 +87,7 @@ export function placementPlansEqual(left: PlacementPlan, right: PlacementPlan): 
     return false;
   }
 
-  const leftEntries = getSortedRenameEntries(left.renameMap);
-  const rightEntries = getSortedRenameEntries(right.renameMap);
-  if (leftEntries.length !== rightEntries.length) {
-    return false;
-  }
-
-  return leftEntries.every(([leftFilename, leftEntry], index) => {
-    const rightTuple = rightEntries[index];
-    if (!rightTuple) return false;
-    const [rightFilename, rightEntry] = rightTuple;
-    return (
-      leftFilename === rightFilename &&
-      leftEntry.newFilename === rightEntry.newFilename &&
-      leftEntry.newOrder === rightEntry.newOrder
-    );
-  });
+  return renameMapsEqual(left.renameMap, right.renameMap);
 }
 
 /**
@@ -130,7 +106,7 @@ export function computePlacementPlan(
   // filename like "NaN-ui-foo.patch".
   if (!Number.isInteger(requestedOrder) || requestedOrder <= 0) {
     throw new InvalidArgumentError(
-      `computePlacementPlan requires a positive integer order, got ${String(requestedOrder)}.`,
+      `computePlacementPlan requires a positive integer order, got ${requestedOrder}.`,
       'requestedOrder'
     );
   }
@@ -151,7 +127,7 @@ export function computePlacementPlan(
     }
     const newOrder = cursor + 1;
     const currentRest = patch.filename.replace(/^\d+-/, '');
-    const newFilename = `${String(newOrder).padStart(prefixWidth, '0')}-${currentRest}`;
+    const newFilename = `${formatPatchOrder(newOrder, prefixWidth)}-${currentRest}`;
     renameMap.set(patch.filename, { newOrder, newFilename });
     cursor = newOrder;
   }
@@ -184,7 +160,7 @@ export function computeExactPlacementPlan(
 ): PlacementPlan {
   if (!Number.isInteger(requestedOrder) || requestedOrder <= 0) {
     throw new InvalidArgumentError(
-      `--order must be a positive integer, got ${String(requestedOrder)}.`,
+      `--order must be a positive integer, got ${requestedOrder}.`,
       '--order'
     );
   }
@@ -192,7 +168,7 @@ export function computeExactPlacementPlan(
   const occupied = manifestPatches.find((patch) => patch.order === requestedOrder);
   if (occupied) {
     throw new InvalidArgumentError(
-      `--order ${String(requestedOrder)} is already occupied by ${occupied.filename}. ` +
+      `--order ${requestedOrder} is already occupied by ${occupied.filename}. ` +
         'Choose an unused order or use --before/--after for positional insertion.',
       '--order'
     );
@@ -236,7 +212,7 @@ export async function resolvePlacementPlan(
     // reach here with a NaN/0/negative value passed in via test harness.
     if (!Number.isInteger(options.order) || options.order <= 0) {
       throw new InvalidArgumentError(
-        `--order must be a positive integer, got ${String(options.order)}.`,
+        `--order must be a positive integer, got ${options.order}.`,
         '--order'
       );
     }
@@ -295,9 +271,7 @@ export async function projectPlacementForLint(
     filename: plan.newFilename,
     order: plan.insertionOrder,
     metadata: null,
-    diff,
-    newFiles: buildNewFileTextProjection(diff),
-    modifiedFileAdditions: buildModifiedFileAdditionsFromDiff(diff),
+    ...projectEntryBody(diff),
   });
   projectedEntries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
   const policyRest = baseCtx.patchPolicy ? { patchPolicy: baseCtx.patchPolicy } : {};
@@ -458,7 +432,7 @@ export async function commitPlacementExport(
       }
       // Normalize identically to commitExportedPatch — the two export
       // paths must produce one artifact contract for the same diff.
-      await writeText(patchPath, normalizePatchArtifact(input.diff));
+      await writeText(patchPath, input.diff);
       await addPatchToManifest(input.patchesDir, {
         ...input.metadata,
         filename: currentPlan.newFilename,
@@ -573,19 +547,7 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
     manifest !== null
       ? findPartialOwnershipOverlap(manifest, input.filesAffected, supersedingFilenames)
       : new Map<string, string[]>();
-  const plan = await planExport({
-    patchesDir: input.patchesDir,
-    category: input.category,
-    name: input.name,
-    description: input.description,
-    filesAffected: input.filesAffected,
-    sourceEsrVersion: input.sourceEsrVersion,
-    ...(input.sourceProduct !== undefined ? { sourceProduct: input.sourceProduct } : {}),
-    ...(input.sourceVersion !== undefined ? { sourceVersion: input.sourceVersion } : {}),
-    ...(input.tier !== undefined ? { tier: input.tier } : {}),
-    ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
-    ...(input.config !== undefined ? { config: input.config } : {}),
-  });
+  const plan = await planExport(buildPlanExportInput(input));
 
   if (input.config !== undefined) {
     enforcePatchPolicy({
@@ -627,7 +589,7 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
   if (overlap.size > 0) {
     const entries = [...overlap.entries()].sort(([a], [b]) => a.localeCompare(b));
     warn(
-      `\n[dry-run] Would create cross-patch ownership overlap on ${String(entries.length)} file${entries.length === 1 ? '' : 's'}:`
+      `\n[dry-run] Would create cross-patch ownership overlap on ${entries.length} file${entries.length === 1 ? '' : 's'}:`
     );
     for (const [file, owners] of entries) {
       warn(`  - ${file} already claimed by: ${owners.join(', ')}`);

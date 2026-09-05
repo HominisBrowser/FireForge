@@ -12,7 +12,8 @@ import { basename } from 'node:path';
 
 import { Command } from 'commander';
 
-import { appendHistory, confirmDestructive, type ConflictReport } from '../../core/destructive.js';
+import { confirmDestructive, type ConflictReport } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import {
   buildPatchQueueContext,
   extractImportSpecifiersWithLines,
@@ -23,9 +24,9 @@ import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import { removePatchFileAndManifest } from '../../core/patch-manifest.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchDeleteOptions } from '../../types/commands/index.js';
-import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /**
@@ -166,14 +167,7 @@ export async function patchDeleteCommand(
     conflicts,
   });
 
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Delete cancelled');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Delete cancelled')) return;
 
   // Proceed: remove under the patch directory lock so concurrent exports
   // cannot race us into the same manifest row. The history append lives
@@ -187,8 +181,9 @@ export async function patchDeleteCommand(
     paths.patches,
     async () => {
       await removePatchFileAndManifest(paths.patches, target.filename);
-      try {
-        await appendHistory(paths.patches, {
+      await appendHistoryBestEffort(
+        paths.patches,
+        {
           operation: 'patch-delete',
           args: {
             filename: target.filename,
@@ -198,12 +193,9 @@ export async function patchDeleteCommand(
           ...(options.yes === true ? { yes: true } : {}),
           ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
           result: 'ok',
-        });
-      } catch (historyError: unknown) {
-        warn(
-          `History log append failed after patch delete committed (${target.filename}): ${toError(historyError).message}`
-        );
-      }
+        },
+        `patch delete committed (${target.filename})`
+      );
     },
     { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch delete' }
   );

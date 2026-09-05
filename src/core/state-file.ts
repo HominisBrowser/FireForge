@@ -20,6 +20,20 @@ export async function withStateFileLock<T>(
   });
 }
 
+/**
+ * A filesystem-safe, sortable timestamp: `2026-08-28T14-32-05-123Z`.
+ *
+ * Colons are not portable in filenames (Windows rejects them outright), so
+ * the ISO form is punctuated with dashes only. Lexical order still equals
+ * chronological order, which is what run-log pruning relies on.
+ *
+ * @param now - Instant to render
+ * @returns The ISO-8601 form with `:` and `.` replaced by `-`
+ */
+export function fileSafeTimestamp(now: Date): string {
+  return now.toISOString().replace(/[:.]/g, '-');
+}
+
 /** Renames a state file out of the way while preserving it for later inspection. */
 export async function quarantineStateFile(
   statePath: string,
@@ -29,7 +43,7 @@ export async function quarantineStateFile(
     return undefined;
   }
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const timestamp = fileSafeTimestamp(new Date());
   const quarantinedPath = `${statePath}.${reason}-${timestamp}`;
   await rename(statePath, quarantinedPath);
   return basename(quarantinedPath);
@@ -48,7 +62,7 @@ export async function quarantineStateFile(
  * inside that tree.
  *
  * `furnace.json` is the pattern the rest should follow: it refuses a newer
- * version by name and tells the operator to upgrade (`migrateFurnaceConfig`
+ * version by name and tells the operator to upgrade (`validateConfigVersion`
  * in `furnace-config.ts`).
  */
 export type DocumentVersionCheck =

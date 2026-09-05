@@ -7,6 +7,66 @@ import type { FirefoxProduct, ProjectLicense } from '../config.js';
 import type { PatchCategory } from './patches.js';
 
 /**
+ * `--dry-run`: print the planned change and exit without writing anything.
+ *
+ * Twenty-four option types spelled this field with five different doc
+ * comments for one behaviour. The contract is uniform and load-bearing — a
+ * dry run must perform every check the real run does and then write nothing —
+ * so it is stated once.
+ */
+export interface DryRunnable {
+  /** Print the planned change without writing anything. */
+  dryRun?: boolean;
+}
+
+/**
+ * `--yes`: answer the confirmation prompt non-interactively.
+ *
+ * Required for non-TTY runs, where there is no prompt to answer. It waives
+ * the prompt only — never a safety gate; flags that waive a refusal are
+ * spelled `--force*` and live on their own types.
+ */
+export interface Confirmable {
+  /** Skip the confirmation prompt; required for non-TTY runs. */
+  yes?: boolean;
+}
+
+/**
+ * `--force-unsafe`: proceed past a refusal the command would otherwise raise.
+ *
+ * Distinct from {@link Confirmable}: this waives a correctness gate (a
+ * projected-lint failure, a patchPolicy violation), not a prompt.
+ */
+export interface UnsafeOverridable {
+  /** Bypass refusals the command would otherwise raise. */
+  forceUnsafe?: boolean;
+}
+
+/**
+ * `--wait-lock [seconds]` for commands that take the ENGINE SESSION lock.
+ *
+ * Parsed at the CLI layer (`true` for the bare flag, meaning 60 seconds) and
+ * consumed there to bound the wait; the command implementation ignores it.
+ */
+export interface EngineLockWaitable {
+  /** Parsed `--wait-lock [seconds]` value; `true` means the 60-second default. */
+  waitLock?: number | boolean;
+}
+
+/**
+ * `--wait-lock [seconds]` for commands that mutate patch metadata under the
+ * PATCH DIRECTORY lock.
+ *
+ * Deliberately separate from {@link EngineLockWaitable}: the two flags share a
+ * spelling but bound different locks, and a reader needs to know which one a
+ * command contends for.
+ */
+export interface PatchLockWaitable {
+  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
+  waitLock?: number | boolean;
+}
+
+/**
  * Options for the setup command.
  */
 export interface SetupOptions {
@@ -57,7 +117,7 @@ export interface SourceSetOptions {
 /**
  * Options for the build command.
  */
-export interface BuildOptions {
+export interface BuildOptions extends EngineLockWaitable {
   /** Fast UI-only rebuild */
   ui?: boolean;
   /** Number of parallel jobs */
@@ -80,18 +140,12 @@ export interface BuildOptions {
    * multi-session checkout wants the hard stop.
    */
   refuseUnexportedDrift?: boolean;
-  /**
-   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
-   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
-   * the command implementation ignores it.
-   */
-  waitLock?: number | boolean;
 }
 
 /**
  * Options for the export command.
  */
-export interface ExportOptions {
+export interface ExportOptions extends EngineLockWaitable {
   /** Name/description for the patch */
   name?: string;
   /** Category classification */
@@ -138,12 +192,6 @@ export interface ExportOptions {
    */
   allowOverlap?: boolean;
   /**
-   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
-   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
-   * the command implementation ignores it.
-   */
-  waitLock?: number | boolean;
-  /**
    * Force a tier override on the new patch's `PatchMetadata.tier`. Only
    * `"branding"` is currently recognised — Commander rejects other values
    * before the handler runs. Use when a branding patch legitimately
@@ -166,9 +214,7 @@ export interface ExportOptions {
 /**
  * Options for the reset command.
  */
-export interface ResetOptions {
-  /** Skip confirmation prompt */
-  yes?: boolean;
+export interface ResetOptions extends Confirmable {
   /** Show what would be reset without doing it */
   dryRun?: boolean;
 }
@@ -176,7 +222,7 @@ export interface ResetOptions {
 /**
  * Options for the discard command.
  */
-export interface DiscardOptions {
+export interface DiscardOptions extends Confirmable {
   /**
    * Restore to pristine upstream (HEAD) instead of the patch-applied
    * baseline, deleting patch-created files.
@@ -184,8 +230,6 @@ export interface DiscardOptions {
   toUpstream?: boolean;
   /** Show what would be discarded without doing it */
   dryRun?: boolean;
-  /** Skip confirmation prompt */
-  yes?: boolean;
 }
 
 /**
@@ -224,7 +268,7 @@ export interface ImportOptions {
 /**
  * Options for the re-export command.
  */
-export interface ReExportOptions {
+export interface ReExportOptions extends EngineLockWaitable {
   /** Re-export all patches */
   all?: boolean;
   /** Scan directories for new/removed files and update filesAffected */
@@ -295,12 +339,6 @@ export interface ReExportOptions {
    */
   lintIgnore?: string[];
   /**
-   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
-   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
-   * the command implementation ignores it.
-   */
-  waitLock?: number | boolean;
-  /**
    * Refuse (non-zero exit, patch not written) a scan-less re-export when
    * unmanaged files exist adjacent to the patch's ownership, instead of
    * warning. Gate-driven workflows use this so a freshly created file
@@ -351,20 +389,11 @@ export interface ReExportOptions {
  * `PatchMetadata.tier` field on a single patch without rewriting the
  * `.patch` file body — the manifest is the only thing that changes.
  */
-export interface PatchTierOptions {
-  /**
-   * Seconds to wait for the patch directory lock. This command mutates patch
-   * metadata under that lock.
-   */
-  waitLock?: number | boolean;
+export interface PatchTierOptions extends Confirmable, DryRunnable, PatchLockWaitable {
   /** Force the named tier on the patch. Only `"branding"` is recognised. */
   tier?: 'branding';
   /** Remove the `tier` override entirely, restoring auto-detection. */
   clear?: boolean;
-  /** Print the planned change without writing. */
-  dryRun?: boolean;
-  /** Skip the confirmation prompt (required for non-TTY). */
-  yes?: boolean;
 }
 
 /**
@@ -372,22 +401,13 @@ export interface PatchTierOptions {
  * mutually exclusive — exactly one of `add`, `remove`, or `clear` must
  * be set per invocation.
  */
-export interface PatchLintIgnoreOptions {
-  /**
-   * Seconds to wait for the patch directory lock. This command mutates patch
-   * metadata under that lock.
-   */
-  waitLock?: number | boolean;
+export interface PatchLintIgnoreOptions extends Confirmable, DryRunnable, PatchLockWaitable {
   /** Lint check IDs to add to the patch's `lintIgnore` list (union, de-duped). */
   add?: string[];
   /** Lint check IDs to remove from the patch's `lintIgnore` list. */
   remove?: string[];
   /** Drop the `lintIgnore` field entirely. */
   clear?: boolean;
-  /** Print the planned change without writing. */
-  dryRun?: boolean;
-  /** Skip the confirmation prompt (required for non-TTY). */
-  yes?: boolean;
 }
 
 /**
@@ -395,12 +415,7 @@ export interface PatchLintIgnoreOptions {
  * mutually exclusive: add a declaration, remove one or more matching
  * declarations, or clear all staged dependencies from the patch.
  */
-export interface PatchStagedDependencyOptions {
-  /**
-   * Seconds to wait for the patch directory lock. This command mutates patch
-   * metadata under that lock.
-   */
-  waitLock?: number | boolean;
+export interface PatchStagedDependencyOptions extends Confirmable, DryRunnable, PatchLockWaitable {
   /** Add a staged dependency declaration. */
   add?: boolean;
   /** Remove matching staged dependency declarations. */
@@ -428,16 +443,12 @@ export interface PatchStagedDependencyOptions {
   owner?: string;
   /** Optional human-readable rationale stored with the declaration. */
   reason?: string;
-  /** Print the planned change without writing. */
-  dryRun?: boolean;
-  /** Skip the confirmation prompt (required for non-TTY). */
-  yes?: boolean;
 }
 
 /**
  * Options for the `patch split` command.
  */
-export interface PatchSplitOptions {
+export interface PatchSplitOptions extends Confirmable, PatchLockWaitable, UnsafeOverridable {
   /** Files to move out of the source patch (engine-relative). */
   files: string[];
   /** Name for the new patch (used in its filename slug). */
@@ -454,14 +465,8 @@ export interface PatchSplitOptions {
   after?: string;
   /** Preview without writing. */
   dryRun?: boolean;
-  /** Skip interactive confirmation (required for non-TTY). */
-  yes?: boolean;
-  /** Bypass projected-lint refusals. */
-  forceUnsafe?: boolean;
   /** Skip per-patch lint of the projected bodies. */
   skipLint?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
 }
 
 /**
@@ -471,7 +476,7 @@ export interface PatchSplitOptions {
  * With `--create --order <n>` the target patch is created at that order
  * and the files move into it as one split-style transaction.
  */
-export interface PatchMoveFilesOptions {
+export interface PatchMoveFilesOptions extends Confirmable, PatchLockWaitable, UnsafeOverridable {
   /** File paths relative to engine/ to move from the source patch to the target patch. */
   file?: string[];
   /** Create the target patch (transactional bootstrap of a split). Requires `order`. */
@@ -484,14 +489,8 @@ export interface PatchMoveFilesOptions {
   description?: string;
   /** Preview the create+move without writing. */
   dryRun?: boolean;
-  /** Skip interactive confirmation (required for non-TTY). */
-  yes?: boolean;
-  /** Bypass projected-lint refusals. */
-  forceUnsafe?: boolean;
   /** Skip per-patch lint of the projected bodies. */
   skipLint?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
 }
 
 /**
@@ -566,7 +565,7 @@ export interface RunOptions {
 /**
  * Options for the test command.
  */
-export interface TestOptions {
+export interface TestOptions extends EngineLockWaitable {
   /** Run tests in headless mode */
   headless?: boolean;
   /**
@@ -680,20 +679,12 @@ export interface TestOptions {
    * checkers that consume a sample artifact after the run.
    */
   perfSamples?: string;
-  /**
-   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
-   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
-   * the command implementation ignores it.
-   */
-  waitLock?: number | boolean;
 }
 
 /**
  * Options for the furnace apply command.
  */
-export interface FurnaceApplyOptions {
-  /** Show what would be changed without writing */
-  dryRun?: boolean;
+export interface FurnaceApplyOptions extends DryRunnable {
   /** Proceed despite baseVersion drift (stale overrides) */
   force?: boolean;
   /** Watch component directories and re-apply on changes */
@@ -717,9 +708,7 @@ export interface FurnacePreviewOptions {
 /**
  * Options for the furnace deploy command.
  */
-export interface FurnaceDeployOptions {
-  /** Show what would be changed without writing */
-  dryRun?: boolean;
+export interface FurnaceDeployOptions extends DryRunnable {
   /** Proceed despite baseVersion drift (stale overrides) */
   force?: boolean;
   /** Skip the validation step (apply only, no accessibility/compatibility checks) */
@@ -735,9 +724,7 @@ export interface FurnaceDeployOptions {
 /**
  * Options for the furnace refresh command.
  */
-export interface FurnaceRefreshOptions {
-  /** Show what would change without modifying files */
-  dryRun?: boolean;
+export interface FurnaceRefreshOptions extends DryRunnable {
   /** Refresh all overrides in a single batch */
   all?: boolean;
   /** Conflict resolution strategy for automated use (ours = keep local, theirs = accept upstream) */
@@ -749,9 +736,7 @@ export interface FurnaceRefreshOptions {
 /**
  * Options for the furnace sync command.
  */
-export interface FurnaceSyncOptions {
-  /** Show what would change without modifying files */
-  dryRun?: boolean;
+export interface FurnaceSyncOptions extends DryRunnable {
   /** Conflict resolution strategy for three-way merge (ours = keep local, theirs = accept upstream) */
   strategy?: 'ours' | 'theirs';
   /**
@@ -781,12 +766,10 @@ export interface FurnaceOverrideOptions {
 }
 
 /**
- * Options for the furnace remove command.
+ * Options for the furnace remove command. `--yes` is the only flag it takes,
+ * so the type is the confirmation mixin under a command-specific name.
  */
-export interface FurnaceRemoveOptions {
-  /** Skip confirmation prompt */
-  yes?: boolean;
-}
+export type FurnaceRemoveOptions = Confirmable;
 
 /**
  * Options for the furnace create command.
@@ -897,15 +880,9 @@ export interface RegisterOptions {
 /**
  * Options for the patch delete command.
  */
-export interface PatchDeleteOptions {
-  /** Skip confirmation prompt; required for non-TTY runs. */
-  yes?: boolean;
-  /** Print what would happen without writing anything. */
-  dryRun?: boolean;
+export interface PatchDeleteOptions extends Confirmable, DryRunnable, PatchLockWaitable {
   /** Bypass the hard refusal when later patches depend on the target. */
   forceUnsafe?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
 }
 
 /**
@@ -915,7 +892,8 @@ export interface PatchDeleteOptions {
  * for the case where the body is already correct but the patch's identity
  * describes a pre-shrink scope.
  */
-export interface PatchRenameOptions {
+export interface PatchRenameOptions
+  extends Confirmable, DryRunnable, PatchLockWaitable, UnsafeOverridable {
   /**
    * New human-readable name. Sanitised the same way `export --name`
    * sanitises into the filename slug (lowercase, non-alphanumerics
@@ -942,43 +920,25 @@ export interface PatchRenameOptions {
    * without touching the description).
    */
   description?: string;
-  /** Print the planned change without writing. */
-  dryRun?: boolean;
-  /** Skip the confirmation prompt (required for non-TTY). */
-  yes?: boolean;
-  /** Bypass force-mode patchPolicy refusals. */
-  forceUnsafe?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
 }
 
 /**
  * Options for the patch reorder command.
  */
-export interface PatchReorderOptions {
+export interface PatchReorderOptions extends PatchLockWaitable {
   to?: number;
   before?: string;
   after?: string;
   yes?: boolean;
   dryRun?: boolean;
   forceUnsafe?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
 }
 
 /**
  * Options for the patch compact command.
  */
-export interface PatchCompactOptions {
-  /** Skip confirmation prompt; required for non-TTY runs. */
-  yes?: boolean;
-  /** Print what would happen without writing anything. */
-  dryRun?: boolean;
-  /** Bypass force-mode patchPolicy refusals. */
-  forceUnsafe?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
-}
+export interface PatchCompactOptions
+  extends Confirmable, DryRunnable, PatchLockWaitable, UnsafeOverridable {}
 
 /**
  * Options for the status command.

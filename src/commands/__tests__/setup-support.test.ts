@@ -66,8 +66,8 @@ import { cancel } from '../../utils/logger.js';
 import { inferProductFromVersion } from '../../utils/validation.js';
 import {
   buildSetupConfig,
-  parseFirefoxProductOption,
-  parseProjectLicenseOption,
+  resolveFirefoxProduct,
+  resolveProjectLicense,
   resolveSetupInputs,
   validateSetupOptions,
   writeSetupProjectFiles,
@@ -112,15 +112,13 @@ describe('setup-support', () => {
     promptMocks.group.mockReset();
   });
 
-  it('parses optional CLI product and license values', () => {
-    expect(parseFirefoxProductOption(undefined)).toBeUndefined();
-    expect(parseFirefoxProductOption('firefox-beta')).toBe('firefox-beta');
-    expect(parseFirefoxProductOption('firefox-devedition')).toBe('firefox-devedition');
-    expect(() => parseFirefoxProductOption('waterfox')).toThrow('Invalid product');
+  it('resolves CLI product and license values, rejecting unknown ones', () => {
+    expect(resolveFirefoxProduct('firefox-beta', '--product')).toBe('firefox-beta');
+    expect(resolveFirefoxProduct('firefox-devedition', '--product')).toBe('firefox-devedition');
+    expect(() => resolveFirefoxProduct('waterfox', '--product')).toThrow('Invalid product');
 
-    expect(parseProjectLicenseOption(undefined)).toBeUndefined();
-    expect(parseProjectLicenseOption('0BSD')).toBe('0BSD');
-    expect(() => parseProjectLicenseOption('MIT')).toThrow('Invalid license');
+    expect(resolveProjectLicense('0BSD', '--license')).toBe('0BSD');
+    expect(() => resolveProjectLicense('MIT', '--license')).toThrow('Invalid license');
   });
 
   it('validates setup option shapes strictly', () => {

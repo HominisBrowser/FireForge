@@ -27,6 +27,7 @@
 import { basename, dirname, join, relative, sep } from 'node:path';
 
 import { pathExists, readText } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { findAllByBasename } from './build-audit-resolve.js';
 
 /** Ceiling on ancestor-directory hops when searching for an owning jar.mn. */
@@ -87,7 +88,7 @@ export function findJarMnEntryForSource(
   content: string,
   relativeSource: string
 ): { target: string; source: string } | undefined {
-  const normalized = relativeSource.replace(/\\/g, '/');
+  const normalized = normalizePathSlashes(relativeSource);
   for (const line of content.split('\n')) {
     const parsed = parseJarMnEntry(line);
     if (!parsed) continue;
@@ -146,7 +147,7 @@ export async function findRegisteredTarget(
  * independent.
  */
 function toPosix(path: string): string {
-  return path.split(sep).join('/');
+  return normalizePathSlashes(path);
 }
 
 /**

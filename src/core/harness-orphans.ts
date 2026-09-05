@@ -32,6 +32,7 @@ import { toError } from '../utils/errors.js';
 import { info, verbose, warn } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
 import { parsePsDuration } from '../utils/ps-duration.js';
+import { sleep } from '../utils/sleep.js';
 
 /** One surviving harness helper process. */
 export interface OrphanedHarnessProcess {
@@ -110,14 +111,11 @@ const COMMAND_EXCERPT_LIMIT = 160;
  */
 export function formatOrphanReport(orphans: readonly OrphanedHarnessProcess[]): string {
   const rows = orphans
-    .map(
-      (p) =>
-        `  PID ${String(p.pid)} (up ${p.elapsed}): ${p.command.slice(0, COMMAND_EXCERPT_LIMIT)}`
-    )
+    .map((p) => `  PID ${p.pid} (up ${p.elapsed}): ${p.command.slice(0, COMMAND_EXCERPT_LIMIT)}`)
     .join('\n');
   const pids = orphans.map((p) => String(p.pid)).join(' ');
   return (
-    `${String(orphans.length)} harness helper process(es) from an EARLIER run are still alive ` +
+    `${orphans.length} harness helper process(es) from an EARLIER run are still alive ` +
     `(this preflight runs before the current run spawns anything, so none of these belong to ` +
     `it):\n${rows}\n` +
     `Survivors like these slow every later run without appearing anywhere in its output — a ` +
@@ -130,7 +128,7 @@ export function formatOrphanReport(orphans: readonly OrphanedHarnessProcess[]): 
 async function listSystemProcesses(): Promise<string> {
   const result = await exec('ps', ['-axo', 'pid=,ppid=,etime=,command='], { timeout: 10000 });
   if (result.exitCode !== 0) {
-    throw new Error(`ps exited ${String(result.exitCode)}`);
+    throw new Error(`ps exited ${result.exitCode}`);
   }
   return result.stdout;
 }
@@ -188,15 +186,13 @@ async function reapOrphanedHarnessProcesses(
     try {
       process.kill(orphan.pid, 'SIGTERM');
     } catch (error: unknown) {
-      verbose(
-        `--reap-orphans: SIGTERM to ${String(orphan.pid)} failed (${toError(error).message}).`
-      );
+      verbose(`--reap-orphans: SIGTERM to ${orphan.pid} failed (${toError(error).message}).`);
       continue;
     }
     // Grace period before escalating: the httpd shape in the field
     // incident ignored SIGTERM while spinning, but an ordinary helper exits
     // promptly and must not be SIGKILLed for being slow by a millisecond.
-    await new Promise((resolve) => setTimeout(resolve, REAP_GRACE_MS));
+    await sleep(REAP_GRACE_MS);
     let alive = true;
     try {
       process.kill(orphan.pid, 0);
@@ -207,11 +203,9 @@ async function reapOrphanedHarnessProcesses(
       try {
         process.kill(orphan.pid, 'SIGKILL');
       } catch (error: unknown) {
-        verbose(
-          `--reap-orphans: SIGKILL to ${String(orphan.pid)} failed (${toError(error).message}).`
-        );
+        verbose(`--reap-orphans: SIGKILL to ${orphan.pid} failed (${toError(error).message}).`);
       }
     }
-    info(`--reap-orphans: terminated PID ${String(orphan.pid)}.`);
+    info(`--reap-orphans: terminated PID ${orphan.pid}.`);
   }
 }

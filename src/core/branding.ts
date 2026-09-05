@@ -6,12 +6,13 @@ import { ExitCode } from '../errors/codes.js';
 import type { ProjectLicense } from '../types/config.js';
 import { copyDir, pathExists, readText, writeTextIfChanged } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { DEFAULT_LICENSE, getLicenseHeader } from './license-headers.js';
 
 /**
  * Error thrown when branding operations fail.
  */
-export class BrandingError extends FireForgeError {
+class BrandingError extends FireForgeError {
   readonly code = ExitCode.PATCH_ERROR;
 
   override get userMessage(): string {
@@ -466,7 +467,7 @@ export async function isBrandingSetup(engineDir: string, config: BrandingConfig)
  * @returns true if the path is managed by branding tooling
  */
 export function isBrandingManagedPath(file: string, binaryName: string): boolean {
-  const normalized = file.replace(/\\/g, '/');
+  const normalized = normalizePathSlashes(file);
   const brandingRoot = `browser/branding/${binaryName}`;
 
   return (

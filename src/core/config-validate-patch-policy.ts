@@ -12,16 +12,12 @@ import type {
   PatchPolicyReservedRange,
 } from '../types/config.js';
 import { toError } from '../utils/errors.js';
-import { parseObject } from '../utils/parse.js';
+import { type ParsedRecord, parseObject } from '../utils/parse.js';
 import { isContainedRelativePath } from '../utils/paths.js';
 
 const PATCH_POLICY_MUTATION_MODES: readonly PatchPolicyMutationMode[] = ['error', 'warn', 'force'];
 
-function optionalConfigString(
-  rec: ReturnType<typeof parseObject>,
-  key: string,
-  label: string
-): string | undefined {
+function optionalConfigString(rec: ParsedRecord, key: string, label: string): string | undefined {
   const value = rec.raw(key);
   if (value === undefined) return undefined;
   if (typeof value !== 'string') {
@@ -55,7 +51,7 @@ function parsePatchPolicyCategory(raw: unknown, label: string): string {
 function parseRangeBounds(
   raw: unknown,
   label: string
-): { rec: ReturnType<typeof parseObject>; from: number; to: number } {
+): { rec: ParsedRecord; from: number; to: number } {
   let rec;
   try {
     rec = parseObject(raw, label);
@@ -131,7 +127,7 @@ function parsePatchPolicyReservedRange(raw: unknown, label: string): PatchPolicy
     from,
     to,
     allowed: allowedRaw.map((entry, index) =>
-      parseReservedAllowedPatch(entry, `${label}.allowed[${String(index)}]`)
+      parseReservedAllowedPatch(entry, `${label}.allowed[${index}]`)
     ),
   };
 }
@@ -153,7 +149,7 @@ function assertPolicyRangesDoNotOverlap(
 }
 
 /** Parses and validates the optional patch policy config block. */
-export function parsePatchPolicyBlock(rec: ReturnType<typeof parseObject>): PatchPolicyConfig {
+export function parsePatchPolicyBlock(rec: ParsedRecord): PatchPolicyConfig {
   const out: PatchPolicyConfig = { ranges: [] };
 
   const filenamePattern = optionalConfigString(
@@ -206,7 +202,7 @@ export function parsePatchPolicyBlock(rec: ReturnType<typeof parseObject>): Patc
     throw new ConfigError('Config field "patchPolicy.ranges" must be a non-empty array');
   }
   out.ranges = rangesRaw.map((entry, index) =>
-    parsePatchPolicyRange(entry, `patchPolicy.ranges[${String(index)}]`)
+    parsePatchPolicyRange(entry, `patchPolicy.ranges[${index}]`)
   );
   assertPolicyRangesDoNotOverlap(out.ranges, 'patchPolicy.ranges');
 
@@ -216,7 +212,7 @@ export function parsePatchPolicyBlock(rec: ReturnType<typeof parseObject>): Patc
       throw new ConfigError('Config field "patchPolicy.reservedRanges" must be an array');
     }
     out.reservedRanges = reservedRangesRaw.map((entry, index) =>
-      parsePatchPolicyReservedRange(entry, `patchPolicy.reservedRanges[${String(index)}]`)
+      parsePatchPolicyReservedRange(entry, `patchPolicy.reservedRanges[${index}]`)
     );
     assertPolicyRangesDoNotOverlap(out.reservedRanges, 'patchPolicy.reservedRanges');
   }

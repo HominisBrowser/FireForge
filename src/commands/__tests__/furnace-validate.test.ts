@@ -366,6 +366,7 @@ describe('furnaceValidateCommand', () => {
       isSymbolicLink: () => false,
       name,
       parentPath: '',
+      path: '',
     });
 
     const staleJarIssue = (component: string): ValidationIssue => ({
@@ -401,46 +402,43 @@ describe('furnaceValidateCommand', () => {
       );
     });
 
-    it('warns when pruning stale jar.mn lines fails', async () => {
+    // A non-Error rejection has to survive the same warning path, so the
+    // operator sees the reason rather than "[object Object]".
+    it.each<[string, unknown, string]>([
+      ['an Error', new Error('jar.mn is read-only'), 'jar.mn is read-only'],
+      ['a non-Error throwable', 'disk detached', 'disk detached'],
+    ])('warns when pruning stale jar.mn lines fails with %s', async (_label, failure, expected) => {
       vi.mocked(validateComponent)
         .mockResolvedValueOnce([staleJarIssue('moz-sidebar')])
         .mockResolvedValueOnce([staleJarIssue('moz-sidebar')]);
-      vi.mocked(pruneStaleJarMnEntries).mockRejectedValueOnce(new Error('jar.mn is read-only'));
+      vi.mocked(pruneStaleJarMnEntries).mockRejectedValueOnce(failure);
 
       await expect(
         furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
       ).rejects.toThrow();
 
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('Could not prune stale jar.mn lines: jar.mn is read-only')
+        expect.stringContaining(`Could not prune stale jar.mn lines: ${expected}`)
       );
     });
 
-    it('stringifies a non-Error prune failure', async () => {
-      vi.mocked(validateComponent)
-        .mockResolvedValueOnce([staleJarIssue('moz-sidebar')])
-        .mockResolvedValueOnce([staleJarIssue('moz-sidebar')]);
-      vi.mocked(pruneStaleJarMnEntries).mockRejectedValueOnce('disk detached');
+    // A fixable issue whose component is not in `config.custom` — unknown to
+    // furnace.json, or registered as an override instead — is skipped rather
+    // than crashing the fix pass. An unknown component is dropped from the
+    // issue list entirely (the run completes); an override-registered one
+    // stays an unfixed issue and still fails the run. Neither writes jar.mn.
+    it.each<[string, string, 'resolves' | 'rejects']>([
+      ['unknown to furnace.json', 'moz-ghost', 'resolves'],
+      ['registered as an override, not custom', 'moz-card', 'rejects'],
+    ])('skips the jar.mn fix for a component %s', async (_label, component, outcome) => {
+      vi.mocked(validateComponent).mockResolvedValue([mjsIssue(component)]);
 
-      await expect(
-        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
-      ).rejects.toThrow();
-
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('Could not prune stale jar.mn lines: disk detached')
-      );
-    });
-
-    it('skips fixable issues for components not present in furnace.json custom', async () => {
-      // A fixable check id whose component is unknown (e.g. removed from
-      // furnace.json between validate and --fix) is skipped rather than
-      // crashing the fix pass; re-validation also skips the unknown
-      // component, so the run completes without a write.
-      vi.mocked(validateComponent).mockResolvedValueOnce([mjsIssue('moz-ghost')]);
-
-      await expect(
-        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
-      ).resolves.toBeUndefined();
+      const run = furnaceValidateCommand('/project', 'moz-sidebar', { fix: true });
+      if (outcome === 'resolves') {
+        await expect(run).resolves.toBeUndefined();
+      } else {
+        await expect(run).rejects.toThrow(/Validation failed/i);
+      }
 
       expect(addJarMnEntries).not.toHaveBeenCalled();
     });
@@ -587,17 +585,6 @@ describe('furnaceValidateCommand', () => {
       expect(info).toHaveBeenCalledWith(
         '\nNo auto-fixable issues found. Remaining issues require manual resolution.'
       );
-      expect(addJarMnEntries).not.toHaveBeenCalled();
-    });
-
-    it('skips jar.mn fix for components not in config.custom', async () => {
-      vi.mocked(validateComponent).mockResolvedValue([mjsIssue('moz-card')]);
-
-      await expect(furnaceValidateCommand('/project', 'moz-card', { fix: true })).rejects.toThrow(
-        /Validation failed/i
-      );
-
-      // moz-card is in overrides, not custom — autoFixIssues skips it
       expect(addJarMnEntries).not.toHaveBeenCalled();
     });
 

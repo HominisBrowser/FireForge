@@ -6,12 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RebaseSession } from '../rebase-session.js';
-import {
-  getRebaseSessionPath,
-  readRebaseSession,
-  saveRebaseSession,
-  tryReadRebaseSession,
-} from '../rebase-session.js';
+import { getRebaseSessionPath, readRebaseSession, saveRebaseSession } from '../rebase-session.js';
 
 // Override getProjectPaths to point at the tmp directory from each test
 vi.mock('../config-paths.js', () => ({
@@ -56,15 +51,12 @@ describe('rebase-session', () => {
     await rm(tmpRoot, { recursive: true, force: true });
   });
 
-  it('returns null when no session exists', async () => {
-    expect(await tryReadRebaseSession(tmpRoot)).toBeNull();
-  });
-
   it('round-trips a session through save and load', async () => {
     const session = makeSession();
     await saveRebaseSession(tmpRoot, session);
-    const loaded = await tryReadRebaseSession(tmpRoot);
-    expect(loaded).toEqual(session);
+    const read = await readRebaseSession(tmpRoot);
+    if (!read.present || !read.valid) throw new Error('expected a valid session on disk');
+    expect(read.session).toEqual(session);
   });
 });
 
@@ -168,17 +160,6 @@ describe('readRebaseSession — absent vs corrupt', () => {
     }
   });
 
-  it('keeps tryReadRebaseSession null for both unusable shapes', async () => {
-    await plant('not json at all');
-    expect(await tryReadRebaseSession(tmpRoot)).toBeNull();
-    await plant(JSON.stringify({ nope: true }));
-    expect(await tryReadRebaseSession(tmpRoot)).toBeNull();
-  });
-
-  it('names the session file so an operator can always find it', () => {
-    expect(getRebaseSessionPath(tmpRoot)).toBe(join(tmpRoot, '.fireforge', 'rebase-session.json'));
-  });
-
   it('reports a missing .fireforge directory as absent from the single read (no pre-probe)', async () => {
     // ENOTDIR/ENOENT from the read itself must mean absent: the old
     // pathExists-then-read pair misreported a file deleted between the two
@@ -232,9 +213,9 @@ describe('readRebaseSession — absent vs corrupt', () => {
       };
       await plant(JSON.stringify(legacy));
 
-      const session = await tryReadRebaseSession(tmpRoot);
-      expect(session).not.toBeNull();
-      const resolved = session?.patches[0];
+      const read = await readRebaseSession(tmpRoot);
+      if (!read.present || !read.valid) throw new Error('expected a valid session on disk');
+      const resolved = read.session.patches[0];
       expect(resolved?.status).toBe('resolved');
       // The stale payload is gone, not carried forward.
       expect(resolved).not.toHaveProperty('error');
@@ -259,8 +240,9 @@ describe('readRebaseSession — absent vs corrupt', () => {
       };
       await plant(JSON.stringify(onDisk));
 
-      const session = await tryReadRebaseSession(tmpRoot);
-      const failed = session?.patches[0];
+      const read = await readRebaseSession(tmpRoot);
+      if (!read.present || !read.valid) throw new Error('expected a valid session on disk');
+      const failed = read.session.patches[0];
       expect(failed?.status).toBe('failed');
       expect(failed).toMatchObject({
         error: 'hunk 2 failed',

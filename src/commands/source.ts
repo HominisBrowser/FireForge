@@ -127,7 +127,14 @@ export function registerSource(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  const source = program.command('source').description('Manage Firefox source configuration');
+  const source = program
+    .command('source')
+    .description('Manage Firefox source configuration')
+    // No-subcommand contract shared with `patch`/`token`/`furnace`: help on
+    // stdout, exit 0 (see `handleParseError` for the groups without an action).
+    .action(() => {
+      source.outputHelp();
+    });
 
   source
     .command('set')

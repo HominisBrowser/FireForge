@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { LockContentionError } from '../errors/base.js';
 import { getNodeErrorCode, isProcessAlive, toError } from '../utils/errors.js';
 import { ensureDir } from '../utils/fs.js';
 import { verbose, warn } from '../utils/logger.js';
+import { sleep } from '../utils/sleep.js';
+import {
+  isLockOwnerAlive,
+  LOCK_PID_FILE,
+  readLockOwner,
+  writeLockOwner,
+} from './file-lock-owner.js';
+
+export { LOCK_PID_FILE };
 
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 const DEFAULT_LOCK_POLL_MS = 50;
@@ -121,63 +130,9 @@ export interface FileLockOptions {
   ownerMetadata?: readonly string[];
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 /** Derives the sibling lock-directory path used to guard a file-based resource. */
 export function createSiblingLockPath(filePath: string, suffix = '.fireforge.lock'): string {
   return `${filePath}${suffix}`;
-}
-
-/**
- * Filename of a lock directory's owner record, relative to the lock dir.
- *
- * Exported so external readers (`tree-store.ts`) share the constant instead of
- * re-spelling `'pid'`; the file *format* is documented on {@link readLockOwner}.
- */
-export const LOCK_PID_FILE = 'pid';
-
-/**
- * Owner record read back from a lock directory's PID file.
- *
- * `token` is the per-acquisition UUID written on line 2 of the PID file. A
- * lock whose owner-file write failed has `token: undefined`; readers must
- * treat that as "unknown owner instance", not as a mismatch.
- */
-type LockOwner =
-  { present: false } | { present: true; pid: number; token?: string; metadata: string[] };
-
-/**
- * Reads the owner PID (line 1), acquisition token (line 2), and diagnostic
- * metadata (lines 3+, see {@link FileLockOptions.ownerMetadata}) from a lock
- * directory's PID file. Returns `{ present: false }` when the PID file is
- * missing or the PID does not parse as a finite integer (caller falls back
- * to the age-only staleness heuristic).
- *
- * File format note: external readers do `parseInt(content.trim(), 10)`,
- * which parses the leading digits of a multi-line file — so the token line
- * stays compatible.
- */
-async function readLockOwner(lockPath: string): Promise<LockOwner> {
-  try {
-    const pidContent = await readFile(join(lockPath, LOCK_PID_FILE), 'utf-8');
-    const [pidLine, tokenLine, ...metadataLines] = pidContent.split('\n');
-    const pid = parseInt((pidLine ?? '').trim(), 10);
-    if (Number.isFinite(pid)) {
-      const metadata = metadataLines.map((line) => line.trim()).filter((line) => line.length > 0);
-      const token = tokenLine?.trim();
-      if (token !== undefined && token.length > 0) {
-        return { present: true, pid, token, metadata };
-      }
-      return { present: true, pid, metadata };
-    }
-  } catch {
-    // PID file missing or unreadable — treat as absent.
-  }
-  return { present: false };
 }
 
 /** Sibling directory in which waiters advertise themselves. */
@@ -254,7 +209,7 @@ export async function readLockStatus(lockPath: string): Promise<LockStatusSnapsh
   }
   const owner = await readLockOwner(lockPath);
   const holder: LockHolder | undefined = owner.present
-    ? { pid: owner.pid, alive: isProcessAlive(owner.pid), metadata: owner.metadata }
+    ? { pid: owner.pid, alive: isLockOwnerAlive(owner), metadata: owner.metadata }
     : undefined;
   return { held: true, holder, heldForMs, queueDepth: queue.depth };
 }
@@ -266,10 +221,10 @@ export async function readLockStatus(lockPath: string): Promise<LockStatusSnapsh
  */
 async function registerWaiter(lockPath: string, startedAt: number): Promise<() => Promise<void>> {
   const dir = lockWaitersDir(lockPath);
-  const file = join(dir, `${String(startedAt)}-${String(process.pid)}-${randomUUID()}`);
+  const file = join(dir, `${startedAt}-${process.pid}-${randomUUID()}`);
   try {
     await ensureDir(dir);
-    await writeFile(file, `${String(process.pid)}\n`, 'utf-8');
+    await writeFile(file, `${process.pid}\n`, 'utf-8');
   } catch (error: unknown) {
     // Advisory only — never fail a lock acquisition over the queue display.
     verbose(`Could not register lock waiter for ${lockPath}: ${toError(error).message}`);
@@ -295,7 +250,7 @@ async function probeWaitState(
 ): Promise<{ holder: LockHolder | undefined; queue: LockQueueState }> {
   const owner = await readLockOwner(lockPath);
   const holder: LockHolder | undefined = owner.present
-    ? { pid: owner.pid, alive: isProcessAlive(owner.pid), metadata: owner.metadata }
+    ? { pid: owner.pid, alive: isLockOwnerAlive(owner), metadata: owner.metadata }
     : undefined;
   return { holder, queue: await readLockQueue(lockPath, startedAt) };
 }
@@ -325,7 +280,7 @@ async function reapStaleLock(
   ageMs: number,
   onStaleLockMessage?: (ageMs: number) => string | undefined
 ): Promise<boolean> {
-  const reapPath = `${lockPath}.reaping-${String(process.pid)}-${randomUUID()}`;
+  const reapPath = `${lockPath}.reaping-${process.pid}-${randomUUID()}`;
   try {
     await rename(lockPath, reapPath);
   } catch (error: unknown) {
@@ -341,18 +296,18 @@ async function reapStaleLock(
   // We exclusively own reapPath now. Re-verify: the owner may have changed
   // between the staleness probe and the rename (release + fresh acquire).
   const owner = await readLockOwner(reapPath);
-  if (owner.present && isProcessAlive(owner.pid)) {
+  if (owner.present && isLockOwnerAlive(owner)) {
     try {
       await rename(reapPath, lockPath);
       verbose(
-        `Aborted stale-lock reap of ${lockPath}: owner PID ${String(owner.pid)} is alive (lock was re-acquired mid-probe)`
+        `Aborted stale-lock reap of ${lockPath}: owner PID ${owner.pid} is alive (lock was re-acquired mid-probe)`
       );
     } catch (restoreError: unknown) {
       // Rename-back can only fail if a third process mkdir'd the lock path
       // in this instant. The displaced live owner keeps running without its
       // lock — surface it loudly instead of hiding the lost exclusion.
       warn(
-        `Could not restore live lock for PID ${String(owner.pid)} at ${lockPath} ` +
+        `Could not restore live lock for PID ${owner.pid} at ${lockPath} ` +
           `(${toError(restoreError).message}). Displaced lock kept at ${reapPath} for inspection.`
       );
     }
@@ -391,14 +346,15 @@ async function removeIfStaleLock(
     // PID-first check an explicitly-dead owner unblocks immediately.
     const owner = await readLockOwner(lockPath);
     if (owner.present) {
-      if (!isProcessAlive(owner.pid)) {
+      if (!isLockOwnerAlive(owner)) {
         return await reapStaleLock(lockPath, ageMs, onStaleLockMessage);
       }
-      // PID is alive — respect it regardless of age. A slow `mach build`
-      // legitimately holds the lock past the stale threshold and we don't
-      // want to race-remove it.
+      // The owner is alive (PID exists AND, where `/proc` can tell, it is
+      // the process that acquired the lock, not a recycled PID) — respect
+      // it regardless of age. A slow `mach build` legitimately holds the
+      // lock past the stale threshold and we don't want to race-remove it.
       verbose(
-        `Lock at ${lockPath} is ${Math.round(ageMs / 1000)}s old but PID ${String(owner.pid)} is still running — not removing`
+        `Lock at ${lockPath} is ${Math.round(ageMs / 1000)}s old but PID ${owner.pid} is still running — not removing`
       );
       return false;
     }
@@ -431,27 +387,20 @@ async function removeIfStaleLock(
  * double-acquisition. When the PID file no longer names us, warn and leave
  * the directory alone.
  *
- * `ownerFileWritten` is false when our own owner-file write failed at
- * acquisition (non-fatal there); ownership then cannot be verified and the
- * removal is unconditional, which is strictly better than leaking the lock.
+ * The owner record is always present here: `writeLockOwner` is fatal, so an
+ * acquisition whose record failed to write never reached the operation.
  */
-async function releaseLock(
-  lockPath: string,
-  ownerToken: string,
-  ownerFileWritten: boolean
-): Promise<void> {
-  if (ownerFileWritten) {
-    const owner = await readLockOwner(lockPath);
-    if (
-      owner.present &&
-      (owner.pid !== process.pid || (owner.token !== undefined && owner.token !== ownerToken))
-    ) {
-      warn(
-        `Not removing lock ${lockPath}: it is now owned by PID ${String(owner.pid)} — ` +
-          'this process no longer holds it.'
-      );
-      return;
-    }
+async function releaseLock(lockPath: string, ownerToken: string): Promise<void> {
+  const owner = await readLockOwner(lockPath);
+  if (
+    owner.present &&
+    (owner.pid !== process.pid || (owner.token !== undefined && owner.token !== ownerToken))
+  ) {
+    warn(
+      `Not removing lock ${lockPath}: it is now owned by PID ${owner.pid} — ` +
+        'this process no longer holds it.'
+    );
+    return;
   }
   await rm(lockPath, { recursive: true, force: true });
 }
@@ -503,7 +452,7 @@ async function buildLockTimeoutError(
   queue?: LockQueueState
 ): Promise<LockContentionError> {
   const owner = await readLockOwner(lockPath);
-  const liveHolder = owner.present && isProcessAlive(owner.pid) ? owner : undefined;
+  const liveHolder = owner.present && isLockOwnerAlive(owner) ? owner : undefined;
   const details =
     liveHolder !== undefined && liveHolder.metadata.length > 0
       ? ` (${liveHolder.metadata.join(', ')})`
@@ -511,14 +460,12 @@ async function buildLockTimeoutError(
   const position = formatQueuePositionReached(queue);
   if (onTimeoutMessage !== undefined) {
     const identifiedHolder =
-      liveHolder !== undefined
-        ? ` The lock is held by PID ${String(liveHolder.pid)}${details}.`
-        : '';
+      liveHolder !== undefined ? ` The lock is held by PID ${liveHolder.pid}${details}.` : '';
     return new LockContentionError(`${onTimeoutMessage}${identifiedHolder}${position}`, cause);
   }
   const holderHint =
     liveHolder !== undefined
-      ? ` It is held by running process ${String(liveHolder.pid)}${details} — wait for it to finish, or stop it and retry.`
+      ? ` It is held by running process ${liveHolder.pid}${details} — wait for it to finish, or stop it and retry.`
       : ' If no other FireForge process is running, remove the lock directory and retry.';
   return new LockContentionError(
     `Timed out waiting for file lock ${lockPath}.${holderHint}${position}`,
@@ -539,9 +486,9 @@ async function buildLockTimeoutError(
 function formatQueuePositionReached(queue: LockQueueState | undefined): string {
   if (queue === undefined || queue.depth === 0) return '';
   if (queue.ahead === 0) {
-    return ` You were next in a queue of ${String(queue.depth)} when the wait expired — a larger --wait-lock would very likely have got a turn.`;
+    return ` You were next in a queue of ${queue.depth} when the wait expired — a larger --wait-lock would very likely have got a turn.`;
   }
-  return ` You were still ${String(queue.ahead)} from the head of a queue of ${String(queue.depth)} when the wait expired; re-run with a larger --wait-lock.`;
+  return ` You were still ${queue.ahead} from the head of a queue of ${queue.depth} when the wait expired; re-run with a larger --wait-lock.`;
 }
 
 /**
@@ -705,32 +652,20 @@ export async function withFileLock<T>(
     await deregisterWaiter?.();
   }
 
-  // Stamp ownership (PID + per-acquisition token) into the lock directory so
-  // stale-lock recovery can check liveness and release can verify the lock
-  // is still ours before removing it.
+  // Stamp ownership (PID + per-acquisition token + acquisition time) into
+  // the lock directory so stale-lock recovery can check liveness and release
+  // can verify the lock is still ours before removing it. Fatal on failure:
+  // an owner-less lock is reaped by the age heuristic after five minutes,
+  // which for a multi-hour build meant a second holder mid-critical-section.
+  // `writeLockOwner` removes the just-created directory before throwing.
   const ownerToken = randomUUID();
-  let ownerFileWritten = false;
-  try {
-    const metadata =
-      options.ownerMetadata
-        ?.map((line) => line.replace(/\r?\n/g, ' ').trim())
-        .filter((line) => line.length > 0) ?? [];
-    await writeFile(
-      join(lockPath, LOCK_PID_FILE),
-      `${String(process.pid)}\n${ownerToken}\n${metadata.length > 0 ? `${metadata.join('\n')}\n` : ''}`,
-      'utf-8'
-    );
-    ownerFileWritten = true;
-  } catch {
-    // Non-fatal: stale recovery falls back to age-only heuristic and release
-    // falls back to unconditional removal.
-  }
+  await writeLockOwner(lockPath, ownerToken, options.ownerMetadata);
 
   heldLocks.add(lockPath);
   try {
     return await operation();
   } finally {
     heldLocks.delete(lockPath);
-    await releaseLock(lockPath, ownerToken, ownerFileWritten);
+    await releaseLock(lockPath, ownerToken);
   }
 }

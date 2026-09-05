@@ -5,13 +5,7 @@ import { text } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { stdioIsInteractive } from '../../core/destructive.js';
-import {
-  createDefaultFurnaceConfig,
-  furnaceConfigExists,
-  getFurnacePaths,
-  loadFurnaceConfig,
-  writeFurnaceConfig,
-} from '../../core/furnace-config.js';
+import { getFurnacePaths, writeFurnaceConfig } from '../../core/furnace-config.js';
 import {
   resolveFtlChromeSubPath,
   tagNameToClassName,
@@ -43,6 +37,7 @@ import type { ProjectLicense } from '../../types/config.js';
 import type { FurnaceConfig, ResolvedTestStyle } from '../../types/furnace.js';
 import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
 import { cancel, intro, isCancel, note, outro } from '../../utils/logger.js';
+import { loadAuthoringFurnaceConfig } from './authoring-config.js';
 import { resolveValidatedTestDir, scaffoldTestFiles } from './create-browser-test.js';
 import { formatDryRunPlan, formatSuccessNote } from './create-dry-run.js';
 import { resolveCreateFeatures } from './create-features.js';
@@ -51,14 +46,6 @@ import { assertCustomEntryPersisted } from './create-readback.js';
 import { generateCssContent, generateFtlContent, generateMjsContent } from './create-templates.js';
 import { validateCreateAgainstConfig } from './create-validation.js';
 import { scaffoldXpcshellTestFiles } from './create-xpcshell.js';
-
-async function loadAuthoringFurnaceConfig(projectRoot: string): Promise<FurnaceConfig> {
-  if (await furnaceConfigExists(projectRoot)) {
-    return loadFurnaceConfig(projectRoot);
-  }
-
-  return createDefaultFurnaceConfig();
-}
 
 function knownComponentSet(config: FurnaceConfig): Set<string> {
   return new Set([
@@ -101,45 +88,59 @@ function validateTagName(name: string): string | undefined {
   return undefined;
 }
 
+interface WriteComponentFilesOptions {
+  /** Destination component directory. */
+  componentDir: string;
+  /** Custom element tag name. */
+  componentName: string;
+  /** Generated component class name. */
+  className: string;
+  /** Human-readable component description. */
+  description: string;
+  /** Whether to include a Fluent file. */
+  localized: boolean;
+  /** Project license used for generated headers. */
+  license: ProjectLicense;
+  /** chrome:// sub-path for the generated FTL reference, when localized. */
+  ftlChromeSubPath: string | undefined;
+  /** Explicit shared FTL path from `--shared-ftl`, when supplied. */
+  sharedFtl: string | undefined;
+  /** Optional rollback journal that snapshots files before writes. */
+  journal?: RollbackJournal | undefined;
+}
+
 /**
  * Writes the scaffolded component source files to disk.
- * @param componentDir - Destination component directory
- * @param componentName - Custom element tag name
- * @param className - Generated component class name
- * @param description - Human-readable component description
- * @param localized - Whether to include a Fluent file
- * @param license - Project license used for generated headers
- * @param ftlChromeSubPath - chrome:// sub-path for the generated FTL reference, when localized
- * @param sharedFtl - Explicit shared FTL path from `--shared-ftl`, when supplied
- * @param journal - Optional rollback journal that snapshots files before writes
+ * @param options - See {@link WriteComponentFilesOptions}
  * @returns Relative filenames written for the component
  */
-async function writeComponentFiles(
-  componentDir: string,
-  componentName: string,
-  className: string,
-  description: string,
-  localized: boolean,
-  license: ProjectLicense,
-  ftlChromeSubPath: string | undefined,
-  sharedFtl: string | undefined,
-  journal?: RollbackJournal
-): Promise<string[]> {
+async function writeComponentFiles(options: WriteComponentFilesOptions): Promise<string[]> {
+  const {
+    componentDir,
+    componentName,
+    className,
+    description,
+    localized,
+    license,
+    ftlChromeSubPath,
+    sharedFtl,
+    journal,
+  } = options;
   await ensureDir(componentDir);
 
   const files = [`${componentName}.mjs`, `${componentName}.css`];
 
   const mjsPath = join(componentDir, `${componentName}.mjs`);
   if (journal) await snapshotFile(journal, mjsPath);
-  const mjsContent = generateMjsContent(
-    componentName,
+  const mjsContent = generateMjsContent({
+    name: componentName,
     className,
     description,
     localized,
-    getLicenseHeader(license, 'js'),
+    header: getLicenseHeader(license, 'js'),
     ftlChromeSubPath,
-    sharedFtl
-  );
+    sharedFtl,
+  });
   await writeText(mjsPath, mjsContent);
 
   const cssPath = join(componentDir, `${componentName}.css`);
@@ -258,17 +259,17 @@ async function performCreateMutations(args: {
     // so signal-driven rollback can clean it up even if writeComponentFiles
     // is interrupted mid-ensureDir.
     recordCreatedDir(journal, args.componentDir);
-    files = await writeComponentFiles(
-      args.componentDir,
-      args.componentName,
-      args.className,
-      args.description,
-      args.localized,
-      args.license,
-      resolveFtlChromeSubPath(freshConfig.ftlBasePath),
-      args.sharedFtl,
-      journal
-    );
+    files = await writeComponentFiles({
+      componentDir: args.componentDir,
+      componentName: args.componentName,
+      className: args.className,
+      description: args.description,
+      localized: args.localized,
+      license: args.license,
+      ftlChromeSubPath: resolveFtlChromeSubPath(freshConfig.ftlBasePath),
+      sharedFtl: args.sharedFtl,
+      journal,
+    });
 
     const customEntry: import('../../types/furnace.js').CustomComponentConfig = {
       description: args.description,

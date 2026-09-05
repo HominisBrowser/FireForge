@@ -33,16 +33,11 @@ export function generateLargeModule(lineCount: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// CSS license header (EUPL-1.2, css comment style)
+// License header (EUPL-1.2). The block-comment form is valid in both CSS and
+// JS, so one constant serves every fixture.
 // ---------------------------------------------------------------------------
 
-const CSS_LICENSE_HEADER = '/* SPDX-License-Identifier: EUPL-1.2 */';
-
-// ---------------------------------------------------------------------------
-// JS license header (EUPL-1.2, js comment style)
-// ---------------------------------------------------------------------------
-
-const JS_LICENSE_HEADER = '/* SPDX-License-Identifier: EUPL-1.2 */';
+const LICENSE_HEADER = '/* SPDX-License-Identifier: EUPL-1.2 */';
 
 // ---------------------------------------------------------------------------
 // Workflow fixtures
@@ -78,7 +73,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     secondExportState: {
       'browser/components/example/panel.js': 'export const panelVersion = 3;\n',
       'browser/components/example/panel-helper.js': [
-        JS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         'export const helperEnabled = true;',
         '',
@@ -121,7 +116,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     initialFiles: {} as Record<string, string>,
     modifiedFiles: {
       'browser/themes/shared/mybrowser-tokens.css': [
-        CSS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         ':root {',
         '  /* Surfaces */',
@@ -175,7 +170,6 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
       description: 'CSS with raw hex/rgb colors for lint testing',
     },
     expectedFilesAffected: ['browser/themes/shared/bad-colors.css'],
-    expectedLintChecks: ['raw-color-value', 'missing-license-header'] as const,
   },
 
   /** CSS with license header but using a foreign token prefix — triggers token-prefix-violation. */
@@ -184,7 +178,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     initialFiles: {} as Record<string, string>,
     modifiedFiles: {
       'browser/themes/shared/foreign-tokens.css': [
-        CSS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         '.panel {',
         '  background: var(--some-foreign-token);',
@@ -199,7 +193,6 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
       description: 'CSS using non-prefixed tokens for lint testing',
     },
     expectedFilesAffected: ['browser/themes/shared/foreign-tokens.css'],
-    expectedLintChecks: ['token-prefix-violation'] as const,
   },
 
   // ----- New fixtures: .sys.mjs modules ----------------------------------
@@ -210,7 +203,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     initialFiles: {} as Record<string, string>,
     modifiedFiles: {
       'browser/modules/mybrowser/SidebarController.sys.mjs': [
-        JS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         'const lazy = {};',
         'ChromeUtils.defineESModuleGetters(lazy, {',
@@ -267,12 +260,6 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
       description: 'Module with lint violations for testing',
     },
     expectedFilesAffected: ['browser/modules/mybrowser/BadModule.sys.mjs'],
-    expectedLintChecks: [
-      'relative-import',
-      'missing-license-header',
-      'missing-jsdoc',
-      'observer-topic-naming',
-    ] as const,
   },
 
   // ----- New fixtures: upstream modification with/without marker ---------
@@ -355,7 +342,6 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
       description: 'BrowserGlue modification without marker comment',
     },
     expectedFilesAffected: ['browser/components/BrowserGlue.sys.mjs'],
-    expectedLintChecks: ['missing-modification-comment'] as const,
   },
 
   // ----- New fixtures: multi-file patches --------------------------------
@@ -400,7 +386,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     initialFiles: {} as Record<string, string>,
     modifiedFiles: {
       'browser/app/profile/mybrowser-prefs.js': [
-        JS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         '// Sidebar preferences',
         'pref("mybrowser.sidebar.enabled", true);',
@@ -434,7 +420,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
       'browser/components/mybrowser/test/browser.toml':
         '[DEFAULT]\n\n["browser_existing.js"]\n\n["browser_sidebar.js"]\n',
       'browser/components/mybrowser/test/browser_sidebar.js': [
-        JS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         '"use strict";',
         '',
@@ -517,7 +503,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     initialFiles: {} as Record<string, string>,
     modifiedFiles: {
       'browser/themes/shared/mybrowser-palette.css': [
-        CSS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         ':root {',
         '  --mybrowser-surface-canvas: light-dark(#f0f0f4, #15141a);',
@@ -532,7 +518,6 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
       description: 'Color palette with light-dark() values',
     },
     expectedFilesAffected: ['browser/themes/shared/mybrowser-palette.css'],
-    expectedLintChecks: ['raw-color-value'] as const,
   },
 
   /** Re-export scenario: export, modify further, re-export with updated content. */
@@ -540,7 +525,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     exportPath: 'browser/modules/mybrowser/Config.sys.mjs',
     initialFiles: {
       'browser/modules/mybrowser/Config.sys.mjs': [
-        JS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         '/** Default config. */',
         'export const MAX_WORKSPACES = 8;',
@@ -549,7 +534,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     },
     firstExportState: {
       'browser/modules/mybrowser/Config.sys.mjs': [
-        JS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         '/** Default config. */',
         'export const MAX_WORKSPACES = 16;',
@@ -558,7 +543,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     },
     secondExportState: {
       'browser/modules/mybrowser/Config.sys.mjs': [
-        JS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         '/** Default config. */',
         'export const MAX_WORKSPACES = 16;',
@@ -637,7 +622,6 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
       description: 'Write-coalescing flush cycle manager',
     },
     expectedFilesAffected: ['browser/modules/mybrowser/FlushManager.sys.mjs'],
-    expectedLintChecks: [] as const,
   },
 
   /**
@@ -744,7 +728,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
         '',
       ].join('\n'),
       'browser/modules/mybrowser/FlushManager.sys.mjs': [
-        JS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         '/** @returns {number} */',
         'export function getFlushInterval() { return 5000; }',
@@ -807,7 +791,7 @@ export const FIREFOX_WORKFLOW_FIXTURES = {
     initialFiles: {} as Record<string, string>,
     modifiedFiles: {
       'browser/modules/mybrowser/EventBus.sys.mjs': [
-        JS_LICENSE_HEADER,
+        LICENSE_HEADER,
         '',
         'const EVENTS = {',
         '  TILES_EVICTED: "mybrowser-tiles-evicted",',

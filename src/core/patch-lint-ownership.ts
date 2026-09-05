@@ -9,9 +9,9 @@
  *
  * The two resolvers are kept separate (one per extension predicate)
  * because the downstream rules differ: `.sys.mjs` files go through
- * `runCheckJs` (TypeScript checkJs) and the export-walker JSDoc rule;
- * chrome subscripts (`.js` non-`.sys.mjs`) only get the script-walker
- * JSDoc rule. Mixing them in a single set would silently broaden
+ * `runCheckJs` (TypeScript checkJs) and the export-walker JSDoc rule,
+ * while chrome subscripts (`.js` non-`.sys.mjs`) only get the
+ * script-walker JSDoc rule. Mixing them in a single set would silently broaden
  * `runCheckJs` to chrome subscripts, which it is not designed for.
  */
 
@@ -71,7 +71,7 @@ export function resolvePatchOwnedSysMjs(
 
 /**
  * Returns the set of file paths that are patch-owned chrome subscripts
- * (`.js` files that are not `.sys.mjs` modules — typically
+ * (`.js` files that are not `.sys.mjs` modules, typically
  * `browser/base/content/<binaryName>*.js` and similar). Same ownership
  * semantics as {@link resolvePatchOwnedSysMjs}.
  *
@@ -94,7 +94,7 @@ export function resolvePatchOwnedChromeScripts(
  * Test-script predicate for the `checkJsTestFiles` pass:
  * plain `.js` files (not `.sys.mjs` modules) that live under a `/test/`
  * path or carry a `browser_` / `test_` / `xpcshell_` basename. Duplicates
- * `patch-lint.ts`'s `isTestFile` shape rather than importing it —
+ * `patch-lint.ts`'s `isTestFile` shape rather than importing it:
  * patch-lint.ts imports this module, so the reverse edge would create an
  * import cycle (dpdm gate). The agreement is pinned by
  * `patch-lint-ownership.test.ts`.
@@ -108,7 +108,7 @@ export function isTestScriptFile(file: string): boolean {
 
 /**
  * Returns the set of patch-owned test `.js` files. Same
- * ownership semantics as {@link resolvePatchOwnedSysMjs}; consumed by the
+ * ownership semantics as {@link resolvePatchOwnedSysMjs}. Consumed by the
  * `patchLint.checkJsTestFiles` pass, which checks each as its own small
  * script-scope program.
  *

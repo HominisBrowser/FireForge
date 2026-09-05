@@ -13,6 +13,7 @@ import { mapWithConcurrency } from '../utils/concurrency.js';
 import { toError } from '../utils/errors.js';
 import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { isBrandingManagedPath } from './branding.js';
 import type { PatchedContentContext } from './patch-apply.js';
 import { createPatchedContentContext } from './patch-apply.js';
@@ -20,34 +21,34 @@ import { classifyBinaryOwnedFile } from './status-binary.js';
 
 /**
  * Classification buckets for engine file changes:
- * - `patch-backed`: content matches the expected post-patch state — normal
+ * - `patch-backed`: content matches the expected post-patch state. Normal
  *   after `fireforge import`.
  * - `patch-owned-drift`: the file is claimed by exactly one patch, but the
  *   live engine content no longer matches that patch's expected post-apply
  *   content. This includes furnace-prefixed paths: a path can be both
  *   Furnace-managed and patch-claimed (export a deployed component, then
- *   edit the workspace source and `furnace deploy` again — the deployed copy
- *   now has content the patch body lacks). Checking the furnace prefix first
- *   would bucket such files as `furnace` and report the stale patch as
- *   owned.
- * - `unmanaged`: edits not explained by any patch or tool — local drift to
+ *   edit the workspace source and `furnace deploy` again, and the deployed
+ *   copy now has content the patch body lacks). Checking the furnace
+ *   prefix first would bucket such files as `furnace` and report the stale
+ *   patch as owned.
+ * - `unmanaged`: edits not explained by any patch or tool. Local drift to
  *   export or discard.
  * - `branding`: files under tool-managed branding paths, written by
  *   FireForge's branding pipeline.
  * - `furnace`: files under Furnace-managed component prefixes. When exactly
  *   one patch also claims the path, this bucket asserts the live content
- *   matches that patch's expected post-apply content — a mismatch is
+ *   matches that patch's expected post-apply content. A mismatch is
  *   reported as `patch-owned-drift` instead (see above).
  * - `conflict`: the file is claimed by two or more patches in
  *   `patches.json`. The human `--ownership` mode surfaces this bucket as
- *   `CONFLICT`; carrying the classification through the JSON pipeline lets
+ *   `CONFLICT`. Carrying the classification through the JSON pipeline lets
  *   machine consumers detect the same ownership breakage rather than seeing
  *   it rolled into `unmanaged` as routine local drift.
  * - `binary-unsupported`: the file's comparison is binary and the owning
- *   patch body records no usable blob hash to compare against — an honest
- *   "binary — comparison unsupported" instead of a permanent false
- *   `patch-owned-drift`. Deliberately NOT in the default `--check` fail set;
- *   opt in with `--fail-on binary-unsupported`.
+ *   patch body records no usable blob hash to compare against. It reports an
+ *   honest "binary, comparison unsupported" instead of a permanent false
+ *   `patch-owned-drift`. Not in the default `--check` fail set. Opt in
+ *   with `--fail-on binary-unsupported`.
  */
 export type FileClassification =
   | 'patch-backed'
@@ -67,7 +68,7 @@ export interface ClassifiedFile extends StatusFile {
   classification: FileClassification;
   /**
    * Names of patch files that claim this path in `patches.json`.
-   * Populated only when `classification === 'conflict'` — single-claim
+   * Populated only when `classification === 'conflict'`. Single-claim
    * patch-backed entries don't need to expose their owner because the
    * single claim is fully captured by the classification itself.
    */
@@ -76,7 +77,7 @@ export interface ClassifiedFile extends StatusFile {
    * Owning patch filename when exactly one patch claims this path
    * (patch-backed, patch-owned-drift, and single-owner furnace entries).
    * Unset for unowned, branding-generated, unowned-furnace, and conflict
-   * entries — conflicts carry `claimedBy` instead. Exposed through
+   * entries. Conflicts carry `claimedBy` instead. Exposed through
    * `status --json` as the `patch` field.
    */
   owner?: string;
@@ -84,7 +85,7 @@ export interface ClassifiedFile extends StatusFile {
 
 /**
  * Builds the file → owning-patch-filenames multimap from manifest rows.
- * Single source of truth for cross-patch claim detection — status
+ * Single source of truth for cross-patch claim detection: status
  * classification, verify's cross-claim check, and the ownership table all
  * consume this builder (they used to each rebuild it, one drift away from
  * disagreeing about what "claimed" means).
@@ -105,7 +106,7 @@ export function buildPatchClaims(
 
 /**
  * Reduces a two-character porcelain XY status to its primary code.
- * Single source of truth — status-output.ts renders from the same logic.
+ * Single source of truth, and status-output.ts renders from the same logic.
  */
 export function getPrimaryStatusCode(status: string): string {
   if (status.includes('?')) return '?';
@@ -124,11 +125,11 @@ export function getPrimaryStatusCode(status: string): string {
  * True for the branding paths whose content FireForge generates itself
  * (configure.sh, brand.properties/ftl, browser/moz.configure). Unlike the
  * broader branding-root test, a brand-new unowned file under the branding
- * directory is NOT generated — it is a patch candidate and must stay
+ * directory is not generated: it is a patch candidate and must stay
  * visible as unmanaged (the Assets.car precedent).
  */
 export function isGeneratedBrandingPath(file: string, binaryName: string): boolean {
-  const normalized = file.replace(/\\/g, '/');
+  const normalized = normalizePathSlashes(file);
   const brandingRoot = `browser/branding/${binaryName}`;
   return (
     normalized === 'browser/moz.configure' ||
@@ -141,7 +142,7 @@ export function isGeneratedBrandingPath(file: string, binaryName: string): boole
 /**
  * Compares a single-owner file's live engine content against its owning
  * patch's expected post-apply content. `matchClassification` is what a
- * clean match reports — `patch-backed` for ordinary patch-claimed paths,
+ * clean match reports: `patch-backed` for ordinary patch-claimed paths,
  * `furnace` for furnace-prefixed paths so healthy deployed components
  * keep landing in the pinned furnace bucket. Any mismatch (including a
  * deletion the patch does not expect, or a failed comparison) reports
@@ -155,8 +156,8 @@ async function classifySingleOwnerFile(
   owner: string,
   ctx: PatchedContentContext
 ): Promise<ClassifiedFile> {
-  // Binary comparisons cannot go through the utf-8 content path below —
-  // binary patch bodies parse to zero hunks, so the patched-content
+  // Binary comparisons cannot go through the utf-8 content path below.
+  // Binary patch bodies parse to zero hunks, so the patched-content
   // computation returned HEAD content unchanged and the comparison
   // reported `patch-owned-drift` forever. Settle by blob hash,
   // or classify explicitly as `binary-unsupported` when no hash exists.
@@ -183,7 +184,7 @@ async function classifySingleOwnerFile(
     };
   }
 
-  // File exists on disk — compare actual vs expected
+  // File exists on disk: compare actual vs expected
   try {
     const [expected, actual] = await Promise.all([
       ctx.computePatched(entry.file),
@@ -222,7 +223,7 @@ export async function classifyFiles(
   furnacePrefixes: Set<string>
 ): Promise<ClassifiedFile[]> {
   // One manifest load + patch discovery + memoized body reads for the
-  // whole batch — the previous per-file computation re-ran all three for
+  // whole batch. The previous per-file computation re-ran all three for
   // every dirty file (O(dirtyFiles × patches) redundant IO on a broad
   // engine edit session).
   const ctx = await createPatchedContentContext(patchesDir, engineDir);
@@ -244,7 +245,7 @@ export async function classifyFiles(
     ctx,
   };
   // Bounded pool over per-file classification (each single-owner file
-  // spawns git); order preserved by the mapper. Per-file failures settle
+  // spawns git). Order preserved by the mapper. Per-file failures settle
   // inside classifySingleOwnerFile's catch, so one bad file never rejects
   // the batch.
   return mapWithConcurrency(files, CLASSIFY_CONCURRENCY, (entry) => classifyEntry(entry, deps));
@@ -262,7 +263,7 @@ interface ClassifyEntryDeps {
   ctx: PatchedContentContext;
 }
 
-/** Classifies one status entry; extracted so the pool worker stays flat. */
+/** Classifies one status entry. Extracted so the pool worker stays flat. */
 async function classifyEntry(entry: StatusFile, deps: ClassifyEntryDeps): Promise<ClassifiedFile> {
   const { engineDir, patchesDir, binaryName, furnacePrefixes, patchClaims, ctx } = deps;
   const owners = patchClaims.get(entry.file);
@@ -321,7 +322,7 @@ async function classifyEntry(entry: StatusFile, deps: ClassifyEntryDeps): Promis
     return { ...entry, classification: 'unmanaged' };
   }
 
-  // File is claimed by exactly one patch — compare content.
+  // File is claimed by exactly one patch: compare content.
   const owner = owners[0];
   if (owner === undefined) {
     return { ...entry, classification: 'unmanaged' };

@@ -3,7 +3,7 @@
  * Tests for the manifest-io mutation helpers: removePatchFromManifest,
  * renumberPatchesInManifest (including the two-phase rename collision
  * case), and removePatchFileAndManifest. Build a fake patches directory
- * on a temp dir and exercise the helpers directly — no CLI in the loop.
+ * on a temp dir and exercise the helpers directly, with no CLI in the loop.
  */
 
 import { readdir, readFile, writeFile } from 'node:fs/promises';
@@ -90,7 +90,7 @@ describe('removePatchFromManifest', () => {
       '001-infra-a.patch',
       '003-infra-c.patch',
     ]);
-    // The ordinals are left intact — no auto-renumber on delete.
+    // The ordinals are left intact. There is no auto-renumber on delete.
     expect(manifest?.patches.map((p) => p.order)).toEqual([1, 3]);
   });
 
@@ -185,7 +185,7 @@ describe('renumberPatchesInManifest', () => {
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch'));
     expect(entries.sort()).toEqual(['001-infra-b.patch', '002-infra-a.patch']);
 
-    // Bodies must still match their *original* content (renamed in place,
+    // Bodies must still match their original content (renamed in place,
     // not rewritten).
     expect(await readFile(join(patchesDir, '002-infra-a.patch'), 'utf-8')).toBe('a');
     expect(await readFile(join(patchesDir, '001-infra-b.patch'), 'utf-8')).toBe('b');
@@ -232,7 +232,7 @@ describe('renumberPatchesInManifest', () => {
   });
 
   it('rewrites staged-dependency owners on non-renamed rows', async () => {
-    // 001 declares a forward import owned by 003; renumbering 003 → 002
+    // 001 declares a forward import owned by 003. Renumbering 003 → 002
     // must remap the owner even though 001 itself is not in the rename map.
     await seed(patchesDir, [
       { filename: '001-infra-a.patch', order: 1, body: 'a' },
@@ -267,12 +267,12 @@ describe('renumberPatchesInManifest', () => {
   it('rolls the queue back to the pre-operation state when phase 2 fails', async () => {
     // Phase 2 rollback: a partial phase-2 failure otherwise leaves some
     // files at their final names and the rest at staging names, and asks the
-    // operator to reach for `doctor --repair-patches-manifest` — a blunt
+    // operator to reach for `doctor --repair-patches-manifest`, a blunt
     // last-resort rebuild. The rollback reverses every completed rename back
     // to the pre-operation state so the directory and manifest stay in
     // agreement without a separate recovery pass.
     //
-    // Force phase 2 to fail on the SECOND rename by planting a pre-existing
+    // Force phase 2 to fail on the second rename by planting a pre-existing
     // file at the would-be target (`006-infra-b.patch`): phase 2 checks
     // `pathExists(targetPath)` before each rename and throws on the
     // conflict. By then it has already renamed the first staged file to its
@@ -295,8 +295,8 @@ describe('renumberPatchesInManifest', () => {
 
     // Both original patch files must be back at their starting names
     // with their original content. The planted file at 006 must still
-    // be there (the rollback doesn't touch it — it was never part of
-    // the operation).
+    // be there (the rollback doesn't touch it, because it was never part
+    // of the operation).
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
     expect(entries).toContain('003-infra-a.patch');
     expect(entries).toContain('004-infra-b.patch');
@@ -311,7 +311,7 @@ describe('renumberPatchesInManifest', () => {
     const staging = (await readdir(patchesDir)).filter((f) => f.startsWith('.fireforge-renumber-'));
     expect(staging).toEqual([]);
 
-    // Manifest rows must match the pre-operation state — nothing was
+    // Manifest rows must match the pre-operation state. Nothing was
     // written, so nothing should have changed.
     const manifest = await loadPatchesManifest(patchesDir);
     const byFilename = new Map(manifest?.patches.map((p) => [p.filename, p]));
@@ -345,7 +345,7 @@ describe('removePatchFileAndManifest', () => {
   });
 });
 
-// addPatchToManifest is exercised indirectly elsewhere; keep a smoke test
+// addPatchToManifest is exercised indirectly elsewhere. Keep a smoke test
 // here so the refactor is covered end-to-end.
 describe('addPatchToManifest (smoke)', () => {
   let projectRoot: string;
@@ -430,7 +430,7 @@ describe('stampPatchVersions', () => {
     const stamp = stampPatchVersions(patchesDir, ['001-infra-a.patch'], '141.0.0esr');
 
     // Give the stamp time to run if it were (incorrectly) not honoring the
-    // lock; the manifest must still carry the old version while it is held.
+    // lock. The manifest must still carry the old version while it is held.
     await new Promise((resolve) => setTimeout(resolve, 200));
     const during = await loadPatchesManifest(patchesDir);
     expect(during?.patches[0]?.sourceEsrVersion).toBe('140.9.0esr');

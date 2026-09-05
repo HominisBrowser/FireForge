@@ -68,7 +68,7 @@ describe('runCheckJs', () => {
     const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-undef-'));
     await writeFile(
       join(tmpDir, 'Undef.sys.mjs'),
-      // EditorState is undefined; Services is a shim-covered global.
+      // EditorState is undefined. Services is a shim-covered global.
       'export const state = EditorState.create({});\nexport const prefs = Services.prefs;\n'
     );
 
@@ -263,8 +263,8 @@ describe('runCheckJs', () => {
 
   it('reports real type errors across owned module boundaries (types actually flow)', async () => {
     // Negative control for the resolver: without narrowing, accessing
-    // .tagName on unknown must fail — proving the import is typed from the
-    // real source rather than silently any.
+    // .tagName on unknown must fail, which shows the import is typed from
+    // the real source rather than silently any.
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
 
@@ -482,7 +482,7 @@ describe('runCheckJs', () => {
   });
 
   it('accepts ChromeUtils.getClassName, defineLazyGetter, and Localization under strict checkJs', async () => {
-    // These are stable chrome globals; the shim's closed
+    // These are stable chrome globals. The shim's closed
     // ChromeUtils member list rejected the two methods (TS2339 is not in
     // the suppressed-code set) and Localization was undeclared.
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
@@ -537,9 +537,9 @@ describe('runCheckJs', () => {
   it('honours patchLint.checkJsExtraShim by appending it to the built-in shim', async () => {
     // The fixture declares `MozHTMLElement`. Without the extra shim, a
     // file referencing it should produce no diagnostic about the symbol
-    // (suppressed by code 2304) — but the type relationship `extends
+    // (suppressed by code 2304), but the type relationship `extends
     // MozHTMLElement` is checked. We assert the reverse: a file that
-    // *misuses* a symbol declared only in extraShim still gets typed.
+    // misuses a symbol declared only in extraShim still gets typed.
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
 
@@ -580,9 +580,9 @@ describe('runCheckJs', () => {
         tmpProject
       );
       expect(issues.length).toBeGreaterThanOrEqual(1);
-      // The diagnostic must NOT be a "Cannot find name 'customGreeting'"
-      // (those codes are suppressed) — it must be the actual type
-      // mismatch on the return statement.
+      // The diagnostic must not be a "Cannot find name 'customGreeting'"
+      // (those codes are suppressed). It must be the actual type mismatch
+      // on the return statement.
       expect(
         issues.some((i) => /Type 'string' is not assignable to type 'number'/.test(i.message))
       ).toBe(true);
@@ -594,7 +594,7 @@ describe('runCheckJs', () => {
   it('accepts ChromeUtils.predictRemoteTypeForURI out of the box under strict checkJs', async () => {
     // 152.0b7 → 153.0b8 source-refresh drill: porting consumer code to
     // the Firefox 153 API tripped checkjs-type-error because the shim's
-    // ChromeUtils predated the member — while whole-project `fireforge
+    // ChromeUtils predated the member, while whole-project `fireforge
     // typecheck` (engine tools/@types Gecko types) accepted the call.
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
@@ -635,7 +635,7 @@ describe('runCheckJs', () => {
     // `ChromeUtilsShim` is a mergeable global interface, so a project extra
     // shim can extend `ChromeUtils` without the duplicate-identifier error a
     // second `declare var ChromeUtils` produces. The fixture adds a novel
-    // member; the correct use must pass (proving no duplicate-identifier /
+    // member. The correct use must pass (proving no duplicate-identifier /
     // missing-member diagnostics) and a misuse must still be flagged
     // (proving the member is TYPED by the merge, not swallowed by a
     // suppressed cannot-find-name code).
@@ -802,12 +802,13 @@ describe('runCheckJs', () => {
     });
 
     try {
-      const { byFile, global } = await runCheckJsGrouped(
-        tmpDir,
-        new Set(['good.sys.mjs', 'bad.sys.mjs'])
-      );
+      const { byFile, global } = await runCheckJsGrouped({
+        repoDir: tmpDir,
+        resolutionOwned: new Set(['good.sys.mjs', 'bad.sys.mjs']),
+      });
       expect(global).toHaveLength(0);
-      // The error is attributed to bad.sys.mjs only — not duplicated, not on good.
+      // The error is attributed to bad.sys.mjs only: not duplicated, and
+      // not on good.
       expect(byFile.has('good.sys.mjs')).toBe(false);
       expect(byFile.get('bad.sys.mjs')?.length ?? 0).toBeGreaterThanOrEqual(1);
     } finally {
@@ -852,8 +853,8 @@ describe('runCheckJs', () => {
 
     try {
       const owned = new Set(['A.sys.mjs', 'B.sys.mjs']);
-      // B misuses A's API. Resolution spans both (no ambient stub needed);
-      // scoping the report to B surfaces the cross-patch type error.
+      // B misuses A's API. Resolution spans both (no ambient stub needed).
+      // Scoping the report to B surfaces the cross-patch type error.
       const reportedForB = await runCheckJs(
         tmpDir,
         owned,
@@ -866,7 +867,8 @@ describe('runCheckJs', () => {
       expect(bErrors.length).toBeGreaterThanOrEqual(1);
       expect(bErrors.every((i) => i.file === 'B.sys.mjs')).toBe(true);
 
-      // Scoping the report to A excludes B's finding — A itself is clean.
+      // Scoping the report to A excludes B's finding, since A itself is
+      // clean.
       const reportedForA = await runCheckJs(
         tmpDir,
         owned,
@@ -918,7 +920,8 @@ describe('runCheckJs', () => {
 
     try {
       const owned = new Set(['consumer.sys.mjs']);
-      // Without paths the import is unresolved (any) — no type error surfaces.
+      // Without paths the import is unresolved (any), so no type error
+      // surfaces.
       const noPaths = await runCheckJs(tmpDir, owned, undefined, undefined, { strict: true });
       expect(noPaths.filter((i) => i.check === 'checkjs-type-error')).toHaveLength(0);
 

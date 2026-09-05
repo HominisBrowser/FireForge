@@ -6,16 +6,11 @@ import { basename } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
 import { escapeRegex, stripJsComments } from '../utils/regex.js';
+import type { PatchQueueRegistrationEntry, PatchQueueView } from './patch-lint-queue-types.js';
 
-interface ModuleRegistrationQueueEntry {
-  filename: string;
-  newFiles: ReadonlyMap<string, string>;
-  modifiedFileAdditions: ReadonlyMap<string, string>;
-}
+type ModuleRegistrationQueueEntry = PatchQueueRegistrationEntry;
 
-interface ModuleRegistrationQueueContext {
-  entries: readonly ModuleRegistrationQueueEntry[];
-}
+type ModuleRegistrationQueueContext = PatchQueueView<PatchQueueRegistrationEntry>;
 
 const IMPORTABLE_EXTENSIONS = ['.mjs', '.sys.mjs', '.js', '.jsm'];
 
@@ -35,7 +30,7 @@ export function moduleSourceSuffix(specifier: string): string | undefined {
 /**
  * Resource-module strings in actual code (comments removed), de-duplicated.
  * Exported for the engine-aware resolution preflight, which must recognise
- * exactly the same specifier shapes this queue-level rule does — two
+ * exactly the same specifier shapes this queue-level rule does. Two
  * extractors would drift.
  */
 export function extractResourceModuleSpecifiers(content: string): string[] {

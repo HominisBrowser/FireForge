@@ -18,6 +18,7 @@ import { type ClassifiedFile, classifyFiles, type StatusFile } from '../core/sta
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { StatusOptions } from '../types/commands/index.js';
+import type { ProjectPaths } from '../types/config.js';
 import { FIREFORGE_TMP_PATH_PATTERN, pathExists } from '../utils/fs.js';
 import {
   info,
@@ -28,7 +29,11 @@ import {
   warn,
 } from '../utils/logger.js';
 import { emitMachineError } from '../utils/machine-output.js';
-import { resolveStatusCheckPolicy, runStatusCheck } from './status-check.js';
+import {
+  resolveStatusCheckPolicy,
+  runStatusCheck,
+  type StatusCheckPolicy,
+} from './status-check.js';
 import { renderJsonStatus, renderJsonSummaryStatus } from './status-json.js';
 import {
   type ClassifiedBuckets,
@@ -53,7 +58,7 @@ function renderRawStatus(files: StatusFile[]): void {
 }
 
 // Resolved lazily at first use (shared with core/git-status): this module
-// is imported by the command manifest for EVERY command, so a
+// is imported by the command manifest for every command, so a
 // module-load-time parse printed the status-specific env warning during
 // `fireforge build` etc.
 let maxUntrackedFilesPerDir: number | undefined;
@@ -69,7 +74,7 @@ function getMaxUntrackedFilesPerDir(): number {
  * This function expands those into individual file entries so each file can be classified.
  *
  * Per-directory expansion is capped at FIREFORGE_MAX_UNTRACKED_FILES (default 5000)
- * entries; any overflow is dropped with a warning. Git ls-files itself
+ * entries. Any overflow is dropped with a warning. Git ls-files itself
  * does not infinite-recurse on symlink loops, but a directory full of
  * generated artefacts can still produce an arbitrarily large list, and
  * truncating gives the user a recoverable signal instead of an OOM.
@@ -102,8 +107,8 @@ async function expandDirectoryEntries(
       const individualFiles = await getUntrackedFilesInDir(engineDir, entry.file);
       const cap = getMaxUntrackedFilesPerDir();
       if (individualFiles.length > cap) {
-        // Recorded once here, reported once by renderTruncationBanner —
-        // the previous per-directory warn duplicated the banner's content.
+        // Recorded once here, reported once by renderTruncationBanner. The
+        // previous per-directory warn duplicated the banner's content.
         truncations.push({
           dir: entry.file,
           total: individualFiles.length,
@@ -126,7 +131,7 @@ async function expandDirectoryEntries(
  * FireForge's own `writeText` produces (see
  * {@link import('../utils/fs.js').FIREFORGE_TMP_PATH_PATTERN}). Those
  * files only exist for the duration of a write + rename and should
- * never appear in `status` output; filtering them here keeps every
+ * never appear in `status` output. Filtering them here keeps every
  * status mode (default, raw, unmanaged, ownership, json) symmetric so
  * the operator never sees a `.mozconfig.fireforge-tmp-<pid>-<uuid>`
  * entry mid-write. Files named for unrelated reasons (e.g. a user's
@@ -142,7 +147,7 @@ function filterFireForgeTempFiles(files: StatusFile[]): StatusFile[] {
  */
 async function classifyStatusFiles(
   files: StatusFile[],
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   projectRoot: string,
   binaryName: string
 ): Promise<ClassifiedFile[]> {
@@ -178,11 +183,11 @@ async function scanEngineStatusFiles(
 
 /**
  * Emits the `--json` payload (full or `--summary`) and applies the `--check`
- * policy, which stays the SOLE exit driver on this path.
+ * policy, which stays the only exit driver on this path.
  *
- * `--include-ownership` is a MODIFIER, not a mode: it appends an ownership
- * block without touching exit semantics, so an ownership conflict still
- * fails only the human `--ownership` mode.
+ * `--include-ownership` is a modifier rather than a mode: it appends an
+ * ownership block without touching exit semantics, so an ownership
+ * conflict still fails only the human `--ownership` mode.
  *
  * @param classified - Classified worktree entries
  * @param files - The same entries pre-classification, for ownership rows
@@ -193,9 +198,9 @@ async function scanEngineStatusFiles(
 async function renderJsonMode(
   classified: ClassifiedFile[],
   files: StatusFile[],
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   options: StatusOptions,
-  checkPolicy: ReturnType<typeof resolveStatusCheckPolicy>
+  checkPolicy: StatusCheckPolicy
 ): Promise<void> {
   const ownership =
     options.includeOwnership === true
@@ -217,8 +222,8 @@ async function renderJsonMode(
 }
 
 /**
- * Detects the "unborn HEAD" aftermath of an interrupted `fireforge download`
- * — git init succeeded but the initial Firefox source commit was never
+ * Detects the "unborn HEAD" aftermath of an interrupted `fireforge download`:
+ * git init succeeded but the initial Firefox source commit was never
  * created, so every file in engine/ reads as untracked. On a ~600 MB
  * Firefox tree this would flood the output with hundreds of thousands of
  * entries and a truncation warning, which is technically correct but not
@@ -274,7 +279,7 @@ export async function statusCommand(
     setMachineOutputMode(true);
   }
 
-  // On a throw, machine mode deliberately stays ENGAGED: withErrorHandling
+  // On a throw, machine mode stays engaged: withErrorHandling
   // routes the styled error to stderr while the mode is on and resets it
   // centrally. A mid-throw restore here would put the refusal on stdout
   // after the JSON payload.
@@ -285,7 +290,7 @@ export async function statusCommand(
   }
 }
 
-/** The status body proper; the machine-mode lifecycle lives in {@link statusCommand}. */
+/** The status body proper. The machine-mode lifecycle lives in {@link statusCommand}. */
 async function runStatusCommandBody(projectRoot: string, options: StatusOptions): Promise<void> {
   const modeCount = [
     options.raw,
@@ -301,13 +306,13 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
     );
   }
 
-  // --summary elides the files[] payload for gate consumers;
-  // it only makes sense on the JSON shape.
+  // --summary elides the files[] payload for gate consumers. It only
+  // makes sense on the JSON shape.
   if (options.summary === true && options.json !== true) {
     throw new InvalidArgumentError('--summary requires --json.', '--summary');
   }
 
-  // --include-ownership adds a block to the JSON payload; it is meaningless
+  // --include-ownership adds a block to the JSON payload. It is meaningless
   // on the human views, where --ownership is the mode that renders the
   // table.
   if (options.includeOwnership === true && options.json !== true) {
@@ -354,20 +359,19 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
 
   // Shared envelope: see src/utils/machine-output.ts and
   // docs/machine-output.md. `status` was the only command that had one.
-  const emitJsonError = emitMachineError;
 
-  // Ownership mode is a flat file→patch table; sources are the manifest's
+  // Ownership mode is a flat file→patch table. Sources are the manifest's
   // filesAffected, any worktree drift, and the cross-patch
   // duplicate-new-file-creation map produced by walking each patch body. The
   // last is what keeps `status --ownership` aligned with `fireforge verify`
-  // — see buildOwnershipTable's header. Runs before the default classify
+  // (see buildOwnershipTable's header). Runs before the default classify
   // path so it can short-circuit without computing patch-backed state.
   if (options.ownership) {
-    // Rung 1 only, deliberately — see the note below on why this branch
-    // does not take the full assertEngineGitReady ladder.
+    // Rung 1 only. See the note below on why this branch does not take the
+    // full assertEngineGitReady ladder.
     await assertEngineExists(paths.engine);
     const manifest = await loadPatchesManifest(paths.patches);
-    // Same scan and the SAME classification pass as every other mode.
+    // The same scan and the same classification pass as every other mode.
     // This branch keeps its historical guard shape on purpose:
     // no baseline-commit assertion, and a non-git engine degrades to an
     // empty table rather than the recovery banner.
@@ -397,12 +401,15 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
   }
 
   // Not routed through assertEngineExists: the --json contract requires a
-  // machine-readable payload on stdout BEFORE the throw, so scripted
+  // machine-readable payload on stdout before the throw, so scripted
   // consumers get a parseable refusal instead of a bare non-zero exit. The
   // message is kept identical to the helper's on purpose.
   if (!(await pathExists(paths.engine))) {
     if (options.json) {
-      emitJsonError('engine-missing', 'Firefox source not found. Run "fireforge download" first.');
+      emitMachineError(
+        'engine-missing',
+        'Firefox source not found. Run "fireforge download" first.'
+      );
     }
     throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
   }
@@ -410,7 +417,7 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
   // Check if it's a git repository
   if (!(await isGitRepository(paths.engine))) {
     if (options.json) {
-      emitJsonError(
+      emitMachineError(
         'engine-not-git',
         'Engine directory is not a git repository. Run "fireforge download" to initialize.'
       );
@@ -437,7 +444,7 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
 
   // `--raw` consumers parse the native `git status --porcelain` output
   // directly. On a clean tree the raw mode should produce nothing on
-  // stdout — the human "Working tree clean" banner would contaminate the
+  // stdout: the human "Working tree clean" banner would contaminate the
   // pipe. Short-circuit before the human clean-tree branch below.
   if (options.raw && files.length === 0) {
     return;

@@ -27,7 +27,7 @@ afterEach(async () => {
     try {
       await chmod(path, 0o755);
     } catch {
-      // Ignore — may already be gone
+      // Ignore: may already be gone
     }
   }
   await Promise.all(
@@ -52,8 +52,8 @@ async function exists(path: string): Promise<boolean> {
 }
 
 describe('permission error handling', () => {
-  // POSIX mode bits are the refusal mechanism here; NTFS ignores
-  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  // POSIX mode bits are the refusal mechanism here. NTFS ignores
+  // `chmod`, so this cannot be ported to Windows, only skipped honestly.
   it.skipIf(process.platform === 'win32')(
     'file lock reports EACCES when lock directory parent is read-only',
     async () => {
@@ -120,8 +120,8 @@ describe('permission error handling', () => {
     expect(await readFile(file2, 'utf-8')).toBe('content2');
   });
 
-  // POSIX mode bits are the refusal mechanism here; NTFS ignores
-  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  // POSIX mode bits are the refusal mechanism here. NTFS ignores
+  // `chmod`, so this cannot be ported to Windows, only skipped honestly.
   it.skipIf(process.platform === 'win32')(
     'snapshot captures file mode and restores it',
     async () => {

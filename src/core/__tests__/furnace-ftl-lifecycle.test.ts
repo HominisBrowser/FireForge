@@ -130,8 +130,8 @@ describe('FTL localization lifecycle', () => {
     it('skips FTL copy when the .ftl source file does not exist', async () => {
       mockReaddir.mockResolvedValueOnce([fakeEntry('my-widget.mjs')] as never);
       // pathExists is called for:
-      //   (1) targetDir (line 499) — returns false so ensureDir creates it
-      //   (2) ftlSrc (line 537) — returns false so the copy is skipped
+      //   (1) targetDir (line 499): returns false so ensureDir creates it
+      //   (2) ftlSrc (line 537): returns false so the copy is skipped
       mockPathExists.mockResolvedValue(false);
 
       await applyCustomComponent(
@@ -186,11 +186,11 @@ describe('FTL localization lifecycle', () => {
     });
 
     it('prunes a dangling per-widget locale jar.mn entry for a sharedFtl widget', async () => {
-      // A localized sharedFtl widget can have
-      // a stale `locale/@AB_CD@/toolkit/global/<name>.ftl` line — written by an
-      // older FireForge — pointing at a .ftl that does not exist, so
-      // `mach build` failed hard. Apply must drop that per-widget line while
-      // leaving the shared bundle's own line (browser/...) intact.
+      // A localized sharedFtl widget can have a stale
+      // `locale/@AB_CD@/toolkit/global/<name>.ftl` line (written by an older
+      // FireForge) pointing at a .ftl that does not exist, so `mach build`
+      // failed hard. Apply must drop that per-widget line while leaving the
+      // shared bundle's own line (browser/...) intact.
       mockReaddir.mockResolvedValueOnce([fakeEntry('mybrowser-dock-button.mjs')] as never);
       mockPathExists.mockResolvedValue(true);
       mockReadText.mockResolvedValue(
@@ -219,8 +219,9 @@ describe('FTL localization lifecycle', () => {
         }
       );
 
-      // The per-widget toolkit/global entry is pruned via removeLocaleFtlJarMnEntry;
-      // the shared bundle line (browser/...) is never targeted.
+      // The per-widget toolkit/global entry is pruned via
+      // removeLocaleFtlJarMnEntry. The shared bundle line (browser/...) is
+      // never targeted.
       expect(removeLocaleFtlJarMnEntry).toHaveBeenCalledWith(
         '/engine',
         'toolkit/locales/jar.mn',
@@ -234,7 +235,7 @@ describe('FTL localization lifecycle', () => {
     it('does not touch the locale jar.mn when no dangling entry exists', async () => {
       mockReaddir.mockResolvedValueOnce([fakeEntry('mybrowser-dock-button.mjs')] as never);
       mockPathExists.mockResolvedValue(true);
-      // Only the shared bundle line is present — nothing dangling to prune.
+      // Only the shared bundle line is present. Nothing is dangling to prune.
       mockReadText.mockResolvedValue(
         '@AB_CD@.jar:\n  locale/@AB_CD@/browser/mybrowser-dock.ftl (%browser/mybrowser-dock.ftl)\n'
       );
@@ -308,7 +309,7 @@ describe('FTL localization lifecycle', () => {
         }
       );
 
-      // css-only overrides only copy .css files — .ftl should not appear
+      // css-only overrides only copy .css files, so .ftl should not appear
       const ftlCalls = mockCopyFile.mock.calls.filter((call) => call[1].endsWith('.ftl'));
       expect(ftlCalls).toHaveLength(0);
       expect(result.affectedPaths.some((p) => p.endsWith('.ftl'))).toBe(false);

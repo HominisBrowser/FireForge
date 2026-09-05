@@ -14,19 +14,7 @@ import { chunkPathspecs, ensureGit, git } from './git-base.js';
  * @param filePath - Path to the file (relative to repo)
  */
 export async function restoreTrackedPath(repoDir: string, filePath: string): Promise<void> {
-  await ensureGit();
-
   await git(['restore', '--source', 'HEAD', '--staged', '--worktree', '--', filePath], repoDir);
-}
-
-/**
- * Removes an untracked path from disk.
- * @param repoDir - Repository directory
- * @param filePath - Path to the file (relative to repo)
- */
-async function removeUntrackedPath(repoDir: string, filePath: string): Promise<void> {
-  const fullPath = join(repoDir, filePath);
-  await removeFile(fullPath);
 }
 
 /**
@@ -35,9 +23,8 @@ async function removeUntrackedPath(repoDir: string, filePath: string): Promise<v
  * @param filePath - Path to remove
  */
 async function removeAddedPath(repoDir: string, filePath: string): Promise<void> {
-  await ensureGit();
   await git(['reset', 'HEAD', '--', filePath], repoDir);
-  await removeUntrackedPath(repoDir, filePath);
+  await removeFile(join(repoDir, filePath));
 }
 
 /**
@@ -47,7 +34,7 @@ async function removeAddedPath(repoDir: string, filePath: string): Promise<void>
  */
 export async function discardStatusEntry(repoDir: string, entry: GitStatusEntry): Promise<void> {
   if (entry.isUntracked) {
-    await removeUntrackedPath(repoDir, entry.file);
+    await removeFile(join(repoDir, entry.file));
     return;
   }
 
@@ -75,7 +62,6 @@ export async function discardStatusEntry(repoDir: string, entry: GitStatusEntry)
  * @param files - File paths to stage (relative to repo)
  */
 export async function stageFiles(repoDir: string, files: string[]): Promise<void> {
-  await ensureGit();
   await git(['add', '--', ...files], repoDir);
 }
 
@@ -85,7 +71,6 @@ export async function stageFiles(repoDir: string, files: string[]): Promise<void
  * @param files - File paths to unstage (relative to repo)
  */
 export async function unstageFiles(repoDir: string, files: string[]): Promise<void> {
-  await ensureGit();
   await git(['reset', 'HEAD', '--', ...files], repoDir);
 }
 
@@ -96,17 +81,16 @@ export async function unstageFiles(repoDir: string, files: string[]): Promise<vo
  * @returns true if file exists in HEAD
  */
 export async function fileExistsInHead(repoDir: string, filePath: string): Promise<boolean> {
-  await ensureGit();
   return (await git(['ls-tree', 'HEAD', '--', filePath], repoDir)).trim().length > 0;
 }
 
 /**
  * Batched equivalent of {@link fileExistsInHead}: returns the subset of
  * `files` that are tracked in HEAD, using a single `git ls-tree` per ARG_MAX
- * chunk instead of one spawn per file. This is the cold-run hot path — a
- * Firefox-sized checkout has hundreds of affected files.
+ * chunk instead of one spawn per file. This is the cold-run hot path, and
+ * a Firefox-sized checkout has hundreds of affected files.
  *
- * `-r` lists nested blobs by full repo-relative path; `--name-only -z` makes
+ * `-r` lists nested blobs by full repo-relative path. `--name-only -z` makes
  * the output a trivial NUL-split with no quoting to undo. Membership in the
  * returned Set is exactly `await fileExistsInHead(repoDir, file)` for any
  * non-directory `file`. Throws (via {@link git}) when HEAD itself is
@@ -119,8 +103,6 @@ export async function fileExistsInHead(repoDir: string, filePath: string): Promi
 export async function listTrackedInHead(repoDir: string, files: string[]): Promise<Set<string>> {
   const tracked = new Set<string>();
   if (files.length === 0) return tracked;
-  await ensureGit();
-
   const wanted = new Set(files);
   for (const chunk of chunkPathspecs(files)) {
     const output = await git(
@@ -129,7 +111,7 @@ export async function listTrackedInHead(repoDir: string, files: string[]): Promi
     );
     for (const name of output.split('\0')) {
       // `ls-tree -r` can surface entries beyond the literal inputs only when an
-      // input is itself a directory in HEAD; intersect with `wanted` so the
+      // input is itself a directory in HEAD. Intersect with `wanted` so the
       // result is always a subset of the requested files, never a superset.
       if (name.length > 0 && wanted.has(name)) tracked.add(name);
     }
@@ -146,10 +128,10 @@ export async function listTrackedInHead(repoDir: string, files: string[]): Promi
  * Uses {@link import('../utils/process.js').exec} rather than {@link git}
  * (which throws on a non-zero exit) because `git hash-object f1 f2 …` is
  * all-or-nothing: it aborts at the first unreadable path and emits nothing
- * for the rest. To keep the per-file contract — where one bad path zeroes
- * only its own index line — a chunk that does not return exactly one hash
+ * for the rest. To keep the per-file contract, where one bad path zeroes
+ * only its own index line, a chunk that does not return exactly one hash
  * per input falls back to hashing that chunk's paths individually. A path
- * that is still unhashable is left out of the map; the caller applies the
+ * that is still unhashable is left out of the map. The caller applies the
  * `0000000000` zero-hash fallback for any miss. Hashing stays in git rather
  * than in-process so filters and `.gitattributes` are applied per path and
  * the result cannot diverge under `core.autocrlf`/`text` attributes.
@@ -170,8 +152,8 @@ export async function hashObjectBatch(
     const result = await exec('git', ['hash-object', '--', ...chunk], { cwd: repoDir });
     const lines = result.stdout.split('\n').filter((line) => line.length > 0);
     if (result.exitCode === 0 && lines.length === chunk.length) {
-      for (let i = 0; i < chunk.length; i++) {
-        hashes.set(chunk[i] as string, lines[i] as string);
+      for (const [i, path] of chunk.entries()) {
+        hashes.set(path, lines[i] as string);
       }
       continue;
     }
@@ -217,19 +199,6 @@ export async function getFileContentAtRef(
     throw new GitError(stderr || 'Git command failed', `show ${ref}:${filePath}`);
   }
   return result.stdout;
-}
-
-/**
- * Gets the content of a file from HEAD commit.
- * @param repoDir - Repository directory
- * @param filePath - Path to the file (relative to repo)
- * @returns File content or null if file doesn't exist in HEAD
- */
-export async function getFileContentFromHead(
-  repoDir: string,
-  filePath: string
-): Promise<string | null> {
-  return getFileContentAtRef(repoDir, filePath, 'HEAD');
 }
 
 /**

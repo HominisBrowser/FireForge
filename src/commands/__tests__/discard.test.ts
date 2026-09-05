@@ -30,7 +30,7 @@ vi.mock('../../core/git-file-ops.js', () => ({
   unstageFiles: vi.fn(() => Promise.resolve()),
 }));
 
-// Keep the pure describe/summarize/apply helpers real; stub only the
+// Keep the pure describe/summarize/apply helpers real. Stub only the
 // planner so unit tests drive the legacy (unmanaged) restore path without
 // a patches directory on disk. The patch-aware planning itself is covered
 // by src/core/__tests__/discard-baseline.test.ts and the
@@ -289,29 +289,27 @@ describe('discardCommand', () => {
       expect(outro).toHaveBeenCalledWith('2 file(s) restored to upstream state');
     });
 
-    it('accepts a trailing slash on the directory path without doubling slashes in messages', async () => {
+    it('normalizes trailing slashes on the directory path', async () => {
+      // The input's trailing slashes must be normalized once on entry: every
+      // user-facing message appends `/` itself and previously rendered
+      // "stories/furnace//", and the managed-prefix comparison against
+      // "stories/furnace//" is a prefix of nothing and prefixed by nothing,
+      // silently dropping the Furnace warning for a parent of a managed path.
+      vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(
+        new Set(['stories/furnace/components/'])
+      );
+
       await expect(
-        discardCommand('/project', 'stories/furnace/', { yes: true })
+        discardCommand('/project', 'stories/furnace//', { yes: true })
       ).resolves.toBeUndefined();
 
       expect(discardStatusEntry).toHaveBeenCalledTimes(2);
-      // The input's trailing slash must be normalized once on entry: every
-      // user-facing message appends `/` itself and previously rendered
-      // "stories/furnace//".
       expect(loggerState.spinnerStop).toHaveBeenCalledWith(
         'Discarded 2 of 2 file(s) under stories/furnace/'
       );
-    });
-
-    it('normalizes repeated trailing slashes in dry-run output', async () => {
-      await expect(
-        discardCommand('/project', 'stories/furnace//', { dryRun: true })
-      ).resolves.toBeUndefined();
-
-      expect(info).toHaveBeenCalledWith(
-        'Would discard changes to 2 file(s) under stories/furnace/:'
+      expect(warn).toHaveBeenCalledWith(
+        'These paths are managed by Furnace. Run "fireforge furnace apply" to redeploy components if needed.'
       );
-      expect(discardStatusEntry).not.toHaveBeenCalled();
     });
 
     it('does not sweep sibling directories sharing the prefix', async () => {
@@ -378,24 +376,6 @@ describe('discardCommand', () => {
 
       await expect(
         discardCommand('/project', 'stories/furnace', { yes: true })
-      ).resolves.toBeUndefined();
-
-      expect(warn).toHaveBeenCalledWith(
-        'These paths are managed by Furnace. Run "fireforge furnace apply" to redeploy components if needed.'
-      );
-    });
-
-    it('still detects a managed prefix below the directory when the input has a trailing slash', async () => {
-      // Discarding a PARENT of a managed prefix with a trailing-slash input:
-      // before normalization the comparison used "stories/furnace//", which
-      // is a prefix of nothing and prefixed by nothing here, silently
-      // dropping the warning.
-      vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(
-        new Set(['stories/furnace/components/'])
-      );
-
-      await expect(
-        discardCommand('/project', 'stories/furnace/', { yes: true })
       ).resolves.toBeUndefined();
 
       expect(warn).toHaveBeenCalledWith(

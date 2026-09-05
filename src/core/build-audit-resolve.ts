@@ -28,7 +28,7 @@ import { normalizePathSlashes } from '../utils/paths.js';
 const MAX_SCAN_DEPTH = 12;
 
 /**
- * Heuristic test for "this looks like a packaged-test source file" — the
+ * Heuristic test for "this looks like a packaged-test source file". The
  * audit routes such paths to `_tests/` instead of `dist/`. Matches
  * mochitest / xpcshell / browser-chrome conventions: any source under a
  * `/test/` or `/tests/` directory, anywhere under a `testing/` subtree
@@ -62,7 +62,7 @@ export function isTestPath(sourcePath: string): boolean {
  *
  * Separators are normalized first because the candidates come from `join()`
  * over a `readdir` walk of the dist tree: on Windows those carry backslashes,
- * which a `/`-only split collapses into a SINGLE segment. Every candidate then
+ * which a `/`-only split collapses into a single segment. Every candidate then
  * scores the same, so the trailing-overlap heuristic that disambiguates
  * same-basename artifacts (`branding/…/aboutDialog.css` versus
  * `browser/…/aboutDialog.css`) silently picks an arbitrary one.
@@ -101,7 +101,7 @@ export function countTrailingSegmentMatches(a: string, b: string): number {
 /**
  * Path segments too common to identify an artifact on their own.
  *
- * Shared deliberately: this set governs two halves of ONE decision —
+ * Shared on purpose: this set governs two halves of one decision,
  * `scoreCandidate` (selection) and `isConfidentMatch` (confirmation, in
  * `build-audit.ts`). When the halves kept separate copies they disagreed,
  * so a source path could earn a selection bonus for a segment that
@@ -137,14 +137,14 @@ export const GENERIC_PATH_SEGMENTS: ReadonlySet<string> = new Set([
  *
  * The bonus exists because Firefox packaging often re-roots files: a source
  * `branding/<name>/content/aboutDialog.css` lands at
- * `chrome/browser/content/branding/aboutDialog.css` — only the basename
+ * `chrome/browser/content/branding/aboutDialog.css`. Only the basename
  * trails-match, but the `branding` segment moved into the middle of the
  * candidate path. Without the bonus that candidate ties with the unrelated
  * `chrome/browser/content/browser/aboutDialog.css`.
  *
  * @param sourcePath Engine-relative POSIX path
  * @param candidatePath Absolute path under the dist tree
- * @returns Numeric score; higher means better match
+ * @returns Numeric score, where higher means better match
  */
 export function scoreCandidate(sourcePath: string, candidatePath: string): number {
   const trailing = countTrailingSegmentMatches(sourcePath, candidatePath);
@@ -216,7 +216,7 @@ export async function findAllByBasename(
 /**
  * Resolves the best-matching artifact for a source path under one or
  * more search roots. Returns the highest-scoring candidate by trailing
- * segment overlap; ties go to the first-found path (deterministic via
+ * segment overlap. Ties go to the first-found path (deterministic via
  * the directory-walk order). Returns undefined when no candidate exists.
  *
  * @param sourcePath Engine-relative POSIX source path

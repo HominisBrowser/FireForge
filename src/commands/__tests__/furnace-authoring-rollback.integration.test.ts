@@ -64,7 +64,7 @@ vi.mock('../../core/furnace-registration-ast.js', () => ({
 
 // `furnace remove` requires the engine to be a git repository for both the
 // override and custom paths so deleted edits can be recovered. The temp
-// project here is a plain filesystem fixture; stub the git-detection
+// project here is a plain filesystem fixture, so stub the git-detection
 // helper so the rollback test can focus on the journal contract rather
 // than the engine bootstrap precondition.
 vi.mock('../../core/git.js', async () => {

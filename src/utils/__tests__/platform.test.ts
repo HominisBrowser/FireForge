@@ -26,7 +26,7 @@ describe('getPlatform', () => {
   });
 
   it('refuses an unsupported platform by name', () => {
-    // The message names the platform it saw AND the ones it supports: the
+    // The message names the platform it saw and the ones it supports: the
     // operator needs both to know whether to file a bug or change machine.
     vi.mocked(platform).mockReturnValue('freebsd');
     expect(() => getPlatform()).toThrow(GeneralError);

@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { getProjectPaths } from '../../core/config.js';
+import type { FurnacePaths } from '../../core/furnace-config.js';
 import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { assertFurnaceReady } from '../../core/furnace-precondition.js';
 import {
@@ -14,6 +15,7 @@ import { validateAllComponents, validateComponent } from '../../core/furnace-val
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceValidateOptions } from '../../types/commands/index.js';
 import type { ComponentType, ValidationIssue } from '../../types/furnace.js';
+import type { FurnaceConfig } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, outro, success, warn } from '../../utils/logger.js';
@@ -93,17 +95,16 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
     }
   }
 
-  // `wrong-registration-pattern` is deliberately NOT auto-fixed: it means the
-  // component IS registered but in the wrong block, and moving code between
-  // blocks is too risky to do unattended. Only truly missing registrations are
-  // repaired, below.
+  // `wrong-registration-pattern` is not auto-fixed: the component is
+  // registered but in the wrong block, and moving code between blocks is too
+  // risky to do unattended. Only missing registrations are repaired, below.
 
   // Repair components missing from customElements.js entirely (reported by
   // validate as `missing-custom-element-registration`).
   //
   // Scoped to the components named in `issues`: iterating every entry in
   // `config.custom` makes `furnace validate <one-component> --fix` write
-  // customElements.js registrations for EVERY custom component, outside the
+  // customElements.js registrations for every custom component, outside the
   // issue list it was handed and invisibly, since `fixed` is never
   // incremented here.
   const componentsWithIssues = new Set(issues.map((issue) => issue.component));
@@ -124,7 +125,7 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
       // stays a no-op for components whose registration is already correct.
       await addCustomElementRegistration(engineDir, componentName, modulePath);
     } catch {
-      // Best-effort repair — the re-validation pass at the call site reports
+      // Best-effort repair. The re-validation pass at the call site reports
       // whatever is still outstanding.
     }
   }
@@ -221,11 +222,11 @@ export async function furnaceValidateCommand(
   }
 
   // Auto-fix fixable issues when --fix is passed. The counter returned by
-  // `autoFixIssues` only counts function calls that did not throw — a write
-  // that succeeded but did not actually resolve the issue (addJarMnEntries
-  // appending to a file mach later ignores) would still bump it. Re-validate
-  // the affected components and compute the *actual* drop in fixable issues
-  // so the reported number is honest.
+  // `autoFixIssues` only counts function calls that did not throw, so a
+  // write that succeeded but did not actually resolve the issue
+  // (addJarMnEntries appending to a file mach later ignores) would still
+  // bump it. Re-validate the affected components and compute the real drop
+  // in fixable issues so the reported number is honest.
   if (options.fix && allIssues.length > 0) {
     const fixableIssues = allIssues.filter((issue) => FIXABLE_CHECKS.has(issue.check));
     if (fixableIssues.length > 0) {
@@ -284,8 +285,8 @@ export async function furnaceValidateCommand(
  */
 async function reValidateComponents(
   projectRoot: string,
-  config: Awaited<ReturnType<typeof loadFurnaceConfig>>,
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
+  config: FurnaceConfig,
+  furnacePaths: FurnacePaths,
   componentNames: Set<string>
 ): Promise<{ issues: ValidationIssue[]; totalErrors: number; totalWarnings: number }> {
   const issues: ValidationIssue[] = [];
@@ -303,7 +304,7 @@ async function reValidateComponents(
       type = 'custom';
       componentDir = join(furnacePaths.customDir, componentName);
     } else {
-      // Stock or removed components are not local-validated; skip silently.
+      // Stock or removed components are not local-validated, so skip silently.
       continue;
     }
 

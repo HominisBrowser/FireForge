@@ -4,36 +4,33 @@
  * Both halves of the defect are only visible across a real process boundary
  * with a real pipe:
  *
- * - a >64 KiB JSON payload written to a PIPED stdout is truncated at exactly
+ * - a >64 KiB JSON payload written to a piped stdout is truncated at exactly
  *   the kernel pipe buffer when the refusal exits non-zero (`process.exit`
- *   before Node's async stdout drains — a file redirect or an exit-0 run
- *   delivers everything);
- * - the styled refusal line must land on stderr, not on stdout after the
+ *   runs before Node's async stdout drains, while a file redirect or an
+ *   exit-0 run delivers everything).
+ * - The styled refusal line must land on stderr, not on stdout after the
  *   JSON.
  *
  * The slow reader is a real shell pipeline (`… | { sleep; cat; }`): while
- * `sleep` runs, NOTHING consumes the pipe, so the payload genuinely backs up
+ * `sleep` runs, nothing consumes the pipe, so the payload genuinely backs up
  * in the 64 KiB kernel buffer. A merely-paused Node stream is not a slow
- * reader — the parent process eagerly buffers the whole payload internally
+ * reader: the parent process eagerly buffers the whole payload internally
  * and defeats the backpressure this test depends on.
  */
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   createTempProject,
+  FIREFORGE_BIN_ENTRY,
   initCommittedRepo,
   removeTempProject,
+  TSX_CLI,
   writeFiles,
   writeFireForgeConfig,
 } from '../test-utils/index.js';
-
-const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
-const tsxCli = join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const binEntry = join(repoRoot, 'bin', 'fireforge.ts');
 
 /** Enough unmanaged files that the JSON payload clears 64 KiB comfortably. */
 const UNMANAGED_FILE_COUNT = 600;
@@ -66,13 +63,13 @@ describe('status --json --fail-on refusal through a real pipe', () => {
 
   it('delivers the complete JSON on stdout and the refusal on stderr at exit 1', async () => {
     // `set -o pipefail` makes the pipeline's exit code fireforge's own (not
-    // cat's 0); the pipeline exit code is what the consumer's gate keys on.
-    // During the sleep the pipe has NO reader at all, so a CLI that exits
+    // cat's 0). The pipeline exit code is what the consumer's gate keys on.
+    // During the sleep the pipe has no reader at all, so a CLI that exits
     // before Node flushes past the kernel buffer truncates stdout at exactly
     // 65 536 bytes.
     const pipeline = [
       'set -o pipefail',
-      `"${process.execPath}" "${tsxCli}" "${binEntry}" status --json --fail-on unmanaged | { sleep 0.5; cat; }`,
+      `"${process.execPath}" "${TSX_CLI}" "${FIREFORGE_BIN_ENTRY}" status --json --fail-on unmanaged | { sleep 0.5; cat; }`,
     ].join('\n');
     const child = spawn('bash', ['-c', pipeline], {
       cwd: projectRoot,

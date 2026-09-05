@@ -20,6 +20,7 @@ import { info, intro, outro, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { normalizeTokenName } from '../utils/validation.js';
 import { tokenCoverageCommand } from './token-coverage.js';
+import { tokenListCommand, tokenShowCommand } from './token-list.js';
 
 async function normalizeTokenNameForProject(
   projectRoot: string,
@@ -35,7 +36,7 @@ async function normalizeTokenNameForProject(
       const strippedPrefix = furnaceConfig.tokenPrefix.replace(/^--/, '').replace(/-$/, '');
       const strippedName = rawTokenName.replace(/^--/, '');
       // A bare name that already starts with the configured prefix text is
-      // treated as fully qualified — blindly prepending would silently
+      // treated as fully qualified. Blindly prepending would silently
       // produce a double-prefixed token (e.g. "--hominis-hominis-shadow-low").
       if (strippedName === strippedPrefix || strippedName.startsWith(`${strippedPrefix}-`)) {
         info(
@@ -56,12 +57,12 @@ async function normalizeTokenNameForProject(
 }
 
 /**
- * Reports a no-op add, naming WHERE the existing declaration lives.
+ * Reports a no-op add, naming where the existing declaration lives.
  *
- * A variant skip has no category to name — the declaration lives in a
- * `:root<selector>` block — so the location reads as that block. The
+ * A variant skip has no category to name, because the declaration lives in
+ * a `:root<selector>` block, so the location reads as that block. The
  * variant path used to report no location at all, so a re-run meant to
- * CHANGE a value exited 0 having silently changed nothing.
+ * change a value exited 0 having silently changed nothing.
  *
  * @param tokenName - Full token name including prefix
  * @param result - Result carrying the skip location, when known
@@ -77,7 +78,7 @@ function reportSkippedToken(
       ? `:root${options.variant}`
       : `category "${result.skippedExisting?.category ?? options.category ?? ''}"`;
   const where = result.skippedExisting
-    ? ` in ${scope} (line ${String(result.skippedExisting.line)}), unchanged`
+    ? ` in ${scope} (line ${result.skippedExisting.line}), unchanged`
     : '';
   info(`Token ${tokenName} already exists${where} (skipped)`);
 }
@@ -100,8 +101,8 @@ export async function tokenAddCommand(
 
   // A fresh project without furnace.json otherwise fails deep inside the
   // token-manager's `assertTokenCategoryExists` with "Token CSS file not
-  // found: browser/themes/shared/<binary>-tokens.css" — technically correct,
-  // but the operator's actual next step is to initialize Furnace, which
+  // found: browser/themes/shared/<binary>-tokens.css", which is technically
+  // correct, but the operator's actual next step is to initialize Furnace, which
   // scaffolds the tokens CSS file. Catching the uninitialized case here
   // gives the right guidance before the generic "file not found" error.
   if (!(await furnaceConfigExists(projectRoot))) {
@@ -217,9 +218,9 @@ export function registerToken(
       // Commander's argument parsing.
       // Description ends with `(required)` because Commander's
       // `makeOptionMandatory` does not render a required marker in `--help`
-      // output — only `.requiredOption` does that, and switching to
+      // output. Only `.requiredOption` does that, and switching to
       // `.requiredOption` would lose the `.choices()` enforcement. The
-      // explicit suffix keeps the runtime validation AND surfaces required
+      // explicit suffix keeps the runtime validation and surfaces required
       // status in help alongside the other options that use `.requiredOption`.
       new Option('--mode <mode>', 'Dark mode behavior (required)')
         .choices(['auto', 'static', 'override'])
@@ -270,6 +271,34 @@ export function registerToken(
           });
         }
       )
+    );
+
+  token
+    .command('list')
+    .description(
+      'List the design-token categories declared in the tokens CSS with their token names, in file order'
+    )
+    .option('--category <name>', 'Restrict the report to one category')
+    .option('--json', 'Emit the machine-readable envelope on stdout (see docs/machine-output.md)')
+    .action(
+      withErrorHandling(async (options: { category?: string; json?: boolean }) => {
+        await tokenListCommand(
+          getProjectRoot(),
+          pickDefined({ category: options.category, json: options.json })
+        );
+      })
+    );
+
+  token
+    .command('show <token-name>')
+    .description(
+      'Show one token: its category, the value it takes in every declaring block, and where it is defined. The leading `--` is optional; with it, use the `--` separator first (e.g. `fireforge token show -- --my-token`).'
+    )
+    .option('--json', 'Emit the machine-readable envelope on stdout (see docs/machine-output.md)')
+    .action(
+      withErrorHandling(async (tokenName: string, options: { json?: boolean }) => {
+        await tokenShowCommand(getProjectRoot(), tokenName, pickDefined({ json: options.json }));
+      })
     );
 
   token

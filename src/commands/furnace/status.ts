@@ -8,6 +8,7 @@ import {
   hasCustomEngineDrift,
   hasOverrideEngineDrift,
 } from '../../core/furnace-apply-helpers.js';
+import type { FurnacePaths } from '../../core/furnace-config.js';
 import {
   furnaceConfigExists,
   getFurnacePaths,
@@ -21,28 +22,34 @@ import {
   formatOverrideBaseVersionDriftWarning,
 } from '../../core/furnace-version-drift.js';
 import { FurnaceError } from '../../errors/furnace.js';
+import type { ProjectPaths } from '../../types/config.js';
+import type { FurnaceConfig, FurnaceState } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, outro, warn } from '../../utils/logger.js';
 
+interface DetailedComponentStatusOptions {
+  /** Component tag name to inspect. */
+  name: string;
+  /** Loaded Furnace configuration. */
+  config: FurnaceConfig;
+  /** Loaded furnace state, for applied/engine checksums. */
+  state: FurnaceState;
+  /** Root directory of the project. */
+  projectRoot: string;
+  /** Resolved project paths. */
+  paths: ProjectPaths;
+  /** Resolved Furnace-specific paths. */
+  furnacePaths: FurnacePaths;
+  /** Engine-relative directory localized components deploy their `.ftl` into. */
+  ftlDir: string;
+}
+
 /**
  * Displays detailed status for a single Furnace component, including registration drift.
- * @param name - Component tag name to inspect
- * @param config - Loaded Furnace configuration
- * @param state - Loaded furnace state, for applied/engine checksums
- * @param projectRoot - Root directory of the project
- * @param paths - Resolved project paths
- * @param furnacePaths - Resolved Furnace-specific paths
- * @param ftlDir - Engine-relative directory localized components deploy their `.ftl` into
+ * @param options - See {@link DetailedComponentStatusOptions}
  */
-async function showDetailedComponentStatus(
-  name: string,
-  config: Awaited<ReturnType<typeof loadFurnaceConfig>>,
-  state: Awaited<ReturnType<typeof loadFurnaceState>>,
-  projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
-  ftlDir: string
-): Promise<void> {
+async function showDetailedComponentStatus(options: DetailedComponentStatusOptions): Promise<void> {
+  const { name, config, state, projectRoot, paths, furnacePaths, ftlDir } = options;
   const customConfig = config.custom[name];
   const overrideConfig = config.overrides[name];
 
@@ -113,7 +120,7 @@ async function showDetailedComponentStatus(
     return;
   }
 
-  // Custom component — run registration consistency check
+  // Custom component: run registration consistency check
   const status = await checkRegistrationConsistency(projectRoot, name, customConfig, ftlDir);
 
   const lines: string[] = [];
@@ -165,22 +172,22 @@ export async function furnaceStatusCommand(projectRoot: string, name?: string): 
   const ftlDir = resolveFtlDir(config.ftlBasePath);
 
   if (name) {
-    await showDetailedComponentStatus(
+    await showDetailedComponentStatus({
       name,
       config,
       state,
       projectRoot,
       paths,
       furnacePaths,
-      ftlDir
-    );
+      ftlDir,
+    });
     return;
   }
 
   // Surface a pendingRepair marker before the normal summary so it cannot
   // be missed. The marker means the last mutation could not roll back
   // cleanly, so the engine and workspace may have drifted in ways apply
-  // cannot detect from checksums alone — doctor is the right next step.
+  // cannot detect from checksums alone, so doctor is the right next step.
   if (state.pendingRepair) {
     warn(
       `Furnace is in pending-repair state from ${state.pendingRepair.operation} (${state.pendingRepair.timestamp}): ${state.pendingRepair.reason}. Run \`fireforge doctor --repair-furnace\` to reconcile.`
@@ -221,7 +228,7 @@ export async function furnaceStatusCommand(projectRoot: string, name?: string): 
   // Surface override baseVersion drift from the project config. This check
   // is cheap (no I/O besides the already-loaded fireforge.json) and catches
   // the single most common silent-drift case: Firefox bumped, overrides
-  // still point at the old version. Advisory only — status never fails.
+  // still point at the old version. Advisory only. Status never fails.
   const forgeConfig = await loadConfig(projectRoot);
   for (const entry of findOverrideBaseVersionDrift(config, forgeConfig.firefox.version)) {
     warn(formatOverrideBaseVersionDriftWarning(entry));
@@ -234,18 +241,18 @@ export async function furnaceStatusCommand(projectRoot: string, name?: string): 
   if (await pathExists(paths.engine)) {
     // Held in an object rather than two `let`s: the scanner below mutates
     // them from inside a closure, and TS's control-flow analysis does not
-    // propagate that through the call — it would narrow both to the literal
+    // propagate that through the call. It would narrow both to the literal
     // `false` and flag every later read as always-falsy.
     const drift = { workspaceChanged: false, engineDrifted: false };
 
     /**
      * Scans one component family for workspace or engine drift.
      *
-     * The engine probe sits behind `else if` deliberately: a component whose
+     * The engine probe sits behind `else if` on purpose: a component whose
      * workspace already changed does not need an engine comparison to decide
      * what `status` reports, and the probe is the expensive half (it
-     * re-hashes deployed files). The consequence is that engine drift can go
-     * UNREPORTED for a component that also has workspace changes — the
+     * re-hashes deployed files). The consequence is that engine drift goes
+     * unreported for a component that also has workspace changes. The
      * summary says "workspace changed", not both.
      */
     const scanFamily = async <TConfig>(

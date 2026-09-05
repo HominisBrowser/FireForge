@@ -15,7 +15,7 @@ import { getUntrackedFiles } from './git-status.js';
 
 /**
  * Collects engine-relative paths changed since the baseline's HEAD SHA,
- * plus any workdir modifications (tracked and untracked). Defensive — git
+ * plus any workdir modifications (tracked and untracked). Defensive: git
  * failures surface as verbose lines and return the files collected so far,
  * so an empty result means "no drift we can prove" rather than "no drift
  * occurred". When the baseline is missing or the engine has no HEAD yet,
@@ -79,7 +79,7 @@ export async function collectChangedEnginePaths(
  * full-build escalation in `build-prepare` (`buildInputFingerprints`).
  *
  * A path with no recorded entry, an unreadable file, or a differing hash
- * is kept — "cannot prove unchanged" must never turn into "unchanged".
+ * is kept, since "cannot prove unchanged" must never turn into "unchanged".
  * With no fingerprint set at all (a baseline written before the field
  * existed) every path is kept, which is the path-only comparison the
  * fingerprints refine.

@@ -32,7 +32,7 @@ vi.mock('../../utils/fs.js', () => createFsMock());
 // The dry-run/real-run parity probe reads the chrome document from disk and
 // runs the same insertion-point scan the real run uses. Every wire test in
 // this file drives `pathExists` through a generic mock that says "yes,
-// everything exists", so the probe would then try to read those files — it is
+// everything exists", so the probe would then try to read those files. It is
 // stubbed out here to keep the focus on the command-level behaviours these
 // tests cover. A dedicated integration test pins the probe contract.
 vi.mock('../../core/wire-dom-fragment.js', async (importOriginal) => {
@@ -205,7 +205,7 @@ describe('wireCommand', () => {
   });
 
   it('probes absolute --dom paths as-is (no engine join)', async () => {
-    // Absolute input already carries its full path; joining with engine
+    // Absolute input already carries its full path. Joining with engine
     // would produce a double-rooted garbage path. Regression guard so a
     // future refactor doesn't accidentally re-route absolutes through join.
     await expect(
@@ -222,7 +222,7 @@ describe('wireCommand', () => {
   it('surfaces the original --dom input in the not-found error for engine-relative paths', async () => {
     // When the joined engine path does not exist, the error message
     // should echo the operator's original input (not the internal
-    // joined path) — matching the existing absolute-input behaviour so
+    // joined path), matching the existing absolute-input behaviour so
     // the error is copy-pasteable back into the CLI.
     vi.mocked(pathExists).mockImplementation((value) =>
       Promise.resolve(
@@ -438,7 +438,7 @@ describe('wireCommand', () => {
       })
     ).resolves.toBeUndefined();
 
-    // The broken furnace config was swallowed; the command proceeds with the
+    // The broken furnace config was swallowed. The command proceeds with the
     // upstream default and does not emit domTargetPath to wireSubscript.
     expect(wireSubscript).toHaveBeenCalledWith(
       '/project',
@@ -465,7 +465,7 @@ describe('wireCommand', () => {
   });
 
   it('coerces bare property chains to function calls in the dry-run preview', async () => {
-    // The preview must mirror what the real wire emits — `X.init` is
+    // The preview must mirror what the real wire emits. `X.init` is
     // coerced to `X.init()` in the generated block, so the preview reflects
     // the same shape.
     await expect(

@@ -18,9 +18,9 @@ import { normalizePathSlashes } from '../../utils/paths.js';
 /**
  * Renders a multi-hunk unified diff between the two strings and returns a
  * flat list of display-ready lines. Each line has already had its marker
- * prefix and color applied by this function; the caller just emits them.
+ * prefix and color applied by this function. The caller just emits them.
  *
- * Pure delegation to the `diff-hunks` module — kept here as a thin wrapper
+ * Pure delegation to the `diff-hunks` module, kept here as a thin wrapper
  * so the command file does not need to care about the hunk data shape.
  */
 function formatUnifiedDiff(original: string, modified: string): string[] {
@@ -58,7 +58,7 @@ async function diffOverride(
     throw new FurnaceError(`Override directory not found: components/overrides/${name}`, name);
   }
 
-  // Prefer the per-override baseCommit (survives download --force); fall back
+  // Prefer the per-override baseCommit (survives download --force). Fall back
   // to the project-wide value for overrides created before this field existed.
   const state = await loadState(projectRoot);
   const baseCommit = overrideConfig.baseCommit ?? state.baseCommit;
@@ -78,9 +78,9 @@ async function diffOverride(
     if (!entry.isFile()) continue;
     if (!isComponentSourceFile(entry.name)) continue;
 
-    // git show takes a repo-relative path. paths.engine IS the repo root.
+    // git show takes a repo-relative path. paths.engine is the repo root.
     // The slice leaves the host's separators behind, and `git show <ref>:<path>`
-    // only understands forward slashes — on Windows the unnormalized form makes
+    // only understands forward slashes. On Windows the unnormalized form makes
     // every baseline read miss, so every overridden file is reported as a new
     // file and `furnace diff` shows nothing.
     const enginePath = normalizePathSlashes(
@@ -137,7 +137,7 @@ async function diffOverride(
  * `furnace apply`.
  *
  * `.ftl` files deploy to `engine/<ftlDir>/<name>.ftl` via
- * `applyCustomFtlFile` — NOT to `customConfig.targetPath` — so the
+ * `applyCustomFtlFile`, not to `customConfig.targetPath`, so the
  * deployment-target lookup has to branch on extension. Without the branch, a
  * component's localization file always reports "not yet deployed to engine
  * (new file)" after a successful apply, because diff looks for it under the
@@ -170,7 +170,7 @@ async function diffCustom(name: string, projectRoot: string, config: FurnaceConf
     const workspaceContent = await readText(workspacePath);
 
     // `.ftl` files deploy to the locale tree, not the component's
-    // targetPath; mirror `applyCustomFtlFile`'s target computation so the
+    // targetPath. Mirror `applyCustomFtlFile`'s target computation so the
     // diff header and the existence probe name the same path apply
     // writes to. Any change here must stay in lock-step with
     // `src/core/furnace-apply-ftl.ts`.

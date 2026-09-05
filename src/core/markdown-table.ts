@@ -2,7 +2,7 @@
 /**
  * Minimal Markdown pipe-table parser/writer used by token-manager.
  *
- * This is **not** a general Markdown parser. It understands exactly the
+ * This is not a general Markdown parser. It understands exactly the
  * slice of GitHub-flavoured Markdown that FireForge emits into token docs:
  *
  *   - Leading `|` per row, trailing `|` optional.
@@ -13,10 +13,10 @@
  *   - Literal `|` and `\` inside a cell are expressed as `\|` and `\\`
  *     respectively. The parser treats any other backslash as a literal
  *     so prose-style backslashes in cell values (e.g. a Windows path)
- *     still round-trip. Unescaping happens at split time; serialization
+ *     still round-trip. Unescaping happens at split time. Serialization
  *     re-applies escapes so round-trips are exact for well-formed input.
  *
- * The parser returns **positional metadata** (`startLine`, `endLine`) so
+ * The parser returns positional metadata (`startLine`, `endLine`) so
  * callers can splice the table back into the surrounding document by
  * range instead of hand-rolled line counters. Mutation operations return
  * a fresh line array rather than mutating in place, matching the rest of
@@ -25,7 +25,7 @@
  * Fallback tolerance: rows with more cells than the header get their
  * overflow merged into the last column (using a literal `|` separator
  * between the merged values). This is for the rare case where a FireForge
- * writer emits an unescaped pipe — the parser still produces a consistent
+ * writer emits an unescaped pipe. The parser still produces a consistent
  * cell count rather than desynchronising the table. On re-serialize the
  * merged cell's literal pipes are escaped, so a malformed input becomes
  * a well-formed output after one round trip.
@@ -39,8 +39,8 @@ export interface MarkdownTable {
   headers: string[];
   /**
    * Data rows. Each row is an array with exactly `headers.length` entries,
-   * trimmed. Rows shorter than the header are right-padded with `''`;
-   * longer rows have trailing cells merged into the last column so the
+   * trimmed. Rows shorter than the header are right-padded with `''`.
+   * Longer rows have trailing cells merged into the last column so the
    * round-trip is faithful.
    */
   rows: string[][];
@@ -62,8 +62,8 @@ const SEPARATOR_ROW = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/;
 
 /**
  * Returns `true` if the given line looks like a table row (starts with
- * `|`, ignoring leading whitespace). Does not validate cell contents —
- * that is the caller's job.
+ * `|`, ignoring leading whitespace). Does not validate cell contents.
+ * That is the caller's job.
  */
 function isPipeRow(line: string): boolean {
   return /^\s*\|/.test(line);
@@ -106,12 +106,12 @@ function splitRow(row: string): string[] {
   }
   cells.push(current);
 
-  // Leading `|` gives an empty first segment; drop it.
+  // Leading `|` gives an empty first segment, so drop it.
   if (cells.length > 0 && cells[0] === '') {
     cells.shift();
   }
 
-  // Trailing `|` gives an empty last segment; drop it.
+  // Trailing `|` gives an empty last segment, so drop it.
   if (cells.length > 0 && cells[cells.length - 1] === '') {
     cells.pop();
   }
@@ -123,7 +123,7 @@ function splitRow(row: string): string[] {
  * Escapes a cell value so `serializeRow`'s pipe delimiters can be told
  * apart from literal `|` inside a cell on re-parse. `\` is escaped first
  * (to `\\`) so that the subsequent `|` → `\|` substitution cannot produce
- * an already-escaped sequence by accident — i.e. a cell containing
+ * an already-escaped sequence by accident. A cell containing
  * literal `\` followed by literal `|` round-trips as `\\\|`, which
  * unescape-on-split reads back as `\` + `|`, not as `\|`.
  */
@@ -147,7 +147,7 @@ function fitRowToColumns(cells: string[], columnCount: number): string[] {
     return [...cells, ...Array<string>(columnCount - cells.length).fill('')];
   }
 
-  // cells.length > columnCount — merge overflow into the last column.
+  // cells.length > columnCount: merge overflow into the last column.
   const kept = cells.slice(0, columnCount - 1);
   const tail = cells.slice(columnCount - 1).join(' | ');
   return [...kept, tail];
@@ -193,7 +193,7 @@ export function findNextTable(lines: string[], fromLine: number): MarkdownTable 
     for (let j = i + 2; j < lines.length; j++) {
       const rowLine = lines[j] ?? '';
       if (!isPipeRow(rowLine)) break;
-      // Another separator line would signal a malformed table — bail.
+      // Another separator line would signal a malformed table, so bail.
       if (SEPARATOR_ROW.test(rowLine)) break;
       rows.push(fitRowToColumns(splitRow(rowLine), headers.length));
       endLine = j + 1;
@@ -206,7 +206,7 @@ export function findNextTable(lines: string[], fromLine: number): MarkdownTable 
 }
 
 /**
- * Returns the first table whose header contains **all** of the provided
+ * Returns the first table whose header contains all of the provided
  * column names (case-sensitive, order-insensitive). Useful when several
  * pipe tables share a document and you want to select "the one with a
  * Mode column".
@@ -229,7 +229,7 @@ export function findTableByColumns(
 }
 
 /**
- * Returns the first table that appears **after** a heading matching the
+ * Returns the first table that appears after a heading matching the
  * given regex. The heading regex is applied to raw lines (no trimming)
  * so callers that want leading whitespace flexibility should include
  * `^\s*` or `^#+\s*` as appropriate.
@@ -260,7 +260,7 @@ export function serializeRow(cells: string[]): string {
 
 /**
  * Inserts a new row into `table.rows` at the given zero-based index. A
- * negative index counts from the end; `Infinity` appends. Mutates the
+ * negative index counts from the end. `Infinity` appends. Mutates the
  * table object so callers using {@link rewriteTableRows} see the update.
  */
 export function insertRow(table: MarkdownTable, cells: string[], index: number): void {

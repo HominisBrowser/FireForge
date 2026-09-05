@@ -2,11 +2,11 @@
 /**
  * Ownership-table assembly for `status`, split out of `status.ts` so the
  * human `--ownership` mode and the additive `ownership` block on the
- * `--json` payload build the SAME rows from the SAME scan.
+ * `--json` payload build the same rows from the same scan.
  *
  * A separate `--ownership` branch re-implements the shared scan and inlines
  * a second copy of the classification call, then discards everything but
- * each file's classification — so three back-to-back `status` invocations in
+ * each file's classification, so three back-to-back `status` invocations in
  * a gate pay three full worktree scans. Both callers hand this module the
  * already-classified files instead.
  *
@@ -37,7 +37,7 @@ export interface OwnershipJsonBlock {
 /**
  * Builds the flat path→owning-patch rows. Sources are the manifest's
  * `filesAffected`, worktree drift, and the cross-patch
- * duplicate-new-file-creation map produced by walking each patch body — the
+ * duplicate-new-file-creation map produced by walking each patch body, the
  * last being what keeps `status --ownership` aligned with `fireforge verify`
  * (see `buildOwnershipTable`'s header).
  *

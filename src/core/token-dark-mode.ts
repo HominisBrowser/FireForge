@@ -3,8 +3,8 @@
  * Dark-mode insertion helpers for the tokens CSS scaffold.
  *
  * `fireforge token add --mode override --dark-value ...` must land the dark
- * declaration INSIDE the nested `:root { }` of the
- * `@media (prefers-color-scheme: dark)` block; landing after that block has
+ * declaration inside the nested `:root { }` of the
+ * `@media (prefers-color-scheme: dark)` block. Landing after that block has
  * closed produces a declaration outside any rule. The helpers here scan the
  * comment-stripped source lines to find the *inner* `:root` block's closing
  * `}` and return a line index the caller can splice into. When the inner
@@ -38,33 +38,48 @@ function rootOpensBraceOnLine(line: string): boolean {
  * into the original array at the same index.
  *
  * We blank the comment body with spaces (rather than removing it) so
- * any downstream consumer that indexes by column — or derives an
- * insertion index as a line number in the original array — still
+ * any downstream consumer that indexes by column (or derives an
+ * insertion index as a line number in the original array) still
  * agrees on line numbers.
+ *
+ * Spans are copied with `indexOf` + `slice` rather than appended one
+ * character at a time. The per-character form allocated a rope link per
+ * character of every line in `tokens.css`, which on a long line cost far
+ * more than the scan it feeds: blanking a 1.6 MB line took ~39 ms against
+ * ~0.07 ms here, and the GC that pressure provoked grew faster than the
+ * input did — enough to make the scanners' linearity test read as
+ * super-linear on a loaded runner.
  */
 export function stripBlockCommentsInLines(lines: string[]): string[] {
   const out: string[] = [];
   let inBlockComment = false;
   for (const original of lines) {
+    // A line with no comment to enter or leave is already its own mirror.
+    if (!inBlockComment && !original.includes('/*')) {
+      out.push(original);
+      continue;
+    }
     let line = '';
-    for (let i = 0; i < original.length; i++) {
+    let i = 0;
+    while (i < original.length) {
       if (inBlockComment) {
-        if (original[i] === '*' && original[i + 1] === '/') {
-          line += '  ';
-          i += 1;
-          inBlockComment = false;
-        } else {
-          line += ' ';
+        const end = original.indexOf('*/', i);
+        if (end === -1) {
+          line += ' '.repeat(original.length - i);
+          break;
         }
-      } else if (original[i] === '/' && original[i + 1] === '*') {
-        line += '  ';
-        i += 1;
-        inBlockComment = true;
+        line += ' '.repeat(end + 2 - i);
+        i = end + 2;
+        inBlockComment = false;
       } else {
-        // `original[i]` is provably defined here (the bounds check is
-        // the loop condition), but TS narrows it to `string | undefined`.
-        // Default to empty string so the concat stays well-typed.
-        line += original[i] ?? '';
+        const start = original.indexOf('/*', i);
+        if (start === -1) {
+          line += original.slice(i);
+          break;
+        }
+        line += `${original.slice(i, start)}  `;
+        i = start + 2;
+        inBlockComment = true;
       }
     }
     out.push(line);
@@ -75,30 +90,24 @@ export function stripBlockCommentsInLines(lines: string[]): string[] {
 /**
  * Finds the closing `}` line of the nested `:root { ... }` block inside
  * a `@media (prefers-color-scheme: dark)` block. Returns `-1` when the
- * media block exists but the nested `:root` block is missing; returns
+ * media block exists but the nested `:root` block is missing. Returns
  * `null` when the `@media` block itself is absent.
  *
  * Runs the scan over a comment-stripped mirror of the source lines so
  * braces inside CSS comments (`/* before { after *\/`) do not offset
- * the depth counter. The scan is deliberately line-indexed so callers
+ * the depth counter. The scan is line-indexed so callers
  * can splice into the original `lines` array at the returned index.
  */
 export function findDarkRootInsertionIndex(lines: string[]): number | null {
   const stripped = stripBlockCommentsInLines(lines);
 
-  let darkMediaLine = -1;
-  for (let i = 0; i < stripped.length; i++) {
-    if (/prefers-color-scheme:\s*dark/.test(stripped[i] ?? '')) {
-      darkMediaLine = i;
-      break;
-    }
-  }
+  const darkMediaLine = stripped.findIndex((line) => /prefers-color-scheme:\s*dark/.test(line));
   if (darkMediaLine === -1) return null;
 
   // Walk the comment-stripped lines after the @media header and find
   // the first `:root {` opener inside the block. The opening brace of
   // the selector may live on the same line as the selector name or on
-  // the following line; either shape is tolerated.
+  // the following line. Either shape is tolerated.
   let rootOpenLine = -1;
   for (let i = darkMediaLine; i < stripped.length; i++) {
     const line = stripped[i] ?? '';
@@ -124,15 +133,15 @@ export function findDarkRootInsertionIndex(lines: string[]): number | null {
   }
   if (rootOpenLine === -1) return -1;
 
-  // Depth-count starting from the `:root` opener; see findBlockCloseIndex.
+  // Depth-count starting from the `:root` opener. See findBlockCloseIndex.
   return findBlockCloseIndex(stripped, rootOpenLine);
 }
 
 /**
  * Depth-counts braces from `startLine` (whose lines must already have
  * block comments stripped), returning the index of the line on which the
- * block opened there returns to its entry depth — i.e. the line carrying
- * the block's closing `}` — or -1 when the block never closes. The first
+ * block opened there returns to its entry depth, i.e. the line carrying
+ * the block's closing `}`, or -1 when the block never closes. The first
  * `{` encountered sets the entry depth, so the scan may start on the
  * selector/at-rule line itself rather than on the opener.
  */
@@ -163,20 +172,14 @@ export function findBlockCloseIndex(stripped: string[], startLine: number): numb
 /**
  * Finds the closing `}` of the outermost
  * `@media (prefers-color-scheme: dark)` block. Used as the fallback
- * landing site when the scaffold has no nested `:root { }` — the
+ * landing site when the scaffold has no nested `:root { }`. The
  * insertion helper uses this index to splice a brand-new `:root`
  * wrapper containing the dark declaration, rather than dropping the
  * value.
  */
 export function findDarkMediaCloseIndex(lines: string[]): number {
   const stripped = stripBlockCommentsInLines(lines);
-  let darkMediaLine = -1;
-  for (let i = 0; i < stripped.length; i++) {
-    if (/prefers-color-scheme:\s*dark/.test(stripped[i] ?? '')) {
-      darkMediaLine = i;
-      break;
-    }
-  }
+  const darkMediaLine = stripped.findIndex((line) => /prefers-color-scheme:\s*dark/.test(line));
   if (darkMediaLine === -1) return -1;
 
   return findBlockCloseIndex(stripped, darkMediaLine);

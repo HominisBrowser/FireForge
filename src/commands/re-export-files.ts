@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join } from 'node:path';
 
-import { getProjectPaths } from '../core/config.js';
 import {
   appendHistory,
   confirmDestructive,
@@ -14,7 +13,6 @@ import { listTrackedInHead } from '../core/git-file-ops.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
 import {
-  buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
   formatPatchLintIssue,
   lintPatchQueue,
@@ -23,21 +21,21 @@ import {
 import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy.js';
-import { buildNewFileTextProjection } from '../core/patch-transform.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { PatchMetadata, ReExportOptions } from '../types/commands/index.js';
-import type { FireForgeConfig } from '../types/config.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { pathExists } from '../utils/fs.js';
 import { info, outro, success, warn } from '../utils/logger.js';
 import { runPatchLint } from './export-shared.js';
+import { projectEntryBody } from './patch/entry-projection.js';
 
 /**
  * Computes the effective `tier` and `lintIgnore` carrying both the patch's
  * existing values and the CLI flag overrides.
  *
- * Tier resolution: the CLI flag takes precedence; the patch's existing tier
+ * Tier resolution: the CLI flag takes precedence. The patch's existing tier
  * is the fallback. Lint-ignore resolution: union of the patch's existing list
- * and the CLI flag values, de-duplicated; an empty result returns `undefined`
+ * and the CLI flag values, de-duplicated. An empty result returns `undefined`
  * so the caller can drop the field rather than write an empty array.
  */
 function resolveEffectiveTierAndLintIgnore(
@@ -69,16 +67,10 @@ async function runProjectedCrossPatchLint(
   projectedDiff: string
 ): Promise<ConflictReport | null> {
   const baseCtx = await buildPatchQueueContext(patchesDir);
-  const projectedNewFiles = buildNewFileTextProjection(projectedDiff);
-  const projectedModifiedFileAdditions = buildModifiedFileAdditionsFromDiff(projectedDiff);
+  const projection = projectEntryBody(projectedDiff);
   const projectedEntries: PatchQueueEntry[] = baseCtx.entries.map((entry) => {
     if (entry.filename !== targetFilename) return entry;
-    return {
-      ...entry,
-      diff: projectedDiff,
-      newFiles: projectedNewFiles,
-      modifiedFileAdditions: projectedModifiedFileAdditions,
-    };
+    return { ...entry, ...projection };
   });
 
   const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
@@ -181,7 +173,7 @@ async function confirmFilesModeProjection(args: {
     title: `Re-export ${target.filename} with --files`,
     summary,
     // A captured deletion still needs the confirmation: the patch will now
-    // REMOVE those files wherever it is applied, which is the same class of
+    // remove those files wherever it is applied, which is the same class of
     // consequence as shrinking the scope.
     yes: removed.length === 0 && deletedFiles.length === 0 ? true : options.yes === true,
     dryRun: isDryRun,
@@ -194,13 +186,13 @@ async function confirmFilesModeProjection(args: {
  * Splits the requested paths into what can be diffed and what is a deletion.
  *
  * A path absent from disk is one of two very different things, and
- * collapsing them is what made a DELETION impossible to capture.
+ * collapsing them is what made a deletion impossible to capture.
  *
  * Tracked in HEAD: a deletion. `git diff HEAD -- <path>` renders it as a
- * proper `deleted file mode` section, so it STAYS in the diff scope. (The
- * comment this replaces claimed the diff "would fail" on any missing path —
- * true only for the never-tracked case.) Dropping these produced the
- * dangerous shape: a re-export that reported success while writing a patch
+ * proper `deleted file mode` section, so it stays in the diff scope. (The
+ * comment this replaces claimed the diff "would fail" on any missing path,
+ * which is true only for the never-tracked case.) Dropping these produced
+ * the dangerous shape: a re-export that reported success while writing a patch
  * whose own file list claimed a path it did not restore, so a fresh clone
  * would apply it and resurrect exactly what the change meant to remove.
  *
@@ -259,7 +251,7 @@ async function classifyRequestedPaths(
  * the current (unchanged) queue instead of the projected state.
  */
 export async function reExportFilesInPlace(
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   selectedPatches: PatchMetadata[],
   options: ReExportOptions,
   config: FireForgeConfig
@@ -275,8 +267,8 @@ export async function reExportFilesInPlace(
 
   const requested = [...new Set(filesOption)].sort();
 
-  // Stale-furnace-source gate: same refusal as the generic re-export path —
-  // the projected diff would capture stale deployed copies.
+  // Stale-furnace-source gate: same refusal as the generic re-export path,
+  // since the projected diff would capture stale deployed copies.
   await enforceFreshFurnaceSources(
     paths.root,
     requested,
@@ -311,12 +303,11 @@ export async function reExportFilesInPlace(
 
   const actualProjectedFiles = extractAffectedFiles(projectedDiff);
   const actualProjectedSet = new Set(actualProjectedFiles);
-  // Domain is the FULL requested list, not the diffable subset. When the
+  // Domain is the full requested list, not the diffable subset. When the
   // subset was used, any path filtered out upstream was invisible to this
-  // check by construction — which is exactly how a dropped deletion slipped
-  // through while the run reported success. A patch that does not do what
-  // its own file list claims is the one property a manifest must never get
-  // wrong, so an explicitly named path that produced no hunk is a refusal.
+  // check, which is how a dropped deletion slipped through while the run
+  // reported success. A patch must do what its own file list claims, so an
+  // explicitly named path that produced no hunk is a refusal.
   const noDiffFiles = requested.filter((file) => !actualProjectedSet.has(file));
   if (noDiffFiles.length > 0) {
     throw new InvalidArgumentError(
@@ -344,16 +335,16 @@ export async function reExportFilesInPlace(
   const patchQueueCtx = (await pathExists(paths.patches))
     ? await buildPatchQueueContext(paths.patches)
     : undefined;
-  await runPatchLint(
-    paths.engine,
-    actualProjectedFiles,
-    projectedDiff,
+  await runPatchLint({
+    engineDir: paths.engine,
+    filesAffected: actualProjectedFiles,
+    diffContent: projectedDiff,
     config,
-    options.skipLint,
+    skipLint: options.skipLint,
     patchQueueCtx,
     ignoreChecks,
-    effectiveTier
-  );
+    patchTier: effectiveTier,
+  });
 
   const conflicts = await runProjectedCrossPatchLint(paths.patches, target.filename, projectedDiff);
   const filesUpdates = buildFilesModeMetadataUpdates(
@@ -405,12 +396,12 @@ export async function reExportFilesInPlace(
   // as the mutation (via the onCommitted hook) so two concurrent re-exports
   // cannot interleave records and a crash between mutation and append cannot
   // orphan the audit trail.
-  await updatePatchAndMetadata(
-    paths.patches,
-    target.filename,
-    projectedDiff,
-    filesUpdates,
-    async () => {
+  await updatePatchAndMetadata({
+    patchesDir: paths.patches,
+    filename: target.filename,
+    newContent: projectedDiff,
+    updates: filesUpdates,
+    onCommitted: async () => {
       await appendHistory(paths.patches, {
         operation: 're-export-files',
         args: {
@@ -424,12 +415,12 @@ export async function reExportFilesInPlace(
         result: 'ok',
       });
     },
-    {
+    policyGate: {
       config,
       command: 're-export --files',
       forceUnsafe: options.forceUnsafe === true,
-    }
-  );
+    },
+  });
 
   success(`Re-exported ${target.filename}`);
   outro('Re-export complete');

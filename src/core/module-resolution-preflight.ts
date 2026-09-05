@@ -4,20 +4,20 @@
  *
  * An `.sys.mjs` that a packaged module imports but whose `EXTRA_JS_MODULES`
  * registration never landed kills every xpcshell suite with `xpcshell return
- * code: -11` and ZERO output — no import error, no stack, nothing. The
+ * code: -11` and no output at all: no import error, no stack, nothing. The
  * queue-level `unregistered-system-module` check catches one shape of this:
- * a module NEWLY CREATED by a patch in the projected queue. The other shape
- * — modules imported from an ALREADY-EXISTING module before their moz.build
- * lines land — slips past it entirely.
+ * a module newly created by a patch in the projected queue. The other shape,
+ * modules imported from an already-existing module before their moz.build
+ * lines land, slips past it entirely.
  *
- * This preflight closes that gap by asking the question against the ENGINE
+ * This preflight closes that gap by asking the question against the engine
  * rather than against a projected diff: for every `resource:///modules/…`
  * specifier imported by any queue-owned module, does the module it names
  * exist, and is it registered in a moz.build that covers it?
  *
  * Scope is the queue-owned file set on purpose. A specifier that resolves to
- * no owned file is an UPSTREAM Firefox module, which FireForge does not
- * police and cannot cheaply enumerate; policing only what the fork owns is
+ * no owned file is an upstream Firefox module, which FireForge does not
+ * police and cannot cheaply enumerate. Policing only what the fork owns is
  * both the actionable set and the one that produces real incidents.
  */
 
@@ -67,7 +67,7 @@ async function readIfPresent(path: string): Promise<string | undefined> {
  * True when some `moz.build` at or above `moduleRelPath`'s directory (up
  * to, and including, the engine root) mentions the module's basename.
  *
- * Walking ancestors — rather than checking only the sibling `moz.build` —
+ * Walking ancestors, rather than checking only the sibling `moz.build`,
  * matches how Mozilla's build system actually works: a module list may sit
  * in a parent directory's `moz.build` with a path-qualified entry. The
  * check is a quoted-basename match for the same reason the queue-level
@@ -83,7 +83,7 @@ async function isRegisteredInAncestorMozBuild(
   // The entry may be the bare basename (`"Foo.sys.mjs"`, sibling
   // moz.build) or path-qualified relative to the moz.build that declares
   // it (`"sub/Foo.sys.mjs"`, ancestor moz.build). Both are the same
-  // registration; anchor on the closing quote and require a path boundary
+  // registration. Anchor on the closing quote and require a path boundary
   // so `NotFoo.sys.mjs` cannot satisfy `Foo.sys.mjs`.
   const quotedLeaf = new RegExp(`["'](?:[^"']*/)?${escapeRegex(leaf)}["']`);
   let dir = dirname(moduleRelPath);
@@ -108,7 +108,7 @@ async function isRegisteredInAncestorMozBuild(
  *
  * @param engineDir - Path to the engine checkout
  * @param ownedFiles - Engine-relative paths the patch queue owns
- * @returns Findings sorted by module path; empty when everything resolves
+ * @returns Findings sorted by module path. Empty when everything resolves
  */
 export async function findUnresolvedSystemModuleImports(
   engineDir: string,
@@ -134,7 +134,7 @@ export async function findUnresolvedSystemModuleImports(
   for (const [specifier, importers] of importersBySpecifier) {
     const suffix = moduleSourceSuffix(specifier);
     if (suffix === undefined) continue;
-    // Only fork-owned targets are policed; anything else is upstream.
+    // Only fork-owned targets are policed. Anything else is upstream.
     const target = owned.find((file) => file.endsWith(suffix));
     if (target === undefined) continue;
 

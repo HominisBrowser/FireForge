@@ -3,8 +3,8 @@
  * Dry-run plan formatter for `furnace create`.
  *
  * Lives outside `create.ts` so the authoring command stays under the
- * per-file LOC budget. The formatter is pure — all inputs are already
- * resolved by the command's validation phase — so it can be exercised
+ * per-file LOC budget. The formatter is pure (all inputs are already
+ * resolved by the command's validation phase), so it can be exercised
  * independently of the mutation plumbing.
  */
 
@@ -14,6 +14,7 @@ import {
   resolveXpcshellTestDir,
 } from '../../core/furnace-constants.js';
 import type { ResolvedTestStyle } from '../../types/furnace.js';
+import { deriveTestStem } from './test-file-name.js';
 
 export interface DryRunPlanInput {
   componentName: string;
@@ -24,7 +25,7 @@ export interface DryRunPlanInput {
   /**
    * Feature-scoped Fluent bundle the component participates in (the same
    * value that will be written to `furnace.json`'s `sharedFtl`). When set,
-   * the component's own `.ftl` is NOT scaffolded and the plan preview
+   * the component's own `.ftl` is not scaffolded and the plan preview
    * reflects that. Omit the key for the default per-component scaffold.
    */
   sharedFtl?: string;
@@ -34,8 +35,8 @@ export interface DryRunPlanInput {
   /**
    * Resolved `--test-dir` override (engine-relative, already validated by
    * `resolveValidatedTestDir`). Omit for the default `<binaryName>`-derived
-   * scaffold directory. The formatters MUST receive the same value the
-   * scaffolders get — the plan used to recompute the default from
+   * scaffold directory. The formatters must receive the same value the
+   * scaffolders get. The plan used to recompute the default from
    * `binaryName` and named a directory the real run never wrote to.
    */
   testDir?: string;
@@ -56,16 +57,12 @@ function formatTestSection(args: {
   const { testStyle, componentName, binaryName, testDir } = args;
   if (testStyle === 'none') return '';
 
-  const strippedName = componentName.startsWith('moz-') ? componentName.slice(4) : componentName;
-  const withoutBinaryPrefix = strippedName.startsWith(binaryName + '-')
-    ? strippedName.slice(binaryName.length + 1)
-    : strippedName;
-  const underscored = withoutBinaryPrefix.replace(/-/g, '_');
+  const underscored = deriveTestStem(componentName, binaryName);
 
   if (testStyle === 'browser-chrome') {
     // Same resolver as scaffoldTestFiles: the registration name is the
     // path below browser/base/content/test/, which under --test-dir is
-    // NOT the binary name.
+    // not the binary name.
     const testDirRel = resolveBrowserChromeTestDir(binaryName, testDir);
     const manifestName = testDirRel.slice(BROWSER_TEST_SCAFFOLD_ROOT.length);
     return (
@@ -96,7 +93,7 @@ export function formatSuccessNote(args: {
   testFiles: string[];
   testStyle: ResolvedTestStyle;
   binaryName: string;
-  /** Resolved `--test-dir` override; see {@link DryRunPlanInput.testDir}. */
+  /** Resolved `--test-dir` override. See {@link DryRunPlanInput.testDir}. */
   testDir?: string | undefined;
 }): string {
   const { componentName, files, testFiles, testStyle, binaryName, testDir } = args;
@@ -150,7 +147,7 @@ export function formatDryRunPlan(args: DryRunPlanInput): string {
   } = args;
 
   const componentFiles: string[] = [`${componentName}.mjs`, `${componentName}.css`];
-  // A per-component .ftl is scaffolded only when the component does NOT
+  // A per-component .ftl is scaffolded only when the component does not
   // opt into a shared feature-scoped bundle. Mirrors writeComponentFiles.
   if (localized && !sharedFtl) componentFiles.push(`${componentName}.ftl`);
 

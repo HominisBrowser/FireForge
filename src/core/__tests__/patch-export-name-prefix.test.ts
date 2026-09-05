@@ -13,8 +13,35 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   getNextPatchFilename,
   patchNameSlug,
+  sanitizeName,
   stripRedundantCategoryPrefix,
 } from '../patch-export.js';
+
+describe('sanitizeName', () => {
+  it('returns empty string for dash-only input', () => {
+    expect(sanitizeName('---')).toBe('');
+  });
+
+  it('truncates to 50 characters', () => {
+    expect(sanitizeName('a'.repeat(100))).toHaveLength(50);
+  });
+
+  it('collapses special characters into single dashes', () => {
+    expect(sanitizeName('my@@@file###name')).toBe('my-file-name');
+  });
+
+  it('handles Unicode and emoji', () => {
+    expect(sanitizeName('🔥test🚀')).toBe('test');
+  });
+
+  it('lowercases everything', () => {
+    expect(sanitizeName('MyTestFile')).toBe('mytestfile');
+  });
+
+  it('strips leading and trailing dashes', () => {
+    expect(sanitizeName('--my-file--')).toBe('my-file');
+  });
+});
 
 describe('patchNameSlug (trailing .patch normalization)', () => {
   it('strips a trailing .patch instead of slugging it into -patch', () => {

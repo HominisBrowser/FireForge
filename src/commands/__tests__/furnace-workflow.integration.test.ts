@@ -84,7 +84,7 @@ describe('furnace→export workflow integration', () => {
     });
 
     // Manually simulate what furnace apply does: write a component file into engine
-    // (Full furnace apply requires complex registration targets; we test the concept)
+    // (Full furnace apply requires complex registration targets, so we test the concept)
     await writeFiles(engineDir, {
       'toolkit/content/widgets/moz-mybrowser-panel/moz-mybrowser-panel.mjs': [
         '/* SPDX-License-Identifier: EUPL-1.2 */',

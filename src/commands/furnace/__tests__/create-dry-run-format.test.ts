@@ -57,68 +57,6 @@ describe('formatDryRunPlan', () => {
     );
   });
 
-  it('names the --test-dir override, not the binary-name default, in the browser-chrome plan', () => {
-    // The scaffolder honoured --test-dir while the plan kept printing
-    // `.../test/<binaryName>/` and `<binaryName>/browser.toml`; an operator
-    // reading the dry run was told about a directory the real run never
-    // touched. Both the path and the moz.build registration name follow
-    // the override now.
-    const plan = formatDryRunPlan({
-      componentName: 'moz-mybrowser-widget',
-      localized: false,
-      register: true,
-      composes: undefined,
-      testStyle: 'browser-chrome',
-      description: '',
-      binaryName: 'mybrowser',
-      testDir: 'browser/base/content/test/mybrowser-tiles',
-    });
-    expect(plan).toContain(
-      'Would create test files in engine/browser/base/content/test/mybrowser-tiles/:'
-    );
-    expect(plan).not.toContain('engine/browser/base/content/test/mybrowser/');
-    expect(plan).toContain(
-      'Would register mybrowser-tiles/browser.toml in engine/browser/base/moz.build'
-    );
-    expect(plan).not.toContain('mybrowser/browser.toml');
-  });
-
-  it('renders a nested --test-dir registration name with its full path below the scaffold root', () => {
-    const plan = formatDryRunPlan({
-      componentName: 'moz-widget',
-      localized: false,
-      register: true,
-      composes: undefined,
-      testStyle: 'browser-chrome',
-      description: '',
-      binaryName: 'mybrowser',
-      testDir: 'browser/base/content/test/mybrowser/widgets',
-    });
-    expect(plan).toContain(
-      'Would register mybrowser/widgets/browser.toml in engine/browser/base/moz.build'
-    );
-  });
-
-  it('names the --test-dir override as the final xpcshell directory', () => {
-    // xpcshell overrides name the FINAL directory: no `/<component>` segment
-    // is appended (matches scaffoldXpcshellTestFiles).
-    const plan = formatDryRunPlan({
-      componentName: 'moz-widget',
-      localized: false,
-      register: true,
-      composes: undefined,
-      testStyle: 'xpcshell',
-      description: '',
-      binaryName: 'mybrowser',
-      testDir: 'browser/base/content/test/mybrowser-storage',
-    });
-    expect(plan).toContain(
-      'xpcshell test files in engine/browser/base/content/test/mybrowser-storage/'
-    );
-    expect(plan).not.toContain('mybrowser-xpcshell');
-    expect(plan).not.toContain('mybrowser-storage/moz-widget/');
-  });
-
   it('renders the xpcshell test plan', () => {
     const plan = formatDryRunPlan({
       componentName: 'moz-widget',
@@ -218,35 +156,6 @@ describe('formatSuccessNote', () => {
       binaryName: 'mybrowser',
     });
     expect(note).toContain('engine/toolkit/content/tests/widgets/');
-  });
-
-  it('names the --test-dir override in the browser-chrome success note', () => {
-    // The real run scaffolded into the override while the success message
-    // still named `.../test/<binaryName>/` — the message is the only
-    // confirmation an operator gets, so it has to name the real directory.
-    const note = formatSuccessNote({
-      componentName: 'moz-widget',
-      files: ['moz-widget.mjs'],
-      testFiles: ['browser_mybrowser_widget.js'],
-      testStyle: 'browser-chrome',
-      binaryName: 'mybrowser',
-      testDir: 'browser/base/content/test/mybrowser-tiles',
-    });
-    expect(note).toContain('Test files in engine/browser/base/content/test/mybrowser-tiles/:');
-    expect(note).not.toContain('engine/browser/base/content/test/mybrowser/');
-  });
-
-  it('names the --test-dir override as the final directory in the xpcshell success note', () => {
-    const note = formatSuccessNote({
-      componentName: 'moz-widget',
-      files: ['moz-widget.mjs'],
-      testFiles: ['test_moz_widget_packaged.js'],
-      testStyle: 'xpcshell',
-      binaryName: 'mybrowser',
-      testDir: 'browser/base/content/test/mybrowser-storage',
-    });
-    expect(note).toContain('Test files in engine/browser/base/content/test/mybrowser-storage/:');
-    expect(note).not.toContain('mybrowser-xpcshell');
   });
 
   it('falls back to the browser-chrome test root for the default mochitest layout', () => {

@@ -23,7 +23,7 @@ export function isString(value: unknown): value is string {
  * @returns True if value is a finite number
  */
 export function isNumber(value: unknown): value is number {
-  // Number.isFinite matches the documented contract: NaN AND ±Infinity are
+  // Number.isFinite matches the documented contract: NaN and ±Infinity are
   // excluded (a JSON config field of 1e999 parses to Infinity and used to
   // validate as a legal number).
   return typeof value === 'number' && Number.isFinite(value);
@@ -48,9 +48,9 @@ export function isPositiveInteger(value: unknown): value is number {
  * orders instead of failing fast.
  *
  * Rejects leading-zero forms ("01"), decimals ("1.5"), whitespace, and
- * non-numeric garbage via a strict regex — only the canonical
- * representation is accepted, so there is no ambiguity between what the user
- * typed and what the value becomes on disk.
+ * non-numeric garbage via a strict regex. Only the canonical representation
+ * is accepted, so there is no ambiguity between what the user typed and what
+ * the value becomes on disk.
  *
  * @param flagName - Flag name to include in the error (e.g. `--order`)
  * @param rawValue - Raw string value from Commander
@@ -96,13 +96,13 @@ export function isArray(value: unknown): value is unknown[] {
  * Narrows a JSON value to a JSON object node (excludes arrays and `null`).
  *
  * Unlike {@link isObject} this accepts only values already known to be JSON
- * data, so the narrowed `JsonObject` keeps its concrete value contract —
- * use it when walking a `JsonValue` tree rather than at `unknown` boundaries.
+ * data, so the narrowed `JsonObject` keeps its concrete value contract.
+ * Use it when walking a `JsonValue` tree rather than at `unknown` boundaries.
  * @param value - JSON value to check
  * @returns True if value is a JSON object node
  */
 export function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return isObject(value);
 }
 
 /**
@@ -126,16 +126,16 @@ export function isValidFirefoxCandidate(candidate: string): boolean {
 /**
  * Naming contract for this module's checks.
  *
- * `validate*` is easy to spread across incompatible return contracts — some
+ * `validate*` is easy to spread across incompatible return contracts: some
  * throwing and returning void, some returning an issue list, some a parsed
- * value, some a boolean, some an error MESSAGE — and a caller cannot tell
- * which from the name. Passing a THROWING `validate*` to a clack `validate`
+ * value, some a boolean, some an error message. A caller cannot tell which
+ * from the name. Passing a throwing `validate*` to a clack `validate`
  * callback, which expects a returned message, kills the prompt instead of
  * re-prompting.
  *
  * The two dominant contracts keep the prefix:
- *   - `validate*` — throws on failure, or returns an issue list.
- *   - `is*` / `has*` — a type predicate or boolean.
+ *   - `validate*`: throws on failure, or returns an issue list.
+ *   - `is*` / `has*`: a type predicate or boolean.
  * The message-returning minority is `describe*Problem`, which reads as what
  * it is: a description of what is wrong, or `undefined`.
  *
@@ -146,40 +146,58 @@ export function isValidFirefoxCandidate(candidate: string): boolean {
  * Valid Firefox product identifiers.
  *
  * `satisfies readonly FirefoxProduct[]` links the runtime list to the union
- * in ONE direction: it rejects an entry here that the union does not
- * declare. It cannot see a union member missing from this list — widening a
- * `readonly T[]` check never fails for being short. The reverse direction is
- * covered by the exhaustive switch in `utils/__tests__/validation.test.ts`,
- * which fails to compile when the union grows.
+ * in one direction: it rejects an entry here that the union does not
+ * declare. It cannot see a union member missing from this list, because
+ * widening a `readonly T[]` check never fails for being short. The reverse direction is
+ * covered by the `ExhaustiveFirefoxProductList` operand below, which stops
+ * compiling when the union grows past this list.
  */
-export const FIREFOX_PRODUCTS = [
+const FIREFOX_PRODUCT_VALUES = [
   'firefox',
   'firefox-esr',
   'firefox-beta',
   'firefox-devedition',
-] as const satisfies readonly FirefoxProduct[];
+] as const;
+
+/**
+ * The type of a complete `FIREFOX_PRODUCTS` list: `readonly FirefoxProduct[]`
+ * while `T` covers every member of the union, and `never` as soon as one is
+ * missing.
+ *
+ * A plain `satisfies readonly FirefoxProduct[]` only rejects an entry the
+ * union does not declare. Widening never fails for being short, so a union
+ * member with no entry slipped through. Satisfying `never` is impossible, so
+ * routing the check through this alias closes that direction too. It has to
+ * be a `satisfies` operand rather than a standalone alias: an alias nothing
+ * instantiates is never evaluated and would assert nothing.
+ */
+type ExhaustiveFirefoxProductList<T extends FirefoxProduct> =
+  Exclude<FirefoxProduct, T> extends never ? readonly FirefoxProduct[] : never;
+
+export const FIREFOX_PRODUCTS = FIREFOX_PRODUCT_VALUES satisfies ExhaustiveFirefoxProductList<
+  (typeof FIREFOX_PRODUCT_VALUES)[number]
+>;
 
 /**
  * Validates a Firefox product string.
  *
- * A type predicate, matching its siblings {@link isValidPatchCategory} and
- * {@link isValidProjectLicense}. Returning plain `boolean` would force
- * `as FirefoxProduct` casts at the call sites even though the `.includes`
- * check IS the runtime proof.
+ * A type predicate, matching its sibling {@link isValidProjectLicense}.
+ * Returning plain `boolean` would force `as FirefoxProduct` casts at the
+ * call sites even though the `.includes` check is the runtime proof.
  */
 export const isValidFirefoxProduct = makeEnumGuard(FIREFOX_PRODUCTS);
 
 /**
  * Builds a type predicate from a `readonly` tuple of allowed values.
  *
- * Deriving the type from the list — rather than declaring a union and
- * hand-maintaining a matching array — removes a whole class of drift: a
+ * Deriving the type from the list, rather than declaring a union and
+ * hand-maintaining a matching array, removes a whole class of drift: a
  * union can otherwise accept a stale allowlist with no compile error, and a
  * copy of the member list on the `fireforge.json` read path can silently
  * reject a newly added value.
  *
  * Returning a predicate rather than a boolean is what removes the `as`
- * casts: `.includes` IS the runtime proof, so the caller should not have to
+ * casts: `.includes` is the runtime proof, so the caller should not have to
  * re-assert it. `ParsedRecord.stringEnum` (src/utils/parse.ts) consumes
  * exactly this shape.
  *
@@ -206,11 +224,6 @@ export const isValidProjectLicense = makeEnumGuard(PROJECT_LICENSES);
  * Valid patch categories.
  */
 export const PATCH_CATEGORIES = ['branding', 'ui', 'privacy', 'security', 'infra'] as const;
-
-/**
- * Validates a patch category string.
- */
-export const isValidPatchCategory = makeEnumGuard(PATCH_CATEGORIES);
 
 /**
  * Checks whether a Firefox version string has an ESR suffix.
@@ -304,13 +317,6 @@ export function isValidAppId(appId: string): boolean {
 }
 
 /**
- * Checks if a value is defined (not undefined or null).
- */
-export function isDefined<T>(value: T | undefined | null): value is T {
-  return value !== undefined && value !== null;
-}
-
-/**
  * Validates that a string is a legal CSS custom property identifier (the part after `--`).
  *
  * A valid CSS custom property name requires the ident portion to:
@@ -375,7 +381,7 @@ export function normalizeTokenName(name: string): string {
  * Normalizes a patch display name against its category:
  * strips a trailing `.patch` and any redundant `NNN-<category>-` /
  * `<category>-` prefixes, case-insensitively and repeatedly, mirroring
- * the filename slug pipeline's require-the-category-token rule — a bare
+ * the filename slug pipeline's require-the-category-token rule. A bare
  * leading number is never stripped, so names like `2-step-verification`
  * survive intact. Falls back to the `.patch`-stripped stem when the
  * strip would empty the name.

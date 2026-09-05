@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Loud guard against silently reverting UNEXPORTED engine drift.
+ * Loud guard against silently reverting unexported engine drift.
  *
  * `build-prepare` rewrites engine files from FireForge-owned sources before
  * every build: the branding tree, every Furnace-managed component, and
  * `mozconfig`. On a multi-session checkout that is a silent destructive
- * write — one session edits a file in `engine/` while another holds the
+ * write: one session edits a file in `engine/` while another holds the
  * engine lock, the lock-holder's build rewrites it back to its patch
  * baseline, and the editing session's later `re-export --wait-lock`
- * captures a HYBRID file that every gate then passes.
+ * captures a hybrid file that every gate then passes.
  *
- * This guard runs BEFORE the writes, classifies the engine's dirty files
+ * This guard runs before the writes, classifies the engine's dirty files
  * with the same classifier `fireforge status` uses, and reports the ones
  * whose content is explained by neither a patch body nor the pristine
  * baseline. Advisory by default (a warning naming every file), refusing
@@ -27,12 +27,12 @@ import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from './git-sta
 import { type ClassifiedFile, classifyFiles } from './status-classify.js';
 
 /**
- * Classifications whose on-disk content is explained by NEITHER a patch
- * body nor the pristine baseline — exactly the content a build-prepare
+ * Classifications whose on-disk content is explained by neither a patch
+ * body nor the pristine baseline, which is the content a build-prepare
  * overwrite would destroy without a record anywhere.
  *
- * `patch-backed` and `furnace` are excluded because their content IS the
- * recorded state; `branding` is excluded because the branding writer
+ * `patch-backed` and `furnace` are excluded because their content is the
+ * recorded state. `branding` is excluded because the branding writer
  * preserves unmanaged lines rather than overwriting them.
  */
 const AT_RISK_CLASSIFICATIONS = new Set(['unmanaged', 'patch-owned-drift', 'conflict']);
@@ -77,15 +77,15 @@ function isOverwrittenByBuildPrepare(
  * Narrows the status entries to the ones build-prepare can overwrite,
  * expanding collapsed untracked directories on the way.
  *
- * Git reports a WHOLLY untracked directory as a single `?? dir/` entry
+ * Git reports a wholly untracked directory as a single `?? dir/` entry
  * rather than listing the files under it. A directory entry has no content
  * to compare, so `classifyFiles` matches it against neither a patch body nor
- * the pristine baseline and buckets it `unmanaged` — an at-risk
- * classification. Expanding here is what keeps this guard and
- * `status --unmanaged`, which expands, agreeing by construction.
+ * the pristine baseline and buckets it `unmanaged`, an at-risk
+ * classification. Expanding here keeps this guard in agreement with
+ * `status --unmanaged`, which also expands.
  *
  * Expansion is scoped to build-prepare-owned prefixes on both sides of the
- * walk: a collapsed directory that merely CONTAINS an owned prefix
+ * walk: a collapsed directory that merely contains an owned prefix
  * (`components/` when `components/custom/` is Furnace-managed) is rewritten
  * to the owned prefixes beneath it, so the enumeration never walks an
  * unrelated subtree and never trips the per-directory expansion cap.
@@ -186,7 +186,7 @@ export function formatUnexportedDriftWarning(files: readonly UnexportedDriftAtRi
     return `  ${entry.file} [${entry.classification}]${owner}`;
   });
   return (
-    `This build is about to rewrite ${String(files.length)} engine file(s) from FireForge-owned ` +
+    `This build is about to rewrite ${files.length} engine file(s) from FireForge-owned ` +
     'sources, and their current content matches NEITHER a patch body NOR the pristine ' +
     'baseline — so the edits below are recorded nowhere and the build will destroy them:\n' +
     `${rows.join('\n')}\n\n` +

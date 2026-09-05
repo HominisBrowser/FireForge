@@ -14,8 +14,8 @@ import { pickDefined } from '../utils/options.js';
 import { FIREFOX_PRODUCTS, PROJECT_LICENSES } from '../utils/validation.js';
 import {
   buildSetupConfig,
-  parseFirefoxProductOption,
-  parseProjectLicenseOption,
+  resolveFirefoxProduct,
+  resolveProjectLicense,
   resolveSetupInputs,
   validateSetupOptions,
   writeSetupProjectFiles,
@@ -96,7 +96,7 @@ export function registerSetup(program: Command, { withErrorHandling }: CommandCo
     .option('-f, --force', 'Overwrite existing configuration without prompting')
     // `--yes` is a plain alias here: `setup`'s only bypass is the overwrite
     // prompt, so the two flags mean exactly the same thing. Seventeen other
-    // commands spell this bypass `--yes`; accepting it means a scripted
+    // commands spell this bypass `--yes`. Accepting it means a scripted
     // sequence can use one spelling throughout.
     .option('-y, --yes', 'Alias for --force: skip the overwrite confirmation')
     .action(
@@ -118,17 +118,11 @@ export function registerSetup(program: Command, { withErrorHandling }: CommandCo
           if (yes === true) setupOptions.force = true;
 
           if (product !== undefined) {
-            const parsedProduct = parseFirefoxProductOption(product);
-            if (parsedProduct !== undefined) {
-              setupOptions.product = parsedProduct;
-            }
+            setupOptions.product = resolveFirefoxProduct(product, '--product');
           }
 
           if (license !== undefined) {
-            const parsedLicense = parseProjectLicenseOption(license);
-            if (parsedLicense !== undefined) {
-              setupOptions.license = parsedLicense;
-            }
+            setupOptions.license = resolveProjectLicense(license, '--license');
           }
 
           await setupCommand(resolve(process.cwd()), setupOptions);

@@ -18,15 +18,10 @@ import type { FireForgeConfig, FireForgeState } from '../../types/config.js';
 import { pathExists, pathExistsStrict, readJson, writeJson } from '../../utils/fs.js';
 import { verbose, warn } from '../../utils/logger.js';
 import {
-  CONFIG_FILENAME,
   configExists,
-  FIREFORGE_DIR,
-  getProjectPaths,
   loadConfig,
   loadState,
   mutateConfig,
-  saveState,
-  STATE_FILENAME,
   updateState,
   validateConfig,
   writeConfig,
@@ -70,20 +65,6 @@ describe('config helpers', () => {
     mockQuarantineStateFile.mockResolvedValue(undefined);
   });
 
-  it('builds the expected project paths', () => {
-    expect(getProjectPaths('/project')).toEqual({
-      root: '/project',
-      config: nativePath(`/project/${CONFIG_FILENAME}`),
-      fireforgeDir: nativePath(`/project/${FIREFORGE_DIR}`),
-      state: nativePath(`/project/${FIREFORGE_DIR}/${STATE_FILENAME}`),
-      engine: nativePath('/project/engine'),
-      patches: nativePath('/project/patches'),
-      configs: nativePath('/project/configs'),
-      src: nativePath('/project/src'),
-      componentsDir: nativePath('/project/components'),
-    });
-  });
-
   it('checks whether the config file exists', async () => {
     mockPathExistsStrict.mockResolvedValueOnce(true);
 
@@ -108,6 +89,18 @@ describe('validateConfig', () => {
     expect(
       validateConfig({ ...base, firefox: { ...base.firefox, sha256: digest } }).firefox.sha256
     ).toBe(digest.toLowerCase());
+  });
+
+  it('accepts the firefox.allowUnverifiedDownload opt-out and rejects non-booleans', () => {
+    const base = makeValidConfig();
+    expect(
+      validateConfig({ ...base, firefox: { ...base.firefox, allowUnverifiedDownload: true } })
+        .firefox.allowUnverifiedDownload
+    ).toBe(true);
+    expect(validateConfig(base).firefox.allowUnverifiedDownload).toBeUndefined();
+    expect(() =>
+      validateConfig({ ...base, firefox: { ...base.firefox, allowUnverifiedDownload: 'yes' } })
+    ).toThrow('Config field "firefox.allowUnverifiedDownload" must be a boolean');
   });
 
   it('accepts an optional firefox release-candidate build directory', () => {
@@ -321,7 +314,7 @@ describe('validateConfig', () => {
 
   // The thresholds were module constants until 0.45.0, and under the
   // recommended `--max-warnings 0` posture the "soft" 750 band is a hard
-  // failure — so a project that needs a different number needs a dial.
+  // failure, so a project that needs a different number needs a dial.
   it('accepts patchLint.fileSizeThresholds and merges partial tiers', () => {
     const config = validateConfig(
       makeValidConfig({
@@ -366,8 +359,8 @@ describe('validateConfig', () => {
     ).toThrow('Config field "patchLint.fileSizeThresholds.general" has unknown key "nope"');
   });
 
-  // Ordering is checked against the MERGED triple, so setting only one
-  // field cannot silently land it below the default beneath it — which
+  // Ordering is checked against the merged triple, so setting only one
+  // field cannot silently land it below the default beneath it, which
   // would disable a band rather than fail anything.
   it('rejects an override that lands out of order against the defaults', () => {
     expect(() =>
@@ -781,7 +774,7 @@ describe('config persistence', () => {
     const PROBE_KEY = 'fireforgePollutionProbe';
 
     afterEach(() => {
-      // Defensive cleanup — if any assertion somehow pollutes the chain
+      // Defensive cleanup: if any assertion somehow pollutes the chain
       // (it shouldn't, since the guard throws), remove it so downstream
       // tests don't inherit the poisoned prototype. `Reflect.deleteProperty`
       // sidesteps `@typescript-eslint/no-dynamic-delete` for a probe key
@@ -873,17 +866,13 @@ describe('config persistence', () => {
     );
   });
 
-  it('saves state and merges incremental updates', async () => {
+  it('merges incremental updates', async () => {
     mockPathExists.mockResolvedValueOnce(true);
     mockReadJson.mockResolvedValueOnce({ baseCommit: 'abc123' });
 
-    await saveState('/project', { baseCommit: 'def456' });
     await updateState('/project', { buildMode: 'debug' });
 
     expect(mockWriteJson).toHaveBeenNthCalledWith(1, nativePath('/project/.fireforge/state.json'), {
-      baseCommit: 'def456',
-    });
-    expect(mockWriteJson).toHaveBeenNthCalledWith(2, nativePath('/project/.fireforge/state.json'), {
       baseCommit: 'abc123',
       buildMode: 'debug',
     });

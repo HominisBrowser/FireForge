@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Furnace staleness advisory — shared between `fireforge run` and
+ * Furnace staleness advisory, shared between `fireforge run` and
  * `fireforge watch`. Both commands launch the built browser without
  * first running `furnace apply`, so this helper surfaces a warning when
  * component files have drifted from the last-applied checksums and the
@@ -23,7 +23,7 @@ import {
 /**
  * Emits a warning when any tracked override or custom component has
  * changed on disk since the last apply. Safe to call from any build-time
- * command that does not auto-apply — a failure inside the probe is
+ * command that does not auto-apply. A failure inside the probe is
  * downgraded to a verbose log and the caller continues.
  */
 export async function warnIfFurnaceStale(projectRoot: string): Promise<void> {

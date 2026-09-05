@@ -8,7 +8,12 @@ import { verbose } from '../utils/logger.js';
 import { exec, executableExists } from '../utils/process.js';
 
 /** Cached Python resolution state */
-const pythonCache: { python?: string; requirementsKey?: string } = {};
+/**
+ * The resolved interpreter and the requirement range it was resolved for.
+ * `undefined` means "not resolved yet". The two always move together, so
+ * one nullable record beats two independently-deletable fields.
+ */
+let pythonCache: { python: string; requirementsKey: string } | undefined;
 
 interface PythonVersion {
   major: number;
@@ -105,10 +110,12 @@ function buildPythonCandidates(requirements: MachPythonRequirements): string[] {
 
 /**
  * Resets the resolved Python executable. Primarily useful for testing.
+ *
+ * @internal Exported only so tests can reach it. Not part of the public
+ * surface.
  */
 export function resetResolvedPython(): void {
-  delete pythonCache.python;
-  delete pythonCache.requirementsKey;
+  pythonCache = undefined;
 }
 
 /**
@@ -120,7 +127,7 @@ export async function ensurePython(engineDir?: string): Promise<void> {
   const requirements = await readMachPythonRequirements(engineDir);
   const requirementsKey = formatRequirementsKey(requirements);
 
-  if (pythonCache.python && pythonCache.requirementsKey === requirementsKey) {
+  if (pythonCache?.requirementsKey === requirementsKey) {
     return;
   }
 
@@ -135,8 +142,7 @@ export async function ensurePython(engineDir?: string): Promise<void> {
         ]);
         const version = parsePythonVersion(stdout);
         if (version && isVersionWithinRequirements(version, requirements)) {
-          pythonCache.python = candidate;
-          pythonCache.requirementsKey = requirementsKey;
+          pythonCache = { python: candidate, requirementsKey };
           return;
         }
       } catch (error: unknown) {
@@ -158,7 +164,7 @@ export async function ensurePython(engineDir?: string): Promise<void> {
  */
 export async function getPython(engineDir?: string): Promise<string> {
   await ensurePython(engineDir);
-  if (!pythonCache.python) {
+  if (pythonCache === undefined) {
     throw new PythonNotFoundError();
   }
   return pythonCache.python;

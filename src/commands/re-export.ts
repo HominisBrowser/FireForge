@@ -16,7 +16,17 @@ import type { PatchesManifest, PatchMetadata, ReExportOptions } from '../types/c
 import type { FireForgeConfig } from '../types/config.js';
 import { elapsedSince } from '../utils/elapsed.js';
 import { toError } from '../utils/errors.js';
-import { cancel, info, intro, isCancel, outro, spinner, success, warn } from '../utils/logger.js';
+import {
+  cancel,
+  info,
+  intro,
+  isCancel,
+  outro,
+  spinner,
+  type SpinnerHandle,
+  success,
+  warn,
+} from '../utils/logger.js';
 import type { AdjacentUnmanagedContext } from './re-export-adjacent.js';
 import {
   loadScanFilesAssignments,
@@ -48,8 +58,9 @@ async function resolveSelectedPatches(
     for (const identifier of patches) {
       const match = resolvePatchIdentifier(identifier, manifest.patches);
       if (!match) {
-        // Suggest, never dump: a wrong guess would otherwise print the
-        // whole ~300-entry manifest, burying the error it was reporting.
+        // Suggest close matches instead of dumping the queue: a wrong guess
+        // would otherwise print the whole ~300-entry manifest, burying the
+        // error it was reporting.
         throw new InvalidArgumentError(
           formatPatchNotFoundError(identifier, manifest.patches),
           identifier
@@ -60,7 +71,7 @@ async function resolveSelectedPatches(
     return selectedPatches;
   }
 
-  // No patches specified — prompt or error
+  // No patches specified: prompt or error
   const isInteractive = stdioIsInteractive();
 
   if (!isInteractive) {
@@ -216,17 +227,17 @@ export async function reExportCommand(
           `Re-exporting ${index + 1}/${selectedPatches.length}: ${patch.filename} (${patch.filesAffected.length} file(s), ${elapsedSince(startedAt)} elapsed)...`
         );
         try {
-          const exported = await reExportSinglePatchWithIndexLockRetry(
+          const exported = await reExportSinglePatchWithIndexLockRetry({
             patch,
             paths,
             manifest,
-            patchOptions,
+            options: patchOptions,
             isDryRun,
             config,
             adjacentCtx,
             driftCtx,
-            lintCtx
-          );
+            lintCtx,
+          });
           if (exported) {
             reExported++;
             reExportedFilenames.push(patch.filename);
@@ -252,7 +263,7 @@ export async function reExportCommand(
 
   // `--stamp` only fires on a run where every selected patch refreshed
   // cleanly. A partial success would leave some patches with a stale body
-  // but a new version — the opposite of the "what I tested, what the
+  // but a new version, the opposite of the "what I tested, what the
   // manifest says" invariant `sourceEsrVersion` exists to record. A
   // non-empty `reExportedFilenames` with fewer entries than `selectedPatches`
   // means a lint failure or missing-file skip landed somewhere in the loop,
@@ -302,7 +313,7 @@ function buildForeignDriftContext(options: ReExportOptions): ForeignDriftContext
 /**
  * Names `--expect-unmanaged` paths that were never met this run. A typo'd
  * carve-out silently leaves the refusal armed for the path it was meant to
- * admit — and, worse, reads as an approval that is in force when it is not.
+ * admit, and reads as an approval that is in force when it is not.
  * A warning rather than a refusal: an approved path legitimately goes unmet
  * when the reviewed file has since been adopted into a patch, which is the
  * outcome the carve-out exists to be retired by.
@@ -329,15 +340,22 @@ function warnUnseenApprovedUnmanaged(adjacentCtx: AdjacentUnmanagedContext): voi
 function throwRunLevelRefusals(
   adjacentCtx: AdjacentUnmanagedContext,
   driftCtx: ForeignDriftContext,
-  progress: ReturnType<typeof spinner>
+  progress: SpinnerHandle
 ): void {
   if (adjacentCtx.refusals.length > 0) {
     progress.error('Re-export refused');
-    const names = adjacentCtx.refusals.map((r) => r.patchFilename).join(', ');
+    // Each offender is named with the owned directory that made it
+    // adjacent: an unattended run reads only this line, and without the
+    // anchor it cannot tell which of a multi-directory patch's locations
+    // the file sits beside.
+    const offenders = adjacentCtx.refusals
+      .map((r) => `${r.patchFilename} (${r.anchored.join(', ')})`)
+      .join('; ');
     throw new GeneralError(
-      `Refused ${String(adjacentCtx.refusals.length)} patch(es) with adjacent unmanaged files ` +
-        `(--refuse-adjacent-unmanaged): ${names}. Adopt reviewed files with --scan --scan-file, ` +
-        `or export them as a new patch.`
+      `Refused ${adjacentCtx.refusals.length} patch(es) with adjacent unmanaged files ` +
+        `(--refuse-adjacent-unmanaged): ${offenders}. Adjacent means the file sits in a ` +
+        `directory the patch already owns a file in. Adopt reviewed files with ` +
+        `--scan --scan-file, or export them as a new patch.`
     );
   }
 
@@ -347,10 +365,10 @@ function throwRunLevelRefusals(
     const unreadable = driftCtx.refusals.filter((r) => r.reason === 'baseline-unreadable');
     const unreadablePart =
       unreadable.length > 0
-        ? ` ${String(unreadable.length)} of these refused because the old patch body was missing or unreadable, so the drift comparison could not run (fail-closed).`
+        ? ` ${unreadable.length} of these refused because the old patch body was missing or unreadable, so the drift comparison could not run (fail-closed).`
         : '';
     throw new GeneralError(
-      `Refused ${String(driftCtx.refusals.length)} patch(es) whose refreshed body would absorb ` +
+      `Refused ${driftCtx.refusals.length} patch(es) whose refreshed body would absorb ` +
         `engine edits not present in the old patch body (--refuse-foreign-drift): ${names}.${unreadablePart}\n\n` +
         'The flag cannot tell WHO wrote those lines, and the two populations have opposite ' +
         'remedies:\n' +
@@ -367,7 +385,7 @@ function throwRunLevelRefusals(
  * Prints the end-of-run summary and enforces the exit contract: a partial run
  * exits non-zero by default. "Re-exported 2 of 3" printing with exit 0 lets a
  * partial refresh ride an `&&` chain as success. The summary still prints
- * first so the honest "N of M" accounting stays visible; the throw then
+ * first so the honest "N of M" accounting stays visible. The throw then
  * carries the failed/skipped breakdown. Dry-run included: a preview
  * reporting that the real run would partially fail must not read as a passing
  * preview in scripts.
@@ -381,7 +399,7 @@ function reportReExportOutcome(args: {
   shouldStamp: boolean;
   stampRequested: boolean;
   config: FireForgeConfig;
-  progress: ReturnType<typeof spinner>;
+  progress: SpinnerHandle;
 }): void {
   const { isDryRun, reExported, selectedCount, config, progress } = args;
   if (isDryRun) {
@@ -413,10 +431,10 @@ function reportReExportOutcome(args: {
     const failedPart =
       args.failedFilenames.length > 0 ? ` Failed: ${args.failedFilenames.join(', ')}.` : '';
     const skippedPart =
-      skippedCount > 0 ? ` Skipped: ${String(skippedCount)} patch(es) (see warnings above).` : '';
+      skippedCount > 0 ? ` Skipped: ${skippedCount} patch(es) (see warnings above).` : '';
     throw new GeneralError(
-      `${isDryRun ? '[dry-run] Would re-export' : 'Re-exported'} only ${String(reExported)} of ` +
-        `${String(selectedCount)} selected patch(es).${failedPart}${skippedPart} ` +
+      `${isDryRun ? '[dry-run] Would re-export' : 'Re-exported'} only ${reExported} of ` +
+        `${selectedCount} selected patch(es).${failedPart}${skippedPart} ` +
         'Partial re-export exits non-zero so it cannot pass as success in scripts; ' +
         'the per-patch errors are listed above.'
     );

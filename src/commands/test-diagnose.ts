@@ -60,11 +60,11 @@ function buildStaleBuildMessage(postRebuild: boolean): string {
 }
 
 function hasStaleBuildArtifactsSignal(output: string): boolean {
-  // Deliberately narrow: only fire on branding-specific resource paths that
+  // Narrow on purpose: only fire on branding-specific resource paths that
   // are always a stale-artifact symptom. A pattern that also matches
   // `resource:///modules/distribution.sys.mjs` fires on real packaging and
-  // module-resolution failures too — a fork's own `.sys.mjs` missing from
-  // the installed app dir after a successful build — pushing operators
+  // module-resolution failures too (a fork's own `.sys.mjs` missing from
+  // the installed app dir after a successful build), pushing operators
   // toward "rebuild" advice for a module-registration issue.
   return (
     /chrome:\/\/branding\/locale\/brand\.properties/i.test(output) ||
@@ -77,7 +77,7 @@ function hasStaleBuildArtifactsSignal(output: string): boolean {
  *
  * A fork's test failing with `Failed to load
  * resource:///modules/<binary>/Store.sys.mjs` can also match the branding
- * pattern, because the harness prints a branding warning during teardown —
+ * pattern, because the harness prints a branding warning during teardown,
  * and the stale-build branch then wins by precedence, telling the operator
  * to rebuild when the real fix is to register the module in the fork's
  * `browser/modules/<binary>/moz.build`. Matching a
@@ -85,8 +85,8 @@ function hasStaleBuildArtifactsSignal(output: string): boolean {
  */
 function hasForkModuleSignal(output: string, binaryName: string): boolean {
   // `binaryName` comes from fireforge.json, and config validation bars only
-  // `..`, path separators, NUL and absolute paths — regex metacharacters get
-  // through. A hand-written character class is easy to get wrong (one that
+  // `..`, path separators, NUL and absolute paths, so regex metacharacters
+  // get through. A hand-written character class is easy to get wrong (one that
   // closes early after an escaped backslash escapes nothing), which makes
   // `my.browser` match `myXbrowser` and lets an unbalanced `(` or `[` throw
   // a SyntaxError out of the failure-diagnosis path, replacing the real test
@@ -113,8 +113,8 @@ function buildForkModuleMessage(binaryName: string): string {
 }
 
 // Detects the broader xpcshell symptom where every `resource:///modules/...`
-// import fails — the signature of xpcshell running with the wrong app-dir on
-// a manifest that sets `firefox-appdir = "browser"`. Checked AFTER the
+// import fails, the signature of xpcshell running with the wrong app-dir on
+// a manifest that sets `firefox-appdir = "browser"`. Checked after the
 // stale-build signal (which matches the narrower `distribution.sys.mjs`
 // path) so the more specific diagnosis wins when both patterns apply.
 function hasXpcshellAppdirSignal(output: string): boolean {
@@ -153,7 +153,7 @@ function buildHarnessSymlinkMessage(): string {
 
 // Detects the `AttributeError: 'MochitestDesktop' object has no attribute
 // 'http3Server'` teardown crash. The attribute is lazy-initialized inside
-// harness code paths that presume chrome://branding resolves correctly; a
+// harness code paths that presume chrome://branding resolves correctly. A
 // missing or miswired branding registration short-circuits the setup and
 // leaves the cleanup path looking up an attribute that was never assigned.
 function hasMochitestHttp3ServerSignal(output: string): boolean {
@@ -188,7 +188,7 @@ function handleNonZeroTestExit(
   postRebuildContext: PostRebuildFailureContext | undefined,
   /**
    * The classified verdict, when one was reached. Carries the failing-test
-   * evidence the final throw names; every branch ABOVE that throw is a
+   * evidence the final throw names. Every branch above that throw is a
    * different diagnosis and does not use it.
    */
   verdict?: HarnessRunVerdict
@@ -229,7 +229,7 @@ function handleNonZeroTestExit(
   // fails to resolve, the fix really is "rebuild", not "pass --app-path".
   // The stale-build check is narrow enough not to match
   // `resource:///modules/distribution.sys.mjs` alone, which produced
-  // false-positive rebuild advice on fork-custom module-load failures; those
+  // false-positive rebuild advice on fork-custom module-load failures. Those
   // cases fall through to xpcshell-appdir, the more useful diagnosis for
   // `Failed to load resource:///modules/…`.
   if (hasStaleBuildArtifactsSignal(combinedOutput)) {
@@ -255,7 +255,7 @@ function handleNonZeroTestExit(
     info('Run "fireforge register <test-path>" to register it.');
   }
   // Last, and additive rather than a branch of its own: the run really did
-  // fail (exit code stays 5), so this only says WHICH KIND of failure it is.
+  // fail (exit code stays 5), so this only says which kind of failure it is.
   // Every branch above is a different diagnosis and outranks it.
   const changedPrefNoise = describeChangedPrefNoise(combinedOutput);
   const failureBlocks = formatFailureBlocks(verdict?.realFailureBlocks);
@@ -274,7 +274,7 @@ function handleNonZeroTestExit(
 /**
  * Applies the harness-run verdict for a single (non-sharded) invocation:
  * exhausted harness-crash retries and silent zero-TEST-START runs are
- * harness problems with their own messages; everything else flows into
+ * harness problems with their own messages. Everything else flows into
  * the regular non-zero-exit diagnosis chain.
  */
 export function finalizeSingleRunOutcome(
@@ -284,8 +284,8 @@ export function finalizeSingleRunOutcome(
   postRebuildContext: PostRebuildFailureContext | undefined,
   headless = false
 ): void {
-  // The FIREFORGE-VERDICT line is the LAST stdout write of the run, on the
-  // pass return and every throw path alike — written raw (not via clack,
+  // The FIREFORGE-VERDICT line is the last stdout write of the run, on the
+  // pass return and every throw path alike, written raw (not via clack,
   // whose renderer drops output under non-TTY capture) so harness-verdict
   // consumers grep one stable line instead of mach internals.
   try {
@@ -327,12 +327,12 @@ function applySingleRunOutcome(
   }
   if (outcome.verdict.kind === 'no-tests' && outcome.result.exitCode === 0) {
     // The silent false green: exit 0 plus a "Passed: 0"-style summary with
-    // zero TEST-START lines must fail, not pass.
+    // zero TEST-START lines must fail rather than pass.
     throw new GeneralError(buildNoTestsRanMessage(0, normalizedPaths));
   }
-  // A green-LOOKING summary rejected on crash/truncation evidence gets its
-  // own explanation instead of the generic exit-code message — the operator
-  // must see WHY the green counts were not trusted.
+  // A green-looking summary rejected on crash/truncation evidence gets its
+  // own explanation instead of the generic exit-code message, so the
+  // operator can see why the green counts were not trusted.
   if (outcome.verdict.greenSummaryRejected) {
     throw new GeneralError(
       buildGreenSummaryRejectedMessage(
@@ -407,7 +407,7 @@ export function diagnoseShardOutcome(
  */
 function formatFailureBlocks(blocks: readonly string[] | undefined): string | undefined {
   if (blocks === undefined || blocks.length === 0) return undefined;
-  // The collector appends a `…(+N more …)` note when it truncated; that
+  // The collector appends a `…(+N more …)` note when it truncated. That
   // note is not a failure block, so it does not count toward the header.
   const shown = blocks.filter((block) => !block.startsWith('…(')).length;
   return `Unexpected test failures (first ${shown}):\n${blocks.join('\n\n')}`;

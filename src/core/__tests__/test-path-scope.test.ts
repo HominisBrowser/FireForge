@@ -23,7 +23,7 @@ describe('analyzeTestPathScopes', () => {
     const base = join(engineDir, 'browser/base/content/test');
     await mkdir(join(base, 'hominis/nested'), { recursive: true });
     await mkdir(join(base, 'hominis-tiles'), { recursive: true });
-    await mkdir(join(base, 'hominess'), { recursive: true }); // NOT prefix-matching
+    await mkdir(join(base, 'hominess'), { recursive: true }); // not prefix-matching
     await writeFile(join(base, 'hominis/browser_one.js'), '');
     await writeFile(join(base, 'hominis/nested/browser_two.js'), '');
     await writeFile(join(base, 'hominis/head.js'), ''); // support file, not counted
@@ -41,9 +41,9 @@ describe('analyzeTestPathScopes', () => {
       isDirectory: true,
       testFileCount: 2, // browser_one + nested browser_two; head.js not counted
     });
-    // The explicit file list is what defeats mach's prefix matching — the
-    // trailing-slash form still sweeps in a prefix-named sibling. No sibling
-    // file can appear here by construction.
+    // The explicit file list is what defeats mach's prefix matching. The
+    // trailing-slash form still sweeps in a prefix-named sibling. The list
+    // names no sibling file, so none can appear here.
     expect(scope?.dispatchPaths).toEqual([
       'browser/base/content/test/hominis/browser_one.js',
       'browser/base/content/test/hominis/nested/browser_two.js',

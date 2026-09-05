@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: EUPL-1.2
+import type { Command } from 'commander';
+import { InvalidArgumentError as CommanderInvalidArgumentError } from 'commander';
+
+import { GeneralError, InvalidArgumentError } from '../errors/base.js';
+import { toError } from './errors.js';
+
 /**
  * Filters an object to only include keys whose values are not undefined.
- * Designed for use with exactOptionalPropertyTypes — the result can be
+ * Designed for use with exactOptionalPropertyTypes: the result can be
  * spread into typed option objects without assigning undefined to optional
  * properties.
  *
  * Constrained to `object`, not `Record<string, unknown>`: a named interface
  * has no index signature, so the narrower constraint rejects exactly the
  * annotations this helper is most useful with. Nothing in the body needs the
- * index signature — the key walk goes through `Object.keys`.
+ * index signature, since the key walk goes through `Object.keys`.
  *
  * @param obj - Object to filter
  * @returns The same object with every `undefined`-valued key removed
@@ -25,18 +31,12 @@ export function pickDefined<T extends object>(
   return result as { [K in keyof T]+?: Exclude<T[K], undefined> };
 }
 
-import type { Command } from 'commander';
-import { InvalidArgumentError as CommanderInvalidArgumentError } from 'commander';
-
-import { GeneralError, InvalidArgumentError } from '../errors/base.js';
-import { toError } from './errors.js';
-
 /**
  * Wraps an option-argument parser so its failures surface through
  * commander's own invalid-argument channel.
  *
  * Commander only treats errors whose `code` is `'commander.invalidArgument'`
- * as argument-validation failures; anything else re-throws out of
+ * as argument-validation failures. Anything else re-throws out of
  * `parseAsync`, BYPASSING `withErrorHandling` entirely and landing in the
  * bin's `main().catch` as an unformatted `Fatal error: …` dump with exit 1.
  * That covers a plain Error, a `GeneralError`, and even a FireForge
@@ -99,12 +99,12 @@ function parseWaitLockSeconds(raw: string): number | undefined {
  * The standing wait budget from {@link WAIT_LOCK_ENV_VAR}, or undefined when
  * it is unset or empty.
  *
- * Exists because a wait budget is a property of the SESSION, not of the
+ * Exists because a wait budget is a property of the session, not of the
  * invocation: a checkout worked by several concurrent agent sessions has a
  * held lock as its normal state, and an unattended loop would otherwise have
- * to thread `--wait-lock` through every command it issues — the one place
- * it is easiest to forget, and the failure only shows up once the loop has
- * already produced a tail of refusals.
+ * to thread `--wait-lock` through every command it issues. That is the one
+ * place it is easiest to forget, and the failure only shows up once the loop
+ * has already produced a tail of refusals.
  *
  * An unusable value is a usage error rather than a silent fall-back to
  * fail-fast: the operator set it precisely because they did not want to
@@ -118,7 +118,7 @@ function waitLockSecondsFromEnv(): number | undefined {
   const parsed = parseWaitLockSeconds(raw);
   if (parsed === undefined) {
     throw new InvalidArgumentError(
-      `${WAIT_LOCK_ENV_VAR} must be an integer in ${String(MIN_WAIT_LOCK_SECONDS)}..${String(MAX_WAIT_LOCK_SECONDS)} (got "${raw}")`,
+      `${WAIT_LOCK_ENV_VAR} must be an integer in ${MIN_WAIT_LOCK_SECONDS}..${MAX_WAIT_LOCK_SECONDS} (got "${raw}")`,
       WAIT_LOCK_ENV_VAR
     );
   }
@@ -140,8 +140,8 @@ function waitLockSecondsFromEnv(): number | undefined {
  * Accepts the raw string too, so it doubles as the option's arg parser (wrap
  * with {@link commanderArgParser} so failures surface through commander's
  * invalid-argument channel). In that role the value is never `undefined`, so
- * the environment fallback cannot leak into flag PARSING — only into flag
- * ABSENCE, which is where it belongs.
+ * the environment fallback cannot leak into flag parsing, only into flag
+ * absence, which is where it belongs.
  */
 export function resolveWaitLockSeconds(
   value: string | number | boolean | undefined
@@ -158,27 +158,27 @@ export function resolveWaitLockSeconds(
   const parsed = parseWaitLockSeconds(value);
   if (parsed === undefined) {
     throw new GeneralError(
-      `--wait-lock must be an integer in ${String(MIN_WAIT_LOCK_SECONDS)}..${String(MAX_WAIT_LOCK_SECONDS)} (got "${value}")`
+      `--wait-lock must be an integer in ${MIN_WAIT_LOCK_SECONDS}..${MAX_WAIT_LOCK_SECONDS} (got "${value}")`
     );
   }
   return parsed;
 }
 
 /**
- * The session-wide wait budget in MILLISECONDS, or undefined when none is
+ * The session-wide wait budget in milliseconds, or undefined when none is
  * set. Sourced from {@link WAIT_LOCK_ENV_VAR} only.
  *
- * Exists for the SECONDARY locks a command takes after the one its
+ * Exists for the secondary locks a command takes after the one its
  * `--wait-lock` flag was threaded to. A furnace mutation takes the engine
- * session lock and then `.fireforge/furnace.lock`; only the first had a
+ * session lock and then `.fireforge/furnace.lock`. Only the first had a
  * budget, so a contended deploy died on the file lock's fixed 30 s while
  * its operator believed a much larger budget was in force. Threading the
- * flag reaches the three furnace commands that declare it — this reaches
+ * flag reaches the three furnace commands that declare it. This reaches
  * the twelve that do not (`create`, `remove`, `rename`, `refresh`, `scan`,
  * `override`, `chrome-doc`, …), which have no flag to thread but are just
  * as contended.
  *
- * Deliberately env-only: a flag belongs to one invocation and is passed
+ * Env-only: a flag belongs to one invocation and is passed
  * explicitly where it applies, while the environment is exactly the place a
  * session-wide default is expressed. An explicit budget at a call site
  * always wins over this.
@@ -191,12 +191,12 @@ export function sessionWaitLockMs(): number | undefined {
 }
 
 /**
- * Registers `--wait-lock [seconds]` on a command that takes NO lock, so a
+ * Registers `--wait-lock [seconds]` on a command that takes no lock, so a
  * scripted sequence can blanket-append the flag without hitting a usage
- * error — a command that rejects it with "unknown option" kills the whole
+ * error. A command that rejects it with "unknown option" kills the whole
  * sequence with a usage error instead of a lock message.
  *
- * The flag is accepted and ignored here — never silently repurposed — and
+ * The flag is accepted and ignored here, never silently repurposed, and
  * the help text says so, so nobody reads its presence as evidence that this
  * command waits for anything.
  *
@@ -217,7 +217,7 @@ function addAcceptedWaitLockOption(command: Command): Command {
  * CLI wiring to add the accept-and-ignore variant only where the honoring
  * one is absent.
  */
-export function hasWaitLockOption(command: Command): boolean {
+function hasWaitLockOption(command: Command): boolean {
   return command.options.some((option) => option.long === '--wait-lock');
 }
 
@@ -237,12 +237,12 @@ export function ensureWaitLockOptionEverywhere(command: Command): void {
  * Registers the shared `--wait-lock [seconds]` flag on a lock-taking
  * command (the engine session lock for engine-mutating commands, the patch
  * directory lock for queue-mutating ones). The parsed option value is `true`
- * for the bare flag or a validated integer; feed it through
+ * for the bare flag or a validated integer. Feed it through
  * {@link resolveWaitLockSeconds} at the call site to obtain the
  * `waitLockSeconds` for `withEngineSessionLock`/`withPatchDirectoryLock`.
  *
- * A command can take MORE than one lock — a furnace mutation takes the
- * engine session lock and then `.fireforge/furnace.lock` — and the budget
+ * A command can take more than one lock (a furnace mutation takes the
+ * engine session lock and then `.fireforge/furnace.lock`) and the budget
  * has to reach all of them or the flag is a half-truth. The secondary locks
  * read the session budget through {@link sessionWaitLockMs} rather than
  * having it threaded to every call site.

@@ -27,8 +27,8 @@ export async function registerCommand(
 ): Promise<void> {
   intro('Register');
 
-  // --after is matched as a substring against existing manifest lines;
-  // guard against control characters / line terminators that would either
+  // --after is matched as a substring against existing manifest lines.
+  // Guard against control characters / line terminators that would either
   // break the match logic or, worse, inject a second line if the value
   // is ever echoed back to a manifest writer. Null bytes are explicitly
   // rejected to mirror the hardening already applied to other user-
@@ -45,7 +45,7 @@ export async function registerCommand(
   }
 
   // Accept either repo-root-relative (`engine/browser/...`) or
-  // engine-relative (`browser/...`) inputs — operators frequently paste
+  // engine-relative (`browser/...`) inputs. Operators frequently paste
   // the former from the output of tab completion or `git status`, and
   // the mismatch used to produce a "File not found" error that named
   // the original path with no hint that dropping `engine/` would fix it.
@@ -72,8 +72,8 @@ export async function registerCommand(
 
   if (options.dryRun) {
     // Dry-run must surface the idempotency decision too. Always saying
-    // "Would register" — even when the rule already knows the entry is
-    // present — makes automation read the plan as "work to do" while the
+    // "Would register", even when the rule already knows the entry is
+    // present, makes automation read the plan as "work to do" while the
     // following real run reports "Already registered".
     if (result.skipped) {
       info(`[dry-run] Already registered: ${engineRelativePath} in ${result.manifest}`);

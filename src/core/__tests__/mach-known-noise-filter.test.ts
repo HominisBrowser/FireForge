@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Echo-filter tests for the known mozsystemmonitor teardown traceback. The
- * filter only shapes what reaches the TERMINAL — the capture path stays raw
+ * filter only shapes what reaches the terminal. The capture path stays raw
  * (asserted in mach.test.ts).
  */
 
@@ -131,9 +131,9 @@ describe('createKnownTeardownNoiseFilter', () => {
     expect(out).toBe(generic);
   });
 
-  // ── The filter is scoped to the documented incident: a closed attribute
-  //    allowlist, a resourcemonitor.py frame, and a seen shutdown marker.
-  //    Anything looser prints verbatim so new upstream defects stay visible. ──
+  // The filter is scoped to the documented incident: a closed attribute
+  // allowlist, a resourcemonitor.py frame, and a seen shutdown marker.
+  // Anything looser prints verbatim so new upstream defects stay visible.
 
   it('passes a non-allowlisted SystemResourceMonitor attribute through verbatim', () => {
     const novel = [
@@ -191,7 +191,7 @@ describe('createKnownTeardownNoiseFilter', () => {
   });
 
   it('shares the shutdown flag across the two stream filters of one run', () => {
-    // SUITE_END arrives on stdout; the traceback lands on stderr.
+    // SUITE_END arrives on stdout. The traceback lands on stderr.
     const shared = createTeardownNoiseContext();
     const stdoutFilter = createKnownTeardownNoiseFilter(shared);
     const stderrFilter = createKnownTeardownNoiseFilter(shared);
@@ -203,7 +203,7 @@ describe('createKnownTeardownNoiseFilter', () => {
     expect(stderrOut).toContain(KNOWN_TEARDOWN_NOISE_ANNOTATION);
     expect(stderrOut).not.toContain('stop_time');
 
-    // With SEPARATE contexts the stderr filter never learns of shutdown
+    // With separate contexts the stderr filter never learns of shutdown
     // and the block prints verbatim.
     const isolatedStderr = createKnownTeardownNoiseFilter(createTeardownNoiseContext());
     createKnownTeardownNoiseFilter(createTeardownNoiseContext()).transform('SUITE_END\n');

@@ -52,7 +52,7 @@ vi.mock('../../core/furnace-config.js', () => ({
 }));
 
 vi.mock('../../core/furnace-constants.js', async (importOriginal) => ({
-  // A leaf of pure constants and pure functions; only the behaviours this
+  // A leaf of pure constants and pure functions. Only the behaviours this
   // suite pins need overriding.
   ...(await importOriginal<typeof import('../../core/furnace-constants.js')>()),
   isComponentSourceFile: vi.fn(
@@ -74,7 +74,7 @@ vi.mock('../../core/furnace-constants.js', async (importOriginal) => ({
 
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
+  // the pending-repair marker (the behaviour these suites assert), so it
   // comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
@@ -323,8 +323,8 @@ describe('furnaceRenameCommand validation', () => {
     });
 
     // The message must read `components/custom/`, not `components/customs/`
-    // (plural built by appending `s` to the furnace-state key `custom`) —
-    // the directory label has to match the on-disk layout.
+    // (plural built by appending `s` to the furnace-state key `custom`).
+    // The directory label has to match the on-disk layout.
     await expect(furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav')).rejects.toThrow(
       /Component directory not found: components\/custom\/moz-sidebar/
     );
@@ -686,7 +686,7 @@ describe('furnaceRenameCommand engine registrations', () => {
 
   it('leaves the locale jar.mn alone on non-localized renames', async () => {
     // Belt check against regressions that would fire the locale jar.mn
-    // re-wire even when the component is not localized — which would
+    // re-wire even when the component is not localized, which would
     // touch a file the apply pipeline never registered.
     await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
 
@@ -755,8 +755,8 @@ describe('furnaceRenameCommand rollback', () => {
       'Rollback failed'
     );
 
-    // Asserts the OUTCOME — a pending-repair marker persisted to furnace
-    // state — rather than the internal call. The rollback sequence now lives
+    // Asserts the outcome (a pending-repair marker persisted to furnace
+    // state) rather than the internal call. The rollback sequence now lives
     // in `completeJournalRollback`, whose call to the recorder is
     // intra-module and so invisible to a module-level spy.
     const updater = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1] as
@@ -776,15 +776,15 @@ describe('furnaceRenameCommand path-label messaging', () => {
     // The preceding rollback describe leaves `writeText` rejecting with
     // "Disk full" and sometimes `restoreRollbackJournalOrThrow` rejecting
     // too. `vi.clearAllMocks()` in the top-level beforeEach clears call
-    // history but does NOT reset mockRejectedValue implementations, so they
-    // are restored explicitly here — otherwise every path-label case trips
+    // history but does not reset mockRejectedValue implementations, so they
+    // are restored explicitly here. Otherwise every path-label case trips
     // the rollback path and never reaches the note assertions.
     mockWriteText.mockResolvedValue(undefined);
     mockRestoreRollbackJournalOrThrow.mockResolvedValue(undefined);
   });
 
   it('renders the success note with the correct `components/custom/` directory label', async () => {
-    // The directory is `components/custom/` (singular); the furnace-state key
+    // The directory is `components/custom/` (singular). The furnace-state key
     // is `custom` too, so nothing may pluralise it on the way into the note.
     await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
 
@@ -829,7 +829,7 @@ describe('furnaceRenameCommand engine-tree cleanup', () => {
   // A rename must clean up two things a naive implementation leaves behind:
   //   - the deployed widget directory at `engine/<oldTargetPath>/`, which
   //     otherwise survives and lets packaging pick up both the old and new
-  //     widget copies;
+  //     widget copies.
   //   - the mochikit scaffold at
   //     `engine/toolkit/content/tests/widgets/test_<old>.html` and its
   //     chrome.toml entry, which otherwise still import and assert against
@@ -934,7 +934,7 @@ describe('furnaceRenameCommand engine-tree cleanup', () => {
 
   it('no-ops when the mochikit scaffold was never created', async () => {
     // Projects that used `furnace create --test-style=browser-chrome` or
-    // `--test-style=none` don't have the mochikit files at all; rename
+    // `--test-style=none` don't have the mochikit files at all. Rename
     // must not fail trying to clean something that was never there.
     mockPathExists.mockImplementation((path: string) => {
       if (path === nativePath('/project/engine')) return Promise.resolve(true);

@@ -40,14 +40,14 @@ export interface DoctorCheckContext {
   /**
    * The parsed furnace config, set by the "Furnace configuration" check
    * when it succeeds. Later furnace checks read from this so they do not
-   * re-parse the file; undefined when the config could not be loaded.
+   * re-parse the file. Undefined when the config could not be loaded.
    */
   furnaceConfig: FurnaceConfig | undefined;
   /**
    * State this run actually mutated, one human-readable line per write.
    * Repairs run inside the check loop while the exit code is computed only
    * after every check, so a repair can land and the run still exit non-zero
-   * on an unrelated check — and a non-zero exit reads as "nothing happened".
+   * on an unrelated check, and a non-zero exit reads as "nothing happened".
    * The runner prints these before the summary in every branch so a write is
    * never invisible.
    */
@@ -55,7 +55,7 @@ export interface DoctorCheckContext {
 }
 
 /**
- * Result a check may return. A single object is the common case; an array
+ * Result a check may return. A single object is the common case. An array
  * lets a single check emit multiple related rows (e.g. the engine branch
  * check which may report on branch + detached state together).
  */
@@ -90,7 +90,7 @@ export interface DoctorCheckDefinition {
   dependsOn?: readonly string[];
   /**
    * Runs the inspection. Throwing is shorthand for "this check failed with
-   * severity 'error'" — the runner converts the exception message into a
+   * severity 'error'": the runner converts the exception message into a
    * DoctorCheck. Returning a DoctorCheck (or array) lets the check control
    * severity, warnings, and fix hints directly.
    */
@@ -100,15 +100,6 @@ export interface DoctorCheckDefinition {
    * when `run` throws. Ignored when `run` returns a DoctorCheck explicitly.
    */
   fix?: string;
-}
-
-/**
- * Resolves a {@link DoctorCheck} to its effective severity. `severity` is the
- * single source of truth; this exists so every consumer of a
- * `DoctorCheck[]` reads it the same way.
- */
-export function resolveDoctorSeverity(check: DoctorCheck): 'ok' | 'warning' | 'error' {
-  return check.severity;
 }
 
 /**

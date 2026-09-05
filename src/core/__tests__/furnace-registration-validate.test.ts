@@ -3,27 +3,10 @@ import { describe, expect, it } from 'vitest';
 
 import { FurnaceError } from '../../errors/furnace.js';
 import {
-  CUSTOM_ELEMENT_TAG_PATTERN,
   describeTagNameProblem,
   validateRegistrationPlacement,
   validateTagName,
 } from '../furnace-registration-validate.js';
-
-describe('CUSTOM_ELEMENT_TAG_PATTERN', () => {
-  it('matches valid custom element names', () => {
-    expect(CUSTOM_ELEMENT_TAG_PATTERN.test('my-button')).toBe(true);
-    expect(CUSTOM_ELEMENT_TAG_PATTERN.test('a-b')).toBe(true);
-    expect(CUSTOM_ELEMENT_TAG_PATTERN.test('moz-card123')).toBe(true);
-    expect(CUSTOM_ELEMENT_TAG_PATTERN.test('x-y-z')).toBe(true);
-  });
-
-  it('rejects invalid names', () => {
-    expect(CUSTOM_ELEMENT_TAG_PATTERN.test('button')).toBe(false);
-    expect(CUSTOM_ELEMENT_TAG_PATTERN.test('My-button')).toBe(false);
-    expect(CUSTOM_ELEMENT_TAG_PATTERN.test('')).toBe(false);
-    expect(CUSTOM_ELEMENT_TAG_PATTERN.test('-foo')).toBe(false);
-  });
-});
 
 describe('validateTagName', () => {
   it('accepts valid custom element tag names', () => {
@@ -53,6 +36,12 @@ describe('validateTagName', () => {
   it('throws FurnaceError for empty string', () => {
     expect(() => {
       validateTagName('');
+    }).toThrow(FurnaceError);
+  });
+
+  it('throws FurnaceError for a name starting with a hyphen', () => {
+    expect(() => {
+      validateTagName('-foo');
     }).toThrow(FurnaceError);
   });
 
@@ -165,7 +154,7 @@ ${dclBlock}`;
 
 describe('describeTagNameProblem', () => {
   it('returns the rule instead of throwing, so a prompt can re-ask', () => {
-    // `furnace create`'s interactive tag prompt passed the THROWING
+    // `furnace create`'s interactive tag prompt passed the throwing
     // `validateTagName` to clack's `validate` callback, which expects a
     // returned message. An invalid name escaped clack's validation loop as a
     // FurnaceError and killed the prompt instead of showing the rule inline.
@@ -180,7 +169,7 @@ describe('describeTagNameProblem', () => {
 
   it('agrees with the throwing sibling', () => {
     // The two must never disagree: `validateTagName` is implemented in terms
-    // of this one precisely so they cannot drift.
+    // of this one so they cannot drift.
     expect(() => {
       validateTagName('NotAValidTag');
     }).toThrow(/NotAValidTag/);

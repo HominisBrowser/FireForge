@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { FireForgeError } from './base.js';
+import { FireForgeError, remedies } from './base.js';
 import { ExitCode } from './codes.js';
 
 /**
  * Error thrown when `patches.json` exists but cannot be parsed or validated.
  *
- * This must be a HARD error on every mutating path. Collapsing "corrupt"
- * into "absent" — a `loadPatchesManifest` that returns null for both — makes
+ * This must be a hard error on every mutating path. Collapsing "corrupt"
+ * into "absent" (a `loadPatchesManifest` that returns null for both) makes
  * the next `fireforge export` rebuild the manifest containing only the new
  * patch, silently destroying every other patch's metadata (tiers,
- * descriptions, lintIgnore, staged dependencies); a failed export's rollback
+ * descriptions, lintIgnore, staged dependencies). A failed export's rollback
  * then deletes `patches.json` outright, because the "before" state looked
  * absent.
  */
@@ -55,17 +55,14 @@ export class PatchError extends FireForgeError {
   }
 
   override get userMessage(): string {
-    let msg = `Patch Error: ${this.message}`;
-
-    if (this.patchName) {
-      msg += `\n\nPatch: ${this.patchName}`;
-    }
-
-    msg += '\n\nTo fix this:\n';
-    msg += '  1. Check if the patch is compatible with the Firefox version\n';
-    msg += '  2. Use "fireforge reset" to start with clean source\n';
-    msg += '  3. Update the patch for the current Firefox version';
-
-    return msg;
+    return (
+      `Patch Error: ${this.message}` +
+      (this.patchName ? `\n\nPatch: ${this.patchName}` : '') +
+      remedies([
+        'Check if the patch is compatible with the Firefox version',
+        'Use "fireforge reset" to start with clean source',
+        'Update the patch for the current Firefox version',
+      ])
+    );
   }
 }

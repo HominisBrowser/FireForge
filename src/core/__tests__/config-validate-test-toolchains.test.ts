@@ -2,7 +2,7 @@
 /**
  * Direct unit tests for the `test` and `externalToolchains` config blocks.
  *
- * This validator runs on EVERY config load but is otherwise reached only
+ * This validator runs on every config load but is otherwise reached only
  * transitively through `validateConfig`, with no fixture supplying either
  * block. It is pure and does no I/O, so every rejection arm is cheap to pin.
  */
@@ -16,7 +16,7 @@ import {
   parseTestBlock,
 } from '../config-validate-test-toolchains.js';
 
-/** Empty config shell — only the fields these parsers assign are asserted. */
+/** Empty config shell: only the fields these parsers assign are asserted. */
 function makeConfig(): FireForgeConfig {
   return {} as FireForgeConfig;
 }
@@ -180,7 +180,7 @@ describe('parseExternalToolchainsBlock', () => {
 
     it('keeps only the name when no optional field is supplied', () => {
       // The three conditional spreads must omit absent keys entirely rather
-      // than writing `undefined` — `exactOptionalPropertyTypes` is on.
+      // than writing `undefined`, because `exactOptionalPropertyTypes` is on.
       expect(parseTool({ name: 'xcodebuild' }).externalToolchains?.[0]?.tools[0]).toEqual({
         name: 'xcodebuild',
       });

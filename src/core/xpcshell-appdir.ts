@@ -10,7 +10,7 @@
  * override as `mozInfo["appname"] + "-appdir"`. On a stock Firefox build the
  * key is `firefox-appdir`, so the very common `firefox-appdir = "browser"`
  * directive is honoured. On a rebranded fork (appname=`mybrowser`) the
- * harness looks for `mybrowser-appdir` — the literal `firefox-appdir` line
+ * harness looks for `mybrowser-appdir`, so the literal `firefox-appdir` line
  * is silently ignored, `appPath` falls back to `xrePath`, and every
  * `resource:///modules/…` import throws `Failed to load
  * resource:///modules/<name>.sys.mjs` because xpcshell resolves the
@@ -22,7 +22,7 @@
  *    `xpcshell.toml`. If none exists, the test is not an xpcshell test and
  *    there is nothing to inject.
  * 2. Read the manifest's `[DEFAULT]` section. Look for `<appname>-appdir`
- *    first — if present, the harness already finds it. Fall back to
+ *    first. If present, the harness already finds it. Fall back to
  *    `firefox-appdir`. This ordering matches upstream precedence and avoids
  *    overriding an operator who already migrated.
  * 3. If only `firefox-appdir` is present and `appname != "firefox"`, compute
@@ -31,7 +31,7 @@
  *    `dist/<bundle>.app/Contents/Resources/<value>` for the macOS packaged
  *    layout) and return it as the value to pass to `--app-path`.
  * 4. If multiple test paths disagree on the resolved value, refuse injection
- *    and return null — the operator can drop down to `--mach-arg`.
+ *    and return null. The operator can drop down to `--mach-arg`.
  *
  * Operator escape hatch: `--mach-arg=--app-path=…` always wins (handled in
  * test.ts, which skips injection when `--app-path=` already appears in the
@@ -70,7 +70,7 @@ export interface AppdirResolveResult {
  *  - Single- or double-quoted values
  *  - Whitespace either side of `=`
  *  - Continuation comments (`#` or `;`) at the end of the line
- *  - Bare unquoted bareword values (e.g. `firefox-appdir = browser`) — some
+ *  - Bare unquoted bareword values (e.g. `firefox-appdir = browser`). Some
  *    operators omit the quotes and the harness honours either form.
  *
  * Returns `undefined` when the key is absent or sits outside `[DEFAULT]`.
@@ -87,8 +87,7 @@ export function parseAppdirFromToml(
   const escapedKey = escapeRegex(key);
   const keyPattern = new RegExp('^\\s*' + escapedKey + '\\s*=\\s*(.+?)\\s*(?:[#;].*)?$');
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] ?? '';
+  for (const [i, line] of lines.entries()) {
     const sectionMatch = /^\s*\[([^\]]+)\]\s*$/.exec(line);
     if (sectionMatch) {
       sectionSeen = true;
@@ -115,7 +114,7 @@ function stripQuotes(raw: string): string | undefined {
   if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
     return raw.slice(1, -1);
   }
-  // Bareword: must not contain whitespace; otherwise we are looking at
+  // Bareword: must not contain whitespace. Otherwise we are looking at
   // commentary that the regex's optional comment tail did not strip.
   if (/\s/.test(raw)) return undefined;
   return raw;
@@ -126,10 +125,10 @@ function stripQuotes(raw: string): string | undefined {
  * returns the absolute path of the first sibling `xpcshell.toml` found.
  * Stops at `engineDir` (inclusive) and returns null on miss.
  *
- * Special-cases `startPath` itself when it already ends with `xpcshell.toml`
- * — operators sometimes pass a manifest path directly.
+ * Special-cases `startPath` itself when it already ends with
+ * `xpcshell.toml`, since operators sometimes pass a manifest path directly.
  *
- * When `startPath` is a DIRECTORY, the walk starts at the directory itself
+ * When `startPath` is a directory, the walk starts at the directory itself
  * (checking `<dir>/xpcshell.toml` first) rather than at its parent.
  * Starting at the parent misses a directory's own manifest, so
  * `fireforge test <dir>` classifies it non-xpcshell and dispatches to the
@@ -152,8 +151,8 @@ export async function findNearestXpcshellManifest(
   const engineAbs = resolve(engineDir);
   let current = absStart;
   // First iteration resolves the starting directory (the path itself for a
-  // directory argument, its parent for a file); subsequent ones walk up.
-  // Cap iterations defensively — a pathological symlink loop would
+  // directory argument, its parent for a file). Subsequent ones walk up.
+  // Cap iterations defensively: a pathological symlink loop would
   // otherwise spin until the call stack overflows.
   for (let i = 0; i < 64; i += 1) {
     const dir = i === 0 ? (startIsDirectory ? absStart : dirname(absStart)) : dirname(current);
@@ -167,10 +166,10 @@ export async function findNearestXpcshellManifest(
 
 /**
  * Reads `<objDir>/mozinfo.json` for the active app name. Returns
- * `"firefox"` when mozinfo cannot be read or the field is missing — that
+ * `"firefox"` when mozinfo cannot be read or the field is missing. That
  * is the safe default because it matches stock Firefox behaviour and
  * means the resolver will not inject anything (the manifest's
- * `firefox-appdir` value WILL be honoured by the upstream harness when
+ * `firefox-appdir` value is honoured by the upstream harness when
  * appname is firefox).
  */
 export async function readMozinfoAppname(objDirPath: string): Promise<string> {
@@ -183,7 +182,7 @@ export async function readMozinfoAppname(objDirPath: string): Promise<string> {
     }
   } catch {
     // Malformed mozinfo is a build-system problem out of scope for the
-    // appdir resolver; treat as if appname were missing.
+    // appdir resolver. Treat as if appname were missing.
   }
   return 'firefox';
 }
@@ -191,21 +190,21 @@ export async function readMozinfoAppname(objDirPath: string): Promise<string> {
 /**
  * Probes the obj-dir's `dist/` subtree for the absolute path the harness
  * would have computed if the manifest key had been honoured. Returns null
- * when no candidate exists — better to skip injection silently than to point
+ * when no candidate exists: better to skip injection silently than to point
  * the harness at a path that does not exist, which fails with a different
  * error than the original symptom and confuses triage.
  *
  * Probe order differs by host platform:
  *
- * - **macOS (`darwin`)**: prefer
- *   `<objDir>/dist/<App>.app/Contents/Resources/<value>` FIRST, then fall
+ * - macOS (`darwin`): prefer
+ *   `<objDir>/dist/<App>.app/Contents/Resources/<value>` first, then fall
  *   back to `<objDir>/dist/bin/<value>`. On macOS `dist/bin` is symlinked to
- *   `dist/<App>.app/Contents/MacOS/` (the *binaries* directory), so
- *   `dist/bin/browser` resolves to `<App>.app/Contents/MacOS/browser/` —
- *   NOT where `resource:///modules/` is rooted. Injecting that path looks
- *   successful in the log but points at a directory with no modules tree, so
- *   every `resource:///modules/…` import still throws.
- * - **non-macOS**: `dist/bin/<value>` first,
+ *   `dist/<App>.app/Contents/MacOS/` (the binaries directory), so
+ *   `dist/bin/browser` resolves to `<App>.app/Contents/MacOS/browser/`,
+ *   which is not where `resource:///modules/` is rooted. Injecting that path
+ *   looks successful in the log but points at a directory with no modules
+ *   tree, so every `resource:///modules/…` import still throws.
+ * - non-macOS: `dist/bin/<value>` first,
  *   `.app/Contents/Resources/<value>` as fallback.
  *
  * On both platforms the final `.app` fallback iterates every `*.app` entry
@@ -251,7 +250,7 @@ export async function resolveAbsoluteAppPath(
  * Outcome carrier for {@link resolveXpcshellAppdirArg}. Distinguishes the
  * three "did nothing" cases so callers can shape diagnostics:
  *  - `none`: no manifest under any test path needs injection.
- *  - `mismatch`: at least two manifests resolved to different values; we
+ *  - `mismatch`: at least two manifests resolved to different values. We
  *    refuse to guess which one the operator meant.
  *  - `unresolved`: the manifest asks for `firefox-appdir = "<value>"` but
  *    no `dist/` candidate exists for that value.
@@ -266,7 +265,7 @@ export type XpcshellAppdirOutcome =
 /**
  * Top-level resolver. Walks every test path, reads the nearest
  * xpcshell.toml, and returns the single absolute path to inject (or a
- * structured "no injection" outcome). Never throws — every fs / parse
+ * structured "no injection" outcome). Never throws: every fs / parse
  * error is folded into a `none` outcome so the test command always falls
  * through to the diagnostic hint instead of dying inside a helper.
  */
@@ -279,7 +278,7 @@ export async function resolveXpcshellAppdirArg(
 
   const objDirAbs = resolve(engineDir, objDirName);
   const appname = await readMozinfoAppname(objDirAbs);
-  // When appname IS "firefox" the upstream harness reads `firefox-appdir`
+  // When appname is "firefox" the upstream harness reads `firefox-appdir`
   // natively. Injecting in that case would be a no-op at best and an
   // override at worst, so bail out before doing any IO per-path.
   if (appname === 'firefox') return { kind: 'none' };
@@ -294,12 +293,12 @@ export async function resolveXpcshellAppdirArg(
     try {
       body = await readText(manifestPath);
     } catch {
-      // An unreadable manifest cannot declare an appdir; skip it and keep
+      // An unreadable manifest cannot declare an appdir. Skip it and keep
       // walking the remaining candidates.
       continue;
     }
 
-    // Operator already migrated — harness will read the appname-keyed
+    // Operator already migrated. The harness will read the appname-keyed
     // value directly. Nothing to do.
     if (parseAppdirFromToml(body, appnameKey) !== undefined) continue;
 
@@ -339,8 +338,7 @@ export async function resolveXpcshellAppdirArg(
  * wins.
  */
 export function operatorAlreadySetAppPath(extraArgs: readonly string[]): boolean {
-  for (let i = 0; i < extraArgs.length; i += 1) {
-    const arg = extraArgs[i] ?? '';
+  for (const [i, arg] of extraArgs.entries()) {
     if (arg === '--app-path' && i + 1 < extraArgs.length) return true;
     if (arg.startsWith('--app-path=')) return true;
   }

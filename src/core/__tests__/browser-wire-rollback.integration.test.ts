@@ -22,16 +22,16 @@ import { wireSubscript } from '../browser-wire.js';
  *
  * The failure is injected at the DOM-fragment insertion step by passing a
  * chrome-document path whose contents contain no insertion anchor (no
- * `#include browser-sets.inc` and no `<html:body>`) — what an operator sees
- * when pointing `wire --dom` at a fork that replaced the upstream
+ * `#include browser-sets.inc` and no `<html:body>`). That is what an
+ * operator sees when pointing `wire --dom` at a fork that replaced the upstream
  * browser.xhtml without preserving one of those anchors.
  */
 
 // Silence intro/outro + warn() during tests. The wire helpers call
-// `utils/logger.js`'s warn() on AST fallback; we don't need that output.
+// `utils/logger.js`'s warn() on AST fallback, and we don't need that output.
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
-// The wire flow calls getProjectPaths to derive engineDir; the real module
+// The wire flow calls getProjectPaths to derive engineDir. The real module
 // assumes a configured FireForge project, so substitute a minimal one.
 vi.mock('../config.js', async () => {
   const actual = await vi.importActual<typeof import('../config.js')>('../config.js');
@@ -60,7 +60,7 @@ interface Fixture {
     chromeDoc: string;
     jarMn: string;
   };
-  /** Snapshots of the files before wire ran — compared against post-wire state. */
+  /** Snapshots of the files before wire ran, compared against post-wire state. */
   pristine: {
     browserMain: string;
     browserInit: string;
@@ -74,7 +74,7 @@ interface Fixture {
  * one existing `loadSubScript` so the AST pathway has a pattern to anchor
  * against. browser-init.js has both onLoad and onUnload so init/destroy
  * expressions could theoretically be added. The chrome document is
- * intentionally missing BOTH anchor patterns so `addDomFragment` fails,
+ * intentionally missing both anchor patterns so `addDomFragment` fails,
  * which triggers the rollback path we want to observe.
  */
 async function buildFixture(chromeDocContents: string): Promise<Fixture> {
@@ -158,7 +158,7 @@ describe('wireSubscript — transactional rollback', () => {
   });
 
   it('restores every touched file when the DOM fragment step fails', async () => {
-    // Chrome document without either anchor, so the tokenizer AND the legacy
+    // Chrome document without either anchor, so the tokenizer and the legacy
     // regex fallback both fail. The legacy fallback substring-matches
     // `<html:body`, so the fixture cannot even mention that token in a
     // comment.
@@ -190,7 +190,7 @@ describe('wireSubscript — transactional rollback', () => {
 
   it('leaves mutations in place on a successful wire', async () => {
     // Chrome document with the `#include browser-sets.inc` anchor so the
-    // DOM-fragment step succeeds; the full wire then completes and we
+    // DOM-fragment step succeeds. The full wire then completes and we
     // expect every file to have been extended with the new subscript,
     // init/destroy expressions, include directive, and jar.mn entry.
     const goodChromeDoc = `<?xml version="1.0"?>

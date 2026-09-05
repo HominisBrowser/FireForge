@@ -90,8 +90,8 @@ describe('computeForeignDrift', () => {
   });
 
   it('treats a file newly present in the body but already owned as drift', () => {
-    // Owned file had no section before (body unchanged from HEAD then);
-    // now the refreshed body carries content for it.
+    // Owned file had no section before (body unchanged from HEAD then).
+    // Now the refreshed body carries content for it.
     const oldBody = '';
     const newBody = textBody(FILE, ['@@ -1,1 +1,2 @@', ' ctx', '+foreign']);
     const drift = computeForeignDrift(oldBody, newBody, [FILE]);

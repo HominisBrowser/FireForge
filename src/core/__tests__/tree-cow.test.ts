@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { cloneEntry, type CloneExecutor, cowCopyArgs, detectCowSupport } from '../tree-cow.js';
+import { cloneEntry, type CloneExecutor, detectCowSupport } from '../tree-cow.js';
 
 describe('detectCowSupport', () => {
   let dir: string;
@@ -70,10 +70,5 @@ describe('cloneEntry', () => {
     expect(executor).toHaveBeenCalledWith('cp', ['-R', '-p', '/src/x', '/dst/x']);
     await cloneEntry('none', '/src/x', '/dst/x', 'linux', executor);
     expect(executor).toHaveBeenLastCalledWith('cp', ['-a', '/src/x', '/dst/x']);
-  });
-
-  it('exposes the per-capability argv prefix for callers', () => {
-    expect(cowCopyArgs('clonefile')).toEqual(['-c', '-R', '-p']);
-    expect(cowCopyArgs('reflink')).toEqual(['--reflink=always', '-a']);
   });
 });

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge patch tier <name>` — sets or clears `PatchMetadata.tier` on a
+ * `fireforge patch tier <name>` sets or clears `PatchMetadata.tier` on a
  * single patch without rewriting the `.patch` file body.
  *
  * Companion to `fireforge re-export <name> --tier <tier>`. Re-export is the
- * right tool when the patch body itself needs regenerating; this subcommand
+ * right tool when the patch body itself needs regenerating. This subcommand
  * covers the metadata-only adjustment, where the operator has discovered
  * (from a `lint --per-patch` warning, say) that the threshold-tier override
  * should be set but the patch body is already correct. Avoiding the
@@ -17,14 +17,15 @@
 
 import { Command, Option } from 'commander';
 
-import { appendHistory, confirmDestructive } from '../../core/destructive.js';
+import { confirmDestructive } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import { updatePatchMetadata } from '../../core/patch-export.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchTierOptions } from '../../types/commands/index.js';
-import { toError } from '../../utils/errors.js';
-import { info, intro, outro, warn } from '../../utils/logger.js';
+import { info, intro, outro } from '../../utils/logger.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /**
@@ -44,8 +45,8 @@ export async function patchTierCommand(
   intro(isDryRun ? 'FireForge patch tier (dry run)' : 'FireForge patch tier');
 
   // Mode mutex: a single invocation either sets or clears the tier.
-  // Combining both is ambiguous — the operator's intent is not obvious
-  // and silently picking one would mask the typo.
+  // Combining both is ambiguous: the operator's intent is not obvious and
+  // silently picking one would mask the typo.
   const setting = options.tier !== undefined;
   const clearing = options.clear === true;
   if (setting && clearing) {
@@ -95,17 +96,10 @@ export async function patchTierCommand(
     yes: options.yes === true,
     dryRun: isDryRun,
   });
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Cancelled — no changes made');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Cancelled — no changes made')) return;
 
   // Single write under the patch directory lock (delegated inside
-  // updatePatchMetadata). Setting routes through `updates`; clearing
+  // updatePatchMetadata). Setting routes through `updates`. Clearing
   // routes through `unsetFields` so TypeScript's exact optional types
   // do not have to carry an explicit `undefined` on the `tier` field.
   if (after !== undefined) {
@@ -117,8 +111,9 @@ export async function patchTierCommand(
     await updatePatchMetadata(paths.patches, target.filename, {}, ['tier']);
   }
 
-  try {
-    await appendHistory(paths.patches, {
+  await appendHistoryBestEffort(
+    paths.patches,
+    {
       operation: 'patch-tier',
       args: {
         filename: target.filename,
@@ -127,12 +122,9 @@ export async function patchTierCommand(
       },
       ...(options.yes === true ? { yes: true } : {}),
       result: 'ok',
-    });
-  } catch (historyError: unknown) {
-    warn(
-      `History log append failed after patch tier committed (${target.filename}): ${toError(historyError).message}`
-    );
-  }
+    },
+    `patch tier committed (${target.filename})`
+  );
 
   info(`${target.filename}: ${action}.`);
   outro('Patch tier complete');

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * browser-init.js — destroy expression in onUnload()/uninit().
+ * browser-init.js: destroy expression in onUnload()/uninit().
  */
 
 import { join } from 'node:path';
@@ -56,7 +56,7 @@ export function addDestroyAST(
   }
 
   // Insert at top of method body (LIFO ordering)
-  // `noUncheckedIndexedAccess` makes this `Statement | undefined`; narrow
+  // `noUncheckedIndexedAccess` makes this `Statement | undefined`. Narrow
   // before casting rather than laundering the undefined through the cast.
   const firstRaw = body.body[0];
   const firstStmt = firstRaw ? asEstree<estree.Statement>(firstRaw) : undefined;
@@ -67,7 +67,7 @@ export function addDestroyAST(
     insertPos = firstStmt.start;
     indent = detectIndent(content, firstStmt.start);
   } else {
-    // Empty method body — insert after opening {
+    // Empty method body: insert after opening {
     insertPos = body.start + 1;
     indent = '    ';
   }
@@ -130,7 +130,7 @@ export function legacyAddDestroy(
 
 /**
  * Adds a destroy expression to the top of onUnload() or uninit() in
- * browser-init.js (LIFO ordering — newest first).
+ * browser-init.js (LIFO ordering, newest first).
  *
  * @param engineDir - Engine source root
  * @param expression - The destroy expression (e.g., "MyComponent.destroy()")
@@ -150,7 +150,7 @@ export async function addDestroyToBrowserInit(
 
   const content = await readText(filePath);
 
-  // Idempotency check — look for the coerced (call) form because that is
+  // Idempotency check: look for the coerced (call) form because that is
   // what the emitter writes. Matching against the raw input would miss a
   // bare `X.destroy` invocation that coercion already persisted as
   // `X.destroy()`.

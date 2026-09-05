@@ -2,10 +2,10 @@
 /**
  * Real-git tests for the context-reduction ("fuzz") apply path.
  *
- * These deliberately do NOT mock `exec`. `--fuzz=N` is a GNU patch(1) flag
- * that `git apply` rejects with a usage error, and a mocked test can
- * simulate `--check --fuzz=1` succeeding — validating behaviour real git
- * cannot produce. Every escalation scenario here runs against an actual git
+ * These do not mock `exec`. `--fuzz=N` is a GNU patch(1) flag that `git
+ * apply` rejects with a usage error, and a mocked test can simulate
+ * `--check --fuzz=1` succeeding, which validates behaviour real git cannot
+ * produce. Every escalation scenario here runs against an actual git
  * repository.
  */
 import { spawnSync } from 'node:child_process';
@@ -92,7 +92,7 @@ describe('applyPatchWithFuzz (real git)', () => {
   it('escalates to reduced context when outer context lines drifted', async () => {
     // Drift the outermost context lines (ctx1/ctx6): exact apply fails,
     // -C2 succeeds. This is exactly the "Firefox update touched nearby
-    // lines" scenario the rebase feature exists for — and exactly what the
+    // lines" scenario the rebase feature exists for, and also what the
     // --fuzz=N implementation could never do against real git.
     const { repo, patchPath } = await makeDriftedRepo(driftOuterContext);
 
@@ -137,7 +137,7 @@ describe('applyPatchWithFuzz (real git)', () => {
 
     expect(result.success).toBe(false);
     // Git's actual --reject phrasing is "Applying patch <file> with N
-    // rejects..." — the old GNU-patch-shaped regex ("saving rejects to
+    // rejects...". The old GNU-patch-shaped regex ("saving rejects to
     // file X.rej") never matched it, so rejectFiles was always empty and
     // the rebase conflict summary's ".rej files created" hint never fired.
     expect(result.rejectFiles).toEqual(['f.txt.rej']);

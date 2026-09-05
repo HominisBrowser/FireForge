@@ -371,7 +371,7 @@ describe('patch move-files --create', () => {
     expect(filenames).toContain('005-ui-feature-styles.patch');
     expect(filenames).not.toContain('005-ui-feature-styles-patch.patch');
     // The manifest display name is the bare slug run through the
-    // G13 normalizer, never the full filename the operator typed — the
+    // G13 normalizer, never the full filename the operator typed. The
     // policy audit's patch-metadata-shape check rejects anything else.
     const created = manifest.patches.find((p) => p.filename === '005-ui-feature-styles.patch');
     expect(created?.name).toBe('feature-styles');
@@ -456,9 +456,9 @@ describe('patch move-files --create', () => {
 
   it('refuses a create+move whose projected queue regresses cross-patch lint', async () => {
     // The moved importer would land at order 1, before the source patch
-    // (order 2) that keeps creating the helper it imports — a forward
-    // edge into an EXISTING patch, which the split machinery does not
-    // auto-declare. The projected lint must refuse.
+    // (order 2) that keeps creating the helper it imports. That is a
+    // forward edge into an existing patch, which the split machinery does
+    // not auto-declare. The projected lint must refuse.
     const helperPath = 'browser/modules/Helper.sys.mjs';
     const importerPath = 'browser/modules/Importer.sys.mjs';
     await writeFiles(engineDir, {
@@ -592,7 +592,7 @@ describe('patch move-files projection lint runs with the whole-queue context', (
 
   it('--create: a moved body misusing another patch module is refused (pre-fix it slipped through)', async () => {
     // Without the queue context B's `resource:///` import degraded to the
-    // ambient wildcard and the misuse passed the projection lint — leaving
+    // ambient wildcard and the misuse passed the projection lint, leaving
     // a queue the committed per-patch gate immediately failed.
     await seedCrossPatchQueue(B_MISUSE);
 
@@ -648,9 +648,10 @@ describe('patch move-files projection lint runs with the whole-queue context', (
   it('--create: a moved browser test whose head.js stays in the source patch lints clean (the handoff shape)', async () => {
     // Pre-fix the projection lint had no queue context, so the sibling
     // head.js was not a checkJs program root and the harness helper it
-    // defines reported as a spurious undefined-identifier warning — noise
-    // the committed-context gate then contradicted, leaving the operator
-    // unable to tell "the split is wrong" from "the projection is blind".
+    // defines reported as a spurious undefined-identifier warning. The
+    // committed-context gate then contradicted that noise, leaving the
+    // operator unable to tell "the split is wrong" from "the projection
+    // is blind".
     await writeFiles(engineDir, {
       [HEAD_PATH]: [
         '/* SPDX-License-Identifier: EUPL-1.2 */',

@@ -10,7 +10,7 @@ import {
   removeTempProject,
   writeFiles,
 } from '../../test-utils/index.js';
-import { loadState, saveState, updateState } from '../config.js';
+import { loadState, updateState } from '../config.js';
 
 describe('project state persistence', () => {
   let projectRoot: string;
@@ -24,7 +24,9 @@ describe('project state persistence', () => {
   });
 
   it('serializes concurrent state updates so fields are not silently lost', async () => {
-    await saveState(projectRoot, { baseCommit: 'abc123' });
+    await writeFiles(projectRoot, {
+      '.fireforge/state.json': `${JSON.stringify({ baseCommit: 'abc123' }, null, 2)}\n`,
+    });
 
     await Promise.all([
       updateState(projectRoot, { buildMode: 'debug' }),

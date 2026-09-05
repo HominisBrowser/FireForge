@@ -15,6 +15,13 @@ export interface FirefoxConfig {
   /** Optional pinned SHA-256 for the resolved source archive */
   sha256?: string;
   /**
+   * Accept a freshly downloaded archive when Mozilla's published SHA256SUMS
+   * cannot be fetched or does not list it, instead of failing closed. The
+   * download is then trusted on TLS alone (with a warning). Ignored when
+   * `sha256` is pinned. Default false.
+   */
+  allowUnverifiedDownload?: boolean;
+  /**
    * Optional release-candidate build directory (e.g. "build2"). When set,
    * the source archive resolves under
    * `pub/<product>/candidates/<version>-candidates/<candidate>/` instead of
@@ -55,7 +62,7 @@ export interface ExternalToolRequirement {
   path?: string;
   /** Resolve the tool with `xcrun -find <name>` instead of PATH. */
   xcrun?: boolean;
-  /** Missing tool is an error by default; set false for advisory probes. */
+  /** Missing tool is an error by default. Set false for advisory probes. */
   required?: boolean;
 }
 
@@ -137,6 +144,8 @@ export interface FireForgeConfig {
   firefox: FirefoxConfig;
   /** Build settings */
   build?: BuildConfig;
+  /** Post-build packaging audit configuration */
+  buildAudit?: BuildAuditConfig;
   /** Test command defaults */
   test?: TestConfig;
   /** Optional project-specific external toolchains checked by doctor. */
@@ -163,14 +172,14 @@ export interface FireForgeConfig {
 /**
  * Configuration for the `fireforge typecheck` command. Distinct from
  * `patchLint.checkJs`: patch-lint runs every time `fireforge lint` runs
- * and is scoped to patch-owned `.sys.mjs`; typecheck runs whole projects
+ * and is scoped to patch-owned `.sys.mjs`. Typecheck runs whole projects
  * the operator points at via `projects` and is intended as a CI gate.
  */
 export interface TypecheckConfig {
   /**
    * Project-relative paths to jsconfig.json (or tsconfig.json) files
    * the typecheck command should run. Must be non-empty when the
-   * `typecheck` block is present — an empty array would silently turn
+   * `typecheck` block is present. An empty array would silently turn
    * the command into a no-op.
    */
   projects: string[];
@@ -179,14 +188,15 @@ export interface TypecheckConfig {
    * contents are concatenated to the built-in `FIREFOX_GLOBALS_SHIM`.
    * Lets projects declare component patterns like `MozLitElement` /
    * `MozXULElement` once instead of per-file. Concat order is
-   * built-in shim first, extraShim second — augment, don't redeclare.
+   * built-in shim first, extraShim second: augment, don't redeclare.
    */
   extraShim?: string;
   /**
    * Per-project override of {@link extraShim}, keyed by the project's path
    * exactly as it appears in {@link projects}. A string value points the
-   * project at a different `.d.ts`; `null` opts the project out of the shared
-   * extra shim entirely (it absorbs only the built-in Firefox globals shim).
+   * project at a different `.d.ts`. `null` opts the project out of the
+   * shared extra shim entirely (it absorbs only the built-in Firefox globals
+   * shim).
    *
    * Needed because the shared shim is injected into every project: a shim hub
    * that references Gecko declaration libs (`lib.gecko.dom.d.ts`, …) is wanted
@@ -199,7 +209,7 @@ export interface TypecheckConfig {
    * How to report undefined free identifiers (TS2304/TS2552). Default
    * `'warning'`: visible without failing the gate, since shim gaps produce
    * the same diagnostic as a genuine missing import. `'error'` makes them
-   * blocking; `'off'` suppresses them.
+   * blocking. `'off'` suppresses them.
    */
   undefinedIdentifiers?: PatchLintSeverityGate;
 }
@@ -207,13 +217,40 @@ export interface TypecheckConfig {
 /**
  * Wire command configuration.
  */
+/**
+ * One intentionally unpackaged source, declared so the post-build audit
+ * stops reporting it as a missing registration.
+ *
+ * `reason` is required and must be non-empty. A carve-out whose rationale
+ * nobody wrote down is indistinguishable from a mistake by the time someone
+ * reads it, and this is the one audit class FireForge cannot derive from the
+ * tree: the file's own header may say "never loaded", but nothing in
+ * `moz.build` or `jar.mn` records that.
+ */
+export interface BuildAuditUnpackagedDeclaration {
+  /** Engine-relative path, exact or with a `*` inside one path segment. */
+  path: string;
+  /** Why this file is never packaged. Required, non-empty. */
+  reason: string;
+}
+
+/** Post-build packaging audit configuration. */
+export interface BuildAuditConfig {
+  /**
+   * Sources the audit must treat as intentionally unpackaged. Admitted
+   * paths are listed in the audit output rather than silenced, and one that
+   * does resolve to a packaged artifact is reported as a stale carve-out.
+   */
+  unpackaged?: BuildAuditUnpackagedDeclaration[];
+}
+
 export interface WireConfig {
   /** Subscript directory relative to engine/. Default: "browser/base/content" */
   subscriptDir?: string;
 }
 
 /**
- * Severity gate for opt-in patch-lint rules. `'off'` disables the rule;
+ * Severity gate for opt-in patch-lint rules. `'off'` disables the rule.
  * `'warning'` and `'error'` emit issues at the matching severity.
  */
 export type PatchLintSeverityGate = 'off' | 'warning' | 'error';
@@ -225,7 +262,7 @@ export type PatchLintSeverityGate = 'off' | 'warning' | 'error';
  *
  * Boolean flags tighten the strict preset. The optional `paths` mapping
  * (each pattern may carry a single `*`) lets patch-owned modules be typed
- * from their real sources — e.g. `"resource:///modules/foo/*": ["./*"]` —
+ * from their real sources (e.g. `"resource:///modules/foo/*": ["./*"]`),
  * resolved host-side against the engine directory, so no `baseUrl` is set
  * (TS5090-safe) and no hand-generated ambient stub shim is needed. Other
  * options (`rootDir`, etc.) stay disallowed: they would fight the
@@ -247,10 +284,10 @@ export interface PatchLintCheckJsCompilerOptions {
 /**
  * Line-count thresholds for one `file-too-large` tier.
  *
- * Every field is optional; an omitted field keeps the built-in default.
+ * Every field is optional. An omitted field keeps the built-in default.
  * The three must stay ordered `notice <= warning <= error`, which the
- * config validator enforces — an out-of-order triple silently disables a
- * band rather than failing anything.
+ * config validator enforces, because an out-of-order triple silently
+ * disables a band rather than failing anything.
  */
 export interface PatchLintFileSizeTier {
   notice?: number;
@@ -289,7 +326,7 @@ export interface PatchLintConfig {
    */
   checkJsStrict?: boolean;
   /**
-   * Boolean overrides merged after the strict preset; only valid when
+   * Boolean overrides merged after the strict preset. Only valid when
    * `checkJsStrict` is true. Requires `checkJs: true`.
    */
   checkJsCompilerOptions?: PatchLintCheckJsCompilerOptions;
@@ -343,16 +380,16 @@ export interface PatchLintConfig {
    * `Services.scriptloader.loadSubScript`, e.g.
    * `browser/base/content/<binaryName>*.js`). Distinct from
    * `jsdocClassMethods` because chrome subscripts are parsed as scripts,
-   * not ES modules — using one flag for both would silently disable the
+   * not ES modules. Using one flag for both would silently disable the
    * rule when a chrome subscript was fed to the module parser. Default:
    * 'off'.
    */
   chromeScriptJsDoc?: PatchLintSeverityGate;
   /**
    * How the checkJs pass reports undefined free identifiers
-   * (TS2304/TS2552). Same semantics as `typecheck.undefinedIdentifiers`;
-   * the two flows share the suppression policy so a patch
-   * cannot pass one and fail the other. Default: 'warning'.
+   * (TS2304/TS2552). Same semantics as `typecheck.undefinedIdentifiers`.
+   * The two flows share the suppression policy so a patch cannot pass one
+   * and fail the other. Default: 'warning'.
    */
   undefinedIdentifiers?: PatchLintSeverityGate;
 }
@@ -375,8 +412,6 @@ export interface FireForgeState {
   brand?: string;
   /** Build mode: dev, debug, release */
   buildMode?: BuildMode;
-  /** Last successful build timestamp (ISO string) */
-  lastBuild?: string;
   /** Firefox version that was downloaded */
   downloadedVersion?: string;
   /** Initial commit hash of the engine (baseline) */

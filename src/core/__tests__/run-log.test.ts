@@ -81,7 +81,7 @@ describe('run-log', () => {
   });
 
   it('degrades to no log rather than failing the run when the path is unusable', async () => {
-    // A file where the logs DIRECTORY should be: mkdir fails, and the run
+    // A file where the logs directory should be: mkdir fails, and the run
     // must proceed with no log rather than dying over a diagnostic.
     await writeFile(join(root, '.fireforge'), 'not a directory');
     expect(await openRunLog(root, 'test')).toBeUndefined();
@@ -105,6 +105,72 @@ describe('run-log', () => {
     expect(() => {
       writeToActiveRunLog('dropped');
     }).not.toThrow();
+  });
+
+  it('redacts secret-shaped values in the file but never in the mirrored terminal stream', async () => {
+    const log = await openRunLog(root, 'build');
+    setActiveRunLog(log);
+    const seen: string[] = [];
+    const base = {
+      write: (chunk: string): boolean => {
+        seen.push(chunk);
+        return true;
+      },
+    } as unknown as NodeJS.WritableStream;
+
+    const tee = teeToRunLog(base);
+    tee.write('env GITHUB_TOKEN=ghp_live MOZ_OBJDIR=obj-x\n');
+    tee.write('> Authorization: Bearer abc.def\n');
+    const path = log?.path ?? '';
+    await closeActiveRunLog();
+
+    // Terminal: untouched.
+    expect(seen.join('')).toContain('GITHUB_TOKEN=ghp_live');
+    expect(seen.join('')).toContain('Bearer abc.def');
+    // File: masked, everything else preserved.
+    const written = await readFile(path, 'utf-8');
+    expect(written).toContain('GITHUB_TOKEN=<redacted> MOZ_OBJDIR=obj-x');
+    expect(written).toContain('Authorization: Bearer <redacted>');
+    expect(written).not.toContain('ghp_live');
+    expect(written).not.toContain('abc.def');
+  });
+
+  it('redacts an assignment split across chunk boundaries and flushes the tail on close', async () => {
+    const log = await openRunLog(root, 'test');
+    log?.write('API_K');
+    log?.write('EY=split-secret rest\nunterminated TOKEN=tail');
+    const path = log?.path ?? '';
+    await log?.close();
+
+    const written = await readFile(path, 'utf-8');
+    expect(written).toBe('API_KEY=<redacted> rest\nunterminated TOKEN=<redacted>');
+  });
+
+  it('treats a lone carriage return as a line end and holds a trailing one for \\r\\n', async () => {
+    const log = await openRunLog(root, 'build');
+    // Progress-bar repaints: TOKEN=a is complete at the first \r and must be
+    // masked even though no newline ever arrives for it.
+    log?.write('TOKEN=a\rTOKEN=b\r');
+    log?.write('\nTOKEN=c');
+    const path = log?.path ?? '';
+    await log?.close();
+
+    expect(await readFile(path, 'utf-8')).toBe(
+      'TOKEN=<redacted>\rTOKEN=<redacted>\r\nTOKEN=<redacted>'
+    );
+  });
+
+  it('flushes an oversized unterminated line instead of buffering it indefinitely', async () => {
+    const log = await openRunLog(root, 'build');
+    const half = 'x'.repeat(600 * 1024);
+    log?.write(half);
+    log?.write(half);
+    const path = log?.path ?? '';
+    // Not closed yet: the tail has crossed the cap and must already be on
+    // its way to disk.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect((await readFile(path, 'utf-8')).length).toBe(2 * half.length);
+    await log?.close();
   });
 
   it('tees mirrored output to both the base stream and the log', async () => {

@@ -5,40 +5,41 @@
  *
  * Headless test runs against recent engines can end with an
  * `AttributeError: 'SystemResourceMonitor' object has no attribute
- * 'stop_time'` traceback at harness teardown — upstream noise that sits
- * exactly where a reader looks for the failure summary. Real failure lines
- * already beat this traceback in CLASSIFICATION; this filter closes the
- * PRESENTATION gap by collapsing the echoed traceback to one labeled line.
+ * 'stop_time'` traceback at harness teardown. That is upstream noise, and
+ * it sits exactly where a reader looks for the failure summary. Real failure
+ * lines already beat this traceback in classification. This filter closes
+ * the presentation gap by collapsing the echoed traceback to one labeled
+ * line.
  *
- * Scope is deliberately narrow:
- *   - Only the terminal ECHO is filtered. The captured stdout/stderr strings
- *     stay raw — the classifier (`test-harness-crash.ts`) depends on the raw
- *     traceback for its green-summary override and secondary-noise
+ * Scope is narrow on purpose:
+ *   - Only the terminal echo is filtered. The captured stdout/stderr strings
+ *     stay raw, because the classifier (`test-harness-crash.ts`) depends on
+ *     the raw traceback for its green-summary override and secondary-noise
  *     detection.
  *   - Only the exact documented incident is collapsed, and every condition
  *     must hold: an `AttributeError` on `SystemResourceMonitor` naming one
- *     of the two known attributes (`stop_time`, `poll_interval`), AND a
- *     `mozsystemmonitor/resourcemonitor.py` stack frame, AND a
+ *     of the two known attributes (`stop_time`, `poll_interval`), and a
+ *     `mozsystemmonitor/resourcemonitor.py` stack frame, and a
  *     previously-seen SUITE_END shutdown marker (shared across the run's
- *     stdout/stderr filter instances — the marker usually lands on stdout
- *     while the traceback lands on stderr). A novel attribute, a novel
+ *     stdout/stderr filter instances, where the marker usually lands on
+ *     stdout while the traceback lands on stderr). A novel attribute, a novel
  *     exception type in resourcemonitor.py, or a pre-shutdown occurrence is
  *     echoed verbatim, always.
- *   - The hold buffer is bounded; on overflow the block is flushed verbatim
+ *   - The hold buffer is bounded. On overflow the block is flushed verbatim
  *     and the filter returns to pass-through, so output is never lost.
  *
- * The COLLAPSE is test-only, deliberately, and not an oversight — the two
- * reasons are worth stating because from outside it reads like one:
+ * The collapse is test-only on purpose, not an oversight. Two reasons,
+ * since from outside they read like one:
  *   1. Recognition requires a previously-seen SUITE_END shutdown marker, and
  *      `mach build` never prints one. Wiring the option into the build
  *      dispatch would therefore be a silent no-op.
  *   2. Relaxing that gate for builds would be wrong on its own terms. The
  *      marker is what separates teardown noise from a traceback raised while
- *      work was still happening; a build has no equivalent boundary, so
+ *      work was still happening. A build has no equivalent boundary, so
  *      FireForge cannot tell the known-cosmetic case from a real build-time
  *      failure and must not withhold the block.
- * The build path instead RECOGNIZES the signature and says so beside the
- * verbatim traceback — see {@link KNOWN_TEARDOWN_NOISE_BUILD_NOTE} and
+ * The build path instead recognizes the signature and says so beside the
+ * verbatim traceback. See {@link KNOWN_TEARDOWN_NOISE_BUILD_NOTE} and
  * `runProtectedMachBuild`.
  */
 
@@ -50,7 +51,7 @@ const CHAINED_EXCEPTION_CONNECTOR_PATTERN =
  * Closed allowlist of the documented teardown family's attributes:
  * `stop_time` and `poll_interval` (the same mozsystemmonitor init failure
  * `test-harness-crash.ts` already classifies as recognized noise). Any other
- * missing attribute is a NEW upstream defect and must print verbatim.
+ * missing attribute is a new upstream defect and must print verbatim.
  */
 const KNOWN_TEARDOWN_ATTRIBUTE_ERROR_PATTERN =
   /AttributeError: 'SystemResourceMonitor' object has no attribute '(?:stop_time|poll_interval)'/;
@@ -59,50 +60,49 @@ const RESOURCEMONITOR_FRAME_PATTERN = /mozsystemmonitor[/\\]resourcemonitor\.py/
 /**
  * Shutdown marker: the harness's SUITE_END line. Matches the shape
  * `test-harness-crash.ts` keys its summary parsing on (module-private
- * there; duplicated here with this cross-reference rather than exported).
+ * there, and duplicated here with this cross-reference rather than
+ * exported).
  */
 const SHUTDOWN_MARKER_PATTERN = /\bSUITE_END\b/;
 
-/** Whole-block recognition — every signal must hold (see module doc). */
-function isRecognizedTeardownNoise(block: string): boolean {
-  return (
-    KNOWN_TEARDOWN_ATTRIBUTE_ERROR_PATTERN.test(block) && RESOURCEMONITOR_FRAME_PATTERN.test(block)
-  );
-}
-
 /**
- * True when CAPTURED output carries the documented mozsystemmonitor
- * teardown traceback.
+ * Whole-block recognition. Every signal must hold (see module doc). True
+ * when captured output carries the documented mozsystemmonitor teardown
+ * traceback.
  *
- * The echo filter above only affects what a human sees. The CLASSIFIER
+ * The echo filter below only affects what a human sees. The classifier
  * reads the raw capture, and it needs the same recognition to tell "the
  * suite finished clean and then upstream fell over at shutdown" from "the
- * suite did not finish". Deliberately the same two-signal test the echo
- * filter applies — a novel attribute or a traceback from anywhere but
- * `resourcemonitor.py` is NOT this incident and must keep failing the run.
+ * suite did not finish". This is the same two-signal test the echo filter
+ * applies: a novel attribute or a traceback from anywhere but
+ * `resourcemonitor.py` is not this incident and must keep failing the run.
  *
  * The shutdown-marker precondition the echo filter adds is intentionally
- * omitted: the whole point at the classification layer is the case where
- * the teardown crash prevented the shutdown marker from printing.
+ * omitted: at the classification layer the case that matters is exactly
+ * the one where the teardown crash prevented the shutdown marker from
+ * printing.
  *
- * Pure; exported for the classifier and for direct unit testing.
+ * Pure. Exported for the classifier and for direct unit testing.
  *
  * @param output - Raw captured stdout/stderr
  * @returns True when the recognized teardown traceback is present
  */
 export function hasKnownTeardownNoise(output: string): boolean {
-  return isRecognizedTeardownNoise(output);
+  return (
+    KNOWN_TEARDOWN_ATTRIBUTE_ERROR_PATTERN.test(output) &&
+    RESOURCEMONITOR_FRAME_PATTERN.test(output)
+  );
 }
 
 /**
- * True when a SINGLE line is the documented teardown family's
+ * True when a single line is the documented teardown family's
  * `AttributeError`.
  *
- * The line-level half of {@link hasKnownTeardownNoise}: the traceback FRAME
+ * The line-level half of {@link hasKnownTeardownNoise}: the traceback frame
  * lives on a neighbouring line, so a per-line test cannot apply the
  * two-signal rule by itself. Callers pair this with
- * `hasKnownTeardownNoise(wholeOutput)` to recover the full recognition —
- * "this capture carries the incident, and THIS line is its header" — which
+ * `hasKnownTeardownNoise(wholeOutput)` to recover the full recognition
+ * ("this capture carries the incident, and this line is its header"), which
  * keeps the closed attribute allowlist (`stop_time`/`poll_interval`) doing
  * the same work it does everywhere else. A novel attribute is not this
  * incident and must stay a candidate failure.
@@ -115,24 +115,25 @@ export function isKnownTeardownNoiseLine(line: string): boolean {
 }
 
 /**
- * Shared across the stdout and stderr filter instances of ONE mach run:
+ * Shared across the stdout and stderr filter instances of one mach run:
  * SUITE_END typically arrives on stdout while the teardown traceback lands
  * on stderr, so the shutdown-seen flag must be visible to both. The two
  * pipes are independent, so a traceback can theoretically beat the marker
- * through — the block then prints verbatim, the correct failure direction.
+ * through. The block then prints verbatim, which is the correct failure
+ * direction.
  */
 export interface TeardownNoiseContext {
   shutdownSeen: boolean;
 }
 
-/** Fresh per-run context — hand the same instance to both stream filters. */
+/** Fresh per-run context. Hand the same instance to both stream filters. */
 export function createTeardownNoiseContext(): TeardownNoiseContext {
   return { shutdownSeen: false };
 }
 
 /**
- * Build-phase note for the SAME recognized signature. The build path does
- * not COLLAPSE the traceback (see the module doc's "test-only" note) — it
+ * Build-phase note for the same recognized signature. The build path does
+ * not collapse the traceback (see the module doc's "test-only" note). It
  * prints verbatim and this line is added beside it, so one signature reads
  * the same in both phases without a build losing output it may need.
  */
@@ -152,7 +153,7 @@ const HOLD_BYTE_LIMIT = 16 * 1024;
 
 /** Chunk-safe, line-buffered echo filter. See module doc. */
 export interface KnownTeardownNoiseFilter {
-  /** Feed a raw chunk; returns the text to echo now (possibly empty). */
+  /** Feed a raw chunk. Returns the text to echo now (possibly empty). */
   transform(chunk: string): string;
   /** Flush any buffered residue verbatim (call after the stream closes). */
   flush(): string;
@@ -161,7 +162,7 @@ export interface KnownTeardownNoiseFilter {
 /**
  * Creates a stateful filter for one output stream. Complete lines outside a
  * traceback pass straight through (only the trailing partial line is held
- * back); a `Traceback (most recent call last)` header switches to hold mode
+ * back). A `Traceback (most recent call last)` header switches to hold mode
  * until the block ends, then either the one-line annotation (recognized
  * signature after a seen shutdown marker) or the verbatim block (anything
  * else) is emitted. Pass the run's shared {@link TeardownNoiseContext} so
@@ -172,18 +173,18 @@ export function createKnownTeardownNoiseFilter(
 ): KnownTeardownNoiseFilter {
   /** Partial (no trailing newline yet) input line. */
   let partial = '';
-  /** Held traceback lines (each WITH its newline) while in hold mode. */
+  /** Held traceback lines (each with its newline) while in hold mode. */
   let held: string[] = [];
   let heldBytes = 0;
   /**
    * State machine:
-   *   'pass'    — outside any traceback; lines echo through.
-   *   'inside'  — between a Traceback header and its closing exception line.
-   *   'closed'  — saw the closing `SomeError: …` line; still holding in
-   *               case a chained-exception connector continues the block
-   *               (the real fixture chains two tracebacks — the whole
-   *               chain must be evaluated as ONE block or the second half
-   *               would print raw after the annotation).
+   *   'pass':   outside any traceback, so lines echo through.
+   *   'inside': between a Traceback header and its closing exception line.
+   *   'closed': saw the closing `SomeError: …` line, still holding in
+   *             case a chained-exception connector continues the block
+   *             (the real fixture chains two tracebacks, so the whole
+   *             chain must be evaluated as one block or the second half
+   *             would print raw after the annotation).
    */
   let state: 'pass' | 'inside' | 'closed' = 'pass';
 
@@ -198,7 +199,7 @@ export function createKnownTeardownNoiseFilter(
   const releaseHeld = (): string => {
     const block = resetHold();
     if (block.length === 0) return '';
-    return context.shutdownSeen && isRecognizedTeardownNoise(block)
+    return context.shutdownSeen && hasKnownTeardownNoise(block)
       ? KNOWN_TEARDOWN_NOISE_ANNOTATION
       : block;
   };
@@ -208,7 +209,7 @@ export function createKnownTeardownNoiseFilter(
     heldBytes += line.length;
     if (held.length > HOLD_LINE_LIMIT || heldBytes > HOLD_BYTE_LIMIT) {
       // Pathological block: flush verbatim rather than risk withholding
-      // output; do not attempt recognition on oversized blocks.
+      // output. Do not attempt recognition on oversized blocks.
       return { out: resetHold(), overflowed: true };
     }
     return { out: '', overflowed: false };
@@ -232,7 +233,7 @@ export function createKnownTeardownNoiseFilter(
         /^[ \t]/.test(content) ||
         TRACEBACK_HEADER_PATTERN.test(content);
       const { out, overflowed } = hold(line);
-      // The first unindented line is the closing `SomeError: …` line; keep
+      // The first unindented line is the closing `SomeError: …` line. Keep
       // holding in case a chained connector extends the block.
       if (!overflowed && !isContinuation) {
         state = 'closed';
@@ -253,8 +254,8 @@ export function createKnownTeardownNoiseFilter(
     return releaseHeld() + processLineInPass(line);
   };
 
-  // Re-dispatch a line through pass-mode handling after a block release —
-  // the line that ended the block may itself start a new traceback.
+  // Re-dispatch a line through pass-mode handling after a block release.
+  // The line that ended the block may itself start a new traceback.
   const processLineInPass = (line: string): string => {
     const content = line.replace(/\r?\n$/, '');
     if (TRACEBACK_HEADER_PATTERN.test(content)) {
@@ -284,7 +285,7 @@ export function createKnownTeardownNoiseFilter(
       let out = '';
       if (state !== 'pass') {
         // A stream that closes mid-block: fold the trailing partial line in
-        // and evaluate — the final exception line is often the last thing
+        // and evaluate. The final exception line is often the last thing
         // printed, without a trailing newline.
         if (partial.length > 0) {
           held.push(partial);

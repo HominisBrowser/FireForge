@@ -114,7 +114,7 @@ export async function configCommand(
   }
 
   if (value === undefined) {
-    // Get mode — read the raw document rather than the validated config so
+    // Get mode: read the raw document rather than the validated config so
     // keys persisted via `fireforge config <key> --force` remain readable.
     // `validateConfig` builds a typed clone containing only the known schema
     // fields, so relying on it here would hide forced-write keys and surface
@@ -134,7 +134,7 @@ export async function configCommand(
       info(`${key} = ${formatValue(currentValue)}`);
     }
   } else {
-    // Set mode — validate key prefix
+    // Set mode: validate key prefix
     const topLevelKey = key.split('.')[0] ?? key;
     if (
       !(SUPPORTED_CONFIG_ROOT_KEYS as readonly string[]).includes(topLevelKey) &&
@@ -159,7 +159,7 @@ export async function configCommand(
       // Serialise the read → mutate → write round-trip behind the sidecar
       // config lock so two concurrent `fireforge config` invocations cannot
       // each read the pre-state, mutate their own copy, and clobber each
-      // other on write — both exiting 0 with one key silently lost. Atomic
+      // other on write, both exiting 0 with one key silently lost. Atomic
       // file writes (temp + rename) are not enough on their own: the lost
       // update happens before the rename, inside the read-modify step.
       // Readers stay lock-free (see `withConfigFileLock`).
@@ -177,12 +177,12 @@ export async function configCommand(
           return true;
         }
 
-        // `--force` is an escape hatch for *unknown* keys; it must not also
-        // let the user write a structurally invalid value for a *known* key.
+        // `--force` is an escape hatch for unknown keys. It must not also
+        // let the user write a structurally invalid value for a known key.
         // Strict validation applies whenever the key is listed in
         // SUPPORTED_CONFIG_PATHS, regardless of --force.
         //
-        // BOTH branches seed the mutation from the raw on-disk document.
+        // Both branches seed the mutation from the raw on-disk document.
         // Round-tripping the known-key branch through `loadConfig` →
         // `validateConfig` builds a typed clone containing only the known
         // schema fields, so any ordinary `fireforge config <key> <value>`
@@ -193,7 +193,7 @@ export async function configCommand(
           await writeConfigDocument(projectRoot, updatedConfig);
         } else {
           // Mutate the raw document (preserving unknown keys), then run
-          // strict validation on the RESULT — validateConfig checks the
+          // strict validation on the result. validateConfig checks the
           // known schema fields and ignores unknown keys, so this keeps
           // exactly the old validation strength while writing the
           // unstripped document.
@@ -206,7 +206,7 @@ export async function configCommand(
     } catch (error: unknown) {
       // Only value/validation problems are the user's "invalid value".
       // Lock-acquisition timeouts and I/O failures must keep their own
-      // types and messages — re-labelling a lock timeout as `Invalid value
+      // types and messages. Re-labelling a lock timeout as `Invalid value
       // for "<key>"` points diagnosis at the value (and returns the wrong
       // exit-code class) when the real problem is a concurrent fireforge
       // process holding the config lock.
@@ -231,7 +231,7 @@ export async function configCommand(
 /**
  * Structural equality check covering the shapes `fireforge config` accepts:
  * primitives (strings, numbers, booleans), `null`, arrays of primitives, and
- * nested objects. Used to short-circuit no-op writes — when the parsed value
+ * nested objects. Used to short-circuit no-op writes: when the parsed value
  * matches the current on-disk value, the mutate + write step is skipped
  * entirely.
  */

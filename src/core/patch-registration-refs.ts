@@ -9,7 +9,7 @@
  * clean" for the broken queue. This module provides a pattern-scoped scan so
  * `verify` can cross-check registrations against available file bodies.
  *
- * The scan is deliberately narrow: it only matches component-shaped
+ * The scan is narrow on purpose: it only matches component-shaped
  * references (widget tag names, locale fluent names). Unrelated jar.mn or
  * customElements.js edits pass through without spurious warnings.
  */
@@ -41,11 +41,11 @@ export interface PatchRegistrationReference {
 
 /**
  * Walks a unified-diff patch body and returns the set of
- * component-shaped engine paths that the patch ADDS a registration for.
+ * component-shaped engine paths that the patch adds a registration for.
  *
- * Returns the empty array when no registration hunks are present OR
+ * Returns the empty array when no registration hunks are present, or
  * when the registration hunks do not mention any component-shaped
- * paths — that leaves the scan silent on the vast majority of patches
+ * paths. That leaves the scan silent on the vast majority of patches
  * (branding tweaks, behavioural fixes, module additions) so it only
  * fires when a furnace-managed component is being newly registered.
  *
@@ -59,7 +59,7 @@ export function collectPatchRegistrationReferences(
   const refs: PatchRegistrationReference[] = [];
 
   // Key the file state off the `b/` path because that names the target
-  // side and is stable against renames. Only real hunk adds count —
+  // side and is stable against renames. Only real hunk adds count.
   // parseDiffSections has already filtered out header/metadata lines.
   for (const section of parseDiffSections(patchBody)) {
     if (!REGISTRATION_FILE_PATHS.has(section.targetPath)) continue;
@@ -80,7 +80,7 @@ export function collectPatchRegistrationReferences(
 
 /**
  * Per-source extractor. Each registration file has a distinct syntactic
- * shape; we scope the match to that file so a jar.mn regex does not
+ * shape. We scope the match to that file so a jar.mn regex does not
  * accidentally match a customElements.js line.
  */
 function extractTargetPathsFromRegistrationLine(sourceFile: string, added: string): string[] {
@@ -89,7 +89,7 @@ function extractTargetPathsFromRegistrationLine(sourceFile: string, added: strin
     //   `   content/global/elements/moz-qa-panel.mjs  (widgets/moz-qa-panel/moz-qa-panel.mjs)`
     // The parenthesised second half is the repo-relative path Firefox's
     // packaging system reads. Widget registrations always live under
-    // `widgets/<tag>/<file>` — the enclosing tree is
+    // `widgets/<tag>/<file>`, and the enclosing tree is
     // `toolkit/content/widgets/`. Reconstruct the engine-relative
     // target path so callers can check it against patch bodies.
     const widgetMatch = /\(\s*(widgets\/[^\s)]+)\s*\)/.exec(added);

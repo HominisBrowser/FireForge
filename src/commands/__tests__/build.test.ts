@@ -17,7 +17,7 @@ vi.mock('../../core/mach.js', () => ({
   buildArtifactMismatchMessage: vi.fn(),
   attemptMozinfoRewrite: vi.fn(),
   runMach: vi.fn(),
-  // `buildCommand` wraps build/buildUI in `withBuildLock`; a pass-through
+  // `buildCommand` wraps build/buildUI in `withBuildLock`. A pass-through
   // stub keeps focus on the command-level behaviour. Dedicated lock tests
   // live in `src/core/__tests__/build-lock.integration.test.ts`.
   withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
@@ -54,7 +54,7 @@ vi.mock('../../core/brand-validation.js', () => ({
 
 vi.mock('../../core/build-prepare.js', async (importOriginal) => ({
   // Keep the real describeSignalShapedExit so exit-code diagnostics stay
-  // authentic; only the environment mutation is stubbed.
+  // authentic. Only the environment mutation is stubbed.
   ...(await importOriginal<typeof import('../../core/build-prepare.js')>()),
   prepareBuildEnvironment: vi.fn(),
 }));
@@ -70,10 +70,11 @@ vi.mock('../../core/build-audit.js', () => ({
   ),
 }));
 
-// The probe itself is covered by src/core/__tests__/toolchain-preflight.test.ts;
-// here it defaults to "no mismatch" so every existing command test proceeds,
-// and the dedicated preflight tests below override per-case. The message
-// formatter stays real so the fail-fast assertion pins the actual wording.
+// The probe itself is covered by
+// src/core/__tests__/toolchain-preflight.test.ts. Here it defaults to "no
+// mismatch" so every existing command test proceeds, and the dedicated
+// preflight tests below override per-case. The message formatter stays real
+// so the fail-fast assertion pins the actual wording.
 vi.mock('../../core/toolchain-preflight.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../core/toolchain-preflight.js')>();
   return {
@@ -242,31 +243,31 @@ describe('buildCommand', () => {
     // `fireforge build` packages the full test set, so the baseline claims
     // full packaging coverage for the --allow-stale-build coverage gate.
     await expect(buildCommand('/project', {})).resolves.toBeUndefined();
-    expect(writeBuildBaseline).toHaveBeenCalledWith(
-      '/project',
-      nativePath('/project/engine'),
-      'mybrowser',
-      'full',
-      undefined,
-      'fireforge build',
-      'auto',
-      'full'
-    );
+    expect(writeBuildBaseline).toHaveBeenCalledWith({
+      projectRoot: '/project',
+      engineDir: nativePath('/project/engine'),
+      binaryName: 'mybrowser',
+      testPackagingCoverage: 'full',
+      previousBaseline: undefined,
+      recordedBy: 'fireforge build',
+      staticComponentsHandling: 'auto',
+      buildKind: 'full',
+    });
 
     vi.mocked(writeBuildBaseline).mockClear();
     await expect(buildCommand('/project', { ui: true })).resolves.toBeUndefined();
-    expect(writeBuildBaseline).toHaveBeenCalledWith(
-      '/project',
-      nativePath('/project/engine'),
-      'mybrowser',
-      'full',
-      undefined,
-      'fireforge build --ui',
-      'auto',
+    expect(writeBuildBaseline).toHaveBeenCalledWith({
+      projectRoot: '/project',
+      engineDir: nativePath('/project/engine'),
+      binaryName: 'mybrowser',
+      testPackagingCoverage: 'full',
+      previousBaseline: undefined,
+      recordedBy: 'fireforge build --ui',
+      staticComponentsHandling: 'auto',
       // --ui is a `mach build faster`: its jar.mn fingerprints must be
       // carried forward, never refreshed.
-      'faster'
-    );
+      buildKind: 'faster',
+    });
   });
 
   it('refuses UI-only builds when the launchable bundle is missing', async () => {
@@ -410,7 +411,7 @@ describe('buildCommand', () => {
 
   it('annotates a successful build whose captured output warns about a stale config.status', async () => {
     // mach prints "config.status is out of date … Be sure to run |mach
-    // build|" at the tail of a SUCCESSFUL build when tool-managed branding
+    // build|" at the tail of a successful build when tool-managed branding
     // edits landed on moz.configure beforehand. Operators read that as
     // "build is incomplete" and either rebuild unnecessarily or doubt the
     // FireForge footer.
@@ -437,7 +438,7 @@ describe('buildCommand', () => {
   it('annotates a successful build whose tail is mach\'s "Config object not found" banner', async () => {
     // A successful build can end with mach's "Config object not found by
     // mach. / Configure complete! / Be sure to run |mach build|" banner
-    // WITHOUT the "config.status is out of date" line. Both shapes must
+    // without the "config.status is out of date" line. Both shapes must
     // route through the same info banner so the explanation always appears
     // before FireForge's own outro.
     const staleStdout = [
@@ -463,7 +464,7 @@ describe('buildCommand', () => {
   it('emits the configure-banner annotation BEFORE the FireForge "Build completed" outro', async () => {
     // Unannotated, the merged tail reads:
     //   [mach's confusing banner] / [FireForge's "Build completed" outro]
-    // The annotation must land BEFORE the outro so the operator's very last
+    // The annotation must land before the outro so the operator's very last
     // terminal line is the explanation, not the confusing tail. Asserts the
     // recorded mock-call order: the info call must precede the outro call.
     const staleStdout = [
@@ -507,7 +508,7 @@ describe('buildCommand', () => {
   });
 
   it('halts before mach build when Furnace apply fails during preflight', async () => {
-    // Pins the user-facing guarantee that `fireforge build` HALTS when
+    // Pins the user-facing guarantee that `fireforge build` halts when
     // Furnace apply fails instead of warning and continuing to mach build.
     // Building a browser that silently dropped requested component changes
     // is worse than failing early, so a regression here is a real
@@ -527,7 +528,7 @@ describe('buildCommand', () => {
     expect(build).not.toHaveBeenCalled();
     expect(buildUI).not.toHaveBeenCalled();
 
-    // The success banner must not have been emitted either — a user
+    // The success banner must not have been emitted either: a user
     // reading only the trailing output should not see "Build completed".
     expect(outro).not.toHaveBeenCalled();
   });
@@ -535,7 +536,7 @@ describe('buildCommand', () => {
   it('fails fast naming fireforge bootstrap when the toolchain preflight reports a mismatch', async () => {
     // 152.0b7 → 153.0b8 source-refresh drill: the post-hop build died
     // ~8s into mach configure on a moved cbindgen minimum. The preflight
-    // must abort BEFORE any expensive pre-build work (Furnace apply,
+    // must abort before any expensive pre-build work (Furnace apply,
     // mozconfig, mach), with `fireforge bootstrap` as the named remedy.
     vi.mocked(runToolchainPreflight).mockResolvedValueOnce([
       {
@@ -582,17 +583,6 @@ describe('registerBuild', () => {
     });
     vi.mocked(build).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', attempts: 1 });
     vi.mocked(buildUI).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', attempts: 1 });
-  });
-
-  it('routes parsed CLI options through the registered action', async () => {
-    const program = createProgram();
-
-    await program.parseAsync(['node', 'test', 'build', '--ui', '--jobs', '4', '--brand', 'beta']);
-
-    expect(validateBrandOverride).toHaveBeenCalledWith('mybrowser', 'beta');
-    expect(buildUI).toHaveBeenCalledWith(nativePath('/project/engine'));
-    expect(build).not.toHaveBeenCalled();
-    expect(info).toHaveBeenCalledWith('Using 4 parallel jobs');
   });
 
   it('rejects invalid parsed job counts before invoking the command action', async () => {

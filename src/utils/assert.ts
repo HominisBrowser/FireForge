@@ -2,17 +2,17 @@
 /**
  * Runtime assertions for FireForge's own internal invariants.
  *
- * These check state that FireForge itself established — a journal was
+ * These check state that FireForge itself established: a journal was
  * registered before the first mutation, a lock is held before a write,
- * manifest ordering is contiguous after a renumber. They are NOT input
- * validation: anything derived from user input, the filesystem, or a
+ * manifest ordering is contiguous after a renumber. They are not input
+ * validation. Anything derived from user input, the filesystem, or a
  * subprocess belongs in a typed error from `src/errors/` with a
  * `userMessage` that tells the operator what to do. An assertion failure
- * says the opposite — that nothing the operator could have done would
- * have prevented it.
+ * says the opposite: nothing the operator could have done would have
+ * prevented it.
  *
  * Every check routes through a helper here rather than being open-coded
- * as `if (!condition) throw`. That is deliberate: an inline throw adds a
+ * as `if (!condition) throw`. An inline throw adds a
  * permanently-uncovered branch to every function it appears in, and the
  * per-module coverage floors in `scripts/check-coverage-thresholds.mjs`
  * would pay for it in ~40 places. Routed through a call, the branch lives
@@ -28,11 +28,11 @@ import { InternalInvariantError } from '../errors/base.js';
  * A failure description, or a thunk producing one.
  *
  * The thunk form exists so a hot call site pays nothing on the passing
- * path — `assert(ok, () => \`bad state: ${JSON.stringify(x)}\`)` builds
+ * path: `assert(ok, () => \`bad state: ${JSON.stringify(x)}\`)` builds
  * the string only when the assertion actually fails, where a plain
  * template literal would build it on every call.
  */
-export type AssertionMessage = string | (() => string);
+type AssertionMessage = string | (() => string);
 
 /**
  * Resolves an {@link AssertionMessage} at failure time.
@@ -60,30 +60,9 @@ export function assert(condition: unknown, message: AssertionMessage): asserts c
 }
 
 /**
- * Asserts that a value is neither `null` nor `undefined`, narrowing it in
- * place for the statements that follow.
- *
- * Use this in statement position, where the value is already bound to a
- * name. Use {@link expectDefined} in expression position, where it is not.
- *
- * @param value - The value that should be present
- * @param message - What was supposed to be present, and why
- * @throws {@link InternalInvariantError} when `value` is `null` or `undefined`.
- */
-export function assertDefined<T>(
-  value: T,
-  message: AssertionMessage
-): asserts value is NonNullable<T> {
-  if (value === null || value === undefined) {
-    throw new InternalInvariantError(resolveMessage(message));
-  }
-}
-
-/**
  * Returns a value that must be present, throwing if it is not.
  *
- * The expression-position counterpart to {@link assertDefined}: it checks
- * and returns in one step, so an indexed read can be asserted inline
+ * Checks and returns in one step, so an indexed read can be asserted inline
  * (`push({ content: expectDefined(lines[k], …) })`) without first binding
  * it to a local.
  *

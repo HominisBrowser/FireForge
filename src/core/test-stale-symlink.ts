@@ -25,7 +25,7 @@ function isInsideDirectory(parent: string, candidate: string): boolean {
  * Removes one stale xpcshell `_tests` symlink when mach reports a
  * FileExistsError during test installation.
  *
- * The guard rails are deliberately narrow: only quoted FileExistsError
+ * The guard rails are narrow: only quoted FileExistsError
  * destinations inside the active objdir's `_tests` tree are considered, and
  * only when lstat confirms the destination itself is a symlink.
  */

@@ -52,13 +52,13 @@ describe('refreshOverrideFile', () => {
     const overridePath = join(await makeTempDir('fireforge-refresh-override-'), 'widget.css');
     await writeFile(overridePath, 'local edit\n');
 
-    const result = await refreshOverrideFile(
-      repoDir,
+    const result = await refreshOverrideFile({
+      engineDir: repoDir,
       overridePath,
-      'widget.css',
+      engineRelPath: 'widget.css',
       baseCommit,
-      'widget.css'
-    );
+      fileName: 'widget.css',
+    });
 
     expect(result).toEqual({ fileName: 'widget.css', status: 'unchanged' });
     await expect(readFile(overridePath, 'utf8')).resolves.toBe('local edit\n');
@@ -74,13 +74,13 @@ describe('refreshOverrideFile', () => {
     const overridePath = join(await makeTempDir('fireforge-refresh-override-'), 'widget.css');
     await writeFile(overridePath, 'one local\nbase\nthree\n');
 
-    const result = await refreshOverrideFile(
-      repoDir,
+    const result = await refreshOverrideFile({
+      engineDir: repoDir,
       overridePath,
-      'widget.css',
+      engineRelPath: 'widget.css',
       baseCommit,
-      'widget.css'
-    );
+      fileName: 'widget.css',
+    });
 
     expect(result).toEqual({ fileName: 'widget.css', status: 'merged' });
     await expect(readFile(overridePath, 'utf8')).resolves.toBe('one local\nbase\nthree upstream\n');
@@ -96,13 +96,13 @@ describe('refreshOverrideFile', () => {
     const overridePath = join(await makeTempDir('fireforge-refresh-override-'), 'widget.css');
     await writeFile(overridePath, 'ours\n');
 
-    const result = await refreshOverrideFile(
-      repoDir,
+    const result = await refreshOverrideFile({
+      engineDir: repoDir,
       overridePath,
-      'widget.css',
+      engineRelPath: 'widget.css',
       baseCommit,
-      'widget.css'
-    );
+      fileName: 'widget.css',
+    });
 
     expect(result.status).toBe('conflict');
     expect(result.conflictMarkers).toBeGreaterThan(0);
@@ -119,14 +119,14 @@ describe('refreshOverrideFile', () => {
     const overridePath = join(await makeTempDir('fireforge-refresh-override-'), 'widget.css');
     await writeFile(overridePath, 'one local\nbase\nthree\n');
 
-    const result = await refreshOverrideFile(
-      repoDir,
+    const result = await refreshOverrideFile({
+      engineDir: repoDir,
       overridePath,
-      'widget.css',
+      engineRelPath: 'widget.css',
       baseCommit,
-      'widget.css',
-      true
-    );
+      fileName: 'widget.css',
+      dryRun: true,
+    });
 
     expect(result).toEqual({ fileName: 'widget.css', status: 'merged' });
     await expect(readFile(overridePath, 'utf8')).resolves.toBe('one local\nbase\nthree\n');
@@ -143,7 +143,13 @@ describe('refreshOverrideFile', () => {
     await writeFile(overridePath, 'local\n');
 
     await expect(
-      refreshOverrideFile(repoDir, overridePath, 'widget.css', baseCommit, 'widget.css')
+      refreshOverrideFile({
+        engineDir: repoDir,
+        overridePath,
+        engineRelPath: 'widget.css',
+        baseCommit,
+        fileName: 'widget.css',
+      })
     ).resolves.toEqual({ fileName: 'widget.css', status: 'new-file' });
   });
 
@@ -158,12 +164,18 @@ describe('refreshOverrideFile', () => {
     await writeFile(overridePath, 'local\n');
 
     await expect(
-      refreshOverrideFile(repoDir, overridePath, 'widget.css', baseCommit, 'widget.css')
+      refreshOverrideFile({
+        engineDir: repoDir,
+        overridePath,
+        engineRelPath: 'widget.css',
+        baseCommit,
+        fileName: 'widget.css',
+      })
     ).resolves.toEqual({ fileName: 'widget.css', status: 'unchanged' });
   });
 
-  // POSIX mode bits are the refusal mechanism here; NTFS ignores
-  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  // POSIX mode bits are the refusal mechanism here. NTFS ignores
+  // `chmod`, so this cannot be ported to Windows, only skipped honestly.
   it.skipIf(process.platform === 'win32')(
     'preserves existing executable mode when it writes upstream content directly',
     async () => {
@@ -178,7 +190,13 @@ describe('refreshOverrideFile', () => {
       await chmod(overridePath, 0o755);
 
       await expect(
-        refreshOverrideFile(repoDir, overridePath, 'widget.sh', baseCommit, 'widget.sh')
+        refreshOverrideFile({
+          engineDir: repoDir,
+          overridePath,
+          engineRelPath: 'widget.sh',
+          baseCommit,
+          fileName: 'widget.sh',
+        })
       ).resolves.toEqual({ fileName: 'widget.sh', status: 'merged' });
       expect((await stat(overridePath)).mode & 0o777).toBe(0o755);
     }

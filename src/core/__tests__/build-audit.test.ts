@@ -51,7 +51,7 @@ describe('isPackageablePath', () => {
     ['browser/app/Makefile.in', false],
     ['build/moz.configure', false],
     // `.inc.xhtml` fragments are consumed via `#include` from a registered
-    // chrome document; they never ship as a standalone packaged artifact.
+    // chrome document. They never ship as a standalone packaged artifact.
     // The carve-out keeps the two sibling checks (`register` + `build
     // audit`) consistent about this file type.
     ['browser/base/content/freshforge-sidebar.inc.xhtml', false],
@@ -81,7 +81,7 @@ describe('auditBuildArtifacts', () => {
   /**
    * Sets up one unpackaged source and returns its path. The audit's
    * missing-artifact notice keys on "was touched", which on a shared
-   * checkout means ANY concurrent session's dirty file — so the notice must
+   * checkout means any concurrent session's dirty file, so the notice must
    * carry ownership or the operator has to census it by hand.
    */
   async function seedTouchedUnpackagedFile(): Promise<string> {
@@ -118,8 +118,8 @@ describe('auditBuildArtifacts', () => {
     expect(message).toContain('Ownership: unmanaged');
   });
 
-  // "unmanaged" must mean "checked and unowned", never "could not check" —
-  // an empty queue renders nothing rather than libelling every path.
+  // "unmanaged" must mean "checked and unowned", never "could not check".
+  // An empty queue renders nothing rather than libelling every path.
   it('says nothing about ownership when there is no queue to check', async () => {
     await seedTouchedUnpackagedFile();
     vi.mocked(loadPatchesManifest).mockResolvedValue(null);
@@ -131,12 +131,18 @@ describe('auditBuildArtifacts', () => {
 
   it('returns zeroed summary when there is no dist tree', async () => {
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
-    expect(summary).toEqual({ updated: 0, stale: 0, missing: 0, skipped: 0, entries: [] });
+    expect(summary).toMatchObject({
+      updated: 0,
+      stale: 0,
+      missing: 0,
+      skipped: 0,
+      entries: [],
+    });
   });
 
   it('warns when a packageable source has no matching artifact in the bundle', async () => {
     // Create the unpacked source plus a packaged source first, then the dist
-    // copy AFTER so the dist mtime is newer than the source (the "updated"
+    // copy after so the dist mtime is newer than the source (the "updated"
     // post-build state). Otherwise the packaged source counts as "stale".
     await ensureDir(join(engineDir, 'browser/app/profile'));
     const unpackaged = 'browser/app/profile/unpackaged.js';
@@ -218,7 +224,7 @@ describe('auditBuildArtifacts', () => {
     await ensureDir(join(engineDir, 'browser/app/profile'));
 
     const ghost = 'browser/app/profile/deleted.js';
-    // Do NOT create the file on disk.
+    // Do not create the file on disk.
     vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
     vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([ghost]);
     vi.spyOn(gitBase, 'git').mockResolvedValue('');
@@ -243,7 +249,13 @@ describe('auditBuildArtifacts', () => {
       binaryName: 'mybrowser',
     };
     const summary = await auditBuildArtifacts('/project', engineDir, baseline);
-    expect(summary).toEqual({ updated: 0, stale: 0, missing: 0, skipped: 0, entries: [] });
+    expect(summary).toMatchObject({
+      updated: 0,
+      stale: 0,
+      missing: 0,
+      skipped: 0,
+      entries: [],
+    });
     expect(verboseMock).toHaveBeenCalled();
   });
 
@@ -286,7 +298,7 @@ describe('auditBuildArtifacts', () => {
     await writeText(join(engineDir, jarMn), 'browser.jar:');
     await writeText(join(engineDir, mozBuild), '');
 
-    // A coincidentally-named upstream moz.build that the OLD basename
+    // A coincidentally-named upstream moz.build that the old basename
     // matcher would have found and false-flagged as the artifact for
     // the branding moz.build above.
     await writeText(join(dist, 'moz.build'), '');
@@ -310,7 +322,7 @@ describe('auditBuildArtifacts', () => {
     // Two artifact candidates in dist/:
     //   (a) chrome/browser/content/branding/aboutDialog.css  ← correct
     //   (b) chrome/browser/content/browser/aboutDialog.css   ← unrelated upstream
-    // The OLD audit took whichever the directory walk happened to hit first.
+    // The old audit took whichever the directory walk happened to hit first.
     await ensureDir(join(engineDir, 'browser/branding/mybrowser/content'));
     const source = 'browser/branding/mybrowser/content/aboutDialog.css';
     await writeText(join(engineDir, source), 'branded');
@@ -356,7 +368,7 @@ describe('auditBuildArtifacts', () => {
     await ensureDir(join(engineDir, 'browser/modules/mybrowser/test'));
     // `mach package-tests` leaves `all-tests.json` at the _tests root.
     // The audit uses its presence as the signal that the full test-packaging
-    // step ran this build; without it, test-path audits are skipped.
+    // step ran this build. Without it, test-path audits are skipped.
     await writeText(join(testsRoot, 'all-tests.json'), '{}');
 
     const source = 'browser/modules/mybrowser/test/browser_mybrowser_startup.js';
@@ -385,8 +397,8 @@ describe('auditBuildArtifacts', () => {
   it('skips files gated off by an enclosing if-CONFIG block in moz.build', async () => {
     // Windows-only stubinstaller CSS is referenced from a moz.build block
     // gated on `if CONFIG["MAKENSISU"]:`. On macOS the file never appears
-    // in dist/, but the audit should not warn about it — it is
-    // platform-excluded, not silently dropped.
+    // in dist/, but the audit should not warn about it, because it is
+    // platform-excluded rather than silently dropped.
     const dist = join(engineDir, 'obj-debug', 'dist');
     await ensureDir(dist);
     await ensureDir(join(engineDir, 'browser/branding/mybrowser/stubinstaller'));
@@ -418,7 +430,7 @@ describe('auditBuildArtifacts', () => {
 
   it('reports test-file misses against _tests/, not dist/', async () => {
     // When a test file is touched but not registered, the warning should
-    // point at _tests/ — directing the operator to xpcshell.toml or
+    // point at _tests/, directing the operator to xpcshell.toml or
     // BROWSER_CHROME_MANIFESTS rather than package-manifest.in.
     const distRoot = join(engineDir, 'obj-debug', 'dist');
     const testsRoot = join(engineDir, 'obj-debug', '_tests');
@@ -443,10 +455,10 @@ describe('auditBuildArtifacts', () => {
   });
 
   it('skips test sources when `_tests/all-tests.json` is not present', async () => {
-    // Plain `mach build` populates a partial `_tests/` subtree but does NOT
+    // Plain `mach build` populates a partial `_tests/` subtree but does not
     // run `mach package-tests`, so registered tests are absent even when
     // moz.build entries are correct. Without the marker the audit warns on
-    // every registered test every build — pure noise. It defers to
+    // every registered test every build, which is pure noise. It defers to
     // `fireforge test` / `mach package-tests` and silently skips test-path
     // sources.
     const distRoot = join(engineDir, 'obj-debug', 'dist');
@@ -475,8 +487,8 @@ describe('auditBuildArtifacts', () => {
     // does not exist (test packaging was scoped or skipped), but an
     // unrelated upstream `_tests/xpcshell/dom/quota/test/xpcshell/common/
     // head.js` remains from a prior run and trail-matches on the basename
-    // only. Reporting that as "stale against an unrelated file" misleads;
-    // the audit downgrades to `missing` and names the unrelated candidate.
+    // only. Reporting that as "stale against an unrelated file" misleads,
+    // so the audit downgrades to `missing` and names the unrelated candidate.
     const distRoot = join(engineDir, 'obj-debug', 'dist');
     const testsRoot = join(engineDir, 'obj-debug', '_tests');
     await ensureDir(distRoot);
@@ -510,7 +522,7 @@ describe('auditBuildArtifacts', () => {
 
   it('keeps the stale classification when the match shares the source parent directory', async () => {
     // Same setup but the candidate lives under a matching parent
-    // (`.../mybrowser/test/head.js`) — the confident-match heuristic
+    // (`.../mybrowser/test/head.js`). The confident-match heuristic
     // correctly keeps it classified as `stale` so the packaging
     // regression surfaces.
     const distRoot = join(engineDir, 'obj-debug', 'dist');
@@ -585,7 +597,7 @@ describe('auditBuildArtifacts', () => {
     const dist = join(engineDir, 'obj-debug', 'dist');
     await ensureDir(dist);
     await ensureDir(join(engineDir, 'browser/branding/mybrowser/stubinstaller'));
-    // No moz.build gate wraps these files — registration is via Makefile.in.
+    // No moz.build gate wraps these files. Registration is via Makefile.in.
     await writeText(
       join(engineDir, 'browser/branding/mybrowser/moz.build'),
       `BRANDING_FILES += [
@@ -657,7 +669,7 @@ describe('auditBuildArtifacts', () => {
 
   it('reports a registered-but-not-packaged miss distinct from an unregistered one', async () => {
     // Registration is correct but packaging never copied the file into
-    // dist — plausibly because the build step was interrupted or a macro
+    // dist, plausibly because the build step was interrupted or a macro
     // filter excluded the jar. The warning should cite the jar.mn entry
     // so the operator can tell "registration is intact, packaging is
     // broken" from "registration is missing".
@@ -673,7 +685,7 @@ describe('auditBuildArtifacts', () => {
 
     const distRoot = join(engineDir, 'obj-debug', 'dist');
     // A wrongly-located same-basename file (pref patch) is the only
-    // dist candidate; the correctly-registered chrome path is absent.
+    // dist candidate. The correctly-registered chrome path is absent.
     await ensureDir(join(distRoot, 'bin/browser/defaults/preferences'));
     await writeText(join(distRoot, 'bin/browser/defaults/preferences/mybrowser.js'), 'pref');
 
@@ -694,7 +706,7 @@ describe('auditBuildArtifacts', () => {
   it('enumerates every same-basename candidate when the heuristic downgrades to missing', async () => {
     // Unregistered source (no jar.mn anywhere) whose basename collides
     // with several files under dist/ that live in unrelated subtrees.
-    // The old warning named only "the nearest" candidate; the new warning
+    // The old warning named only "the nearest" candidate. The new warning
     // surfaces all of them so the operator can triage the registration
     // bug against the full set of confounders.
     const distRoot = join(engineDir, 'obj-debug', 'dist');
@@ -729,7 +741,7 @@ describe('auditBuildArtifacts', () => {
     const missing = warnings.find((m) => /unrelated subtrees/.test(m));
     expect(missing).toBeDefined();
     expect(missing).toContain('helper.js');
-    // The enumeration should include ALL three candidates, not just one.
+    // The enumeration should include all three candidates, not just one.
     // Asserted against the native candidate paths, since the warning prints
     // what the dist/ walk produced (backslash-separated on Windows).
     expect(missing).toContain(c1);

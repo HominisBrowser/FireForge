@@ -221,7 +221,7 @@ describe('lint integration', () => {
       'browser/base/content/browser.js': 'export const title = "unchanged";\n',
     });
 
-    // No modifications — should return without error
+    // No modifications, so it should return without error
     await expect(lintCommand(projectRoot, [])).resolves.toBeUndefined();
   });
 
@@ -230,7 +230,7 @@ describe('lint integration', () => {
     await initCommittedRepo(join(projectRoot, 'engine'), fixture.initialFiles);
     await writeFiles(join(projectRoot, 'engine'), fixture.modifiedFiles);
 
-    // Rust files should pass lint cleanly — no JS/CSS checks apply
+    // Rust files should pass lint cleanly. No JS/CSS checks apply
     await expect(lintCommand(projectRoot, [fixture.exportPath])).resolves.toBeUndefined();
   });
 
@@ -248,7 +248,7 @@ describe('lint integration', () => {
     expect(colorIssues.length).toBeGreaterThanOrEqual(1);
     expect(colorIssues[0]?.severity).toBe('error');
 
-    // Should NOT have missing-license-header (header is present)
+    // Should not have missing-license-header (header is present)
     const headerIssues = issues.filter((i) => i.check === 'missing-license-header');
     expect(headerIssues).toHaveLength(0);
 
@@ -272,7 +272,7 @@ describe('lint integration', () => {
         'import { x } from "./y.mjs";\nexport function f() {}\n',
     });
 
-    // Lint only the clean file — should pass even though Bad.sys.mjs has violations
+    // Lint only the clean file. It should pass even though Bad.sys.mjs has violations
     await expect(
       lintCommand(projectRoot, ['browser/themes/shared/clean.css'])
     ).resolves.toBeUndefined();
@@ -362,7 +362,7 @@ describe('lint integration', () => {
     await writeFile(join(projectRoot, 'patches', '001-core-big.patch'), '# stub\n');
 
     const reportPath = join(projectRoot, 'lint-report.json');
-    // The waiver keeps the run green; the measurement must still surface.
+    // The waiver keeps the run green. The measurement must still surface.
     await expect(
       lintCommand(projectRoot, [], { perPatch: true, noCache: true, report: reportPath })
     ).resolves.toBeUndefined();

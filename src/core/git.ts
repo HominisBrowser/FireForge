@@ -67,8 +67,8 @@ interface SourceScanSummary {
 
 /**
  * Returns true when the error looks like a process killed by the spawn
- * timeout (SIGTERM → exit code 143) OR an AbortError raised by
- * `AbortSignal.timeout` — Node's `child_process` layer rejects with an
+ * timeout (SIGTERM → exit code 143) or an AbortError raised by
+ * `AbortSignal.timeout`. Node's `child_process` layer rejects with an
  * AbortError when the signal fires, so both shapes have to be recognised.
  */
 function isTimeoutError(error: unknown): boolean {
@@ -99,7 +99,7 @@ async function cleanupIndexLock(dir: string): Promise<void> {
  * other exclusion mechanism git considers, e.g. `.git/info/exclude`,
  * core.excludesFile). Used by the chunked staging fallback to skip entries
  * that would otherwise fail `git add -- <path>` with the fatal "The
- * following paths are ignored by one of your .gitignore files" error — a
+ * following paths are ignored by one of your .gitignore files" error, a
  * state the monolithic `git add -A` path silently handles. A Firefox
  * checkout's top-level `.vscode/` is the common case: without this, the
  * chunked invocation aborts the whole fallback and turns a recoverable
@@ -114,7 +114,7 @@ async function isPathIgnored(dir: string, relativePath: string): Promise<boolean
   const result = await exec('git', ['check-ignore', '-q', '--', relativePath], { cwd: dir });
   if (result.exitCode === 0) return true;
   if (result.exitCode === 1) return false;
-  // Any other shape is "we don't know" — let the caller proceed and
+  // Any other shape is "we don't know", so let the caller proceed and
   // surface the real error if `git add` rejects the path.
   return false;
 }
@@ -126,7 +126,7 @@ async function isPathIgnored(dir: string, relativePath: string): Promise<boolean
  *
  * A chunked pass that hits its own timeout raises a typed
  * {@link GitIndexingTimeoutError} rather than an opaque `AbortError: The
- * operation was aborted`; the typed error carries the environment-variable
+ * operation was aborted`. The typed error carries the environment-variable
  * override so the operator can extend the budget and re-run.
  */
 async function stageAllFilesChunked(
@@ -171,7 +171,7 @@ async function stageAllFilesChunked(
     await runChunk(['add', '--', dirName], dirName);
   }
 
-  // Stage any top-level files (excluding gitignored ones — `git add`
+  // Stage any top-level files (excluding gitignored ones, because `git add`
   // on an explicit ignored path errors out, which would otherwise
   // abort the chunked fallback after the monolithic path has already
   // timed out).
@@ -192,7 +192,7 @@ async function stageAllFilesChunked(
 /**
  * Interval between heartbeat progress messages during the monolithic
  * `git add -A`. On a fresh ~600 MB Firefox tree the monolithic add runs
- * 60–120 seconds, during which git emits nothing to stdout/stderr. Without a
+ * 60 to 120 seconds, during which git emits nothing to stdout/stderr. Without a
  * heartbeat the CLI spinner stays pinned on "Indexing Firefox source …" for
  * the full window and looks hung, which invites a SIGINT mid-way.
  */
@@ -215,7 +215,7 @@ async function scanTopLevelSource(dir: string): Promise<SourceScanSummary> {
 
 /**
  * Stages all files in the repository.
- * Tries a monolithic `git add -A` first; if that times out, falls back to
+ * Tries a monolithic `git add -A` first. If that times out, falls back to
  * directory-by-directory staged adds.
  */
 export async function stageAllFiles(
@@ -230,7 +230,7 @@ export async function stageAllFiles(
     `Source scan complete: ${scan.directories.length} top-level director${scan.directories.length === 1 ? 'y' : 'ies'}, ${scan.topLevelFiles.length} top-level file${scan.topLevelFiles.length === 1 ? '' : 's'}`
   );
 
-  // The heartbeat tracks a PER-PHASE start timestamp and labels each tick
+  // The heartbeat tracks a per-phase start timestamp and labels each tick
   // with the phase. A single start time set at function entry reports
   // cumulative elapsed for the whole `stageAllFiles` invocation, so after a
   // monolithic timeout the chunked-phase ticks name numbers that already
@@ -279,13 +279,8 @@ export async function stageAllFiles(
     phase = 'chunked';
     phaseStartedAt = Date.now();
 
-    try {
-      await stageAllFilesChunked(dir, scan, options);
-      reportProgress?.('Git phase complete: chunked source indexing finished.');
-    } catch (error: unknown) {
-      if (error instanceof GitIndexingTimeoutError) throw error;
-      throw error;
-    }
+    await stageAllFilesChunked(dir, scan, options);
+    reportProgress?.('Git phase complete: chunked source indexing finished.');
   } finally {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
   }
@@ -354,13 +349,30 @@ export async function initRepository(
   await git(['remote', 'add', 'origin', 'https://github.com/mozilla-firefox/firefox'], dir);
   reportProgress('Git phase complete: source git repository metadata initialized.');
 
+  await stageAndCommitSource(
+    dir,
+    reportProgress,
+    'Indexing Firefox source with git add -A (this can take several minutes on large trees)...'
+  );
+}
+
+/**
+ * The tail shared by {@link initRepository} and {@link resumeRepository}:
+ * normalizes the Firefox ignore files, stages the whole tree, and creates
+ * the initial source commit. Index-lock failures on either git step are
+ * wrapped into the typed lock error so both entry points report them the
+ * same way.
+ */
+async function stageAndCommitSource(
+  dir: string,
+  reportProgress: (message: string) => void,
+  stagingMessage: string
+): Promise<void> {
   reportProgress('Normalizing Firefox ignore files for Git-backed mach lint compatibility...');
   await ensureFirefoxIgnorefileCompatibility(dir);
 
   // Add all files
-  reportProgress(
-    'Indexing Firefox source with git add -A (this can take several minutes on large trees)...'
-  );
+  reportProgress(stagingMessage);
   await assertNoGitIndexLock(dir);
   try {
     await stageAllFiles(dir, { onProgress: reportProgress });
@@ -385,7 +397,6 @@ export async function resumeRepository(
   dir: string,
   options: { onProgress?: (message: string) => void } = {}
 ): Promise<void> {
-  await ensureGit();
   const reportProgress = options.onProgress ?? (() => {});
 
   if (!(await isGitRepository(dir))) {
@@ -405,24 +416,7 @@ export async function resumeRepository(
   // Ensure origin remote exists (may have been added before the interrupt)
   await ensureOriginRemote(dir);
 
-  reportProgress('Normalizing Firefox ignore files for Git-backed mach lint compatibility...');
-  await ensureFirefoxIgnorefileCompatibility(dir);
-
-  // Stage all files
-  reportProgress('Indexing Firefox source (resuming)...');
-  await assertNoGitIndexLock(dir);
-  try {
-    await stageAllFiles(dir, { onProgress: reportProgress });
-  } catch (error: unknown) {
-    throw await maybeWrapIndexLockError(dir, error);
-  }
-
-  // Create initial commit
-  try {
-    await createInitialSourceCommit(dir, reportProgress);
-  } catch (error: unknown) {
-    throw await maybeWrapIndexLockError(dir, error);
-  }
+  await stageAndCommitSource(dir, reportProgress, 'Indexing Firefox source (resuming)...');
 }
 
 async function assertNoGitIndexLock(dir: string): Promise<void> {
@@ -509,8 +503,8 @@ export async function applyPatch(
  * @param patchPath - Path to the patch file
  * @param repoDir - Repository directory
  * @param options.reject - Fall back to `git apply --reject`
- * @param options.protectedFiles - Files that must NOT be reset to HEAD by the
- *   recovery step. Callers applying a patch QUEUE pass the files already
+ * @param options.protectedFiles - Files that must not be reset to HEAD by the
+ *   recovery step. Callers applying a patch queue pass the files already
  *   touched by previously applied patches in the same run: two overlapping
  *   patches (an `--allow-overlap` queue) share files, and a blanket
  *   `checkout HEAD` would wipe the earlier patch's changes from the shared
@@ -550,14 +544,14 @@ export async function applyPatchIdempotent(
 }
 
 /**
- * Restores `files` to their HEAD state, deleting files the patch would CREATE
- * (present on disk from a partial apply but absent in HEAD — for those,
+ * Restores `files` to their HEAD state, deleting files the patch would create
+ * (present on disk from a partial apply but absent in HEAD, where
  * `git checkout HEAD --` fails, and ignoring that failure leaves stray files
  * that make the subsequent forward apply die with "already exists" and no
  * hint why).
  *
  * Every git invocation is chunked via {@link chunkPathspecs} so a very large
- * patch cannot hit `E2BIG`, and every exit code is checked — a silent failed
+ * patch cannot hit `E2BIG`, and every exit code is checked. A silent failed
  * restore is the confusing state this recovery step exists to prevent.
  */
 async function restoreFilesToHead(
@@ -626,8 +620,6 @@ export async function reversePatch(patchPath: string, repoDir: string): Promise<
  * @returns True if there are uncommitted changes
  */
 export async function hasChanges(repoDir: string): Promise<boolean> {
-  await ensureGit();
-
   const entries = await getWorkingTreeStatus(repoDir);
   return entries.length > 0;
 }
@@ -652,8 +644,6 @@ export function isMissingHeadError(error: unknown): boolean {
  * @returns Commit hash
  */
 export async function getHead(repoDir: string): Promise<string> {
-  await ensureGit();
-
   const output = await git(['rev-parse', 'HEAD'], repoDir);
   return output.trim();
 }
@@ -664,8 +654,6 @@ export async function getHead(repoDir: string): Promise<string> {
  * @returns Branch name
  */
 export async function getCurrentBranch(repoDir: string): Promise<string> {
-  await ensureGit();
-
   const output = await git(['rev-parse', '--abbrev-ref', 'HEAD'], repoDir);
   return output.trim();
 }
@@ -675,26 +663,12 @@ export async function getCurrentBranch(repoDir: string): Promise<string> {
  * @param repoDir - Repository directory
  */
 export async function resetChanges(repoDir: string): Promise<void> {
-  await ensureGit();
-
   try {
     await git(['reset', '--hard', 'HEAD'], repoDir);
   } catch (error: unknown) {
     throw await maybeWrapIndexLockError(repoDir, error);
   }
   await git(['clean', '-fd'], repoDir);
-}
-
-/**
- * Creates a commit with all current changes.
- * @param repoDir - Repository directory
- * @param message - Commit message
- */
-export async function commit(repoDir: string, message: string): Promise<void> {
-  await ensureGit();
-
-  await stageAllFiles(repoDir);
-  await git(['commit', '-m', message], repoDir);
 }
 
 /**

@@ -4,10 +4,10 @@
  * `fireforge furnace create --test-style=mochikit`.
  *
  * Browser-chrome mochitests require a `tabbrowser` in the top-level chrome
- * document, so forks with a bespoke chrome document that deliberately omits
- * one cannot run them. MochiKit tests load the component module directly via
+ * document, so forks with a bespoke chrome document that omits one cannot
+ * run them. MochiKit tests load the component module directly via
  * `chrome://global/` and assert against `customElements`, so they work
- * against any fork that registers the upstream toolkit test manifest tree —
+ * against any fork that registers the upstream toolkit test manifest tree,
  * including those without a tabbrowser.
  */
 
@@ -39,7 +39,7 @@ import {
  * Appends a per-test entry to the existing `chrome.toml` when present,
  * writes a fresh `[DEFAULT]`-headed one otherwise. The caller is still
  * responsible for ensuring the `toolkit/content/tests/widgets/chrome.toml`
- * path is registered somewhere in the moz.build tree; most forks inherit
+ * path is registered somewhere in the moz.build tree. Most forks inherit
  * this from upstream via `TEST_HARNESS_FILES += [...]`.
  */
 export async function scaffoldMochikitTestFiles(
@@ -71,9 +71,9 @@ export async function scaffoldMochikitTestFiles(
     writtenFiles.push(testFileName);
   }
 
-  // chrome.toml — append entry if the file already exists, otherwise write
-  // a fresh skeleton + entry. Idempotency: if the entry is already present
-  // the manifest is left untouched so re-runs don't double-register.
+  // chrome.toml: append an entry if the file already exists, otherwise
+  // write a fresh skeleton + entry. Idempotency: if the entry is already
+  // present the manifest is left untouched so re-runs don't double-register.
   const manifestPath = join(testDir, 'chrome.toml');
   const entry = generateMochikitChromeTomlEntry(componentName);
 

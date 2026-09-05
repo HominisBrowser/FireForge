@@ -4,7 +4,7 @@
  * FireForge CLI entry point, and the only file that may call process.exit().
  * Library code propagates errors via CommandError or FireForgeError instead.
  *
- * The signal pipeline below composes several lifecycle modules; see
+ * The signal pipeline below composes several lifecycle modules. See
  * docs/lifecycle-invariants.md for who owns what.
  */
 
@@ -16,6 +16,7 @@ import {
   isSignalRollbackInFlight,
   rollbackActiveOperationsForSignal,
 } from '../src/core/furnace-operation.js';
+import { closeActiveRunLog } from '../src/core/run-log.js';
 import { waitForActiveCriticalSections } from '../src/core/signal-critical.js';
 import { CommandError } from '../src/errors/base.js';
 import { waitForActiveChildShutdown } from '../src/utils/process.js';
@@ -34,24 +35,24 @@ const SIGNAL_CRITICAL_SECTION_TIMEOUT_MS = 5_000;
  * under `run`/`test`, mach under `build`) to shut down after the signal was
  * forwarded to them. Must exceed the largest child grace window
  * (execSmokeRun's killGraceMs default of 10 s) so the SIGTERM → grace →
- * SIGKILL escalation can complete; exiting earlier orphans hung Firefox
+ * SIGKILL escalation can complete. Exiting earlier orphans hung Firefox
  * trees. A second Ctrl+C escalates to SIGKILL immediately.
  */
 const CHILD_SHUTDOWN_TIMEOUT_MS = 12_000;
 
 /**
  * Upper bound (ms) a delayed exit waits for stdout/stderr to drain. A pipe
- * is ASYNC, so `process.exit()` discards anything queued past the 64 KiB
- * kernel buffer — enough to truncate a JSON payload mid-object. Bounded so
- * a stalled reader cannot wedge a failing process; an EPIPE'd/closed pipe
- * releases the wait immediately.
+ * is async, so `process.exit()` discards anything queued past the 64 KiB
+ * kernel buffer, which is enough to truncate a JSON payload mid-object.
+ * Bounded so a stalled reader cannot wedge a failing process. An
+ * EPIPE'd/closed pipe releases the wait immediately.
  */
 const STDIO_FLUSH_TIMEOUT_MS = 5_000;
 
 /**
- * Drains stdio, then exits. Every delayed exit routes through here — only
- * the second-Ctrl+C force-exit (an explicit "out NOW") and this helper's
- * own call terminate directly.
+ * Drains stdio, then exits. Every delayed exit routes through here. Only
+ * the second-Ctrl+C force-exit (an explicit request to quit at once) and
+ * this helper's own call terminate directly.
  */
 function exitAfterStdioFlush(code: number): void {
   void waitForStdioDrain(STDIO_FLUSH_TIMEOUT_MS).finally(() => {
@@ -89,9 +90,9 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
       // A diagnostic must never keep the process from exiting.
     }
     if (isSignalRollbackInFlight()) {
-      // A second Ctrl+C while we're already rolling back is a noisy "I want
-      // out now" — let the second signal terminate the process forcefully
-      // rather than queueing another rollback that will race the first.
+      // A second Ctrl+C while we're already rolling back means the user
+      // wants out now, so let it terminate the process forcefully rather
+      // than queueing another rollback that will race the first.
       process.exit(exitCode);
     }
     // Rollback, critical-section drain, and child shutdown run in parallel.
@@ -100,7 +101,7 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
     // applied to the engine but a stale session file that mis-tracks progress
     // on `--continue`. Waiting on child shutdown keeps the parent alive through
     // the SIGTERM → grace → SIGKILL escalation execInherit/execSmokeRun forward
-    // to Firefox/mach; exiting first orphans those trees.
+    // to Firefox/mach. Exiting first orphans those trees.
     void Promise.allSettled([
       rollbackActiveOperationsForSignal(signal).catch((error: unknown) => {
         console.error(
@@ -114,11 +115,16 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
       // `withFileLock`'s `finally { rm }` never runs across `process.exit`,
       // so both sweeps exist for the same reason. The generic one covers
       // every lock this process holds (engine session, patch directory,
-      // build); the furnace one stays because it carries rollback
+      // build). The furnace one stays because it carries rollback
       // bookkeeping the generic sweep does not, and runs after it so the
       // ownership checks see a settled tree.
       .then(() => forceReleaseHeldLocksForSignal())
       .then(() => forceReleaseFurnaceLocksForActiveOperations())
+      // The run log's held partial line and queued writes do not survive
+      // `process.exit`. The command's own `finally` that would close it is
+      // racing this handler and usually loses. Best-effort like the log
+      // itself: a diagnostic must never keep the process from exiting.
+      .then(() => closeActiveRunLog().catch(() => undefined))
       .finally(() => {
         exitAfterStdioFlush(exitCode);
       });
@@ -134,7 +140,7 @@ main().catch((error: unknown) => {
     return;
   }
 
-  // Truly unexpected — CommandError should have been thrown by withErrorHandling
+  // Unexpected: withErrorHandling should have thrown a CommandError.
   console.error('Fatal error:', error);
   exitAfterStdioFlush(1);
 });

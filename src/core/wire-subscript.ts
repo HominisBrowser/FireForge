@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * browser-main.js — loadSubScript registration.
+ * browser-main.js: loadSubScript registration.
  */
 
 import { join } from 'node:path';
@@ -69,7 +69,7 @@ export function addSubscriptAST(
     insertPos = lastTry.end;
     indent = detectIndent(content, lastTry.start);
   } else {
-    // No existing loadSubScript — insert before last standalone closing brace
+    // No existing loadSubScript: insert before last standalone closing brace
     // Use line-based search to avoid matching braces inside strings/comments
     const allLines = content.split('\n');
     let lastBrace = -1;
@@ -175,7 +175,7 @@ export async function addSubscriptToBrowserMain(
 
   const content = await readText(filePath);
 
-  // Idempotency check — include closing quote to avoid substring false positives
+  // Idempotency check. Include the closing quote to avoid substring false positives
   if (content.includes(`content/${name}.js"`)) {
     return false;
   }

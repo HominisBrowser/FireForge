@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import type { FirefoxProduct } from '../types/config.js';
-import { FireForgeError } from './base.js';
+import { FireForgeError, remedies } from './base.js';
 import { ExitCode } from './codes.js';
 
 /**
@@ -18,18 +18,15 @@ export class DownloadError extends FireForgeError {
   }
 
   override get userMessage(): string {
-    let msg = `Download Error: ${this.message}`;
-
-    if (this.url) {
-      msg += `\n\nURL: ${this.url}`;
-    }
-
-    msg += '\n\nTo fix this:\n';
-    msg += '  1. Check your internet connection\n';
-    msg += '  2. Verify the Firefox version in fireforge.json is valid\n';
-    msg += '  3. Try again with "fireforge download --force"';
-
-    return msg;
+    return (
+      `Download Error: ${this.message}` +
+      (this.url ? `\n\nURL: ${this.url}` : '') +
+      remedies([
+        'Check your internet connection',
+        'Verify the Firefox version in fireforge.json is valid',
+        'Try again with "fireforge download --force"',
+      ])
+    );
   }
 }
 
@@ -50,25 +47,59 @@ export class ChecksumMismatchError extends DownloadError {
   }
 
   override get userMessage(): string {
-    let msg =
+    return (
       `Download Error: Firefox source archive checksum mismatch.\n\n` +
       `Product: ${this.product}\n` +
       `URL: ${this.url}\n` +
       `Expected SHA-256: ${this.expectedSha256}\n` +
-      `Actual SHA-256: ${this.actualSha256}`;
+      `Actual SHA-256: ${this.actualSha256}` +
+      remedies([
+        'Verify firefox.product, firefox.version, and firefox.sha256 in fireforge.json',
+        'Compare the pinned hash with Mozilla SHA256SUMMARY for the resolved archive',
+        ...(this.product === 'firefox-devedition'
+          ? [
+              'Developer Edition archives should resolve under https://archive.mozilla.org/pub/devedition/releases/',
+            ]
+          : []),
+        'Re-run "fireforge download --force" after correcting the source settings',
+      ])
+    );
+  }
+}
 
-    msg += '\n\nTo fix this:\n';
-    msg += '  1. Verify firefox.product, firefox.version, and firefox.sha256 in fireforge.json\n';
-    msg += '  2. Compare the pinned hash with Mozilla SHA256SUMMARY for the resolved archive\n';
-    if (this.product === 'firefox-devedition') {
-      msg +=
-        '  3. Developer Edition archives should resolve under https://archive.mozilla.org/pub/devedition/releases/\n';
-      msg += '  4. Re-run "fireforge download --force" after correcting the source settings';
-    } else {
-      msg += '  3. Re-run "fireforge download --force" after correcting the source settings';
-    }
+/**
+ * Error thrown when the default integrity check cannot obtain Mozilla's
+ * published SHA-256 for a freshly downloaded archive (checksum file
+ * unreachable, malformed, or not listing the archive) and no operator pin
+ * or explicit opt-out allows the download to be trusted on TLS alone.
+ */
+export class ChecksumUnavailableError extends DownloadError {
+  constructor(
+    public readonly product: FirefoxProduct,
+    public readonly checksumsUrl: string,
+    public readonly reason: string,
+    url: string
+  ) {
+    super(`Could not verify archive against published SHA256SUMS: ${reason}`, url);
+  }
 
-    return msg;
+  override get userMessage(): string {
+    return (
+      `Download Error: Firefox source archive integrity could not be verified.\n\n` +
+      `Product: ${this.product}\n` +
+      `Archive: ${this.url ?? ''}\n` +
+      `Checksums: ${this.checksumsUrl}\n` +
+      `Reason: ${this.reason}\n\n` +
+      'The archive was downloaded but discarded: without the published digest it would be ' +
+      'trusted on TLS alone, and it becomes the git baseline every patch is built on.\n\n' +
+      'To fix this:\n' +
+      '  1. Check connectivity to archive.mozilla.org (a captive portal or proxy may be ' +
+      'answering the SHA256SUMS request) and retry\n' +
+      '  2. Or pin the archive digest: set firefox.sha256 in fireforge.json ' +
+      '(from the release SHA256SUMS, obtained out of band)\n' +
+      '  3. Or, for an offline mirror you trust, set firefox.allowUnverifiedDownload: true ' +
+      'in fireforge.json to accept the download with a warning'
+    );
   }
 }
 

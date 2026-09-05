@@ -7,6 +7,66 @@ import type { FirefoxProduct, ProjectLicense } from '../config.js';
 import type { PatchCategory } from './patches.js';
 
 /**
+ * `--dry-run`: print the planned change and exit without writing anything.
+ *
+ * Twenty-four option types spelled this field with five different doc
+ * comments for one behaviour. The contract is uniform and load-bearing (a
+ * dry run must perform every check the real run does and then write
+ * nothing), so it is stated once.
+ */
+export interface DryRunnable {
+  /** Print the planned change without writing anything. */
+  dryRun?: boolean;
+}
+
+/**
+ * `--yes`: answer the confirmation prompt non-interactively.
+ *
+ * Required for non-TTY runs, where there is no prompt to answer. It waives
+ * the prompt only, never a safety gate. Flags that waive a refusal are
+ * spelled `--force*` and live on their own types.
+ */
+export interface Confirmable {
+  /** Skip the confirmation prompt. Required for non-TTY runs. */
+  yes?: boolean;
+}
+
+/**
+ * `--force-unsafe`: proceed past a refusal the command would otherwise raise.
+ *
+ * Distinct from {@link Confirmable}: this waives a correctness gate (a
+ * projected-lint failure, a patchPolicy violation), not a prompt.
+ */
+export interface UnsafeOverridable {
+  /** Bypass refusals the command would otherwise raise. */
+  forceUnsafe?: boolean;
+}
+
+/**
+ * `--wait-lock [seconds]` for commands that take the ENGINE SESSION lock.
+ *
+ * Parsed at the CLI layer (`true` for the bare flag, meaning 60 seconds) and
+ * consumed there to bound the wait. The command implementation ignores it.
+ */
+export interface EngineLockWaitable {
+  /** Parsed `--wait-lock [seconds]` value. `true` means the 60-second default. */
+  waitLock?: number | boolean;
+}
+
+/**
+ * `--wait-lock [seconds]` for commands that mutate patch metadata under the
+ * PATCH DIRECTORY lock.
+ *
+ * Separate from {@link EngineLockWaitable}: the two flags share a
+ * spelling but bound different locks, and a reader needs to know which one a
+ * command contends for.
+ */
+export interface PatchLockWaitable {
+  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
+  waitLock?: number | boolean;
+}
+
+/**
  * Options for the setup command.
  */
 export interface SetupOptions {
@@ -57,7 +117,7 @@ export interface SourceSetOptions {
 /**
  * Options for the build command.
  */
-export interface BuildOptions {
+export interface BuildOptions extends EngineLockWaitable {
   /** Fast UI-only rebuild */
   ui?: boolean;
   /** Number of parallel jobs */
@@ -76,22 +136,16 @@ export interface BuildOptions {
    * Refuse the build (rather than warn) when it would overwrite engine
    * content recorded in neither a patch body nor the pristine baseline.
    * The default is a loud warning, because an interactive
-   * operator often means to discard the drift; a scripted gate on a
+   * operator often means to discard the drift. A scripted gate on a
    * multi-session checkout wants the hard stop.
    */
   refuseUnexportedDrift?: boolean;
-  /**
-   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
-   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
-   * the command implementation ignores it.
-   */
-  waitLock?: number | boolean;
 }
 
 /**
  * Options for the export command.
  */
-export interface ExportOptions {
+export interface ExportOptions extends EngineLockWaitable {
   /** Name/description for the patch */
   name?: string;
   /** Category classification */
@@ -138,14 +192,8 @@ export interface ExportOptions {
    */
   allowOverlap?: boolean;
   /**
-   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
-   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
-   * the command implementation ignores it.
-   */
-  waitLock?: number | boolean;
-  /**
    * Force a tier override on the new patch's `PatchMetadata.tier`. Only
-   * `"branding"` is currently recognised — Commander rejects other values
+   * `"branding"` is currently recognised. Commander rejects other values
    * before the handler runs. Use when a branding patch legitimately
    * touches a non-allowlisted sibling that `isBrandingOnlyPatch` cannot
    * reach (a fork-specific theme override under `browser/themes/<name>/`,
@@ -154,7 +202,7 @@ export interface ExportOptions {
   tier?: 'branding';
   /**
    * Lint check IDs to suppress on this patch. Writes to
-   * `PatchMetadata.lintIgnore`. Repeatable on the CLI; each occurrence
+   * `PatchMetadata.lintIgnore`. Repeatable on the CLI, and each occurrence
    * appends to the list. Useful when a patch is advisory-noisy by nature
    * (a cohesive branding bundle, an auto-generated manifest) and a
    * specific check does not apply, but `--skip-lint` is too coarse a
@@ -166,9 +214,7 @@ export interface ExportOptions {
 /**
  * Options for the reset command.
  */
-export interface ResetOptions {
-  /** Skip confirmation prompt */
-  yes?: boolean;
+export interface ResetOptions extends Confirmable {
   /** Show what would be reset without doing it */
   dryRun?: boolean;
 }
@@ -176,7 +222,7 @@ export interface ResetOptions {
 /**
  * Options for the discard command.
  */
-export interface DiscardOptions {
+export interface DiscardOptions extends Confirmable {
   /**
    * Restore to pristine upstream (HEAD) instead of the patch-applied
    * baseline, deleting patch-created files.
@@ -184,8 +230,6 @@ export interface DiscardOptions {
   toUpstream?: boolean;
   /** Show what would be discarded without doing it */
   dryRun?: boolean;
-  /** Skip confirmation prompt */
-  yes?: boolean;
 }
 
 /**
@@ -202,7 +246,7 @@ export interface PackageOptions {
 export interface ImportOptions {
   /**
    * Answer the engine-drift prompt non-interactively. Unlike `force`,
-   * this does NOT waive the patch-integrity gate.
+   * this does not waive the patch-integrity gate.
    */
   yes?: boolean;
   /** Specific patches to apply (by name) */
@@ -224,7 +268,7 @@ export interface ImportOptions {
 /**
  * Options for the re-export command.
  */
-export interface ReExportOptions {
+export interface ReExportOptions extends EngineLockWaitable {
   /** Re-export all patches */
   all?: boolean;
   /** Scan directories for new/removed files and update filesAffected */
@@ -238,15 +282,15 @@ export interface ReExportOptions {
   /**
    * Path to a JSON manifest containing bulk scan assignments:
    * `{ "assignments": [{ "patch": "<patch>", "files": ["path"] }] }`.
-   * Requires `--scan`; mutually exclusive with positional patches, `--all`,
+   * Requires `--scan`. Mutually exclusive with positional patches, `--all`,
    * `--scan-file`, and `--files`.
    */
   scanFilesManifest?: string;
   /**
    * Restrict the re-exported patch's filesAffected to this explicit list.
-   * Files currently in the patch but not in this list are dropped (shrink);
-   * files in this list but not currently in the patch are added. Mutually
-   * exclusive with `--scan` and `--all`; applies to a single target patch
+   * Files currently in the patch but not in this list are dropped (shrink).
+   * Files in this list but not currently in the patch are added. Mutually
+   * exclusive with `--scan` and `--all`. Applies to a single target patch
    * at a time.
    */
   files?: string[];
@@ -274,60 +318,54 @@ export interface ReExportOptions {
    * After every selected patch re-exports cleanly, stamp each re-exported
    * patch's `sourceEsrVersion` in `patches.json` to the current
    * `firefox.version` from `fireforge.json`. Opt-in because the default
-   * contract of `re-export` is "refresh the patch body and filesAffected";
-   * version stamping is normally a `rebase` responsibility. Use this when
+   * contract of `re-export` is "refresh the patch body and filesAffected".
+   * Version stamping is normally a `rebase` responsibility. Use this when
    * re-exporting after a manual Firefox bump that did not go through
    * `rebase`.
    */
   stamp?: boolean;
   /**
    * Force a tier override on the selected patch(es). Only `"branding"` is
-   * currently recognised. Mutually exclusive with `--all` — mass tier
-   * changes are virtually always footguns, since different patches in
+   * currently recognised. Mutually exclusive with `--all`, since mass
+   * tier changes are virtually always footguns: different patches in
    * the queue have different shapes.
    */
   tier?: 'branding';
   /**
-   * Lint check IDs to suppress, **appended** (union) to the patch's existing
+   * Lint check IDs to suppress, appended (union) to the patch's existing
    * `lintIgnore` list. De-duplicated. Mutually exclusive with `--all`. To
    * remove an entry or clear the list, use `fireforge patch lint-ignore`,
    * which has explicit `--add` / `--remove` / `--clear` modes.
    */
   lintIgnore?: string[];
   /**
-   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
-   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
-   * the command implementation ignores it.
-   */
-  waitLock?: number | boolean;
-  /**
    * Refuse (non-zero exit, patch not written) a scan-less re-export when
    * unmanaged files exist adjacent to the patch's ownership, instead of
    * warning. Gate-driven workflows use this so a freshly created file
    * beside a patch's owned files cannot be silently left out of the
-   * refreshed body. Only meaningful on the plain path — mutually
+   * refreshed body. Only meaningful on the plain path, and mutually
    * exclusive with `--scan` and `--files`, which set filesAffected
    * explicitly.
    */
   refuseAdjacentUnmanaged?: boolean;
   /**
-   * Bypass per-patch lint result cache reads AND writes for this invocation
+   * Bypass per-patch lint result cache reads and writes for this invocation
    * (`--no-cache`). The cache is what lets a repeat re-export of an unchanged
    * patch skip the checkJs program build entirely.
    */
   noCache?: boolean;
   /**
    * Refuse (non-zero exit, patch not written) a re-export whose refreshed
-   * body would absorb engine lines not present in the old patch body —
-   * the multi-session guard against silently capturing another session's
-   * uncommitted edits in files the patch already owns. The drift preview
-   * always prints; this flag turns it into a hard stop. Mutually
+   * body would absorb engine lines not present in the old patch body.
+   * This is the multi-session guard against silently capturing another
+   * session's uncommitted edits in files the patch already owns. The drift preview
+   * always prints. This flag turns it into a hard stop. Mutually
    * exclusive with `--scan` and `--files`.
    */
   refuseForeignDrift?: boolean;
   /**
-   * Engine-relative files whose drift is EXPECTED (`--expect`, repeatable;
-   * requires `--refuse-foreign-drift`). The content-based drift detector
+   * Engine-relative files whose drift is expected (`--expect`, repeatable).
+   * Requires `--refuse-foreign-drift`. The content-based drift detector
    * cannot tell the exporting session's own slice edits from another
    * session's, so a slice export under the refusal flag names its intended
    * files here: drift confined to expected files proceeds, drift anywhere
@@ -335,13 +373,14 @@ export interface ReExportOptions {
    */
   expect?: string[];
   /**
-   * Engine-relative files that are an APPROVED unmanaged exception
-   * (`--expect-unmanaged`, repeatable; requires
-   * `--refuse-adjacent-unmanaged`). The adjacency refusal is all-or-nothing
-   * without it: a project with a reviewed, deliberately unmanaged path beside
-   * a patch's ownership has to drop the flag entirely and hand-read the
-   * notice, which is a weaker belt than the one being disarmed. Approved
-   * paths are still LISTED — they are carved out of the refusal, not hidden.
+   * Engine-relative files that are an approved unmanaged exception
+   * (`--expect-unmanaged`, repeatable). Requires
+   * `--refuse-adjacent-unmanaged`. The adjacency refusal is all-or-nothing
+   * without it: a project with a reviewed, intentionally unmanaged path
+   * beside a patch's ownership has to drop the flag entirely and hand-read
+   * the notice, which is a weaker belt than the one being disarmed.
+   * Approved paths are still listed. They are carved out of the refusal
+   * rather than hidden.
    */
   expectUnmanaged?: string[];
 }
@@ -349,45 +388,27 @@ export interface ReExportOptions {
 /**
  * Options for the `fireforge patch tier` subcommand. Sets or clears the
  * `PatchMetadata.tier` field on a single patch without rewriting the
- * `.patch` file body — the manifest is the only thing that changes.
+ * `.patch` file body. The manifest is the only thing that changes.
  */
-export interface PatchTierOptions {
-  /**
-   * Seconds to wait for the patch directory lock. This command mutates patch
-   * metadata under that lock.
-   */
-  waitLock?: number | boolean;
+export interface PatchTierOptions extends Confirmable, DryRunnable, PatchLockWaitable {
   /** Force the named tier on the patch. Only `"branding"` is recognised. */
   tier?: 'branding';
   /** Remove the `tier` override entirely, restoring auto-detection. */
   clear?: boolean;
-  /** Print the planned change without writing. */
-  dryRun?: boolean;
-  /** Skip the confirmation prompt (required for non-TTY). */
-  yes?: boolean;
 }
 
 /**
  * Options for the `fireforge patch lint-ignore` subcommand. Modes are
- * mutually exclusive — exactly one of `add`, `remove`, or `clear` must
+ * mutually exclusive: exactly one of `add`, `remove`, or `clear` must
  * be set per invocation.
  */
-export interface PatchLintIgnoreOptions {
-  /**
-   * Seconds to wait for the patch directory lock. This command mutates patch
-   * metadata under that lock.
-   */
-  waitLock?: number | boolean;
+export interface PatchLintIgnoreOptions extends Confirmable, DryRunnable, PatchLockWaitable {
   /** Lint check IDs to add to the patch's `lintIgnore` list (union, de-duped). */
   add?: string[];
   /** Lint check IDs to remove from the patch's `lintIgnore` list. */
   remove?: string[];
   /** Drop the `lintIgnore` field entirely. */
   clear?: boolean;
-  /** Print the planned change without writing. */
-  dryRun?: boolean;
-  /** Skip the confirmation prompt (required for non-TTY). */
-  yes?: boolean;
 }
 
 /**
@@ -395,12 +416,7 @@ export interface PatchLintIgnoreOptions {
  * mutually exclusive: add a declaration, remove one or more matching
  * declarations, or clear all staged dependencies from the patch.
  */
-export interface PatchStagedDependencyOptions {
-  /**
-   * Seconds to wait for the patch directory lock. This command mutates patch
-   * metadata under that lock.
-   */
-  waitLock?: number | boolean;
+export interface PatchStagedDependencyOptions extends Confirmable, DryRunnable, PatchLockWaitable {
   /** Add a staged dependency declaration. */
   add?: boolean;
   /** Remove matching staged dependency declarations. */
@@ -428,21 +444,17 @@ export interface PatchStagedDependencyOptions {
   owner?: string;
   /** Optional human-readable rationale stored with the declaration. */
   reason?: string;
-  /** Print the planned change without writing. */
-  dryRun?: boolean;
-  /** Skip the confirmation prompt (required for non-TTY). */
-  yes?: boolean;
 }
 
 /**
  * Options for the `patch split` command.
  */
-export interface PatchSplitOptions {
+export interface PatchSplitOptions extends Confirmable, PatchLockWaitable, UnsafeOverridable {
   /** Files to move out of the source patch (engine-relative). */
   files: string[];
   /** Name for the new patch (used in its filename slug). */
   name: string;
-  /** Category for the new patch; defaults to the source patch's category. */
+  /** Category for the new patch. Defaults to the source patch's category. */
   category?: string;
   /** Description for the new patch. */
   description?: string;
@@ -454,14 +466,8 @@ export interface PatchSplitOptions {
   after?: string;
   /** Preview without writing. */
   dryRun?: boolean;
-  /** Skip interactive confirmation (required for non-TTY). */
-  yes?: boolean;
-  /** Bypass projected-lint refusals. */
-  forceUnsafe?: boolean;
   /** Skip per-patch lint of the projected bodies. */
   skipLint?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
 }
 
 /**
@@ -471,27 +477,21 @@ export interface PatchSplitOptions {
  * With `--create --order <n>` the target patch is created at that order
  * and the files move into it as one split-style transaction.
  */
-export interface PatchMoveFilesOptions {
+export interface PatchMoveFilesOptions extends Confirmable, PatchLockWaitable, UnsafeOverridable {
   /** File paths relative to engine/ to move from the source patch to the target patch. */
   file?: string[];
   /** Create the target patch (transactional bootstrap of a split). Requires `order`. */
   create?: boolean;
   /** Exact sparse order for the created patch. Only valid with `create`. */
   order?: number;
-  /** Category for the created patch; defaults to the source patch's. */
+  /** Category for the created patch. Defaults to the source patch's. */
   category?: string;
   /** Description for the created patch. */
   description?: string;
   /** Preview the create+move without writing. */
   dryRun?: boolean;
-  /** Skip interactive confirmation (required for non-TTY). */
-  yes?: boolean;
-  /** Bypass projected-lint refusals. */
-  forceUnsafe?: boolean;
   /** Skip per-patch lint of the projected bodies. */
   skipLint?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
 }
 
 /**
@@ -525,15 +525,15 @@ export interface RunOptions {
    * Enable smoke-run mode. Launches the browser, streams the console,
    * sends SIGTERM to the whole process group after `smokeExit` seconds,
    * and applies the smoke exit contract:
-   *  - `0` — clean window (no unallowed error lines).
-   *  - `ExitCode.SMOKE_EXIT_FAILURE` (12) — one or more console lines
+   *  - `0`: clean window (no unallowed error lines).
+   *  - `ExitCode.SMOKE_EXIT_FAILURE` (12): one or more console lines
    *    matched the error heuristic and were not covered by the allowlist.
-   *  - `ExitCode.SMOKE_LAUNCH_FAILURE` (13) — the browser exited with a
-   *    non-clean status before the smoke window elapsed (launch-side
-   *    failure we cannot observe as a console line — crash before console
-   *    wiring, missing profile, etc.).
+   *  - `ExitCode.SMOKE_LAUNCH_FAILURE` (13): the browser exited with a
+   *    non-clean status before the smoke window elapsed (a launch-side
+   *    failure we cannot observe as a console line, such as a crash
+   *    before console wiring, or a missing profile).
    *
-   * POSIX only (process-group semantics do not map cleanly onto Windows);
+   * POSIX only (process-group semantics do not map cleanly onto Windows).
    * `runSmokeExit` rejects the flag up front on `win32`.
    */
   smokeExit?: number;
@@ -545,7 +545,7 @@ export interface RunOptions {
   consoleAllow?: string[];
   /**
    * Path to a newline-delimited allowlist regex file. Blank lines and
-   * `#` comments are ignored; each remaining line is compiled as a
+   * `#` comments are ignored. Each remaining line is compiled as a
    * regex and appended to the active allowlist.
    */
   consoleAllowFile?: string;
@@ -566,7 +566,7 @@ export interface RunOptions {
 /**
  * Options for the test command.
  */
-export interface TestOptions {
+export interface TestOptions extends EngineLockWaitable {
   /** Run tests in headless mode */
   headless?: boolean;
   /**
@@ -581,7 +581,7 @@ export interface TestOptions {
    * Run the scoped pre-test build (packaging exactly the requested paths,
    * MIXED harnesses allowed) and exit without dispatching tests. One
    * ~10-minute build then covers both an xpcshell and a browser-chrome
-   * half of a slice; run each harness afterwards without `--build`.
+   * half of a slice. Run each harness afterwards without `--build`.
    * Emits `FIREFORGE-VERDICT: PASS` on success.
    */
   buildOnly?: boolean;
@@ -599,7 +599,7 @@ export interface TestOptions {
    * Forwarded to the PRE-TEST build: refuse (rather than warn) when that
    * build would overwrite engine content recorded in neither a patch body
    * nor the pristine baseline. Same meaning as `fireforge build`'s flag of
-   * the same name — a scripted `test --build` is exactly the shape the
+   * the same name. A scripted `test --build` is exactly the shape the
    * multi-session hazard shows up in, and until now it was the one shape
    * that could not arm the refusal. Valid only with `--build`/`--build-only`.
    */
@@ -615,8 +615,8 @@ export interface TestOptions {
   /**
    * Extra arguments forwarded verbatim to `mach test` (repeatable). Escape
    * valve for upstream xpcshell/mochitest flags that FireForge does not
-   * model directly. Order relative to other flags is preserved; passthrough
-   * values appear after `--headless` if both are set.
+   * model directly. Order relative to other flags is preserved, and
+   * passthrough values appear after `--headless` if both are set.
    */
   machArg?: string[];
   /**
@@ -634,8 +634,8 @@ export interface TestOptions {
   /**
    * Terminate harness helper processes (`xpcshell` httpd, `pywebsocket`,
    * `ssltunnel`, `moz-http2`) that survived an earlier run in this
-   * project's objdir. The census itself runs on EVERY test dispatch and is
-   * report-only; this flag opts into the kill. Survivors slow later runs
+   * project's objdir. The census itself runs on every test dispatch and is
+   * report-only. This flag opts into the kill. Survivors slow later runs
    * without appearing in their output, so the visibility is the default and
    * the termination is the choice.
    */
@@ -644,9 +644,9 @@ export interface TestOptions {
   allowStaleBuild?: boolean;
   /**
    * Permit tests despite `components.conf` changes that only a full
-   * `fireforge build` compiles into the StaticComponents table — the
-   * packaged child process will resolve the OLD table. For operators who
-   * rebuilt out-of-band and accept the risk; distinct from
+   * `fireforge build` compiles into the StaticComponents table. The
+   * packaged child process will resolve the old table. For operators who
+   * rebuilt out-of-band and accept the risk. Distinct from
    * `allowStaleBuild`, which only accepts stale packaged content.
    */
   allowStaleComponents?: boolean;
@@ -663,14 +663,14 @@ export interface TestOptions {
    * Force dispatch through the generic `mach test` command instead of the
    * suite-specific `mach xpcshell-test` / `mach mochitest` commands a
    * single-suite run auto-selects. Escape hatch for the rare case where a
-   * suite-specific command misbehaves; on a healthy host the generic command
+   * suite-specific command misbehaves. On a healthy host the generic command
    * is equivalent. The default (auto suite dispatch) skips the mozlog
    * resource monitor that crashes `mach test` on a broken host.
    */
   genericMachTest?: boolean;
   /**
    * Commander negation flag for `--no-shard`. When false, multiple test
-   * paths run in one combined mach invocation; by default they shard into
+   * paths run in one combined mach invocation. By default they shard into
    * sequential single-file harness runs with an aggregate report.
    */
   shard?: boolean;
@@ -680,20 +680,12 @@ export interface TestOptions {
    * checkers that consume a sample artifact after the run.
    */
   perfSamples?: string;
-  /**
-   * Parsed `--wait-lock [seconds]` value (`true` for the bare flag, meaning
-   * 60). Consumed at the CLI layer to bound the engine-session-lock wait;
-   * the command implementation ignores it.
-   */
-  waitLock?: number | boolean;
 }
 
 /**
  * Options for the furnace apply command.
  */
-export interface FurnaceApplyOptions {
-  /** Show what would be changed without writing */
-  dryRun?: boolean;
+export interface FurnaceApplyOptions extends DryRunnable {
   /** Proceed despite baseVersion drift (stale overrides) */
   force?: boolean;
   /** Watch component directories and re-apply on changes */
@@ -717,9 +709,7 @@ export interface FurnacePreviewOptions {
 /**
  * Options for the furnace deploy command.
  */
-export interface FurnaceDeployOptions {
-  /** Show what would be changed without writing */
-  dryRun?: boolean;
+export interface FurnaceDeployOptions extends DryRunnable {
   /** Proceed despite baseVersion drift (stale overrides) */
   force?: boolean;
   /** Skip the validation step (apply only, no accessibility/compatibility checks) */
@@ -735,9 +725,7 @@ export interface FurnaceDeployOptions {
 /**
  * Options for the furnace refresh command.
  */
-export interface FurnaceRefreshOptions {
-  /** Show what would change without modifying files */
-  dryRun?: boolean;
+export interface FurnaceRefreshOptions extends DryRunnable {
   /** Refresh all overrides in a single batch */
   all?: boolean;
   /** Conflict resolution strategy for automated use (ours = keep local, theirs = accept upstream) */
@@ -749,9 +737,7 @@ export interface FurnaceRefreshOptions {
 /**
  * Options for the furnace sync command.
  */
-export interface FurnaceSyncOptions {
-  /** Show what would change without modifying files */
-  dryRun?: boolean;
+export interface FurnaceSyncOptions extends DryRunnable {
   /** Conflict resolution strategy for three-way merge (ours = keep local, theirs = accept upstream) */
   strategy?: 'ours' | 'theirs';
   /**
@@ -781,12 +767,10 @@ export interface FurnaceOverrideOptions {
 }
 
 /**
- * Options for the furnace remove command.
+ * Options for the furnace remove command. `--yes` is the only flag it takes,
+ * so the type is the confirmation mixin under a command-specific name.
  */
-export interface FurnaceRemoveOptions {
-  /** Skip confirmation prompt */
-  yes?: boolean;
-}
+export type FurnaceRemoveOptions = Confirmable;
 
 /**
  * Options for the furnace create command.
@@ -824,15 +808,15 @@ export interface FurnaceCreateOptions {
    * Test harness style to scaffold when `--with-tests` is set.
    *
    * - `browser-chrome` (default when `--with-tests` is set without
-   *   `--test-style`) — browser mochitest scaffold; requires a working
+   *   `--test-style`): browser mochitest scaffold. Requires a working
    *   `tabbrowser`. Prefer this for interactive chrome/widget coverage
    *   (including on macOS).
-   * - `mochikit` — opt-in MochiKit test at
+   * - `mochikit`: opt-in MochiKit test at
    *   `engine/toolkit/content/tests/widgets/test_<tag>.html` that loads
    *   the component via `chrome://global/`. Use when the top-level chrome
-   *   document lacks a `tabbrowser`; on macOS the toolkit mochitest-chrome
+   *   document lacks a `tabbrowser`. On macOS the toolkit mochitest-chrome
    *   flavor can be unreliable (long idle timeout).
-   * - `xpcshell` — equivalent to setting `--xpcshell`; headless, storage-only.
+   * - `xpcshell`: equivalent to setting `--xpcshell`. Headless, storage-only.
    */
   testStyle?: 'mochikit' | 'browser-chrome' | 'xpcshell';
   /** Stock component tag names composed internally by this component */
@@ -858,7 +842,7 @@ export interface FurnaceCreateOptions {
    * Without this flag, a name that does not start with the prefix is
    * rejected before any files are written, so a prefix-mismatched
    * component cannot leave behind a half-scaffolded state. Pass this
-   * flag only when you know the prefix mismatch is intentional — e.g.
+   * flag only when you know the prefix mismatch is intentional, e.g.
    * creating an experimental component whose name intentionally breaks
    * the fork's convention.
    */
@@ -897,15 +881,9 @@ export interface RegisterOptions {
 /**
  * Options for the patch delete command.
  */
-export interface PatchDeleteOptions {
-  /** Skip confirmation prompt; required for non-TTY runs. */
-  yes?: boolean;
-  /** Print what would happen without writing anything. */
-  dryRun?: boolean;
+export interface PatchDeleteOptions extends Confirmable, DryRunnable, PatchLockWaitable {
   /** Bypass the hard refusal when later patches depend on the target. */
   forceUnsafe?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
 }
 
 /**
@@ -915,70 +893,53 @@ export interface PatchDeleteOptions {
  * for the case where the body is already correct but the patch's identity
  * describes a pre-shrink scope.
  */
-export interface PatchRenameOptions {
+export interface PatchRenameOptions
+  extends Confirmable, DryRunnable, PatchLockWaitable, UnsafeOverridable {
   /**
    * New human-readable name. Sanitised the same way `export --name`
    * sanitises into the filename slug (lowercase, non-alphanumerics
    * collapsed to `-`, length-capped). The patch's `name` field stores
-   * the raw value; the filename uses the sanitised slug. Optional when
+   * the raw value. The filename uses the sanitised slug. Optional when
    * `--category`/`--order`/`--description` carry the change.
    */
   to?: string;
   /**
    * New category (validated against configured categories). Rewrites
-   * the filename prefix and the manifest row in one transaction —
+   * the filename prefix and the manifest row in one transaction, so
    * recategorising no longer requires `patch delete` + fresh export.
    */
   category?: string;
   /**
-   * Move the patch to this exact UNUSED sparse order. Collisions refuse
-   * with a pointer to `patch reorder` (which renumbers siblings); an
+   * Move the patch to this exact unused sparse order. Collisions refuse
+   * with a pointer to `patch reorder` (which renumbers siblings). An
    * order change is projected through cross-patch lint first.
    */
   order?: number;
   /**
    * Replacement description. Omit to leave the description unchanged
-   * (intentional — operators frequently want to relabel the slug
+   * (intentional: operators frequently want to relabel the slug
    * without touching the description).
    */
   description?: string;
-  /** Print the planned change without writing. */
-  dryRun?: boolean;
-  /** Skip the confirmation prompt (required for non-TTY). */
-  yes?: boolean;
-  /** Bypass force-mode patchPolicy refusals. */
-  forceUnsafe?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
 }
 
 /**
  * Options for the patch reorder command.
  */
-export interface PatchReorderOptions {
+export interface PatchReorderOptions extends PatchLockWaitable {
   to?: number;
   before?: string;
   after?: string;
   yes?: boolean;
   dryRun?: boolean;
   forceUnsafe?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
 }
 
 /**
  * Options for the patch compact command.
  */
-export interface PatchCompactOptions {
-  /** Skip confirmation prompt; required for non-TTY runs. */
-  yes?: boolean;
-  /** Print what would happen without writing anything. */
-  dryRun?: boolean;
-  /** Bypass force-mode patchPolicy refusals. */
-  forceUnsafe?: boolean;
-  /** Wait budget for the patch directory lock (`--wait-lock [seconds]`). */
-  waitLock?: number | boolean;
-}
+export interface PatchCompactOptions
+  extends Confirmable, DryRunnable, PatchLockWaitable, UnsafeOverridable {}
 
 /**
  * Options for the status command.
@@ -988,9 +949,9 @@ export interface StatusOptions {
   /**
    * Report the engine-session lock instead of file status:
    * holder pid, the command it is running, how long it has held the lock,
-   * and how many waiters are queued behind it. Read-only — it never
+   * and how many waiters are queued behind it. Read-only: it never
    * acquires the lock, so it is safe to run while a build or test holds
-   * it, which is exactly when an operator asks.
+   * it, which is when an operator usually asks.
    */
   lock?: boolean;
   unmanaged?: boolean;
@@ -1003,7 +964,7 @@ export interface StatusOptions {
   ownership?: boolean;
   /**
    * Print the recorded test-packaging coverage of the last build baseline
-   * (scope, timestamp, recording invocation) and exit. Read-only — the
+   * (scope, timestamp, recording invocation) and exit. Read-only, and the
    * counterpart to the out-of-coverage test refusal.
    */
   testCoverage?: boolean;
@@ -1018,18 +979,18 @@ export interface StatusOptions {
   summary?: boolean;
   /**
    * With `--json` (and composing with `--summary`), append an additive
-   * `ownership` block — the flat path→owning-patch rows plus
-   * managed/unmanaged/conflict counts — so a gate reads ownership,
-   * classification, and the check verdict from ONE scan instead of three
-   * back-to-back `status` invocations. A modifier, not a mode: exit
-   * semantics are unchanged, so ownership conflicts still fail only the
-   * human `--ownership` mode. Refused without `--json`.
+   * `ownership` block (the flat path→owning-patch rows plus
+   * managed/unmanaged/conflict counts) so a gate reads ownership,
+   * classification, and the check verdict from one scan instead of three
+   * back-to-back `status` invocations. This is a modifier rather than a
+   * mode: exit semantics are unchanged, so ownership conflicts still fail
+   * only the human `--ownership` mode. Refused without `--json`.
    */
   includeOwnership?: boolean;
   /**
    * Exit non-zero when any classification in the fail policy is
    * non-empty (default policy: unmanaged, patch-owned-drift, conflict).
-   * Composes with the default view and `--json`; refused alongside
+   * Composes with the default view and `--json`. Refused alongside
    * `--raw`/`--unmanaged`/`--ownership`/`--test-coverage`.
    */
   check?: boolean;
@@ -1046,7 +1007,7 @@ export interface StatusOptions {
  */
 export interface TokenAddOptions {
   /**
-   * Required for a base declaration; optional under
+   * Required for a base declaration. Optional under
    * {@link TokenAddOptions.variant}, which routes into a `:root<selector>`
    * block where no category applies.
    */
@@ -1123,8 +1084,8 @@ export interface LintCommandOptions {
   /**
    * When set, tag each issue as `introduced` or `cumulative` based on
    * whether its file changed since this git revision (e.g. `HEAD`, a
-   * branch name, or a SHA). Issues are not filtered — the full set still
-   * prints — but a diff-scoped summary makes it trivial to see which
+   * branch name, or a SHA). Issues are not filtered and the full set
+   * still prints, but a diff-scoped summary makes it easy to see which
    * errors the current task introduced.
    */
   since?: string;
@@ -1147,8 +1108,8 @@ export interface LintCommandOptions {
    * On a repo where `import` or `rebase` has just applied the full queue,
    * the aggregate diff sums every patch's changes, and the patch-size
    * advisory rules (`large-patch-lines`, `large-patch-files`) fire against
-   * that sum — "Patch is 37529 lines" for a queue of individually-fine
-   * patches. `--per-patch` rescopes the diff to each patch's own
+   * that sum, reporting "Patch is 37529 lines" for a queue of
+   * individually-fine patches. `--per-patch` rescopes the diff to each patch's own
    * `filesAffected`, honours the patch's own `lintIgnore`, and runs the
    * cross-patch rules once over the whole queue so queue-level findings
    * still surface.
@@ -1161,7 +1122,7 @@ export interface LintCommandOptions {
    * Restrict `--per-patch` to a named subset of the queue (by filename,
    * filename ± `.patch`, or manifest `name`). Lets a change that touches a
    * handful of patches run the per-patch gate over just those instead of
-   * the full ~90-patch queue. Only valid with {@link perPatch}; queue-level
+   * the full ~90-patch queue. Only valid with {@link perPatch}. Queue-level
    * findings (policy, cross-patch) are scoped to files the subset touches.
    */
   patches?: string[];

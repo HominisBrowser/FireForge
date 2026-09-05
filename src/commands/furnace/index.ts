@@ -58,7 +58,7 @@ function registerFurnaceApplyCommand(furnace: Command, context: CommandContext):
         }
       ) => {
         const { waitLock, ...rest } = options ?? {};
-        // Resolved ONCE and used twice: the engine session lock below, and
+        // Resolved once and used twice: the engine session lock below, and
         // the furnace lock the mutation takes inside it. Resolving twice
         // would be the same value today and a drift risk tomorrow.
         const waitLockSeconds = resolveWaitLockSeconds(waitLock);

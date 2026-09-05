@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
@@ -7,6 +6,7 @@ import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import type { JsonValue } from '../types/json.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { getPackageVersion } from '../utils/package-root.js';
 import { getFurnacePaths } from './furnace-config.js';
 import { git } from './git-base.js';
@@ -14,17 +14,17 @@ import { collectNewFileCreatorsByPath, type PatchQueueContext } from './patch-li
 
 // Schema 2: entries additionally carry the lintIgnore-suppressed issues and
 // the measured non-binary line count, so a warm run can report waived size
-// measurements identically to a cold one — a cache hit must never surface
-// LESS than a fresh lint.
+// measurements identically to a cold one. A cache hit must never surface
+// less than a fresh lint.
 // Schema 3: the key additionally content-hashes the
 // `patchLint.checkJsTestShim` file exactly as `checkJsExtraShim`'s already
-// was; without it, editing the test shim in place replays every cached
+// was. Without it, editing the test shim in place replays every cached
 // verdict.
-// Schema 4: each entry RECORDS the lint-ignore waiver set that produced it,
+// Schema 4: each entry records the lint-ignore waiver set that produced it,
 // and a lookup whose effective waiver set differs is refused even when the
 // key matches. The key already hashes `patch.lintIgnore`, so this is
 // belt-and-braces on purpose: a waiver change is the one mutation that makes
-// a replayed verdict actively WRONG (an operator writes a waiver, re-runs,
+// a replayed verdict actively wrong (an operator writes a waiver, re-runs,
 // and is shown the finding they just waived), and the class must not depend
 // on every future key input staying complete. Bumping the schema also
 // discards every pre-4 entry, which is itself the cure for a cache that
@@ -81,11 +81,6 @@ function stableJson(value: JsonValue): string {
   return `{${entries
     .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item as JsonValue)}`)
     .join(',')}}`;
-}
-
-/** Computes a SHA-256 hex digest for text or binary content. */
-function sha256Hex(content: string | Buffer): string {
-  return createHash('sha256').update(content).digest('hex');
 }
 
 /** Computes a stable SHA-256 digest for JSON-compatible data. */
@@ -153,7 +148,7 @@ function buildOwnershipFingerprint(
 export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput): Promise<string> {
   // Hash in parallel, then insert in sorted order. The sort is load-bearing:
   // `stableHash` below serialises this record, so insertion order is part of
-  // the cache key — assigning as results land would make the key
+  // the cache key, and assigning as results land would make the key
   // nondeterministic.
   const sortedFiles = [...input.existingFiles].sort((a, b) => a.localeCompare(b));
   const hashes = await Promise.all(
@@ -172,8 +167,8 @@ export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput
     shimPath === undefined
       ? null
       : { path: shimPath, hash: await fileHash(resolve(input.projectRoot, shimPath)) };
-  // Both shims feed compiled checkJs programs, so both are content-hashed —
-  // the config block alone only carries their PATHS, and an in-place edit
+  // Both shims feed compiled checkJs programs, so both are content-hashed.
+  // The config block alone only carries their paths, and an in-place edit
   // must invalidate the programs it feeds.
   const [extraShim, testShim] = await Promise.all([
     shimHashOf(input.config.patchLint?.checkJsExtraShim),
@@ -184,9 +179,9 @@ export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput
     cacheSchemaVersion: LINT_CACHE_SCHEMA_VERSION,
     engineHeadSha: input.engineHeadSha ?? null,
     lintImplementationVersion: LINT_IMPLEMENTATION_VERSION,
-    // Deliberately the PLAIN semver, not the +g<sha> build identity:
-    // identity churns every commit at the same version and
-    // would invalidate the cache for no correctness gain.
+    // The plain semver, not the +g<sha> build identity: that identity
+    // churns every commit at the same version and would invalidate the
+    // cache for no correctness gain.
     packageVersion: input.packageVersion ?? getPackageVersion(),
     patchFile: await fileHash(join(input.patchesDir, input.patch.filename)),
     patchMetadata: normalizePatchMetadata(input.patch),
@@ -243,7 +238,7 @@ export async function loadPerPatchLintCache(projectRoot: string): Promise<PerPat
     return { schemaVersion: LINT_CACHE_SCHEMA_VERSION, entries };
   } catch {
     // Any unreadable or malformed cache file is treated as a cold cache. The
-    // cache is a pure optimisation, so discarding it is always safe — the
+    // cache is a pure optimisation, so discarding it is always safe. The
     // alternative is failing lint over a corrupt sidecar.
     return createEmptyPerPatchLintCache();
   }
@@ -279,7 +274,7 @@ function normalizeLintIgnoreSet(lintIgnore: Iterable<string> | undefined): strin
 
 /**
  * Returns the cached lint payload for a patch when the stored key still
- * matches AND the entry was computed under the same lint-ignore waiver set.
+ * matches and the entry was computed under the same lint-ignore waiver set.
  * A waiver change makes a replayed verdict actively wrong, so the waiver set
  * is compared explicitly rather than trusted to the key.
  */
@@ -303,16 +298,26 @@ export function getCachedPerPatchLintIssues(
   };
 }
 
+export interface SetCachedPerPatchLintIssuesInput {
+  /** Cache file to mutate in place. */
+  cache: PerPatchLintCacheFile;
+  /** Patch the payload belongs to, and also the cache entry key. */
+  patchFilename: string;
+  /** Fingerprint the payload is valid for. */
+  key: string;
+  /** Reported issues, stored as copies. */
+  issues: PatchLintIssue[];
+  /** Issues suppressed by `lintIgnore`, stored as copies. */
+  suppressed: PatchLintIssue[];
+  /** Line count the run measured. */
+  lineCount: number;
+  /** Suppression ids in force for the run, normalized on store. */
+  lintIgnore?: Iterable<string> | undefined;
+}
+
 /** Stores the per-patch lint payload after a successful lint calculation. */
-export function setCachedPerPatchLintIssues(
-  cache: PerPatchLintCacheFile,
-  patchFilename: string,
-  key: string,
-  issues: PatchLintIssue[],
-  suppressed: PatchLintIssue[],
-  lineCount: number,
-  lintIgnore?: Iterable<string>
-): void {
+export function setCachedPerPatchLintIssues(input: SetCachedPerPatchLintIssuesInput): void {
+  const { cache, patchFilename, key, issues, suppressed, lineCount, lintIgnore } = input;
   cache.entries[patchFilename] = {
     key,
     patchFilename,

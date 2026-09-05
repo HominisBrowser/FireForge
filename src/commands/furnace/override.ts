@@ -6,13 +6,7 @@ import { select, text } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig, loadState } from '../../core/config.js';
 import { stdioIsInteractive } from '../../core/destructive.js';
-import {
-  createDefaultFurnaceConfig,
-  furnaceConfigExists,
-  getFurnacePaths,
-  loadFurnaceConfig,
-  writeFurnaceConfig,
-} from '../../core/furnace-config.js';
+import { getFurnacePaths, writeFurnaceConfig } from '../../core/furnace-config.js';
 import { resolveFtlDir } from '../../core/furnace-constants.js';
 import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-operation.js';
 import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
@@ -31,42 +25,39 @@ import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceOverrideOptions } from '../../types/commands/index.js';
 import type { OverrideType } from '../../types/furnace.js';
+import type { FurnaceConfig } from '../../types/index.js';
 import { toError } from '../../utils/errors.js';
 import { copyFile, ensureDir, pathExists, writeJson } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, note, outro, warn } from '../../utils/logger.js';
+import { loadAuthoringFurnaceConfig } from './authoring-config.js';
 
-async function loadAuthoringFurnaceConfig(
-  projectRoot: string
-): Promise<ReturnType<typeof createDefaultFurnaceConfig>> {
-  if (await furnaceConfigExists(projectRoot)) {
-    return loadFurnaceConfig(projectRoot);
-  }
-
-  return createDefaultFurnaceConfig();
+interface CopyOverrideFilesOptions {
+  /** Absolute path to the engine checkout. */
+  engineDir: string;
+  /** Original component directory in the engine checkout. */
+  srcDir: string;
+  /** Destination override directory in the workspace. */
+  destDir: string;
+  /** Custom element tag name being overridden. */
+  componentName: string;
+  /** Whether the component ships a localized `.ftl` file. */
+  hasFTL: boolean;
+  /** Requested override mode. */
+  overrideType: OverrideType;
+  /** Engine-relative directory the shared `.ftl` deploys into. */
+  ftlDir: string;
+  /** Rollback journal every write is recorded in. */
+  journal: RollbackJournal;
 }
 
 /**
  * Copies the source files needed for a new override into the workspace.
- * @param engineDir - Absolute path to the engine checkout
- * @param srcDir - Original component directory in the engine checkout
- * @param destDir - Destination override directory in the workspace
- * @param componentName - Custom element tag name being overridden
- * @param hasFTL - Whether the component ships a localized `.ftl` file
- * @param overrideType - Requested override mode
- * @param ftlDir - Engine-relative directory the shared `.ftl` deploys into
- * @param journal - Rollback journal every write is recorded in
+ * @param options - See {@link CopyOverrideFilesOptions}
  * @returns Filenames copied into the override directory
  */
-async function copyOverrideFiles(
-  engineDir: string,
-  srcDir: string,
-  destDir: string,
-  componentName: string,
-  hasFTL: boolean,
-  overrideType: OverrideType,
-  ftlDir: string,
-  journal: RollbackJournal
-): Promise<string[]> {
+async function copyOverrideFiles(options: CopyOverrideFilesOptions): Promise<string[]> {
+  const { engineDir, srcDir, destDir, componentName, hasFTL, overrideType, ftlDir, journal } =
+    options;
   await ensureDir(destDir);
 
   const entries = await readdir(srcDir, { withFileTypes: true });
@@ -130,25 +121,47 @@ async function copyOverrideFiles(
   return copiedFiles;
 }
 
+interface SaveOverrideConfigOptions {
+  /** Project root holding `furnace.json`. */
+  projectRoot: string;
+  /** Override directory the `override.json` marker is written into. */
+  destDir: string;
+  /** Custom element tag name being overridden. */
+  componentName: string;
+  /** Requested override mode. */
+  overrideType: OverrideType;
+  /** Human-readable override description. */
+  description: string;
+  /** Resolved engine details for the overridden component. */
+  details: { sourcePath: string };
+  /** Firefox version the override was forked from. */
+  firefoxVersion: string;
+  /** Rollback journal every write is recorded in. */
+  journal: RollbackJournal;
+  /** Engine commit the override was forked from, when known. */
+  baseCommit?: string | undefined;
+}
+
 /**
  * Writes override metadata to disk and updates furnace.json with the new
  * override entry. Re-reads the current on-disk furnace.json inside the
  * operation lock and splices the new entry onto the fresh state, so two
  * concurrent `furnace override` commands cannot race their read-modify-write
- * cycles into a single surviving entry — otherwise both report success and
+ * cycles into a single surviving entry. Otherwise both report success and
  * furnace.json keeps only the second writer's.
  */
-async function saveOverrideConfig(
-  projectRoot: string,
-  destDir: string,
-  componentName: string,
-  overrideType: OverrideType,
-  description: string,
-  details: { sourcePath: string },
-  firefoxVersion: string,
-  journal: RollbackJournal,
-  baseCommit?: string
-): Promise<void> {
+async function saveOverrideConfig(options: SaveOverrideConfigOptions): Promise<void> {
+  const {
+    projectRoot,
+    destDir,
+    componentName,
+    overrideType,
+    description,
+    details,
+    firefoxVersion,
+    journal,
+    baseCommit,
+  } = options;
   const overrideJson = {
     type: overrideType,
     description,
@@ -163,8 +176,8 @@ async function saveOverrideConfig(
 
   // Re-read the current furnace.json inside the lock. The outer caller
   // loaded a snapshot before entering `runFurnaceMutation`, but another
-  // furnace mutation (override / init / sync) may have landed in between
-  // — writing back the stale snapshot would drop that concurrent write.
+  // furnace mutation (override / init / sync) may have landed in between,
+  // and writing back the stale snapshot would drop that concurrent write.
   const freshConfig = await loadAuthoringFurnaceConfig(projectRoot);
   freshConfig.overrides[componentName] = {
     type: overrideType,
@@ -200,7 +213,7 @@ async function performOverrideMutations(args: {
   srcDir: string;
   destDir: string;
   details: { sourcePath: string; hasFTL: boolean };
-  config: Awaited<ReturnType<typeof loadAuthoringFurnaceConfig>>;
+  config: FurnaceConfig;
   furnacePaths: { furnaceConfig: string };
   ftlDir: string;
   firefoxVersion: string;
@@ -215,29 +228,29 @@ async function performOverrideMutations(args: {
       recordCreatedDir(journal, args.destDir);
 
       try {
-        const filesCopied = await copyOverrideFiles(
-          args.engineDir,
-          args.srcDir,
-          args.destDir,
-          args.componentName,
-          args.details.hasFTL,
-          args.overrideType,
-          args.ftlDir,
-          journal
-        );
+        const filesCopied = await copyOverrideFiles({
+          engineDir: args.engineDir,
+          srcDir: args.srcDir,
+          destDir: args.destDir,
+          componentName: args.componentName,
+          hasFTL: args.details.hasFTL,
+          overrideType: args.overrideType,
+          ftlDir: args.ftlDir,
+          journal,
+        });
 
         await snapshotFile(journal, args.furnacePaths.furnaceConfig);
-        await saveOverrideConfig(
-          args.projectRoot,
-          args.destDir,
-          args.componentName,
-          args.overrideType,
-          args.description,
-          args.details,
-          args.firefoxVersion,
+        await saveOverrideConfig({
+          projectRoot: args.projectRoot,
+          destDir: args.destDir,
+          componentName: args.componentName,
+          overrideType: args.overrideType,
+          description: args.description,
+          details: args.details,
+          firefoxVersion: args.firefoxVersion,
           journal,
-          args.baseCommit
-        );
+          baseCommit: args.baseCommit,
+        });
 
         return filesCopied;
       } catch (error: unknown) {
@@ -254,17 +267,14 @@ async function performOverrideMutations(args: {
 
 /**
  * Throws if `componentName` is already classified as something `override`
- * cannot coexist with. A stock-bucket entry is NOT a hard conflict — the
- * whole point of `override` is to fork a component out of the stock bucket
- * into the overrides bucket, and requiring manual `furnace.json` surgery
- * first was a pure footgun. `promoteStockToOverrideIfNeeded` handles the
- * transition in-memory; this guard only rejects the other two cases where
+ * cannot coexist with. A stock-bucket entry is not a hard conflict:
+ * `override` exists to fork a component out of the stock bucket into the
+ * overrides bucket, and requiring manual `furnace.json` surgery first was
+ * a footgun. `promoteStockToOverrideIfNeeded` handles the
+ * transition in-memory. This guard only rejects the other two cases where
  * a rename actually contradicts existing state.
  */
-function assertNoComponentCollision(
-  config: Awaited<ReturnType<typeof loadAuthoringFurnaceConfig>>,
-  componentName: string
-): void {
+function assertNoComponentCollision(config: FurnaceConfig, componentName: string): void {
   if (componentName in config.overrides) {
     throw new FurnaceError(
       `An override for "${componentName}" already exists in furnace.json`,
@@ -285,12 +295,9 @@ function assertNoComponentCollision(
  * the subsequent `writeFurnaceConfig` inside the mutation phase persists
  * the stock → override promotion atomically alongside the new override
  * entry. Returns true when a promotion happened so the caller can emit a
- * one-line note; false when the component was not stock.
+ * one-line note. Returns false when the component was not stock.
  */
-function promoteStockToOverrideIfNeeded(
-  config: Awaited<ReturnType<typeof loadAuthoringFurnaceConfig>>,
-  componentName: string
-): boolean {
+function promoteStockToOverrideIfNeeded(config: FurnaceConfig, componentName: string): boolean {
   const index = config.stock.indexOf(componentName);
   if (index === -1) return false;
   config.stock.splice(index, 1);
@@ -312,9 +319,9 @@ export async function furnaceOverrideCommand(
 
   intro('Furnace Override');
 
-  // --- Validate config-independent inputs BEFORE auto-creating furnace.json
+  // --- Validate config-independent inputs before auto-creating furnace.json
   // so a failed authoring command never strands a fresh config in the
-  // project root. CLI-supplied name is checked here; the engine directory
+  // project root. CLI-supplied name is checked here. The engine directory
   // and component-resolution checks below also have no config dependency.
   const paths = getProjectPaths(projectRoot);
 
@@ -347,7 +354,7 @@ export async function furnaceOverrideCommand(
   let componentName = name;
 
   if (!componentName) {
-    // Interactive prompt path; non-interactive missing-name was rejected above.
+    // Interactive prompt path. Non-interactive missing-name was rejected above.
     const allComponents = await scanWidgetsDirectory(paths.engine, ftlDir);
     const available = allComponents.filter((c) => !(c.tagName in config.overrides));
 
@@ -491,7 +498,7 @@ export async function furnaceOverrideCommand(
 
 /**
  * Creates multiple overrides in a single invocation. Each component is validated
- * and created sequentially; failures on one component do not block the rest.
+ * and created sequentially. Failures on one component do not block the rest.
  * @param projectRoot - Root directory of the project
  * @param names - Component tag names to override
  * @param options - CLI options applied to all overrides
@@ -532,8 +539,8 @@ export async function furnaceBatchOverrideCommand(
 
   // Check for duplicates and pre-existing classifications across every
   // bucket in furnace.json. A stock-bucket entry is promoted in-memory
-  // here (see `promoteStockToOverrideIfNeeded`) rather than rejected —
-  // the operator's intent is to fork that specific stock component. The
+  // here (see `promoteStockToOverrideIfNeeded`) rather than rejected,
+  // since the operator's intent is to fork that specific stock component. The
   // collision guard still rejects name conflicts that would double-
   // classify a tag in a way `writeFurnaceConfig` cannot safely produce
   // (two overrides, or an override + custom).

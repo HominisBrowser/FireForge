@@ -24,7 +24,12 @@ import {
   runMarionettePreflight,
 } from '../core/marionette-preflight.js';
 import { ensureMochitestServerPortAvailable } from '../core/mochitest-server-port.js';
-import { closeActiveRunLog, openRunLog, setActiveRunLog } from '../core/run-log.js';
+import {
+  closeActiveRunLog,
+  openRunLog,
+  setActiveRunLog,
+  writeToActiveRunLog,
+} from '../core/run-log.js';
 import { createPostRebuildFailureContext } from '../core/test-harness-output.js';
 import {
   analyzeTestPathScopes,
@@ -32,9 +37,10 @@ import {
   type TestPathScope,
 } from '../core/test-path-scope.js';
 import { assertObjdirMatchesTreeMarker } from '../core/tree-store.js';
-import { GeneralError } from '../errors/base.js';
+import { FireForgeError, GeneralError, PreflightRefusalError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
+import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, notice, outro, verbose } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
@@ -91,7 +97,7 @@ async function assertTestPathsExist(engineDir: string, testPaths: string[]): Pro
  * auto-routes to the suite-specific command (`mach xpcshell-test` /
  * `mach mochitest`), which degrades a broken host resource monitor to a
  * warning instead of crashing generic `mach test` at startup. Mixed runs are
- * rejected before this point; a path-less "run all" or an explicit
+ * rejected before this point. A path-less "run all" or an explicit
  * `--generic-mach-test` opt-out stays on the generic command.
  */
 function resolveTestSuite(classification: HarnessClassification, forceGeneric: boolean): TestSuite {
@@ -164,8 +170,8 @@ function logTestSelection(scopes: readonly TestPathScope[]): void {
 
 /**
  * Runs the `--doctor` marionette handshake probe. With no test paths the
- * probe is the entire command (returns `'stop'` after reporting); with
- * paths it gates the mach invocation — a FAIL throws before mach runs.
+ * probe is the entire command (returns `'stop'` after reporting). With
+ * paths it gates the mach invocation, where a FAIL throws before mach runs.
  */
 async function runDoctorPreflight(args: {
   engineDir: string;
@@ -177,8 +183,8 @@ async function runDoctorPreflight(args: {
 }): Promise<'stop' | 'continue'> {
   const { engineDir, effectivePort, hasTestPaths, objDir, binaryName, launchablePath } = args;
   // Non-TTY captures need the banner even if clack's renderer defers output
-  // in pipe mode; TTY users need the clack framing. Gated rather than
-  // written twice — the unconditional pair printed the same line twice on a
+  // in pipe mode. TTY users need the clack framing. Gated rather than
+  // written twice: the unconditional pair printed the same line twice on a
   // terminal.
   if (process.stdout.isTTY) {
     info('Running marionette preflight...');
@@ -194,7 +200,7 @@ async function runDoctorPreflight(args: {
   // can drop the summary under non-TTY capture.
   //
   // Gated on non-TTY: unconditional, it stacks with the two clack renderings
-  // below and the same line appears THREE times on a terminal. Captured
+  // below and the same line appears three times on a terminal. Captured
   // streams are exactly where this branch still fires.
   const directLine = formatMarionettePreflightLine(preflight);
   if (!process.stdout.isTTY) {
@@ -210,7 +216,7 @@ async function runDoctorPreflight(args: {
       throw new GeneralError('Marionette preflight reported FAIL — see output above.');
     }
     // Doctor-only runs end here, so they carry their own verdict line
-    // (reason=preflight on failure); with test paths the verdict comes
+    // (reason=preflight on failure). With test paths the verdict comes
     // from the actual harness run downstream.
     emitPassVerdict();
     outro('Test completed');
@@ -240,12 +246,12 @@ function appendMarionetteForwardingArgs(
 ): void {
   // Auto-forward the Marionette port to mach when `--marionette-port` is set.
   // `--setpref=marionette.port=<n>` configures where the browser listener
-  // binds; `--marionette=127.0.0.1:<n>` tells the mochitest harness client to
+  // binds. `--marionette=127.0.0.1:<n>` tells the mochitest harness client to
   // connect there (default client is 127.0.0.1:2828). xpcshell ignores both
   // for browser Marionette.
   //
   // Skip setpref forwarding when the operator already supplied an equivalent
-  // arg via `--mach-arg` — duplicates would confuse without changing
+  // arg via `--mach-arg`: duplicates would confuse without changing
   // semantics. Skip when mach args explicitly request `--flavor=xpcshell` (or
   // `xpcshell-tests`): the preflight still honours `--marionette-port`, but
   // mach does not use the marionette.port pref on that harness. Any other arg
@@ -256,7 +262,7 @@ function appendMarionetteForwardingArgs(
   // `--marionette=...` (or two-token `--marionette host:port`).
   if (options.marionettePort === undefined) return;
   if (xpcshellOnly) {
-    // Manifest classification says every requested path is xpcshell —
+    // Manifest classification says every requested path is xpcshell.
     // xpcshell ignores the browser Marionette path entirely, and forwarding
     // the mochitest client flags here makes mach reject the dispatch.
     info(
@@ -373,9 +379,9 @@ const TEST_BUILD_PREFLIGHT = {
  *
  * Owns the run's exactly-one-`FIREFORGE-VERDICT:`-line guarantee: the sink
  * is re-armed at entry, and any failure that reaches this boundary without
- * an inner writer having emitted — the preflight ladder (missing engine or
- * build, config errors, stale-build and port gates, missing paths), and a
- * harness process that failed to start — emits `FAIL reason=preflight`,
+ * an inner writer having emitted (the preflight ladder: missing engine or
+ * build, config errors, stale-build and port gates, missing paths, and a
+ * harness process that failed to start) emits `FAIL reason=preflight`,
  * since no harness classification exists for such a run. Writers closer to
  * the harness (doctor, canary, single, sharded, the engine-generation
  * guard) emit first and win.
@@ -390,25 +396,64 @@ export async function testCommand(
 ): Promise<void> {
   intro('FireForge Test');
   resetVerdictEmission();
-  // Opened before ANY work so a preflight refusal is logged too — those are
+  // Opened before any work so a preflight refusal is logged too. Those are
   // exactly the runs whose only output a `tail` throws away. Closed in
   // `finally`, after the verdict line has already read the path.
   setActiveRunLog(await openRunLog(projectRoot, 'test'));
   try {
     await runTestCommandBody(projectRoot, testPaths, options);
   } catch (error: unknown) {
-    if (!verdictEmitted()) emitFailVerdict('preflight');
+    if (!verdictEmitted()) {
+      renderPreflightRefusal(error);
+      emitFailVerdict('preflight', refusalNote(error));
+    }
     throw error;
   } finally {
     await closeActiveRunLog();
   }
 }
 
+/** The refusal class a preflight gate named, when it named one. */
+function refusalNote(error: unknown): string | undefined {
+  return error instanceof PreflightRefusalError ? error.note : undefined;
+}
+
+/**
+ * Puts a preflight refusal's own text on the operator's channel before the
+ * verdict line, and into the run log.
+ *
+ * Both halves matter, and neither happened before:
+ *
+ *  - `withErrorHandling` renders `error.userMessage` back in `cli.ts`, but
+ *    by then `emitFailVerdict` has called `setStdoutSealed(true)`, the seal
+ *    that keeps the verdict the last stdout write, so `logError` routes to
+ *    stderr. A run captured with `> file` therefore kept the verdict and
+ *    dropped the reason.
+ *  - That same rendering happens after this function's caller returns, and
+ *    the `finally` below has already closed the run log. So the artifact the
+ *    verdict's own `log=` key points at did not contain the refusal either,
+ *    which is what left `.fireforge/logs/test-*.log` holding only the
+ *    pre-test build.
+ *
+ * Writing here, before the seal, fixes both without trading away the
+ * contract: the refusal lands on stdout and in the log, and the verdict
+ * line still comes last.
+ */
+function renderPreflightRefusal(error: unknown): void {
+  const text = error instanceof FireForgeError ? error.userMessage : toError(error).message;
+  const block = `Preflight refused:\n${text}\n`;
+  // Raw stdout rather than the clack logger: this must land on the captured
+  // stream verbatim, and clack's renderer can drop output under non-TTY
+  // capture, the same reason the verdict line is written this way.
+  process.stdout.write(block);
+  writeToActiveRunLog(block);
+}
+
 /**
  * Verifies `engine/` did not change under the run before any PASS verdict
- * may print. On failure the run's verdict is `FAIL reason=inconclusive` —
- * the harness result exists but cannot be trusted (`preflight` would
- * misdescribe a run whose harness already executed) — emitted here so the
+ * may print. On failure the run's verdict is `FAIL reason=inconclusive`,
+ * because the harness result exists but cannot be trusted (`preflight` would
+ * misdescribe a run whose harness already executed). It is emitted here so the
  * guard's throw can never leave a stale or missing verdict line behind.
  */
 async function verifyEngineGenerationOrEmitInconclusive(
@@ -437,7 +482,7 @@ async function runTestCommandBody(
   const buildCheck = await hasBuildArtifacts(paths.engine);
   assertBuildArtifacts(paths.engine, buildCheck, TEST_BUILD_PREFLIGHT);
   // Inside a verification tree, only the objdir the marker records was
-  // proven rewritten-and-reconfigured to the tree; refuse any other.
+  // proven rewritten-and-reconfigured to the tree. Refuse any other.
   await assertObjdirMatchesTreeMarker(projectRoot, buildCheck.objDir);
 
   // Load the project config once so both the build and the port
@@ -447,11 +492,11 @@ async function runTestCommandBody(
   const canaryPath = resolveCanaryPath(options, projectConfig);
   assertTestModeCombinations(testPaths, options, canaryPath);
 
-  // `hasBuildArtifacts` only confirms `obj-*/dist/` exists; a partial build
+  // `hasBuildArtifacts` only confirms `obj-*/dist/` exists. A partial build
   // (linker failed, packaging step interrupted) can satisfy that check
   // without ever writing the launchable binary the marionette preflight
   // needs to spawn. `fireforge run` already uses `hasRunnableBundle` to fail
-  // fast with a precise message; mirroring it here makes `test --doctor`
+  // fast with a precise message. Mirroring it here makes `test --doctor`
   // against an incomplete build surface the missing-bundle path instead of a
   // cryptic `Browser process exited during spawn (exit code 1, signal none).
   // stderr tail: (empty)`.
@@ -466,8 +511,8 @@ async function runTestCommandBody(
   // Normalized engine-relative request paths, hoisted above the build/stale
   // gate: the pre-test build records them as the packaging-coverage claim,
   // and the --allow-stale-build path checks the request against the
-  // recorded coverage. (Existence is still asserted later, after the gate —
-  // stale/coverage refusals keep precedence over missing-path errors.)
+  // recorded coverage. (Existence is still asserted later, after the gate,
+  // so stale/coverage refusals keep precedence over missing-path errors.)
   const requestedPaths = canaryPath !== undefined ? [canaryPath] : testPaths;
   const normalizedPaths = requestedPaths.map((p) => stripEnginePrefix(p).trim());
 
@@ -533,12 +578,12 @@ async function runTestCommandBody(
     extraArgs.push('--auto');
   }
   if (canaryPath !== undefined) {
-    extraArgs.push(`--timeout=${String(canaryTimeoutSeconds(projectConfig))}`);
+    extraArgs.push(`--timeout=${canaryTimeoutSeconds(projectConfig)}`);
   }
 
   // --mach-arg is a verbatim passthrough for upstream mach/xpcshell/mochitest
   // flags FireForge does not model directly (see the xpcshell appdir hint
-  // above for why). Appended AFTER --headless so mach sees
+  // above for why). Appended after --headless so mach sees
   // the FireForge-managed flags first and the escape-valve ones last, which
   // keeps the override precedence predictable.
   if (forwardedMachArgs.length > 0) {
@@ -547,15 +592,15 @@ async function runTestCommandBody(
 
   appendMarionetteForwardingArgs(extraArgs, options, forwardedPort, xpcshellOnly);
 
-  // Directory arguments mean EXACTLY that directory: mozbuild's test
+  // Directory arguments mean exactly that directory: mozbuild's test
   // resolver matches paths by string prefix, so a bare directory arg
-  // silently sweeps in prefix-named siblings — `…/test/hominis` also running
-  // `…/test/hominis-tiles`, with no indication the scope widened. Each
+  // silently sweeps in prefix-named siblings, with `…/test/hominis` also
+  // running `…/test/hominis-tiles`, with no indication the scope widened. Each
   // directory argument therefore dispatches as its enumerated explicit
-  // test-file list, which cannot prefix-match a sibling; a trailing-`/`
+  // test-file list, which cannot prefix-match a sibling. A trailing-`/`
   // normalization does not work, as mach still sweeps the sibling in. Any
   // prefix-siblings are echoed so the narrowed scope is visible.
-  // Classification above intentionally used the raw argument forms; only the
+  // Classification above intentionally used the raw argument forms. Only the
   // mach dispatch needs the exact-match shape.
   const scopes = await analyzeTestPathScopes(paths.engine, normalizedPaths);
   const dispatchGroups: ShardGroup[] = scopes.map((scope) => ({
@@ -596,10 +641,10 @@ async function runTestCommandBody(
 
   // Multi-argument requests shard into sequential harness runs by default:
   // one shared mochitest profile across files bleeds pref/media-query state
-  // into later files. Sharding is per path ARGUMENT — a directory argument
+  // into later files. Sharding is per path argument: a directory argument
   // keeps its enumerated files together in one invocation, preserving the
   // one-browser-instance semantics of a directory run. `--no-shard` restores
-  // the combined invocation. The default must not be SILENT: a cross-file
+  // the combined invocation. The default must not be silent: a cross-file
   // pollution repro otherwise "passes" because the comparison run was
   // sharded without saying so, misattributing a suite-context bug upstream.
   // Hence the one-line notice stating what sharding does and does not
@@ -617,7 +662,7 @@ async function runTestCommandBody(
         diagnoseShardOutcome(outcome, label, projectConfig.binaryName, postRebuildContext)
       );
     } finally {
-      // Runs BEFORE the aggregate verdict below: a mutated engine/ emits
+      // Runs before the aggregate verdict below: a mutated engine/ emits
       // `FAIL reason=inconclusive` and throws, so an invalidated run can
       // never print `PASS shards=N/N` first. (A throw here masks an
       // in-flight shard error, as the plain assert always did.)

@@ -96,7 +96,7 @@ describe('concurrent furnace mutations', () => {
     expect(result1).toEqual({ status: 'fulfilled', value: 'held' });
     expect(error.status).toBe('rejected');
     if (error.status === 'rejected') {
-      // The caller's copy leads; withFileLock appends the holder
+      // The caller's copy leads, and withFileLock appends the holder
       // identification from the lock's owner metadata.
       expect((error.reason as Error).message).toMatch(
         /^Another furnace operation is running( The lock is held by PID \d+.*)?$/
@@ -136,8 +136,8 @@ describe('concurrent furnace mutations', () => {
 
     expect(result1).toBe('result1');
     expect(result2).toBe('result2');
-    // Both should overlap — both starts must occur before both ends.
-    // We do NOT assert which operation starts first because the OS
+    // Both should overlap: both starts must occur before both ends.
+    // We do not assert which operation starts first because the OS
     // scheduler is free to run either callback first when both are
     // launched concurrently via Promise.all.
     const op1StartIdx = executionOrder.indexOf('op1-start');

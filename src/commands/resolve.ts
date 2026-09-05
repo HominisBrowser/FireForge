@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { confirm } from '@clack/prompts';
 import { Command } from 'commander';
 
-import { getProjectPaths, loadConfig, loadState, updateState } from '../core/config.js';
+import { getProjectPaths, loadConfig, loadState } from '../core/config.js';
 import { stdioIsInteractive } from '../core/destructive.js';
 import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { getStagedDiffForFiles } from '../core/git-diff.js';
@@ -27,6 +27,7 @@ import {
   success,
 } from '../utils/logger.js';
 import { addWaitLockOption, resolveWaitLockSeconds } from '../utils/options.js';
+import { clearPendingResolution } from './pending-resolution.js';
 
 /**
  * Options accepted by {@link resolveCommand}.
@@ -43,7 +44,7 @@ export interface ResolveCommandOptions {
    * and the command proceeds straight to the patch-refresh + state-clear
    * path.
    *
-   * The guard without `--yes` is preserved — running `resolve` with no TTY
+   * The guard without `--yes` is preserved: running `resolve` with no TTY
    * and no `--yes` still refuses, so an accidental pipe-into invocation does
    * not silently commit whatever the engine happens to contain.
    */
@@ -58,7 +59,7 @@ export interface ResolveCommandOptions {
 /**
  * Runs the resolve command to fix broken patches.
  * @param projectRoot - Root directory of the project
- * @param options - Optional flags; see {@link ResolveCommandOptions}.
+ * @param options - Optional flags. See {@link ResolveCommandOptions}.
  */
 export async function resolveCommand(
   projectRoot: string,
@@ -83,7 +84,7 @@ export async function resolveCommand(
   // Non-interactive mode requires an explicit `--yes`: the operator is
   // asserting the manual merge is complete and the refreshed diff is the one
   // to record. Without it, an accidental pipe or CI shell could commit
-  // whatever the engine currently contains — but an unconditional TTY
+  // whatever the engine currently contains, but an unconditional TTY
   // refusal dead-ends a scripted recovery flow.
   if (!stdioIsInteractive() && !options.yes) {
     throw new GeneralError(
@@ -117,7 +118,7 @@ export async function resolveCommand(
   // Refuse to proceed if the patch file was deleted between the conflict
   // and the resolve. Without this check, `updatePatchAndMetadata` would
   // throw a less actionable "patch file is missing" error from inside
-  // the lock; the explicit precondition lets us point the user at the
+  // the lock. The explicit precondition lets us point the user at the
   // exact recovery path.
   const patchPath = join(paths.patches, patchFilename);
   if (!(await pathExists(patchPath))) {
@@ -188,29 +189,28 @@ export async function resolveCommand(
     // here keeps resolve in agreement with every other writer.
     const diffFilesAffected = extractAffectedFiles(diffContent);
     const config = await loadConfig(projectRoot);
-    await updatePatchAndMetadata(
-      paths.patches,
-      patchFilename,
-      diffContent,
-      {
+    await updatePatchAndMetadata({
+      patchesDir: paths.patches,
+      filename: patchFilename,
+      newContent: diffContent,
+      updates: {
         filesAffected: diffFilesAffected,
         ...buildPatchSourceMetadata(config.firefox),
       },
-      undefined,
-      undefined,
-      { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'resolve' }
-    );
+      onCommitted: undefined,
+      policyGate: undefined,
+      lockOptions: {
+        waitLockSeconds: resolveWaitLockSeconds(options.waitLock),
+        command: 'resolve',
+      },
+    });
 
     // Clear pendingResolution from state.json transactionally so a
     // concurrent update to unrelated keys (another command writing buildMode
     // or baseCommit between our load and save) is not clobbered. The updater
     // runs inside the state-file lock with the freshest on-disk state, so
     // only pendingResolution is affected.
-    await updateState(projectRoot, (current) => {
-      const next = { ...current };
-      delete next.pendingResolution;
-      return next;
-    });
+    await clearPendingResolution(projectRoot);
 
     s.stop(`Updated ${patchFilename}`);
     success('Patch updated successfully and resolution state cleared.');

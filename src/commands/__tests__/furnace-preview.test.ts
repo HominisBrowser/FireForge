@@ -56,7 +56,7 @@ vi.mock('../../core/furnace-rollback.js', () => ({
 
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
+  // the pending-repair marker (the behaviour these suites assert), so it
   // comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
@@ -90,7 +90,7 @@ vi.mock('../../core/mach.js', () => ({
   runMachCapture: vi.fn(),
   // The preview preflight consults hasBuildArtifacts to refuse fast when no
   // dist/ exists. Default to "build complete" so the other tests exercise
-  // the staging + storybook path; the preflight tests override per-case.
+  // the staging + storybook path. The preflight tests override per-case.
   hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
 }));
 
@@ -277,7 +277,7 @@ describe('furnacePreviewCommand', () => {
   it('cleans synced stories when syncStories fails mid-sync', async () => {
     // Regression guard for non-atomic cleanup: syncStories writes files
     // incrementally, so a mid-sync failure can leave partial files behind.
-    // The fix sets the cleanup flag BEFORE awaiting syncStories, so the
+    // The fix sets the cleanup flag before awaiting syncStories, so the
     // finally block still runs cleanStories on partial state.
     vi.mocked(syncStories).mockRejectedValueOnce(new Error('ENOSPC: disk full mid-write'));
 
@@ -333,7 +333,7 @@ describe('furnacePreviewCommand', () => {
     expect(next.pendingRepair?.operation).toBe('preview-teardown');
     expect(next.pendingRepair?.reason).toContain('EACCES');
     // cleanStories must still have run even though the journal restore
-    // is the failing step — both teardown steps are independent.
+    // is the failing step. Both teardown steps are independent.
     expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
   });
 
@@ -364,7 +364,7 @@ describe('furnacePreviewCommand', () => {
     }
 
     // Both errors must be surfaced so the operator sees what triggered
-    // the failure AND what was left behind.
+    // the failure and what was left behind.
     expect(caught).toBeInstanceOf(Error);
     const message = (caught as Error).message;
     expect(message).toMatch(/EACCES: engine locked/);
@@ -398,7 +398,7 @@ describe('furnacePreviewCommand — build-artefact preflight', () => {
       /Furnace preview requires a completed Firefox build/
     );
 
-    // Must NOT reach the staging step.
+    // Must not reach the staging step.
     expect(applyAllComponents).not.toHaveBeenCalled();
     expect(syncStories).not.toHaveBeenCalled();
     expect(runMach).not.toHaveBeenCalled();
@@ -413,7 +413,7 @@ describe('furnacePreviewCommand — build-artefact preflight', () => {
     //
     // The preflight accepts either `.cargo/config.toml` (post-configure) or
     // `.cargo/config.toml.in` (post-bootstrap template, consumed at
-    // `mach configure` time) — neither-present is the only shape that should
+    // `mach configure` time). Neither-present is the only shape that should
     // refuse. A missing-toml but present-`.in` workspace is a successful
     // `fireforge bootstrap` that has not yet reached configure.
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
@@ -445,7 +445,7 @@ describe('furnacePreviewCommand — build-artefact preflight', () => {
 
     // Command should proceed past the preflight. `applyAllComponents` or
     // `syncStories` getting called is evidence the preflight did not
-    // block — the test's mocks resolve those to no-op / undefined, so
+    // block. The test's mocks resolve those to no-op / undefined, so
     // we just assert the preflight refusal didn't fire.
     await expect(furnacePreviewCommand('/project')).resolves.toBeUndefined();
   });

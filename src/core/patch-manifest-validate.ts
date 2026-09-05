@@ -118,12 +118,12 @@ function validatePatchMetadata(data: unknown, index: number): PatchMetadata {
 
   const filesAffected = rec.stringArray('filesAffected');
 
-  // Optional fields. These are easy to strip silently — an escape hatch
+  // Optional fields. These are easy to strip silently: an escape hatch
   // that round-trips only through test fixtures mocking
   // `loadPatchesManifest` looks fine while real operator edits to
   // `patches.json` are dropped on every load, so a patch relying on
   // `lintIgnore` to suppress a rule is quietly re-tripped the next time the
-  // manifest validates. Preserve both `lintIgnore` and `tier` here; future
+  // manifest validates. Preserve both `lintIgnore` and `tier` here. Future
   // optional fields follow the same template.
   const lintIgnore = rec.optionalStringArray('lintIgnore');
 
@@ -176,7 +176,7 @@ export function validatePatchesManifest(data: unknown): PatchesManifest {
     throw new Error('patches.json must be a JSON object');
   }
 
-  // A manifest from a NEWER FireForge is not corrupt. The bare "version must
+  // A manifest from a newer FireForge is not corrupt. The bare "version must
   // be 1" this replaced sent the operator looking for damage in a file that
   // only needed a newer build to read it.
   const version = checkDocumentVersion(data, 'version', PATCHES_MANIFEST_VERSION);

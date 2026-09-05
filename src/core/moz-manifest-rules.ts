@@ -4,6 +4,7 @@ import { basename, join } from 'node:path';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { escapeRegex } from '../utils/regex.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import type { RegisterResult } from './moz-manifest-register.js';
@@ -61,8 +62,8 @@ export function getRules(binaryName: string, createManifest = false): PatternRul
       supportsAfter: true,
     },
     {
-      // `.inc.xhtml` fragments under browser/base/content/ are deliberately
-      // excluded: they are consumed via `#include` from a registered chrome
+      // `.inc.xhtml` fragments under browser/base/content/ are excluded on
+      // purpose: they are consumed via `#include` from a registered chrome
       // document (typically browser.xhtml) and do not get their own packaged
       // chrome URI. Without the carve-out, `status` flags every wired
       // fragment as "potentially unregistered" and `register --dry-run`
@@ -82,8 +83,8 @@ export function getRules(binaryName: string, createManifest = false): PatternRul
       supportsAfter: true,
     },
     {
-      // Fork-owned browser.toml manifests at ARBITRARY depth under
-      // browser/base/content/test/ — a one-level pattern rejects nested
+      // Fork-owned browser.toml manifests at any depth under
+      // browser/base/content/test/. A one-level pattern rejects nested
       // browser-chrome manifests.
       pattern: /^browser\/base\/content\/test\/((?:[^/]+\/)*[^/]+)\/browser\.toml$/,
       isRegistered: (_engineDir, testDir) => isTestManifestRegistered(_engineDir, testDir),
@@ -114,14 +115,14 @@ export function getRules(binaryName: string, createManifest = false): PatternRul
       // xpcshell test files. Any `test_*.js` outside
       // browser/base/content/test/ (which stays browser-chrome territory
       // with its browser.toml guidance) registers into the directory's
-      // xpcshell.toml; with --create-manifest a missing manifest is
+      // xpcshell.toml. With --create-manifest a missing manifest is
       // scaffolded and wired via XPCSHELL_TESTS_MANIFESTS.
       pattern: /^(?!browser\/base\/content\/test\/)(.+)\/(test_[^/]+\.js)$/,
       isRegistered: (engineDir, dirRel, fileName) =>
         isXpcshellTestRegistered(engineDir, dirRel, fileName),
       register: (engineDir, _after, dryRun, dirRel, fileName) =>
         registerXpcshellTest(engineDir, dirRel, fileName, dryRun, createManifest),
-      // Both groups are guaranteed by the pattern; slice avoids dead
+      // Both groups are guaranteed by the pattern, so slice avoids dead
       // fallback branches.
       extractArgs: (m) => m.slice(1, 3),
       supportsAfter: false,
@@ -129,45 +130,57 @@ export function getRules(binaryName: string, createManifest = false): PatternRul
   ];
 }
 
-async function isSharedCSSRegistered(engineDir: string, fileName: string): Promise<boolean> {
-  const manifestPath = join(engineDir, 'browser/themes/shared/jar.inc.mn');
+/**
+ * Reads an engine manifest and reports whether it contains any of `needles`.
+ *
+ * The five registration probes below share this shape: resolve the manifest
+ * relative to the engine, refuse with the manifest's own path when it is
+ * missing, then substring-match the entry each registrar writes.
+ *
+ * @param engineDir - Path to the engine directory
+ * @param manifestRel - Engine-relative manifest path (forward slashes, and
+ *   also the path named in the refusal message)
+ * @param needles - Entry forms that count as registered
+ * @returns True when the manifest contains at least one needle
+ * @throws GeneralError when the manifest does not exist
+ */
+async function manifestIncludes(
+  engineDir: string,
+  manifestRel: string,
+  needles: readonly string[]
+): Promise<boolean> {
+  const manifestPath = join(engineDir, manifestRel);
   if (!(await pathExists(manifestPath))) {
-    throw new GeneralError('Manifest not found: browser/themes/shared/jar.inc.mn');
+    throw new GeneralError(`Manifest not found: ${manifestRel}`);
   }
 
-  const name = basename(fileName, '.css');
   const content = await readText(manifestPath);
-  // `register` writes the canonical `skin/classic/browser/<name>.css` form;
+  return needles.some((needle) => content.includes(needle));
+}
+
+async function isSharedCSSRegistered(engineDir: string, fileName: string): Promise<boolean> {
+  const name = basename(fileName, '.css');
+  // `register` writes the canonical `skin/classic/browser/<name>.css` form.
   // `furnace chrome-doc create` writes a `content/browser/<name>.css` entry
   // because the CSS is loaded by a chrome document via a `chrome://browser/
   // content/<name>.css` URI. Match either prefix so paths registered by the
   // chrome-doc scaffolder are not flagged as "potentially unregistered" by
   // `status` and so a re-run of `register` against the same file recognises
   // the existing entry instead of proposing a duplicate.
-  return (
-    content.includes(`skin/classic/browser/${name}.css`) ||
-    content.includes(`content/browser/${name}.css`)
-  );
+  return manifestIncludes(engineDir, 'browser/themes/shared/jar.inc.mn', [
+    `skin/classic/browser/${name}.css`,
+    `content/browser/${name}.css`,
+  ]);
 }
 
 async function isBrowserContentRegistered(engineDir: string, fileName: string): Promise<boolean> {
-  const manifestPath = join(engineDir, 'browser/base/jar.mn');
-  if (!(await pathExists(manifestPath))) {
-    throw new GeneralError('Manifest not found: browser/base/jar.mn');
-  }
-
-  const content = await readText(manifestPath);
-  return content.includes(`content/browser/${fileName}`);
+  return manifestIncludes(engineDir, 'browser/base/jar.mn', [`content/browser/${fileName}`]);
 }
 
 async function isTestManifestRegistered(engineDir: string, testDir: string): Promise<boolean> {
-  const manifestPath = join(engineDir, 'browser/base/moz.build');
-  if (!(await pathExists(manifestPath))) {
-    throw new GeneralError('Manifest not found: browser/base/moz.build');
-  }
-
-  const content = await readText(manifestPath);
-  return content.includes(`content/test/${testDir}/browser.toml`);
+  return manifestIncludes(engineDir, 'browser/base/moz.build', [
+    `content/test/${testDir}/browser.toml`,
+  ]);
 }
 
 async function isFireForgeModuleRegistered(
@@ -175,13 +188,7 @@ async function isFireForgeModuleRegistered(
   fileName: string,
   moduleDir: string
 ): Promise<boolean> {
-  const manifestPath = join(engineDir, moduleDir, 'moz.build');
-  if (!(await pathExists(manifestPath))) {
-    throw new GeneralError(`Manifest not found: ${moduleDir}/moz.build`);
-  }
-
-  const content = await readText(manifestPath);
-  return content.includes(`"${fileName}"`);
+  return manifestIncludes(engineDir, `${moduleDir}/moz.build`, [`"${fileName}"`]);
 }
 
 async function isToolkitWidgetRegistered(
@@ -189,13 +196,9 @@ async function isToolkitWidgetRegistered(
   _tagName: string,
   fileName: string
 ): Promise<boolean> {
-  const manifestPath = join(engineDir, 'toolkit/content/jar.mn');
-  if (!(await pathExists(manifestPath))) {
-    throw new GeneralError('Manifest not found: toolkit/content/jar.mn');
-  }
-
-  const content = await readText(manifestPath);
-  return content.includes(`content/global/elements/${fileName}`);
+  return manifestIncludes(engineDir, 'toolkit/content/jar.mn', [
+    `content/global/elements/${fileName}`,
+  ]);
 }
 
 /**
@@ -205,7 +208,7 @@ async function isToolkitWidgetRegistered(
  * @returns True if the file matches a known registration pattern
  */
 export function matchesRegistrablePattern(filePath: string, binaryName: string): boolean {
-  const normalized = filePath.replace(/\\/g, '/');
+  const normalized = normalizePathSlashes(filePath);
   const rules = getRules(binaryName);
   return rules.some((rule) => rule.pattern.test(normalized));
 }
@@ -218,7 +221,7 @@ function getUnregistrableAdvice(filePath: string): string | null {
 
   // `.inc.xhtml` fragments live under browser/base/content/ but are
   // consumed via `#include` from a registered chrome document (browser.xhtml
-  // by default; a fork's custom top-level doc when `wire --dom-target` is
+  // by default, or a fork's custom top-level doc when `wire --dom-target` is
   // set). The preprocessor resolves the include at packaging time, so the
   // fragment never needs its own chrome URI entry in jar.mn. Give the
   // operator the actionable `wire` path instead of letting the generic
@@ -235,7 +238,7 @@ function getUnregistrableAdvice(filePath: string): string | null {
   // xpcshell.toml manifests scaffolded by `furnace create --test-style
   // xpcshell` or `furnace chrome-doc create --with-tests` live under
   // `browser/base/content/test/<binary-name>-xpcshell/<component>/`. The
-  // scaffold intentionally does NOT auto-register — wiring
+  // scaffold does not auto-register, because wiring
   // `XPCSHELL_TESTS_MANIFESTS` requires a deliberate choice about which
   // moz.build should own the entry. `register` surfaces that same guidance
   // instead of falling through to browser.toml-centric advice for a path
@@ -274,7 +277,7 @@ export async function isFileRegistered(root: string, filePath: string): Promise<
   const { engine: engineDir } = getProjectPaths(root);
   const config = await loadConfig(root);
   const rules = getRules(config.binaryName);
-  const normalizedPath = filePath.replace(/\\/g, '/');
+  const normalizedPath = normalizePathSlashes(filePath);
 
   for (const rule of rules) {
     const match = normalizedPath.match(rule.pattern);
@@ -331,7 +334,7 @@ export async function registerFile(
   const rules = getRules(config.binaryName, options.createManifest === true);
 
   // Normalize path separators
-  const normalizedPath = filePath.replace(/\\/g, '/');
+  const normalizedPath = normalizePathSlashes(filePath);
 
   for (const rule of rules) {
     const match = normalizedPath.match(rule.pattern);

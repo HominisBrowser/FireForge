@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Patches manifest — re-exports from focused sub-modules.
+ * Patches manifest: re-exports from focused sub-modules.
  *
- * Callers should continue to import from this module; the internal split
+ * Callers should continue to import from this module. The internal split
  * is an implementation detail.
  */
 

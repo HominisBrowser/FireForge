@@ -4,13 +4,13 @@
  * plugin covers.
  *
  * Each rule here targets a hand-rolled pattern that gets repeated across
- * dozens of files, where one copy is eventually silently broken — a malformed
- * regex character class that escapes nothing, an errno check that
- * misclassifies a plain `{code}` object. These rules are what stop the
- * pattern coming back.
+ * dozens of files, where one copy is eventually silently broken: a malformed
+ * regex character class that escapes nothing, or an errno check that
+ * misclassifies a plain `{code}` object. These rules stop the pattern coming
+ * back.
  *
- * Deliberately plain JS with no build step and no dependencies: this directory
- * is tooling, is excluded from `tsconfig.json`, and never ships in `dist/`.
+ * Plain JS with no build step and no dependencies, because this directory is
+ * tooling, is excluded from `tsconfig.json`, and never ships in `dist/`.
  */
 
 /** Reports `X instanceof Error ? X.message : String(X)` in favour of `toError`. */
@@ -54,9 +54,9 @@ const noOpenCodedToError = {
           consequent.property.name === 'message';
         // The alternate must be `String(<the same identifier>)`. Checking only
         // that the callee is named `String` reported
-        // `e instanceof Error ? e.message : String(other)` — a different
-        // fallback value, and not the idiom `toError` replaces — and even
-        // `String()` with no arguments at all.
+        // `e instanceof Error ? e.message : String(other)`, which uses a
+        // different fallback value and is not the idiom `toError` replaces. It
+        // also reported `String()` with no arguments at all.
         const isStringCall =
           alternate.type === 'CallExpression' &&
           alternate.callee.type === 'Identifier' &&
@@ -107,7 +107,7 @@ const noErrnoCast = {
   },
   create(context) {
     // Both spellings: the qualified `NodeJS.ErrnoException` and a bare
-    // `ErrnoException` pulled in via import — the cast is equally unchecked.
+    // `ErrnoException` pulled in via import. The cast is unchecked either way.
     const isErrnoExceptionName = (typeName) =>
       (typeName?.type === 'TSQualifiedName' &&
         typeName.left?.type === 'Identifier' &&
@@ -154,8 +154,8 @@ const preferSharedRegexEscape = {
     const filename = context.filename ?? context.getFilename();
     if (filename.replace(/\\/g, '/').endsWith('src/utils/regex.ts')) return {};
     return {
-      // `<value>.replace(/[metachars]/g, '\\$&')` — the whole idiom, not just
-      // a regex literal that happens to be a character class. Matching the
+      // Match the whole idiom `<value>.replace(/[metachars]/g, '\\$&')`, not
+      // just a regex literal that happens to be a character class. Matching the
       // literal alone reported every unrelated class of six-plus punctuation
       // characters (delimiter and bracket matchers, tokenisers) and told the
       // author to call `escapeRegex`, which would not do what they wanted.
@@ -171,19 +171,19 @@ const preferSharedRegexEscape = {
         }
         const [pattern, replacement] = args;
         if (!pattern.regex || !/^\[[.*+?^${}()|\\[\]]{6,}\]$/.test(pattern.regex.pattern)) return;
-        // '\$&' — re-emit the matched metacharacter behind a backslash.
+        // '\$&' re-emits the matched metacharacter behind a backslash.
         if (replacement.type !== 'Literal' || replacement.value !== '\\$&') return;
         context.report({ node, messageId: 'inlineEscape' });
       },
       // `escapeRegex` / `escapeRegExp` only. The selector was
       // `^escape(Regex|RegExp|For[A-Z]\w*)$`, which matched every `escapeForX`
-      // helper — `escapeForHtml`, `escapeForShell` — and told each of them to
-      // import a REGEX escaper.
+      // helper (`escapeForHtml`, `escapeForShell`) and told each of them to
+      // import a regex escaper.
       'FunctionDeclaration[id.name=/^escape(Regex|RegExp|Regexp)$/]'(node) {
         context.report({ node: node.id, messageId: 'localHelper' });
       },
       // The same helper written as `const escapeRegex = (s) => …` or a
-      // function expression — a declaration-only selector let those through.
+      // function expression. A declaration-only selector let those through.
       'VariableDeclarator[id.name=/^escape(Regex|RegExp|Regexp)$/]'(node) {
         if (
           node.init?.type === 'ArrowFunctionExpression' ||
@@ -248,8 +248,8 @@ const noUntypedJsonDocument = {
   },
   create(context) {
     const filename = (context.filename ?? context.getFilename()).replace(/\\/g, '/');
-    // `isObject` in validation.ts IS the sanctioned unknown→object bridge;
-    // its type predicate necessarily names Record<string, unknown>.
+    // `isObject` in validation.ts is the sanctioned unknown→object bridge.
+    // Its type predicate necessarily names Record<string, unknown>.
     if (filename.endsWith('src/utils/validation.ts')) return {};
     const functionTypes = new Set([
       'FunctionDeclaration',
@@ -259,7 +259,7 @@ const noUntypedJsonDocument = {
     ]);
     // Only functions attached straight to an export declaration count:
     // `export function f`, `export default function`, `export const f = () => …`.
-    // Class methods stay exempt — ParsedRecord's constructor legitimately
+    // Class methods stay exempt: ParsedRecord's constructor legitimately
     // takes the Record its factory just narrowed.
     const isDirectlyExported = (fn) => {
       const parent = fn.parent;
@@ -285,13 +285,13 @@ const noUntypedJsonDocument = {
           return;
         }
         // Ascend to the function whose signature holds this annotation. The
-        // walk stops at the INNERMOST function-like node, so annotations in
+        // walk stops at the innermost function-like node, so annotations in
         // nested helpers inside an exported function's body never report.
         let child = node;
         let parent = node.parent;
         while (parent) {
           // A generic bound (`<T extends Record<string, unknown>>`) constrains
-          // a caller-supplied shape; it is not a dictionary handed to callers.
+          // a caller-supplied shape. It is not a dictionary handed to callers.
           if (parent.type === 'TSTypeParameter') return;
           if (functionTypes.has(parent.type)) {
             if (child !== parent.body && isDirectlyExported(parent)) {
@@ -331,11 +331,11 @@ const noOpenCodedTtyCheck = {
     /**
      * True for `process.<handle>.isTTY`, where `handle` is the one named.
      *
-     * Deliberately handle-specific: this rule targets the
-     * PROMPT-ANSWERABILITY check (`stdin && stdout`), not any TTY
-     * conjunction. `logger.ts`'s spinner gate is `stdout && stderr`, a
-     * different question — whether output can be redrawn — and must not be
-     * routed through a predicate about whether a prompt can be answered.
+     * Handle-specific on purpose: this rule targets the prompt-answerability
+     * check (`stdin && stdout`), not any TTY conjunction. `logger.ts`'s
+     * spinner gate is `stdout && stderr`, which asks a different question
+     * (whether output can be redrawn) and must not be routed through a
+     * predicate about whether a prompt can be answered.
      */
     function isProcessIsTty(node, handle) {
       return (
@@ -361,6 +361,63 @@ const noOpenCodedTtyCheck = {
   },
 };
 
+/**
+ * Reports `ReturnType<typeof X>` where `X` is imported from a local module.
+ *
+ * The structural spelling hides the real contract: the reader has to open
+ * the function to learn what the parameter is, and the type silently changes
+ * when the function's return type does. Every local function whose return
+ * type is worth naming in a signature should export that type (or already
+ * does, as with `ProjectPaths`, `RollbackJournal`, `FireForgeConfig`, and
+ * others), and callers should import it. Package imports are left alone: the
+ * author cannot export a name from `node_modules`, and the derived form is
+ * the only spelling for e.g. `ReturnType<typeof spinner>`.
+ */
+const noReturnTypeOfImport = {
+  meta: {
+    type: 'suggestion',
+    docs: {
+      description:
+        'Use the exported named type instead of ReturnType<typeof X> for a locally imported X.',
+    },
+    schema: [],
+    messages: {
+      returnTypeOfImport:
+        'Do not derive a type with `ReturnType<typeof {{name}}>`; import (or export from ' +
+        '`{{source}}`) the named type that `{{name}}` returns instead.',
+    },
+  },
+  create(context) {
+    /** Imported local binding name → module source. */
+    const localImports = new Map();
+    return {
+      ImportDeclaration(node) {
+        const source = node.source.value;
+        if (typeof source !== 'string' || !source.startsWith('.')) return;
+        for (const specifier of node.specifiers) {
+          localImports.set(specifier.local.name, source);
+        }
+      },
+      'TSTypeReference[typeName.type="Identifier"][typeName.name="ReturnType"]'(node) {
+        const [argument] = node.typeArguments?.params ?? node.typeParameters?.params ?? [];
+        if (
+          argument?.type !== 'TSTypeQuery' ||
+          argument.exprName.type !== 'Identifier' ||
+          !localImports.has(argument.exprName.name)
+        ) {
+          return;
+        }
+        const name = argument.exprName.name;
+        context.report({
+          node,
+          messageId: 'returnTypeOfImport',
+          data: { name, source: localImports.get(name) },
+        });
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     'no-open-coded-to-error': noOpenCodedToError,
@@ -369,5 +426,6 @@ export default {
     'no-empty-jsdoc': noEmptyJsdoc,
     'no-untyped-json-document': noUntypedJsonDocument,
     'no-open-coded-tty-check': noOpenCodedTtyCheck,
+    'no-return-type-of-import': noReturnTypeOfImport,
   },
 };

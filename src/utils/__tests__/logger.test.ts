@@ -225,9 +225,11 @@ describe('logger human mode', () => {
     handle.stop();
     handle.error();
 
-    expect(clack.log.step).toHaveBeenCalledWith('progress');
-    // stop() without a message re-prints the latest message.
-    expect(clack.log.step).toHaveBeenCalledWith('progress');
+    expect(clack.log.step).toHaveBeenNthCalledWith(1, 'progress');
+    // stop() without a message re-prints the latest message, so this is a
+    // second call with the same text, which a plain toHaveBeenCalledWith
+    // cannot tell apart from the message() call above.
+    expect(clack.log.step).toHaveBeenNthCalledWith(2, 'progress');
     expect(clack.log.error).toHaveBeenCalledWith('Failed');
   });
   it('note without a title emits the bare message', () => {

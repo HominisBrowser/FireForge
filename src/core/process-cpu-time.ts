@@ -3,12 +3,12 @@
  * Accumulated-CPU-time probe for a single PID.
  *
  * Exists to answer the one question `kill(pid, 0)` cannot: a lock holder
- * that EXISTS may still be wedged. A downstream fork running five concurrent
- * sessions on one checkout diagnosed exactly this by hand — "a holder at
- * near-zero CPU is hung, not working" — after a queue stalled behind a
+ * that exists may still be wedged. A downstream fork running five concurrent
+ * sessions on one checkout diagnosed exactly this by hand ("a holder at
+ * near-zero CPU is hung, not working") after a queue stalled behind a
  * command that had consumed 0.3 s of CPU in eleven minutes.
  *
- * It is reported as EVIDENCE, never as a verdict. A legitimately slow holder
+ * It is reported as evidence, never as a verdict. A legitimately slow holder
  * can also sit at low CPU while blocked on I/O or on a child process, so
  * nothing keys a refusal, a kill, or a lock steal off this number.
  */
@@ -20,7 +20,7 @@ import { parsePsDuration } from '../utils/ps-duration.js';
  *
  * Best-effort: a missing `ps`, an exited process, or an unparseable field
  * yields `undefined`, which callers must render as "unknown" rather than as
- * zero — reporting a live build as having used no CPU would invert the very
+ * zero. Reporting a live build as having used no CPU would invert the very
  * diagnosis this exists for.
  *
  * @param pid - Process to inspect
@@ -34,7 +34,7 @@ export async function readProcessCpuSeconds(pid: number): Promise<number | undef
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        `(Get-Process -Id ${String(pid)} -ErrorAction SilentlyContinue).CPU`,
+        `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).CPU`,
       ]);
       const seconds = Number.parseFloat(result.stdout.trim());
       return Number.isFinite(seconds) ? seconds : undefined;

@@ -45,7 +45,7 @@ vi.mock('../../core/token-coverage.js', () => ({
 
 vi.mock('../../core/token-manager.js', async (importOriginal) => ({
   // TOKEN_MODES and its `isTokenMode` guard are pure data and a pure
-  // predicate; the command's validation is what these tests exercise.
+  // predicate. The command's validation is what these tests exercise.
   ...(await importOriginal<typeof import('../../core/token-manager.js')>()),
   getTokensCssPath: vi.fn(),
 }));
@@ -147,7 +147,7 @@ describe('tokenCoverageCommand', () => {
     // `browser/themes/shared/` while the engine worktree reports
     // `?? browser/themes/shared/` (collapsed). Scanning status codes
     // directly reports "No modified CSS files" because the directory path
-    // does not end in `.css`; expanding untracked directories picks up the
+    // does not end in `.css`. Expanding untracked directories picks up the
     // files inside.
     vi.mocked(expandUntrackedDirectoryEntries).mockResolvedValueOnce([
       statusEntry('??', 'browser/themes/shared/mybrowser-extras.css'),

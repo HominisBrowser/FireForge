@@ -2,7 +2,7 @@
 /**
  * Integration tests for `fireforge patch rename`. Pins the contract
  * that the filename change, manifest mutation, and history append
- * happen together — without these tests the only way to verify the
+ * happen together. Without these tests the only way to verify the
  * "filename is renamed on disk and the manifest stays in sync" path
  * is to drive the CLI manually, which is exactly the brittle workflow
  * this verb was added to replace.
@@ -170,7 +170,7 @@ describe('patch rename', () => {
     });
 
     it('refuses an order change that would introduce a forward-import error', async () => {
-      // 010 creates Helper.sys.mjs; 020 imports it. Moving the creator
+      // 010 creates Helper.sys.mjs, and 020 imports it. Moving the creator
       // after the importer must be refused with the projected error named.
       const creatorBody = [
         'diff --git a/foo/Helper.sys.mjs b/foo/Helper.sys.mjs',
@@ -309,8 +309,8 @@ describe('patch rename', () => {
   });
 
   it('preserves the existing ordinal and category prefix', async () => {
-    // Operator should never accidentally lose ordering through a rename
-    // — the tiebreaker (`(owner.order === entry.order && owner.filename
+    // Operator should never accidentally lose ordering through a rename.
+    // The tiebreaker (`(owner.order === entry.order && owner.filename
     // > entry.filename)`) in forward-import depends on it.
     await seed(patchesDir, [makeMetadata('0123-privacy-old-name.patch', 123, ['a.js'])]);
 
@@ -382,7 +382,7 @@ describe('patch rename', () => {
 
   it('refuses to rename a legacy filename without the canonical prefix', async () => {
     await seed(patchesDir, [
-      // Legacy "001-name.patch" shape, no category — splitPatchFilename
+      // Legacy "001-name.patch" shape, no category, so splitPatchFilename
       // returns null and the command refuses rather than guess.
       {
         ...makeMetadata('001-foo.patch', 1, ['a.js']),

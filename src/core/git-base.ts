@@ -6,7 +6,7 @@ import { readOnlyGitIndexEnv } from './git-readonly-index.js';
 /**
  * Environment variable that overrides the monolithic `git add -A` timeout
  * (milliseconds). Operators on slow or loaded filesystems can legitimately
- * exceed the 10-minute default during a baseline indexing pass; making the
+ * exceed the 10-minute default during a baseline indexing pass. Making the
  * cap overridable lets them retry without recompiling.
  */
 export const GIT_ADD_TIMEOUT_ENV_VAR = 'FIREFORGE_GIT_ADD_TIMEOUT_MS';
@@ -77,12 +77,33 @@ export interface GitStatusEntry {
 }
 
 /**
- * Ensures git is available in the system.
+ * In-flight or settled successful `git` availability probe.
+ *
+ * The probe spawns `which git` (or `where` on Windows), and every git wrapper
+ * in this layer used to run it before each command, which meant dozens of
+ * extra spawns per `fireforge export`. Only success is cached: a rejection
+ * clears the slot so a run that installs git mid-flight (or a test that flips
+ * the probe) sees the new answer instead of a sticky refusal.
+ */
+let gitAvailability: Promise<void> | undefined;
+
+/**
+ * Ensures git is available in the system. Memoised after the first successful
+ * probe. {@link git} calls it, so callers that go through that wrapper do not
+ * need to.
  * @throws GitNotFoundError if git is not installed
  */
 export async function ensureGit(): Promise<void> {
-  if (!(await executableExists('git'))) {
-    throw new GitNotFoundError();
+  gitAvailability ??= (async (): Promise<void> => {
+    if (!(await executableExists('git'))) {
+      throw new GitNotFoundError();
+    }
+  })();
+  try {
+    await gitAvailability;
+  } catch (error: unknown) {
+    gitAvailability = undefined;
+    throw error;
   }
 }
 
@@ -97,13 +118,14 @@ export async function git(
   cwd: string,
   options?: { timeout?: number; env?: Record<string, string> }
 ): Promise<string> {
+  await ensureGit();
   const execOptions: Parameters<typeof exec>[2] = { cwd };
   if (options?.timeout !== undefined) {
     execOptions.timeout = options.timeout;
   }
   // A read-only command's private-index scope overlays GIT_INDEX_FILE so
   // index refreshes never touch the primary checkout.
-  // Merged UNDER the caller's own env so an explicit override still wins.
+  // Merged under the caller's own env so an explicit override still wins.
   const readOnlyIndexEnv = readOnlyGitIndexEnv(cwd);
   if (options?.env !== undefined || readOnlyIndexEnv !== undefined) {
     execOptions.env = { ...readOnlyIndexEnv, ...options?.env };
@@ -121,7 +143,7 @@ export async function git(
  * Splits a pathspec list into chunks whose joined byte length stays well under
  * the OS `ARG_MAX` limit, so a single batched `git` invocation over hundreds of
  * Mozilla-length paths cannot fail with `E2BIG`. The 96 KB budget is
- * deliberately conservative — even the smallest historical `ARG_MAX` (256 KB)
+ * conservative on purpose: even the smallest historical `ARG_MAX` (256 KB)
  * leaves room for the fixed git arguments plus the inherited environment.
  *
  * Chunk boundaries are output-neutral for every batched caller here: each
@@ -171,7 +193,7 @@ export async function configureGitPerformance(repoDir: string): Promise<void> {
  * rewrites LF to CRLF on checkout and back on staging. FireForge cannot
  * tolerate that: patch bodies are byte diffs of the working tree, and
  * `hashObjectBatch` deliberately delegates to git so `.gitattributes` and
- * `core.autocrlf` DO apply to the hashes `status` compares against. Under the
+ * `core.autocrlf` do apply to the hashes `status` compares against. Under the
  * global default the same tree hashes differently on Windows than everywhere
  * else, so exported patches and drift detection disagree across machines.
  * Setting it per-repository leaves the developer's global config alone.

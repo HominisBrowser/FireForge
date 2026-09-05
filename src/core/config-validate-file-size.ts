@@ -12,7 +12,7 @@ import { DEFAULT_FILE_SIZE_THRESHOLDS } from './patch-lint-file-size.js';
 
 /**
  * Parses one `patchLint.fileSizeThresholds.<tier>` triple. Every field is
- * optional and merges over the built-in default; values must be positive
+ * optional and merges over the built-in default. Values must be positive
  * integers and stay ordered `notice <= warning <= error`, because an
  * out-of-order triple would silently disable a band instead of failing.
  */
@@ -39,7 +39,7 @@ function parseFileSizeTier(raw: unknown, field: string): PatchLintFileSizeTier {
 
 /**
  * Parses the `patchLint.fileSizeThresholds` block. Ordering is validated
- * against the MERGED triple (overrides on top of the defaults), so setting
+ * against the merged triple (overrides on top of the defaults), so setting
  * only `warning` cannot land below the default `notice`.
  */
 export function parsePatchLintFileSizeThresholds(raw: unknown): PatchLintFileSizeThresholds {
@@ -55,7 +55,7 @@ export function parsePatchLintFileSizeThresholds(raw: unknown): PatchLintFileSiz
     if (merged.notice > merged.warning || merged.warning > merged.error) {
       throw new ConfigError(
         `Config field "patchLint.fileSizeThresholds.${tier}" must satisfy notice <= warning <= error ` +
-          `(resolved: ${String(merged.notice)}/${String(merged.warning)}/${String(merged.error)})`
+          `(resolved: ${merged.notice}/${merged.warning}/${merged.error})`
       );
     }
     out[tier] = parsed;

@@ -2,7 +2,7 @@
 /**
  * Feature-flag resolution for `furnace create`. Extracted from
  * `create.ts` so the authoring command stays under the per-file LOC
- * budget — the flag resolver has grown with each new opt-in (`--xpcshell`,
+ * budget. The flag resolver has grown with each new opt-in (`--xpcshell`,
  * `--test-style`, `--shared-ftl`).
  */
 
@@ -18,7 +18,7 @@ import { cancel, isCancel } from '../../utils/logger.js';
  * `--shared-ftl` implies `localized` and short-circuits the interactive
  * prompt so the operator is not asked to flip a flag we are about to
  * enforce. `--no-localized` combined with `--shared-ftl` is rejected
- * fast-fail; the cross-field check in furnace-config would catch it
+ * fast-fail. The cross-field check in furnace-config would catch it
  * too, but later and without a clear command-line message.
  *
  * @param isInteractive - Whether interactive prompts are available

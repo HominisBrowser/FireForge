@@ -33,7 +33,7 @@ export function validateWireName(value: string, label: string): void {
  * `Startup.init` or `Startup.init()` and get the same wired output.
  *
  * `validateWireName` accepts both shapes, but the generated block
- * interpolates the expression verbatim inside `${expression};` — so a bare
+ * interpolates the expression verbatim inside `${expression};`, so a bare
  * `Startup.init` emits `Startup.init;`, a plain property reference that
  * never invokes the lifecycle hook. The symptom is silent: `wire` reports
  * success and the browser-init block looks plausible, but the hook never
@@ -51,7 +51,7 @@ export function coerceToCall(expression: string): string {
  * Tracks multi-line block comment state across calls via the `inBlockComment`
  * parameter, allowing callers to iterate over lines while preserving context.
  *
- * **Regex literal heuristic:** When a `/` follows an operator or keyword-boundary
+ * Regex literal heuristic: when a `/` follows an operator or keyword-boundary
  * character (one of `= ( : , ! | & ? ; ~ ^ { [ \n + - * % < >`), it is treated
  * as a regex literal opener and characters are skipped until the closing `/`.
  * This heuristic can misfire on:
@@ -60,7 +60,7 @@ export function coerceToCall(expression: string): string {
  *   - Tagged template literals or unusual formatting.
  *
  * For Firefox source files this heuristic is sufficient because the AST-based
- * parser (via `withParserFallback`) is tried first; this function is only
+ * parser (via `withParserFallback`) is tried first. This function is only
  * used in the regex-based fallback path.
  *
  * @param line - A single line of source text
@@ -134,7 +134,7 @@ function isRegexLiteralStart(line: string, i: number): boolean {
 
 /**
  * Scans from the opening `/` of a regex literal to its closing `/`
- * (honouring escapes), returning the index of the closing slash — or the
+ * (honouring escapes), returning the index of the closing slash, or the
  * end of the line when the literal never closes.
  */
 function scanToRegexLiteralEnd(line: string, start: number): number {
@@ -182,8 +182,8 @@ export function tokenizeXhtml(lines: string[]): XhtmlToken[] {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy (line-based) helpers — shared by fallback implementations in
-// wire-targets.ts.  Extracted to reduce duplication and make the brace-
+// Legacy (line-based) helpers, shared by fallback implementations in
+// the wire target modules.  Extracted to reduce duplication and make the brace-
 // walking logic independently testable.
 // ---------------------------------------------------------------------------
 
@@ -192,10 +192,10 @@ export function tokenizeXhtml(lines: string[]): XhtmlToken[] {
  * advances to the line containing the opening brace.
  *
  * By default this helper is tolerant: when no `{` is found anywhere after
- * the signature, it still returns `braceIndex: methodLine` — which is the
+ * the signature, it still returns `braceIndex: methodLine`, which is the
  * correct answer when the signature and body brace live on the same line,
  * but is ambiguous when the method is abstract or truncated. Opt into
- * stricter behaviour by passing `requireBrace: true`; the function will
+ * stricter behaviour by passing `requireBrace: true`. The function will
  * return `null` instead of guessing, letting the caller surface a clean
  * {@link ParserFallbackError} rather than inserting into a wrong offset.
  *
@@ -207,24 +207,12 @@ export function findMethodBraceIndex(
   pattern: RegExp,
   options?: { requireBrace?: boolean }
 ): { methodLine: number; braceIndex: number } | null {
-  let methodLine = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (pattern.test(lines[i] ?? '')) {
-      methodLine = i;
-      break;
-    }
-  }
+  const methodLine = lines.findIndex((line) => pattern.test(line));
   if (methodLine === -1) return null;
 
-  let braceIndex = methodLine;
-  let braceFound = false;
-  for (let i = methodLine; i < lines.length; i++) {
-    if (lines[i]?.includes('{')) {
-      braceIndex = i;
-      braceFound = true;
-      break;
-    }
-  }
+  const braceOffset = lines.slice(methodLine).findIndex((line) => line.includes('{'));
+  const braceFound = braceOffset !== -1;
+  const braceIndex = braceFound ? methodLine + braceOffset : methodLine;
 
   if (!braceFound && options?.requireBrace) {
     return null;
@@ -237,10 +225,10 @@ export function findMethodBraceIndex(
  * Starting from `startLine`, walks lines using {@link countBraceDepth}
  * until the brace depth returns to zero (i.e., the enclosing block closes).
  *
- * Default behaviour is defensive — if the block never closes, the helper
+ * Default behaviour is defensive: if the block never closes, the helper
  * returns `startLine + 1` so a single malformed file does not stop the
  * entire fallback path. Pass `{ strict: true }` to opt into failing loudly
- * with a {@link ParserFallbackError} instead; new callers should prefer
+ * with a {@link ParserFallbackError} instead. New callers should prefer
  * strict mode so silent mis-insertions surface as the fallback refusing
  * to touch the file.
  *
@@ -301,7 +289,7 @@ export function computeFileBraceBalance(content: string): { depth: number; balan
  * Round-trip guard used after a legacy fallback mutation: if the file's
  * net brace balance drifts between `before` and `after`, something went
  * wrong and the fallback is refusing to write a corrupted file. Expects
- * the delta to be exactly zero — wire fallbacks only insert whole
+ * the delta to be exactly zero, since wire fallbacks only insert whole
  * try/catch blocks, which always contribute equal opens and closes.
  *
  * @throws {@link ParserFallbackError} when the balance delta is non-zero.
@@ -341,7 +329,7 @@ const FIREFORGE_BLOCK_PATTERN = /\/\/\s*.*init\s*—|typeof\s+\w+\s*!==\s*"undef
 /**
  * Scans lines starting from `startLine` for consecutive fireforge try-catch
  * blocks (identified by init comments or typeof guards) and returns the
- * line index just after the last such block — i.e., where a new block should
+ * line index just after the last such block, i.e. where a new block should
  * be inserted.
  *
  * Non-fireforge, non-blank, non-comment lines terminate the scan.

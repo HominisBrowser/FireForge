@@ -4,15 +4,15 @@
  *
  * `TIMEOUT … application timed out after N seconds with no output` /
  * `Ran 0 checks` has three known causes, one of them purely environmental:
- * a HEADED run on an unattended machine whose display is asleep or locked.
+ * a headed run on an unattended machine whose display is asleep or locked.
  * A headed Firefox on a sleeping display never paints, never reaches its
- * first test, and dies at the no-output timeout — indistinguishable, from
- * the log alone, from a product hang.
+ * first test, and dies at the no-output timeout, which from the log alone
+ * is indistinguishable from a product hang.
  *
- * `caffeinate -disu` does not cure it. It PREVENTS sleep; it cannot WAKE a
- * display that is already asleep, so wrapping the run changes nothing once
- * the machine has dimmed. `fireforge test` defaults to headed, so an
- * unattended run walks straight into this.
+ * `caffeinate -disu` does not cure it. It prevents sleep, but it cannot
+ * wake a display that is already asleep, so wrapping the run changes
+ * nothing once the machine has dimmed. `fireforge test` defaults to
+ * headed, so an unattended run walks straight into this.
  *
  * The probe is advisory and fail-open: anything unexpected reports
  * `'unknown'` and the caller degrades to the generic triage list rather than
@@ -31,7 +31,7 @@ const DISPLAY_PROBE_TIMEOUT_MS = 5_000;
 
 /**
  * IOKit power state at which `IODisplayWrangler` is fully lit. Lower
- * states are dimmed or off; macOS reports 4 for a live display.
+ * states are dimmed or off. macOS reports 4 for a live display.
  */
 const DISPLAY_AWAKE_POWER_STATE = 4;
 
@@ -46,10 +46,10 @@ const DISPLAY_AWAKE_POWER_STATE = 4;
  * ```
  *
  * Only the `IODisplayWrangler` row matters, and only its first numeric
- * column (the current power state). Any other shape — no such row, a
- * non-numeric column, an error message — is `'unknown'`, never a guess.
+ * column (the current power state). Any other shape (no such row, a
+ * non-numeric column, an error message) is `'unknown'`, never a guess.
  *
- * Pure; exported for direct unit testing.
+ * Pure. Exported for direct unit testing.
  *
  * @param stdout - Raw `pmset -g powerstate IODisplayWrangler` output
  * @returns The measured state, or `'unknown'`
@@ -67,7 +67,7 @@ export function parseDisplayPowerState(stdout: string): DisplaySleepState {
 
 /**
  * Probes the display's power state. Non-darwin platforms report `'unknown'`
- * without spawning anything — the stall shape this serves is macOS-specific
+ * without spawning anything: the stall shape this serves is macOS-specific
  * and no equivalent single-command probe is wired for other platforms.
  *
  * @param platform - `process.platform`-style id (injected for testability)

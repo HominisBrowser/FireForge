@@ -29,40 +29,56 @@ import {
   PATCH_CATEGORIES,
 } from '../utils/validation.js';
 
+export interface RunPatchLintOptions {
+  /** Engine root directory. */
+  engineDir: string;
+  /** Files touched by the patch. */
+  filesAffected: string[];
+  /** Raw unified diff string. */
+  diffContent: string;
+  /** Project configuration. */
+  config: FireForgeConfig;
+  /** If true, downgrade errors to warnings. */
+  skipLint?: boolean | undefined;
+  /** Optional cross-patch context for ownership resolution. */
+  patchQueueCtx?: import('../core/patch-lint-cross.js').PatchQueueContext | undefined;
+  /**
+   * Optional per-patch set of `check` IDs to suppress (threaded from
+   * `PatchMetadata.lintIgnore`). Surgical alternative to `--skip-lint` when
+   * exactly one advisory rule does not apply to a specific patch, e.g.
+   * `large-patch-lines` on a cohesive branding bundle that genuinely cannot
+   * be split.
+   */
+  ignoreChecks?: ReadonlySet<string> | undefined;
+  /**
+   * Optional explicit tier override (threaded from `PatchMetadata.tier`).
+   * Forces the branding-tier thresholds when set, independent of the
+   * auto-detect allowlist. When the branding tier is applied, a single
+   * `info()` line surfaces the choice so the tier decision is visible rather
+   * than silent.
+   */
+  patchTier?: 'branding' | undefined;
+}
+
 /**
  * Runs the full patch lint pipeline and reports results. Warnings are always
  * displayed. Errors block the export unless skipLint is true.
  *
- * @param engineDir - Engine root directory
- * @param filesAffected - Files touched by the patch
- * @param diffContent - Raw unified diff string
- * @param config - Project configuration
- * @param skipLint - If true, downgrade errors to warnings
- * @param patchQueueCtx - Optional cross-patch context for ownership
- *   resolution
- * @param ignoreChecks - Optional per-patch set of `check` IDs to suppress
- *   (threaded from `PatchMetadata.lintIgnore`). Surgical alternative to
- *   `--skip-lint` when exactly one advisory rule does not apply to a
- *   specific patch — e.g. `large-patch-lines` on a cohesive branding bundle
- *   that genuinely cannot be split.
- * @param patchTier - Optional explicit tier override (threaded from
- *   `PatchMetadata.tier`). Forces the branding-tier thresholds when set,
- *   independent of the auto-detect allowlist. When the branding tier is
- *   applied, a single `info()` line surfaces the choice so the tier decision
- *   is visible rather than silent.
+ * @param options - See {@link RunPatchLintOptions}
  */
-export async function runPatchLint(
-  engineDir: string,
-  filesAffected: string[],
-  diffContent: string,
-  config: FireForgeConfig,
-  skipLint?: boolean,
-  patchQueueCtx?: import('../core/patch-lint-cross.js').PatchQueueContext,
-  ignoreChecks?: ReadonlySet<string>,
-  patchTier?: 'branding'
-): Promise<void> {
+export async function runPatchLint(options: RunPatchLintOptions): Promise<void> {
+  const {
+    engineDir,
+    filesAffected,
+    diffContent,
+    config,
+    skipLint,
+    patchQueueCtx,
+    ignoreChecks,
+    patchTier,
+  } = options;
   // Compute the tier decision independently of the lint pipeline so it can
-  // be surfaced even when the rule body emitted no issues — a branding patch
+  // be surfaced even when the rule body emitted no issues. A branding patch
   // under the soft threshold still benefits from operators knowing which
   // tier governed the run. The same helper is reused inside `lintPatchSize`,
   // so the surfaced tier and the tier that actually drove the thresholds
@@ -145,6 +161,16 @@ export function reportPatchLintOutcome(issues: PatchLintIssue[], skipLint?: bool
   }
 }
 
+/** Patch identity resolved for an export, from flags or interactive prompts. */
+export interface ExportPatchMetadata {
+  /** Normalized patch name (without order prefix or extension). */
+  patchName: string;
+  /** Category the patch is filed under. */
+  selectedCategory: PatchCategory;
+  /** Human-readable patch description. */
+  description: string;
+}
+
 /**
  * Resolves patch metadata interactively or from flags, with shared validation.
  * @param options - Export command options
@@ -156,11 +182,11 @@ export async function promptExportPatchMetadata(
   isInteractive: boolean,
   commandName: 'export' | 'export-all',
   config?: FireForgeConfig
-): Promise<{ patchName: string; selectedCategory: PatchCategory; description: string } | null> {
+): Promise<ExportPatchMetadata | null> {
   const categories =
     config !== undefined ? getPatchPolicyCategories(config) : [...PATCH_CATEGORIES];
-  // A filename-shaped `--name foo.patch` must not die on the dot rule —
-  // strip the extension before validation so the one-step flow works for
+  // A filename-shaped `--name foo.patch` must not die on the dot rule, so
+  // strip the extension before validation and the one-step flow works for
   // both name shapes.
   let patchName = options.name?.trim().replace(/\.patch$/i, '');
 
@@ -236,7 +262,7 @@ export async function promptExportPatchMetadata(
     }
   }
 
-  // The filename slug pipeline strips redundant category prefixes; the
+  // The filename slug pipeline strips redundant category prefixes. The
   // manifest display name must agree, or every `export --name ui-foo`
   // needs a follow-up `patch rename` to satisfy bare-slug naming policy.
   const normalized = normalizePatchDisplayName(patchName, category);
@@ -304,14 +330,14 @@ export async function confirmSupersedePatches(
  * Detects new files missing license headers and offers to add them.
  *
  * In interactive mode the user is prompted before any files are modified. In
- * non-interactive mode the function is a no-op — the existing lint error
+ * non-interactive mode the function is a no-op. The existing lint error
  * blocks the export instead.
  *
  * @param engineDir - Absolute path to engine directory
  * @param diffContent - Current unified diff
  * @param config - Project configuration
  * @param isInteractive - Whether interactive prompts are available
- * @param dryRun - When true, only REPORT missing headers, never prompt or
+ * @param dryRun - When true, only report missing headers, never prompt or
  *   write. Dry-run must stay read-only: without this flag an interactive
  *   `export --dry-run` prompts (default Yes), writes license headers into
  *   engine/ files, and then closes with "no changes made".
@@ -404,7 +430,7 @@ export async function autoFixLicenseHeaders(
  *
  * Returns an empty map when no overlap exists. Used by the overlap gate in
  * `export` and `export-all` to refuse a default-mode export that would
- * silently create cross-patch ownership conflicts — the same class of
+ * silently create cross-patch ownership conflicts, the same class of
  * conflict `verify` immediately fails with.
  */
 export function findPartialOwnershipOverlap(
@@ -429,16 +455,16 @@ export function findPartialOwnershipOverlap(
 /**
  * Gate that refuses the default export path when the new patch would
  * silently claim files already tracked by other non-superseded patches.
- * `findAllPatchesForFiles` catches the full-coverage supersede case; this
- * fills the gap for PARTIAL overlap — two patches both claiming e.g.
+ * `findAllPatchesForFiles` catches the full-coverage supersede case. This
+ * fills the gap for partial overlap: two patches both claiming e.g.
  * `browser/themes/shared/jar.inc.mn` after a second export with `--before`.
  *
  * Proceeds silently when there is no overlap, or when the caller passed
  * `--allow-overlap`. In interactive mode the caller is prompted to
  * acknowledge the overlap (the proper fix path is `re-export --files` to
  * repartition ownership, so the prompt surfaces that pointer). In
- * non-interactive mode it throws — better to fail fast than let the queue
- * fall out of sync with verify.
+ * non-interactive mode it throws, since failing fast beats letting the
+ * queue fall out of sync with verify.
  */
 export async function guardOwnershipOverlap(args: {
   patchesDir: string;
@@ -460,7 +486,7 @@ export async function guardOwnershipOverlap(args: {
   s.stop();
   const entries = [...overlap.entries()].sort(([a], [b]) => a.localeCompare(b));
   warn(
-    `This export would create cross-patch ownership overlap on ${String(entries.length)} file${entries.length === 1 ? '' : 's'}:`
+    `This export would create cross-patch ownership overlap on ${entries.length} file${entries.length === 1 ? '' : 's'}:`
   );
   for (const [file, owners] of entries) {
     warn(`  - ${file} already claimed by: ${owners.join(', ')}`);
@@ -497,7 +523,7 @@ export async function guardOwnershipOverlap(args: {
  * order: the supersede confirmation, then the cross-patch ownership overlap
  * guard. The overlap guard receives the filenames of the patches the export
  * would fully supersede so it does not flag a file claimed by a patch that
- * is about to be removed. Catching only FULL-coverage supersedes leaves a
+ * is about to be removed. Catching only full-coverage supersedes leaves a
  * second export targeting a shared file creating a queue where two patches
  * both claim it and `verify` fails immediately.
  *
@@ -508,7 +534,7 @@ export async function guardOwnershipOverlap(args: {
  * @param args.allowOverlap - The command's `--allow-overlap` flag
  * @param args.isInteractive - Whether prompting the operator is possible
  * @param args.s - Active spinner, stopped before any prompt
- * @returns `true` when both gates passed; `false` when the operator declined
+ * @returns `true` when both gates passed, `false` when the operator declined
  *   (the caller returns without committing)
  */
 export async function runSupersedeAndOverlapGates(args: {

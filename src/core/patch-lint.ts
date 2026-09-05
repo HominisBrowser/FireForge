@@ -37,13 +37,14 @@ import { invokePatchLintPrettier } from './patch-lint-prettier.js';
 // The cross-patch lint infrastructure (queue context builder,
 // duplicate-creation and forward-import rules, ignore marker) lives in
 // `patch-lint-cross.ts` so the per-patch and cross-patch rule bodies each
-// stay within the per-file line budget. The public surface is re-exported
-// from `patch-lint-reexports.ts` so callers keep importing from one module.
+// stay within the per-file line budget. Its surface is re-exported here so
+// callers keep importing from one module.
 
-export * from './patch-lint-reexports.js';
+export * from './patch-lint-cross.js';
+export { buildModifiedFileAdditionsFromDiff, detectNewFilesInDiff } from './patch-lint-diff.js';
 
 // The CSS rule bodies live in `patch-lint-css.ts` (same per-file-budget
-// split as the other rule families); re-export the imported binding so
+// split as the other rule families). Re-export the imported binding so
 // callers and tests keep importing `lintPatchedCss` from this module.
 export { lintPatchedCss };
 
@@ -67,8 +68,8 @@ function countContentLines(content: string): number {
 }
 
 /**
- * Canonical `[check] file: message` rendering of a patch-lint issue — the
- * one string shape every reporter and refusal message uses, so operators
+ * Canonical `[check] file: message` rendering of a patch-lint issue. It is
+ * the one string shape every reporter and refusal message uses, so operators
  * can grep one format across lint output and refusal details.
  */
 export function formatPatchLintIssue(
@@ -121,8 +122,8 @@ const PATCH_LINE_THRESHOLDS = {
    * `browser/branding/<name>/` subtree.
    *
    * Calibrated against a fresh-fork branding export, which lands around
-   * 15–16k lines (localized brand.ftl across many locales + SVG path data +
-   * copied upstream CSS). That is the MINIMUM branding diff, so it must
+   * 15-16k lines (localized brand.ftl across many locales + SVG path data +
+   * copied upstream CSS). That is the minimum branding diff, so it must
    * surface as a soft `notice` rather than a `warning`: the warning band
    * sits above it with ~13% headroom, and the error band at roughly 2× the
    * baseline, where non-branding work is probably bundled in.
@@ -138,7 +139,7 @@ const PATCH_LINE_THRESHOLDS = {
 /**
  * File-count thresholds for the `large-patch-files` rule, mirroring the tier
  * shape of {@link PATCH_LINE_THRESHOLDS}. A single warning-only threshold
- * per tier is intentional — file count expresses scope, not blast radius,
+ * per tier is intentional: file count expresses scope, not blast radius,
  * and there is no error band that would block export.
  *
  * The branding tier sits well above the typical floor because branding
@@ -149,7 +150,7 @@ const PATCH_LINE_THRESHOLDS = {
  * genuinely bloated patch.
  *
  * Test tier matches general because a test-only patch rarely touches many
- * files (a single regression test usually adds 1–3 fixtures); the elevation
+ * files (a single regression test usually adds 1-3 fixtures). The elevation
  * in {@link PATCH_LINE_THRESHOLDS.test} addresses big table-driven test
  * bodies, not file fan-out.
  */
@@ -175,10 +176,10 @@ const SPLIT_HINT =
  * branding patches legitimately need to touch to register the new branding
  * flavor with the top-level configure. A predicate requiring every file to
  * live under `browser/branding/` drops a branding patch that also touches
- * `browser/moz.configure` — the canonical registration point — into the
+ * `browser/moz.configure` (the canonical registration point) into the
  * general lint tier.
  *
- * Intentionally narrow: add entries only when a genuine branding patch
+ * Narrow on purpose: add entries only when a genuine branding patch
  * cannot be expressed without a specific registration sibling. Pinned
  * against ESR 140.x conventions at time of writing.
  */
@@ -190,7 +191,7 @@ const BRANDING_REGISTRATION_FILES: ReadonlySet<string> = new Set([
 /**
  * Returns true when a patch qualifies for the branding threshold tier:
  * every file lives either under `browser/branding/` or in the narrow
- * registration allowlist, AND the patch contains at least one file
+ * registration allowlist, and the patch contains at least one file
  * under `browser/branding/` (guard against a config-only patch
  * accidentally qualifying as branding).
  *
@@ -232,7 +233,7 @@ export function isTestFile(file: string): boolean {
 }
 
 /**
- * Narrower scope than `isTestFile` — only browser-chrome test files
+ * Narrower scope than `isTestFile`: only browser-chrome test files
  * (`browser_*.js` under a `/test/` or `/tests/` directory). Excludes
  * `head.js` and `head_*.js` test helpers.
  */
@@ -250,28 +251,29 @@ function isBrowserChromeTestFile(file: string): boolean {
  * Each alternative must sit at a call boundary: preceded by something that
  * is not an identifier character, `.`, `#`, or `-`. A plain
  * `strippedContent.includes(tok)` over `Assert.`, `ok(`, `is(`, `isnot(`,
- * `isDeeply(` lets any identifier merely *ending* in one satisfy the gate —
- * `this.axis(3)` contains `is(`, `book(` contains `ok(`,
- * `promiseIsDeeply(` contains `isDeeply(` — so an assertion-free smoke test
+ * `isDeeply(` lets any identifier merely *ending* in one satisfy the gate:
+ * `this.axis(3)` contains `is(`, `book(` contains `ok(`, and
+ * `promiseIsDeeply(` contains `isDeeply(`, so an assertion-free smoke test
  * using any such call clears the floor.
  *
- * The namespaced arm must name a member AND a call. Matching the namespace
+ * The namespaced arm must name a member and a call. Matching the namespace
  * and its dot alone re-opens the same hole from the other side:
  * `SimpleTest` is mostly *harness* API, so `SimpleTest.finish()`,
  * `SimpleTest.waitForExplicitFinish()` and `SimpleTest.requestCompleteLog()`
- * would each clear the floor on their own — the exact calls an
+ * would each clear the floor on their own, which are the exact calls an
  * assertion-free smoke test contains. The enumeration below is the
  * mochitest/xpcshell assertion surface both namespaces share, and it is what
  * the user-facing message names.
  *
  * Two qualified spellings of the bare four also count: `window.ok(...)` (the
- * globals ARE window properties) and an optional-chained `win?.ok(...)`;
- * blocking those flags tests whose only assertions are real as
- * assertion-free. `SpecialPowers.ok(` stays excluded — that is API surface,
+ * globals are window properties) and an optional-chained `win?.ok(...)`.
+ * Blocking those flags tests whose only assertions are real as
+ * assertion-free. `SpecialPowers.ok(` stays excluded: that is API surface,
  * not an assertion.
  *
- * Deliberately textual, not AST-based: this runs over patch bodies rather
- * than resolvable sources, and the surrounding rule is a floor, not a proof.
+ * Textual rather than AST-based, on purpose: this runs over patch bodies
+ * rather than resolvable sources, and the surrounding rule is a floor, not
+ * a proof.
  */
 const ASSERTION_MEMBERS = [
   'ok',
@@ -292,7 +294,7 @@ const ASSERTION_MEMBERS = [
   'stringContains',
   'throws',
   'rejects',
-  // `todo`, `todo_is`, `todo_isnot`, `info`-free — todo* record an expected
+  // `todo`, `todo_is`, `todo_isnot`, `info`-free: todo* record an expected
   // failure, which is still a recorded assertion outcome.
   'todo',
   'todo_is',
@@ -323,27 +325,28 @@ export function commentStyleForFile(file: string): CommentStyle | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Decides whether a NEW file's leading header satisfies the
- * `missing-license-header` rule. Single owner of the acceptance policy —
- * `lintNewFileHeaders` (the rule) and `autoFixLicenseHeaders` (the
+ * Decides whether a new file's leading header satisfies the
+ * `missing-license-header` rule. It is the single owner of the acceptance
+ * policy: `lintNewFileHeaders` (the rule) and `autoFixLicenseHeaders` (the
  * interactive export fixer) must agree, or the fixer offers to stack a
  * second header onto a file the lint already accepts.
  *
  * Accepted shapes, in order:
- *  - the project's own header for the file's comment style;
- *  - under `browser/branding/`, ANY recognised license header in the
+ *  - the project's own header for the file's comment style.
+ *  - under `browser/branding/`, any recognised license header in the
  *    matching style: the setup-generated branding directory is copied from
  *    Firefox's `unofficial` template and arrives with Mozilla MPL-2.0
- *    headers — legitimate for copyright purposes (the assets are Mozilla's)
- *    even when the fork's own code is 0BSD / EUPL-1.2 / GPL-2.0-or-later;
- *  - on an MPL-2.0 project, any recognised header in the matching style;
+ *    headers, legitimate for copyright purposes (the assets are Mozilla's)
+ *    even when the fork's own code is 0BSD / EUPL-1.2 / GPL-2.0-or-later.
+ *  - on an MPL-2.0 project, any recognised header in the matching style.
  *  - the verbatim upstream MPL-2.0 block header (`/* … *\/`, optionally
- *    behind a leading editor-directive comment) REGARDLESS of the project
+ *    behind a leading editor-directive comment) regardless of the project
  *    license, on any file whose comment syntax is the block form (JS and
  *    CSS): a file copied from the Firefox tree legitimately keeps Mozilla's
  *    header for provenance in an EUPL/GPL/0BSD project too. Only the block
- *    form is accepted — the `// `-style MPL header is FireForge-generated,
- *    not upstream provenance — and `hash`-style files (FTL) stay excluded
+ *    form is accepted, because the `// `-style MPL header is
+ *    FireForge-generated rather than upstream provenance, and `hash`-style
+ *    files (FTL) stay excluded
  *    because `/* … *\/` is not a comment there.
  *
  * @param file - Engine-relative path of the new file
@@ -417,7 +420,7 @@ export async function lintNewFileHeaders(
  * @param patchOwnedFiles - Optional set of patch-owned `.sys.mjs` paths for scoped JSDoc enforcement
  * @param patchOwnedChromeScripts - Optional set of patch-owned chrome
  *   subscripts (`.js` non-`.sys.mjs`) for scoped chrome-script JSDoc
- *   enforcement. Built by {@link resolvePatchOwnedChromeScripts}; passed
+ *   enforcement. Built by {@link resolvePatchOwnedChromeScripts}. Passed
  *   separately from `patchOwnedFiles` so the `runCheckJs` consumer (which
  *   only accepts `.sys.mjs`) is not silently broadened.
  * @returns Array of lint issues
@@ -511,7 +514,7 @@ export async function lintPatchedJs(
     issues.push(...lintChromeScriptJsDocForFile(file, content, isChromeOwned, chromeMode));
 
     // 3b. Assertion floor for browser-chrome tests touched by this patch
-    // (covers both newly introduced files and modified upstream tests —
+    // (covers both newly introduced files and modified upstream tests:
     // a patch that strips the last `Assert.equal` from an existing
     // browser_*.js silently passed under the old `isNew` gate).
     const assertionFloor = config.patchLint?.testAssertionFloor;
@@ -593,7 +596,7 @@ export type PatchSizeTierDecision =
  * Decides which `large-patch-lines` threshold tier applies to a patch.
  * Exported so `runPatchLint` and the per-patch `lint` command can
  * surface the tier choice to the operator *without* depending on
- * `lintPatchSize`'s internal return shape — the rule itself stays a
+ * `lintPatchSize`'s internal return shape. The rule itself stays a
  * pure issues-array API, and the decision is computed separately for
  * the sole purpose of reporting.
  *
@@ -601,7 +604,7 @@ export type PatchSizeTierDecision =
  * The test tier beats branding because a table-driven regression test
  * is legitimately large independent of whether the patch also claims
  * branding shape, and the test-tier thresholds are already more
- * permissive than branding — so "tests beat branding" is the
+ * permissive than branding, so "tests beat branding" is the
  * defensive-for-tests choice.
  */
 export function resolvePatchSizeTier(
@@ -615,17 +618,22 @@ export function resolvePatchSizeTier(
   return { tier: 'general' };
 }
 
+/** Line and file-count thresholds governing one patch-size tier. */
+export interface PatchSizeThresholds {
+  /** Added-line counts at which notice/warning/error issues fire. */
+  lines: { notice: number; warning: number; error: number };
+  /** Maximum number of files a patch may touch before an issue fires. */
+  maxFiles: number;
+}
+
 /**
  * Read-only view of the size thresholds a tier enforces.
  * Public-API companion to {@link resolvePatchSizeTier} /
  * {@link countNonBinaryDiffLines} so consumers can build waiver-freshness
- * checks against the SAME numbers `large-patch-lines` /
+ * checks against the same numbers `large-patch-lines` /
  * `large-patch-files` fire on instead of mirroring them.
  */
-export function getPatchSizeThresholds(tier: 'general' | 'test' | 'branding'): {
-  lines: { notice: number; warning: number; error: number };
-  maxFiles: number;
-} {
+export function getPatchSizeThresholds(tier: 'general' | 'test' | 'branding'): PatchSizeThresholds {
   return {
     lines: { ...PATCH_LINE_THRESHOLDS[tier] },
     maxFiles: PATCH_FILES_THRESHOLDS[tier],
@@ -655,7 +663,7 @@ export function lintPatchSize(
   // thresholds because a big regression test is legitimate (table-driven
   // harnesses run into the thousands of lines). Branding patches get their
   // own tier so a first export of setup-generated branding does not fire the
-  // general hard limit — see `PATCH_LINE_THRESHOLDS.branding` and
+  // general hard limit. See `PATCH_LINE_THRESHOLDS.branding` and
   // `PATCH_FILES_THRESHOLDS.branding` above. An explicit `patchTier` opt-in
   // forces branding even when `isBrandingOnlyPatch` cannot reach the patch's
   // actual shape (a branding patch that also touches a non-allowlisted
@@ -767,7 +775,7 @@ export async function lintModifiedFileHeaders(
 export interface LintExportedPatchOptions {
   /**
    * Cross-patch context for ownership resolution. Present whenever the
-   * caller has a loaded patch queue; absent for the ad-hoc single-diff
+   * caller has a loaded patch queue. Absent for the ad-hoc single-diff
    * paths that have no queue to resolve against.
    */
   patchQueueCtx?: import('./patch-lint-cross.js').PatchQueueContext;
@@ -783,7 +791,7 @@ export interface LintExportedPatchOptions {
    * Explicit tier override, threaded from `PatchMetadata.tier`. When
    * `"branding"` forces the branding thresholds on the
    * `large-patch-lines` rule. Callers with a per-patch manifest context
-   * (re-export, per-patch lint) should pass this; aggregate-mode callers
+   * (re-export, per-patch lint) should pass this. Aggregate-mode callers
    * without a specific patch context omit it and fall through to
    * auto-detection.
    */
@@ -793,12 +801,12 @@ export interface LintExportedPatchOptions {
    * The ad-hoc `fireforge lint <files>` path passes a cross-patch file
    * list that does not correspond to a single patch, so it suppresses the
    * synthetic combined-list size check here and re-evaluates the size
-   * rules per owning patch instead — never synthesising a phantom
+   * rules per owning patch instead, never synthesising a phantom
    * oversized patch from the operator's file selection.
    */
   skipPatchSize?: boolean;
   /**
-   * Restrict checkJs diagnostics to these repo-relative files; module
+   * Restrict checkJs diagnostics to these repo-relative files. Module
    * resolution still spans every owned file in `patchQueueCtx`. Export and
    * re-export pass the patch under export so cross-patch `resource:///`
    * imports resolve against the whole queue while only that patch's
@@ -807,15 +815,15 @@ export interface LintExportedPatchOptions {
   checkJsReportScope?: ReadonlySet<string>;
   /**
    * Pre-computed checkJs issues for this patch. When provided, the internal
-   * checkJs invocation is skipped and these are appended verbatim — the
+   * checkJs invocation is skipped and these are appended verbatim: the
    * per-patch lint path builds one queue-wide checkJs program and
    * attributes findings per patch instead of rebuilding per patch.
    */
   precomputedCheckJs?: readonly PatchLintIssue[];
   /**
-   * Invoked with the issues DROPPED by the `ignoreChecks` waiver filter,
-   * when any were. Suppression semantics are unchanged — the
-   * returned issue list still excludes them — but the caller can report
+   * Invoked with the issues dropped by the `ignoreChecks` waiver filter,
+   * when any were. Suppression semantics are unchanged (the returned issue
+   * list still excludes them), but the caller can report
    * the measurement a waived size finding carried (per-patch NOTICE lines
    * and the `--report` JSON) instead of losing it entirely.
    */
@@ -829,7 +837,7 @@ export interface LintExportedPatchOptions {
  * @param affectedFiles - File paths (relative to repoDir) affected by the patch
  * @param diffContent - Raw unified diff string
  * @param config - Project configuration
- * @param options - Optional context and behaviour switches; see
+ * @param options - Optional context and behaviour switches. See
  *   {@link LintExportedPatchOptions}. Every optional input lives here
  *   rather than in a positional tail: four of the five call sites had to
  *   pass `undefined` placeholders to reach the one member they wanted.
@@ -881,7 +889,7 @@ export async function lintExportedPatch(
 
   if (options?.precomputedCheckJs) {
     // Per-patch lint built one queue-wide program and already attributed
-    // this patch's findings — append them instead of rebuilding the program.
+    // this patch's findings, so append them instead of rebuilding the program.
     issues.push(...options.precomputedCheckJs);
   } else if (config.patchLint?.checkJs) {
     issues.push(
@@ -910,10 +918,10 @@ export async function lintExportedPatch(
     }
   }
 
-  // Prettier over patch-owned .sys.mjs. Deliberately NOT part of the
-  // precomputedCheckJs short-circuit: it is a separate tool with its own
-  // gate, and a queue-wide program has no equivalent to share. Scoped to
-  // the files THIS patch owns, run from engine/ so the engine's own config
+  // Prettier over patch-owned .sys.mjs. Kept out of the
+  // precomputedCheckJs short-circuit on purpose: it is a separate tool with
+  // its own gate, and a queue-wide program has no equivalent to share.
+  // Scoped to the files this patch owns, run from engine/ so its own config
   // and ignore file decide (see `patch-lint-prettier.ts`).
   const prettierGate = config.patchLint?.prettier ?? 'off';
   if (prettierGate !== 'off' && patchOwnedFiles.size > 0) {
@@ -927,7 +935,7 @@ export async function lintExportedPatch(
 
   // Filter out ignored checks last so every rule still runs (keeps the
   // implementation uniform) but suppressed rules do not surface. We do not
-  // reclassify severities — an ignored error simply drops, mirroring how
+  // reclassify severities: an ignored error simply drops, mirroring how
   // inline `fireforge-ignore: <check>` markers work in the CSS and
   // forward-import rules.
   if (ignoreChecks && ignoreChecks.size > 0) {

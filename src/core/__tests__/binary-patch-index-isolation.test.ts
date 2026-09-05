@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * The one-writer invariant for untracked binary patches, against a REAL git
+ * The one-writer invariant for untracked binary patches, against a real git
  * repository.
  *
  * `generateBinaryFilePatch` has to write an index entry to diff an untracked
- * file. Writing it to the SHARED index made that write observable: a
+ * file. Writing it to the shared index made that write observable: a
  * concurrent `fireforge test` fingerprints `engine/` with `git status` and
  * refuses a verdict taken across a change, so a parallel gate lane running
  * this staging killed healthy suites with `FAIL reason=inconclusive` on its
@@ -19,7 +19,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createTempProject, removeTempProject, runGit } from '../../test-utils/index.js';
 import { generateBinaryFilePatch } from '../git-diff.js';
 
-/** A tiny PNG-shaped buffer — binary enough for git to treat it as such. */
+/** A tiny PNG-shaped buffer, binary enough for git to treat it as such. */
 const BINARY = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03,
 ]);
@@ -75,7 +75,7 @@ describe('untracked binary patch generation (real git)', () => {
 
   it('never lets a concurrent status probe observe the staged entry', async () => {
     // Serial before/after equality would also hold for a stage-then-restore
-    // implementation; the defect was the WINDOW in between. Poll `git status`
+    // implementation. The defect was the window in between. Poll `git status`
     // throughout the call and assert the transient entry never appears.
     const repo = await initRepo();
     await writeFile(join(repo, 'icon.png'), BINARY);
@@ -95,8 +95,8 @@ describe('untracked binary patch generation (real git)', () => {
       await probe;
     }
 
-    // Every observation must be the untracked state. An `A` entry — git's
-    // rendering of the intent-to-add staging — is the flap that voided the
+    // Every observation must be the untracked state. An `A` entry (git's
+    // rendering of the intent-to-add staging) is the flap that voided the
     // suites.
     expect([...observed].every((status) => status.includes('?? icon.png'))).toBe(true);
     expect([...observed].some((status) => /(^|\0)A/.test(status))).toBe(false);
@@ -105,7 +105,7 @@ describe('untracked binary patch generation (real git)', () => {
   it('does not mistake a tracked, unmodified binary for a fresh add', async () => {
     // The tracked-and-unmodified case reaches the same staging branch (its
     // `diff HEAD` is empty). A private index seeded from nothing would
-    // report the whole file as added; seeding from the repo's own index is
+    // report the whole file as added. Seeding from the repo's own index is
     // what keeps this empty.
     const repo = await initRepo();
     await writeFile(join(repo, 'tracked.png'), BINARY);

@@ -8,7 +8,7 @@
  *
  *  - creating a directory `moz.build` (license header + the requested list
  *    directive) and wiring the parent chain's `DIRS` entries up to the
- *    nearest existing moz.build;
+ *    nearest existing moz.build.
  *  - wiring an `XPCSHELL_TESTS_MANIFESTS` entry for a (possibly freshly
  *    created) `xpcshell.toml` into the nearest existing moz.build.
  *
@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { pathExists, readText, writeText } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { getLicenseHeader } from './license-headers.js';
 import { findAlphabeticalMozBuildPosition } from './moz-manifest-helpers.js';
 import { tokenizeMozBuildList } from './moz-manifest-tokenizers.js';
@@ -35,7 +36,7 @@ export interface ScaffoldAction {
 
 /**
  * moz.build files use Firefox's canonical MPL-2.0 hash-comment header
- * regardless of the fork's own project license — they live in the engine
+ * regardless of the fork's own project license. They live in the engine
  * tree among upstream MPL files.
  */
 function mozBuildHeader(): string {
@@ -74,7 +75,7 @@ export function upsertMozBuildListEntry(
  * Ensures every parent directory between `childRelDir` and the nearest
  * existing moz.build carries a `DIRS` entry pointing at the next segment
  * down, creating intermediate moz.build files as needed. Walks upward
- * from the child's parent; throws when no moz.build exists anywhere up
+ * from the child's parent. Throws when no moz.build exists anywhere up
  * to the engine root (an engine checkout always has one at the root, so
  * this indicates a bogus path).
  */
@@ -85,7 +86,7 @@ export async function ensureParentDirsWiring(
 ): Promise<ScaffoldAction[]> {
   const actions: ScaffoldAction[] = [];
   let childName = childRelDir.split('/').at(-1) ?? childRelDir;
-  let parentRel = dirname(childRelDir).replace(/\\/g, '/');
+  let parentRel = normalizePathSlashes(dirname(childRelDir));
 
   for (;;) {
     if (parentRel === '.' || parentRel === '' || parentRel === '/') {
@@ -114,7 +115,7 @@ export async function ensureParentDirsWiring(
     if (!dryRun) await writeText(parentManifestPath, scaffold);
     actions.push({ manifest: parentManifestRel, change: `created with DIRS += ["${childName}"]` });
     childName = parentRel.split('/').at(-1) ?? parentRel;
-    parentRel = dirname(parentRel).replace(/\\/g, '/');
+    parentRel = normalizePathSlashes(dirname(parentRel));
   }
 }
 
@@ -156,7 +157,7 @@ export async function ensureXpcshellManifestWiring(
   manifestRelPath: string,
   dryRun: boolean
 ): Promise<ScaffoldAction[]> {
-  let dirRel = dirname(manifestRelPath).replace(/\\/g, '/');
+  let dirRel = normalizePathSlashes(dirname(manifestRelPath));
 
   for (;;) {
     if (dirRel === '.' || dirRel === '' || dirRel === '/') {
@@ -175,6 +176,6 @@ export async function ensureXpcshellManifestWiring(
       if (!dryRun) await writeText(mozBuildPath, updated);
       return [{ manifest: mozBuildRel, change: `XPCSHELL_TESTS_MANIFESTS += ["${relEntry}"]` }];
     }
-    dirRel = dirname(dirRel).replace(/\\/g, '/');
+    dirRel = normalizePathSlashes(dirname(dirRel));
   }
 }

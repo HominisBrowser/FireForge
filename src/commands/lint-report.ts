@@ -2,15 +2,16 @@
 /**
  * Machine-readable per-patch lint report (`lint --per-patch --report
  * <path>`). One mechanism serves two observability gaps: consumers get each
- * patch's size metrics against the SAME thresholds the size rules fire on,
+ * patch's size metrics against the same thresholds the size rules fire on,
  * instead of mirroring `countNonBinaryDiffLines`, and lintIgnore-suppressed
  * issues stay visible with their measurements rather than vanishing.
  *
- * Helper module consumed by lint-per-patch.ts; no registrar is exported and
+ * Helper module consumed by lint-per-patch.ts. No registrar is exported and
  * none is wanted.
  */
 import {
   getPatchSizeThresholds,
+  type PatchSizeThresholds,
   type PatchSizeTierDecision,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
@@ -22,7 +23,7 @@ const LINT_REPORT_SCHEMA_VERSION = 1;
 
 /**
  * Structural view of one per-patch lint outcome. Mirrors the relevant
- * fields of lint-per-patch's QueuedPatchResult without importing it —
+ * fields of lint-per-patch's QueuedPatchResult without importing it:
  * that module imports this one, and a type back-edge would trip the
  * dpdm cycle gate.
  */
@@ -41,16 +42,16 @@ interface LintReportPatch {
   lineCount: number;
   filesAffected: number;
   tier: PatchSizeTierDecision;
-  thresholds: ReturnType<typeof getPatchSizeThresholds>;
+  thresholds: PatchSizeThresholds;
   issues: PatchLintIssue[];
   suppressedIssues: PatchLintIssue[];
 }
 
 /**
  * Writes the per-patch lint report JSON. Called after the per-patch
- * results are assembled in patch order; queue-level and policy findings
+ * results are assembled in patch order. Queue-level and policy findings
  * are patch-attributed by their `file`/`filename` fields upstream and
- * are NOT duplicated here — the report is the per-patch view.
+ * are not duplicated here. The report is the per-patch view.
  */
 export async function writePerPatchLintReport(
   reportPath: string,

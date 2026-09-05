@@ -68,7 +68,7 @@ describe('tagLintIssues', () => {
 
   // Aggregate patch-size findings carry the synthetic `(patch)` file, which
   // never appears in a real diff set, so they are always tagged
-  // `[cumulative]` under `--only-introduced` even when the aggregate IS the
+  // `[cumulative]` under `--only-introduced` even when the aggregate is the
   // diff the operator asked about. Tagging promotes the aggregate finding to
   // `introduced` whenever the diff set is non-empty.
   it('tags aggregate patch-size findings as introduced when diff set is non-empty', () => {
@@ -93,9 +93,9 @@ describe('tagLintIssues', () => {
 
   it('keeps aggregate findings as cumulative when diff set is empty', () => {
     // Empty diff set means `lint --since HEAD` ran but the caller is not
-    // introducing any change — a clean branch whose only lint noise is
+    // introducing any change: a clean branch whose only lint noise is
     // pre-existing cumulative queue state. An aggregate finding here
-    // genuinely describes drift, not current work.
+    // genuinely describes drift rather than current work.
     const issues: PatchLintIssue[] = [
       {
         file: AGGREGATE_PATCH_FILE,

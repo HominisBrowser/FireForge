@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Manifest-sync repair against a REAL filesystem and a real furnace lock.
+ * Manifest-sync repair against a real filesystem and a real furnace lock.
  *
  * The unit suite in `doctor.test.ts` mocks `node:fs/promises` wholesale,
  * which is why it cannot catch an empty-custom-orphan cleanup using `rm(dir)`
- * without `{ recursive: true }` — that throws EISDIR on a directory, so the
+ * without `{ recursive: true }`. That throws EISDIR on a directory, so the
  * "Deleted N empty custom orphan directories" branch is unreachable in
  * production while the mocked test reports it working. Nor can it catch the
  * decide-before-lock window, since nothing concurrent runs there.
@@ -111,7 +111,7 @@ describe('furnace manifest sync repair (real filesystem)', () => {
   it('never leaves a name in both custom and overrides', async () => {
     // A concurrent `furnace create` registering the orphan name under
     // `custom` must not be overwritten into `overrides` as well, producing a
-    // name in BOTH maps — a state nothing in furnace-config.ts rejects.
+    // name in both maps, a state nothing in furnace-config.ts rejects.
     const staleSnapshot = emptyConfig();
     const overrideDir = join(root, 'components', 'overrides', 'moz-widget');
     await mkdir(overrideDir, { recursive: true });
@@ -135,7 +135,7 @@ describe('furnace manifest sync repair (real filesystem)', () => {
 
   it('reconciles a name orphaned in both trees once, not once per tree', async () => {
     // Both the override half and the custom-cleanup half re-check orphans
-    // against the fresh config; a name present in both orphan lists must not
+    // against the fresh config. A name present in both orphan lists must not
     // be pushed into `reconciled` twice, reporting "Skipped 2 names (x, x)".
     const staleSnapshot = emptyConfig();
     const overrideDir = join(root, 'components', 'overrides', 'moz-widget');

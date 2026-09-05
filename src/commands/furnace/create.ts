@@ -5,13 +5,7 @@ import { text } from '@clack/prompts';
 
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { stdioIsInteractive } from '../../core/destructive.js';
-import {
-  createDefaultFurnaceConfig,
-  furnaceConfigExists,
-  getFurnacePaths,
-  loadFurnaceConfig,
-  writeFurnaceConfig,
-} from '../../core/furnace-config.js';
+import { getFurnacePaths, writeFurnaceConfig } from '../../core/furnace-config.js';
 import {
   resolveFtlChromeSubPath,
   tagNameToClassName,
@@ -43,6 +37,7 @@ import type { ProjectLicense } from '../../types/config.js';
 import type { FurnaceConfig, ResolvedTestStyle } from '../../types/furnace.js';
 import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
 import { cancel, intro, isCancel, note, outro } from '../../utils/logger.js';
+import { loadAuthoringFurnaceConfig } from './authoring-config.js';
 import { resolveValidatedTestDir, scaffoldTestFiles } from './create-browser-test.js';
 import { formatDryRunPlan, formatSuccessNote } from './create-dry-run.js';
 import { resolveCreateFeatures } from './create-features.js';
@@ -51,14 +46,6 @@ import { assertCustomEntryPersisted } from './create-readback.js';
 import { generateCssContent, generateFtlContent, generateMjsContent } from './create-templates.js';
 import { validateCreateAgainstConfig } from './create-validation.js';
 import { scaffoldXpcshellTestFiles } from './create-xpcshell.js';
-
-async function loadAuthoringFurnaceConfig(projectRoot: string): Promise<FurnaceConfig> {
-  if (await furnaceConfigExists(projectRoot)) {
-    return loadFurnaceConfig(projectRoot);
-  }
-
-  return createDefaultFurnaceConfig();
-}
 
 function knownComponentSet(config: FurnaceConfig): Set<string> {
   return new Set([
@@ -101,45 +88,59 @@ function validateTagName(name: string): string | undefined {
   return undefined;
 }
 
+interface WriteComponentFilesOptions {
+  /** Destination component directory. */
+  componentDir: string;
+  /** Custom element tag name. */
+  componentName: string;
+  /** Generated component class name. */
+  className: string;
+  /** Human-readable component description. */
+  description: string;
+  /** Whether to include a Fluent file. */
+  localized: boolean;
+  /** Project license used for generated headers. */
+  license: ProjectLicense;
+  /** chrome:// sub-path for the generated FTL reference, when localized. */
+  ftlChromeSubPath: string | undefined;
+  /** Explicit shared FTL path from `--shared-ftl`, when supplied. */
+  sharedFtl: string | undefined;
+  /** Optional rollback journal that snapshots files before writes. */
+  journal?: RollbackJournal | undefined;
+}
+
 /**
  * Writes the scaffolded component source files to disk.
- * @param componentDir - Destination component directory
- * @param componentName - Custom element tag name
- * @param className - Generated component class name
- * @param description - Human-readable component description
- * @param localized - Whether to include a Fluent file
- * @param license - Project license used for generated headers
- * @param ftlChromeSubPath - chrome:// sub-path for the generated FTL reference, when localized
- * @param sharedFtl - Explicit shared FTL path from `--shared-ftl`, when supplied
- * @param journal - Optional rollback journal that snapshots files before writes
+ * @param options - See {@link WriteComponentFilesOptions}
  * @returns Relative filenames written for the component
  */
-async function writeComponentFiles(
-  componentDir: string,
-  componentName: string,
-  className: string,
-  description: string,
-  localized: boolean,
-  license: ProjectLicense,
-  ftlChromeSubPath: string | undefined,
-  sharedFtl: string | undefined,
-  journal?: RollbackJournal
-): Promise<string[]> {
+async function writeComponentFiles(options: WriteComponentFilesOptions): Promise<string[]> {
+  const {
+    componentDir,
+    componentName,
+    className,
+    description,
+    localized,
+    license,
+    ftlChromeSubPath,
+    sharedFtl,
+    journal,
+  } = options;
   await ensureDir(componentDir);
 
   const files = [`${componentName}.mjs`, `${componentName}.css`];
 
   const mjsPath = join(componentDir, `${componentName}.mjs`);
   if (journal) await snapshotFile(journal, mjsPath);
-  const mjsContent = generateMjsContent(
-    componentName,
+  const mjsContent = generateMjsContent({
+    name: componentName,
     className,
     description,
     localized,
-    getLicenseHeader(license, 'js'),
+    header: getLicenseHeader(license, 'js'),
     ftlChromeSubPath,
-    sharedFtl
-  );
+    sharedFtl,
+  });
   await writeText(mjsPath, mjsContent);
 
   const cssPath = join(componentDir, `${componentName}.css`);
@@ -149,7 +150,7 @@ async function writeComponentFiles(
 
   // Skip the per-component .ftl stub when the component participates in a
   // pre-existing feature-scoped bundle. The shared bundle is owned
-  // elsewhere; dropping a stub here would clutter the workspace with
+  // elsewhere. Dropping a stub here would clutter the workspace with
   // empty files that never get packaged (furnace apply also skips copying
   // them in this mode).
   if (localized && !sharedFtl) {
@@ -170,7 +171,7 @@ async function writeComponentFiles(
  * Invariants:
  * - `--xpcshell` alone is equivalent to `--test-style=xpcshell`.
  * - `--with-tests` alone (no `--test-style`) defaults to `browser-chrome`
- *   (multi-process mochitest; reliable on macOS for interactive chrome).
+ *   (multi-process mochitest, reliable on macOS for interactive chrome).
  *   Forks whose chrome document has no `tabbrowser` should pass
  *   `--test-style=mochikit` explicitly.
  * - When both `--xpcshell` and `--with-tests` are set, `--xpcshell` wins
@@ -220,8 +221,8 @@ async function performCreateMutations(args: {
   testDir: string | undefined;
   operationContext?: FurnaceOperationContext;
 }): Promise<{ files: string[]; testFiles: string[] }> {
-  // Invariant: the journal MUST be registered with the operation context
-  // BEFORE any filesystem mutation (including recordCreatedDir, whose entries
+  // Invariant: the journal must be registered with the operation context
+  // before any filesystem mutation (including recordCreatedDir, whose entries
   // are consulted by SIGINT rollback). The try/catch below assumes signal
   // handlers can find the journal for any partial write that follows.
   const journal = createRollbackJournal();
@@ -258,17 +259,17 @@ async function performCreateMutations(args: {
     // so signal-driven rollback can clean it up even if writeComponentFiles
     // is interrupted mid-ensureDir.
     recordCreatedDir(journal, args.componentDir);
-    files = await writeComponentFiles(
-      args.componentDir,
-      args.componentName,
-      args.className,
-      args.description,
-      args.localized,
-      args.license,
-      resolveFtlChromeSubPath(freshConfig.ftlBasePath),
-      args.sharedFtl,
-      journal
-    );
+    files = await writeComponentFiles({
+      componentDir: args.componentDir,
+      componentName: args.componentName,
+      className: args.className,
+      description: args.description,
+      localized: args.localized,
+      license: args.license,
+      ftlChromeSubPath: resolveFtlChromeSubPath(freshConfig.ftlBasePath),
+      sharedFtl: args.sharedFtl,
+      journal,
+    });
 
     const customEntry: import('../../types/furnace.js').CustomComponentConfig = {
       description: args.description,
@@ -403,7 +404,7 @@ export async function furnaceCreateCommand(
   const furnacePaths = getFurnacePaths(projectRoot);
 
   if (!componentName) {
-    // Interactive prompt path; non-interactive missing-name was rejected above.
+    // Interactive prompt path. Non-interactive missing-name was rejected above.
     const nameResult = await text({
       message: 'Component tag name:',
       placeholder: 'moz-my-widget',
@@ -466,7 +467,7 @@ export async function furnaceCreateCommand(
   // partial mutation behind.
   const testStyle = resolveTestStyle(options);
   const testDir = resolveValidatedTestDir(options.testDir, testStyle);
-  // Not routed through assertFurnaceEngineReady: this rung is CONDITIONAL on
+  // Not routed through assertFurnaceEngineReady: this rung is conditional on
   // a test style being requested, and it names the component so the refusal
   // identifies which create failed. Both are outside the shared helper's
   // shape, and a scaffold without --with-tests must keep working with no
@@ -494,7 +495,7 @@ export async function furnaceCreateCommand(
   // structural rules with furnace-config.ts so the command and the on-disk
   // schema cannot diverge. Pass the resolved `localized` rather than a `true`
   // literal so the validator's cross-field check stays anchored to the real
-  // feature selection — `resolveCreateFeatures` promotes localized upstream,
+  // feature selection. `resolveCreateFeatures` promotes localized upstream,
   // and hard-coding `true` here would hide a regression if that promotion
   // ever moved or dropped.
   let sharedFtl: string | undefined;
@@ -506,10 +507,10 @@ export async function furnaceCreateCommand(
     sharedFtl = result.value;
   }
 
-  // Dry-run exits here — every validation that does not need a write has
+  // Dry-run exits here. Every validation that does not need a write has
   // already run, so the plan we render reflects exactly what the real
   // command would do. The mutation phase and its rollback journal are
-  // intentionally skipped so no furnace.json/engine state is touched.
+  // skipped so no furnace.json/engine state is touched.
   if (isDryRun) {
     const plan = formatDryRunPlan({
       componentName,
@@ -518,7 +519,7 @@ export async function furnaceCreateCommand(
       composes,
       stockAdditions,
       // Spread rather than assign so the key is absent when sharedFtl is
-      // undefined — the DryRunPlanInput type uses strict-optional shape.
+      // undefined. The DryRunPlanInput type uses a strict-optional shape.
       ...(sharedFtl !== undefined ? { sharedFtl } : {}),
       testStyle,
       description,

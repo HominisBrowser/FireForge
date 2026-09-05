@@ -6,7 +6,7 @@
  * disagree with the files on disk, against a real filesystem. With
  * content-based state checksums, "edited source + skip report + identical
  * files" implies an earlier apply (a watch cycle or named apply) already
- * deployed exactly that edit — so the skip report is accurate.
+ * deployed exactly that edit, so the skip report is accurate.
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -91,12 +91,12 @@ describe('furnace apply skip-report accuracy', () => {
     expect(first.errors).toEqual([]);
     expect(first.applied.map((entry) => entry.name)).toEqual(['panel']);
 
-    // Settled state skips — the baseline for the incident sequence.
+    // Settled state skips. This is the baseline for the incident sequence.
     const settled = await applyAllComponents(projectRoot);
     expect(settled.skipped).toEqual([{ name: 'panel', reason: 'No changes since last apply' }]);
 
-    // Edit the SOURCE, then apply. The report must say
-    // applied, and the engine copy must carry the edit.
+    // Edit the source, then apply. The report must say applied, and the
+    // engine copy must carry the edit.
     await writeFile(join(overrideDir, 'panel.css'), '.panel { color: rebeccapurple; }\n');
     const afterEdit = await applyAllComponents(projectRoot);
     expect(afterEdit.errors).toEqual([]);
@@ -110,9 +110,9 @@ describe('furnace apply skip-report accuracy', () => {
   it('candidate 2: engine-side tampering defeats the cached-hash drift fast path', async () => {
     await applyAllComponents(projectRoot);
 
-    // Tamper the DEPLOYED copy out-of-band (reset/manual edit). The cached
+    // Tamper the deployed copy out-of-band (reset/manual edit). The cached
     // engine hash no longer matches, so the fast path must report drift and
-    // re-apply — not trust the workspace checksum match into a skip.
+    // re-apply. It must not trust the workspace checksum match into a skip.
     await writeFile(engineCssPath, '/* clobbered out-of-band */\n');
     const afterTamper = await applyAllComponents(projectRoot);
     expect(afterTamper.skipped).toEqual([]);
@@ -121,10 +121,10 @@ describe('furnace apply skip-report accuracy', () => {
   });
 
   it('candidate 3: css-only override with a non-css workspace file cannot wedge into a stale skip', async () => {
-    // The checksummed file set (.mjs/.css/.ftl) is a SUPERSET of the
+    // The checksummed file set (.mjs/.css/.ftl) is a superset of the
     // css-only copy set (.css), so a non-css edit reads as "changed" and
-    // re-applies (harmlessly re-copying the css) rather than the reverse —
-    // there is no file the copy predicate deploys that the change detector
+    // re-applies (harmlessly re-copying the css) rather than the reverse.
+    // There is no file the copy predicate deploys that the change detector
     // cannot see.
     await writeFile(join(projectRoot, 'furnace.json'), furnaceConfig('css-only'));
     await writeFile(join(overrideDir, 'helper.mjs'), 'export const H = 1;\n');
@@ -147,9 +147,9 @@ describe('furnace apply skip-report accuracy', () => {
     await applyAllComponents(projectRoot);
 
     // Named-apply core semantics: the mutation runs but the batch state file
-    // is NOT rewritten (the CLI merges per-component state separately). The
+    // is not rewritten (the CLI merges per-component state separately). The
     // next batch apply must therefore still see the pre-edit checksums and
-    // re-apply — it must never read the un-persisted run as "already done".
+    // re-apply. It must never read the un-persisted run as "already done".
     await writeFile(join(overrideDir, 'panel.css'), '.panel { color: teal; }\n');
     const named = await applyAllComponents(projectRoot, false, {
       componentName: 'panel',
@@ -160,7 +160,7 @@ describe('furnace apply skip-report accuracy', () => {
 
     // Batch apply after the unpersisted named run: state still records the
     // pre-edit checksums, so this re-applies (idempotent copy) rather than
-    // skipping on state it never persisted. Outcome AND report agree.
+    // skipping on state it never persisted. Outcome and report agree.
     const batch = await applyAllComponents(projectRoot);
     expect(batch.applied.map((entry) => entry.name)).toEqual(['panel']);
     expect(batch.skipped).toEqual([]);

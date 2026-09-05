@@ -3,9 +3,9 @@
  * Pins that `planExport` (dry-run preview) agrees with what
  * `commitExportedPatch` (real write) actually does. Both paths go through
  * the shared `computeExportPlanUnderLock` helper, so any drift between
- * planning logic and write logic — a bug fix applied to one but not the
- * other — would cause this test to fail with a concrete mismatch instead
- * of silently producing misleading dry-run previews.
+ * planning logic and write logic (a bug fix applied to one but not the
+ * other) causes this test to fail with a concrete mismatch instead of
+ * silently producing misleading dry-run previews.
  */
 
 import { writeFile } from 'node:fs/promises';
@@ -162,8 +162,8 @@ describe('planExport agrees with commitExportedPatch', () => {
       },
     ]);
 
-    // The new export covers everything in 003-ui-legacy — so the plan
-    // should report it as superseded, and the commit should delete it.
+    // The new export covers everything in 003-ui-legacy, so the plan should
+    // report it as superseded and the commit should delete it.
     const input = {
       patchesDir,
       category: 'ui' as const,

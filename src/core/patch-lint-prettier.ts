@@ -5,21 +5,21 @@
  * Until 0.45.0 no tier of the chain ran Prettier on `.sys.mjs` at all, so
  * module formatting drift was caught by nothing and survived to a human
  * reviewer. Worse, the obvious manual check was misleading in the same
- * direction: a fork's ROOT `.prettierignore` typically excludes `engine/`,
+ * direction: a fork's root `.prettierignore` typically excludes `engine/`,
  * so `prettier --check --config engine/.prettierrc.js <engine files>` run
  * from the repo root reports "all files use Prettier code style" for files
  * that fail the identical check run from inside `engine/`. A root-level
  * spot-check falsely refuted a correct reviewer finding on exactly this.
  *
- * This pass therefore runs prettier with `cwd` set to the ENGINE directory,
+ * This pass therefore runs prettier with `cwd` set to the engine directory,
  * so the engine's own `.prettierrc*` and `.prettierignore` resolve the way
  * they do for anyone working in that tree, and the FireForge result agrees
  * with the operator's own command.
  *
  * Opt-in (`patchLint.prettier`, default `'off'`): it spawns a process per
  * lint and is a new failure surface on queues that never had one. When it
- * is off, formatting is explicitly out of scope for the per-patch tier —
- * that is the contract, not an accident.
+ * is off, formatting is explicitly out of scope for the per-patch tier.
+ * That is the contract, not an accident.
  */
 
 import { join } from 'node:path';
@@ -29,7 +29,7 @@ import type { PatchLintSeverityGate } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
-import { exec } from '../utils/process.js';
+import { exec, type ExecResult } from '../utils/process.js';
 
 /** How long prettier gets before the pass gives up (ms). */
 const PRETTIER_TIMEOUT_MS = 120_000;
@@ -70,11 +70,11 @@ async function resolvePrettier(
 /**
  * Runs `prettier --check` over `files` from inside the engine directory.
  *
- * @param engineDir - Absolute engine directory; also the `cwd`, which is
+ * @param engineDir - Absolute engine directory. Also the `cwd`, which is
  *   what makes the engine's own config and ignore file authoritative
  * @param projectRoot - FireForge project root, for the fallback binary
  * @param files - Engine-relative patch-owned `.sys.mjs` paths
- * @param gate - Severity for reported issues; `'off'` skips the pass
+ * @param gate - Severity for reported issues. `'off'` skips the pass
  * @returns One issue per unformatted file, or a single run-level issue when
  *   prettier could not be run at all
  */
@@ -88,7 +88,7 @@ export async function invokePatchLintPrettier(
   const severity = gate === 'error' ? ('error' as const) : ('warning' as const);
 
   const invocation = await resolvePrettier(engineDir, projectRoot);
-  let result: Awaited<ReturnType<typeof exec>>;
+  let result: ExecResult;
   try {
     result = await exec(invocation.command, [...invocation.prefixArgs, '--check', ...files], {
       cwd: engineDir,
@@ -118,7 +118,7 @@ export async function invokePatchLintPrettier(
         file: '(prettier)',
         check: 'prettier-format',
         message:
-          `prettier exited ${String(result.exitCode)} without completing the check: ` +
+          `prettier exited ${result.exitCode} without completing the check: ` +
           output.trim().split('\n').slice(-5).join(' ').slice(0, 400),
         severity,
       },

@@ -13,17 +13,17 @@
  *     recursive-make backend isn't stale.
  *
  * The marker lives under `.fireforge/last-build.json`. It is written only
- * on successful build completion; a failed build does not update it, so a
+ * on successful build completion. A failed build does not update it, so a
  * subsequent run still audits against the last known-good tree.
  */
 
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { verbose } from '../utils/logger.js';
 import {
   isBuildInputPath,
@@ -54,13 +54,13 @@ const FINGERPRINT_IO_CONCURRENCY = 16;
  * the `jar.mn` half of {@link BuildBaseline.buildInputFingerprints} is
  * refreshed (`'full'`) or carried forward from the previous record
  * (`'faster'`). `fireforge build --ui` and a non-escalated `test --build`
- * are `'faster'`; `fireforge build` and an escalated `test --build` are
+ * are `'faster'`. `fireforge build` and an escalated `test --build` are
  * `'full'`.
  */
 export type BaselineBuildKind = 'full' | 'faster';
 
 /** Name of the last-build marker file under `.fireforge/`. */
-export const BUILD_BASELINE_FILENAME = 'last-build.json';
+const BUILD_BASELINE_FILENAME = 'last-build.json';
 
 /**
  * Resolves the on-disk path of the build baseline marker.
@@ -73,7 +73,7 @@ export function getBuildBaselinePath(projectRoot: string): string {
 
 /**
  * Reads the last-build baseline if present. Returns undefined when no
- * previous successful build has been recorded — callers must tolerate that
+ * previous successful build has been recorded. Callers must tolerate that
  * path (first build, cleaned workspace).
  * @param projectRoot - Root directory of the project
  */
@@ -85,10 +85,54 @@ export async function readBuildBaseline(projectRoot: string): Promise<BuildBasel
   try {
     return await readJson<BuildBaseline>(path);
   } catch {
-    // A corrupt marker is equivalent to no marker — the audit/auto-configure
+    // A corrupt marker is equivalent to no marker: the audit/auto-configure
     // will treat it as "first build" rather than block on the inconsistency.
     return undefined;
   }
+}
+
+export interface WriteBuildBaselineOptions {
+  /** Root directory of the project. */
+  projectRoot: string;
+  /** Path to the engine directory. */
+  engineDir: string;
+  /** Current `binaryName` from fireforge.json. */
+  binaryName: string;
+  /**
+   * Coverage claim of the packaged test runtime this build produced
+   * (`'full'`, or the scoped request paths of a `test --build` invocation).
+   * Omitted → field left off the marker.
+   */
+  testPackagingCoverage?: TestPackagingCoverage | undefined;
+  /**
+   * The baseline this write replaces, when the caller has it. A scoped
+   * (non-`'full'`) write carries its `staticComponentsBaseline` forward
+   * verbatim, because `mach build faster` does not rebake `components.conf`
+   * registrations, so the last full build stays the anchor for the
+   * compiled StaticComponents table.
+   */
+  previousBaseline?: BuildBaseline | undefined;
+  /** Invocation shape that produced this baseline. */
+  recordedBy?: string | undefined;
+  /**
+   * `'auto'` (default) refreshes the static-components anchor whenever the
+   * coverage claim is `'full'` or absent. `'refresh'` records it even for a
+   * scoped coverage claim whose implementation escalated to a full build.
+   * `'carry-forward'` always keeps the previous anchor: needed by
+   * `--extend-coverage`, whose union can evaluate to `'full'` while the
+   * build that produced it was still a scoped `mach build faster` that did
+   * not rebake the compiled table.
+   */
+  staticComponentsHandling?: 'auto' | 'refresh' | 'carry-forward' | undefined;
+  /**
+   * Which mach build produced this baseline (default `'full'`). A
+   * `'faster'` write carries the previous record's `jar.mn` fingerprints
+   * forward instead of refreshing them. See
+   * {@link BuildBaseline.buildInputFingerprints}. Every caller that ran
+   * `mach build faster` must say so, or the next pre-test build skips an
+   * escalation no full build has honoured.
+   */
+  buildKind?: BaselineBuildKind | undefined;
 }
 
 /**
@@ -97,50 +141,27 @@ export async function readBuildBaseline(projectRoot: string): Promise<BuildBasel
  * the current binaryName. Caller is responsible for only invoking this
  * after the build exit code was zero.
  *
- * @param projectRoot - Root directory of the project
- * @param engineDir - Path to the engine directory
- * @param binaryName - Current `binaryName` from fireforge.json
- * @param testPackagingCoverage - Coverage claim of the packaged test
- *   runtime this build produced (`'full'`, or the scoped request paths of
- *   a `test --build` invocation). Omitted → field left off the marker.
- * @param previousBaseline - The baseline this write replaces, when the
- *   caller has it. A scoped (non-`'full'`) write carries its
- *   `staticComponentsBaseline` forward verbatim — `mach build faster`
- *   does not rebake `components.conf` registrations, so the last FULL
- *   build stays the honest anchor for the compiled StaticComponents table.
- * @param recordedBy - Invocation shape that produced this baseline.
- * @param staticComponentsHandling - `'auto'` (default) refreshes the
- *   static-components anchor whenever the coverage claim is `'full'` or
- *   absent. `'refresh'` records it even for a scoped coverage claim whose
- *   implementation escalated to a full build. `'carry-forward'` always
- *   keeps the previous anchor: needed by `--extend-coverage`, whose union
- *   can EVALUATE to `'full'` while the build that produced it was still a
- *   scoped `mach build faster` that did not rebake the compiled table.
- * @param buildKind - Which mach build produced this baseline (default
- *   `'full'`). A `'faster'` write carries the previous record's `jar.mn`
- *   fingerprints forward instead of refreshing them — see
- *   {@link BuildBaseline.buildInputFingerprints}. Every caller that ran
- *   `mach build faster` MUST say so, or the next pre-test build skips an
- *   escalation no full build has honoured.
+ * @param options - See {@link WriteBuildBaselineOptions}
  */
-export async function writeBuildBaseline(
-  projectRoot: string,
-  engineDir: string,
-  binaryName: string,
-  testPackagingCoverage?: TestPackagingCoverage,
-  previousBaseline?: BuildBaseline,
-  recordedBy?: string,
-  staticComponentsHandling: 'auto' | 'refresh' | 'carry-forward' = 'auto',
-  buildKind: BaselineBuildKind = 'full'
-): Promise<void> {
+export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Promise<void> {
+  const {
+    projectRoot,
+    engineDir,
+    binaryName,
+    testPackagingCoverage,
+    previousBaseline,
+    recordedBy,
+    staticComponentsHandling = 'auto',
+    buildKind = 'full',
+  } = options;
   let engineHeadSha = '';
   try {
     engineHeadSha = await getHead(engineDir);
   } catch (error: unknown) {
-    // Engine may be an unborn branch (freshly cloned + reset, or mid-import)
-    // — record an empty SHA and let downstream fall back to "no prior state"
-    // behavior. Any other git failure is bubbled up; we don't want to
-    // silently write a garbage marker.
+    // Engine may be an unborn branch (freshly cloned + reset, or
+    // mid-import). Record an empty SHA and let downstream fall back to "no
+    // prior state" behavior. Any other git failure is bubbled up, because
+    // we don't want to silently write a garbage marker.
     if (!isMissingHeadError(error)) {
       throw error;
     }
@@ -155,7 +176,7 @@ export async function writeBuildBaseline(
 
   // A full-coverage write (and the legacy no-claim `fireforge build` shape)
   // just recompiled the StaticComponents table, so it anchors the table to
-  // the current engine state. A scoped write did not — carry the previous
+  // the current engine state. A scoped write did not, so carry the previous
   // anchor forward verbatim.
   const staticComponentsBaseline =
     staticComponentsHandling === 'refresh' ||
@@ -189,7 +210,7 @@ export async function writeBuildBaseline(
  * or new one means the file is genuinely stale.
  *
  * Returns `undefined` on any git failure so a broken probe never corrupts
- * the on-disk baseline with `{}`; the stale-check then falls back to a
+ * the on-disk baseline with `{}`. The stale-check then falls back to a
  * path-only comparison.
  */
 async function collectPackageableFingerprints(
@@ -203,9 +224,9 @@ async function collectPackageableFingerprints(
  * ({@link isBuildInputPath}) this build consumed. Backend inputs
  * (`moz.build` & co) are always taken from the live tree: the
  * auto-configure preflight reconfigured against them before this build
- * ran. `jar.mn` entries are taken from the live tree only after a FULL
- * build; a `faster` write carries the previous record's `jar.mn` entries
- * forward verbatim, because `mach build faster` is exactly the build the
+ * ran. `jar.mn` entries are taken from the live tree only after a full
+ * build. A `faster` write carries the previous record's `jar.mn` entries
+ * forward verbatim, because `mach build faster` is the build the
  * `jar.mn` escalation exists to bypass, and recording a `jar.mn` it did
  * not install would silence the next escalation. Returns `undefined` on
  * probe failure so the field is omitted rather than written as `{}`.
@@ -236,7 +257,7 @@ async function collectBuildInputFingerprints(
 /**
  * Anchor for the compiled StaticComponents table: the engine HEAD SHA of
  * this (full) build plus content fingerprints of the `components.conf`
- * manifests dirty right now — the same dirty-path probe family as
+ * manifests dirty right now, using the same dirty-path probe family as
  * {@link collectPackageableFingerprints}, filtered to XPCOM manifests.
  * Returns `undefined` on probe failure so a broken probe omits the field
  * (the static-components stale check then degrades to "fresh") rather than
@@ -294,7 +315,7 @@ async function collectDirtyFingerprints(
       async (relPath) => {
         try {
           const buffer = await readFile(join(engineDir, relPath));
-          return [relPath, createHash('sha256').update(buffer).digest('hex')] as const;
+          return [relPath, sha256Hex(buffer)] as const;
         } catch (fileError: unknown) {
           if (getNodeErrorCode(fileError) === 'ENOENT') {
             // A path reported by git but absent on disk is normally a tracked
@@ -303,7 +324,7 @@ async function collectDirtyFingerprints(
             return [relPath, DELETED_FILE_FINGERPRINT] as const;
           }
           // A file that disappeared between status probe and hash is
-          // expected in concurrent scenarios; non-ENOENT failures remain
+          // expected in concurrent scenarios. Non-ENOENT failures remain
           // untrusted and are skipped without failing the whole baseline write.
           verbose(
             `Build baseline: skipping ${contextLabel} for ${relPath} — ${toError(fileError).message}`

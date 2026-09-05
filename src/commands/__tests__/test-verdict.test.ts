@@ -68,7 +68,7 @@ describe('verdict sink exactly-one-line guarantee', () => {
       emitFailVerdict('preflight');
       logError('after verdict');
       expect(stderrWrites).toEqual(['error: after verdict\n']);
-      // The verdict is still the ONLY stdout write.
+      // The verdict is still the only stdout write.
       expect(capture.writes).toEqual(['FIREFORGE-VERDICT: FAIL reason=preflight\n']);
 
       resetVerdictEmission();
@@ -211,7 +211,7 @@ describe('the run-log path rides the verdict line', () => {
    * verdict assertions hold on every platform, which leaves this the only
    * place the ` log=<path>` suffix is pinned. It has to be here rather than
    * there: the suffix must be part of the verdict line and not a separate
-   * write, because the verdict is the run's LAST stdout write and a `tail`
+   * write, because the verdict is the run's last stdout write and a `tail`
    * cuts anything printed before it.
    */
   it('appends log=<path> to the emitted line, once, as the final write', () => {

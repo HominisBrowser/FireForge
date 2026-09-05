@@ -20,7 +20,7 @@ vi.mock('../config.js', () => ({
   })),
   // `applyAllComponents` reads fireforge.json only for the optional
   // `markerComment` field. Tests do not exercise it, so resolve to an empty
-  // shape — the code path also tolerates a rejection.
+  // shape. The code path also tolerates a rejection.
   loadConfig: vi.fn(() => Promise.resolve({})),
 }));
 
@@ -335,7 +335,7 @@ describe('applyAllComponents', () => {
     // (override and custom). The custom's checksums are computed but not
     // stored, because stepErrors trigger rollback before persistence.
     expect(computeComponentChecksums).toHaveBeenCalledTimes(2);
-    // Step errors trigger rollback — state is NOT persisted
+    // Step errors trigger rollback, so state is not persisted
     expect(updateFurnaceState).not.toHaveBeenCalled();
     expect(restoreRollbackJournalOrThrow).toHaveBeenCalledWith(
       expect.any(Object),
@@ -344,7 +344,7 @@ describe('applyAllComponents', () => {
   });
 
   it('records patch-owned overwrite warnings even when the component source changed', async () => {
-    // The changed === true path used to skip drift detection entirely —
+    // The changed === true path used to skip drift detection entirely,
     // exactly the case where a deployed engine-only fix gets replaced.
     vi.mocked(hasComponentChanged).mockResolvedValue(true);
     vi.mocked(applyOverrideComponent).mockResolvedValue({
@@ -436,7 +436,7 @@ describe('applyAllComponents', () => {
   it('re-applies a custom component whose registration has drifted from the engine', async () => {
     // Scenario: the engine's customElements.js or jar.mn has been reset but
     // the workspace source files are unchanged. hasComponentChanged returns
-    // false; hasCustomEngineDrift returns true; apply must re-run.
+    // false, hasCustomEngineDrift returns true, and apply must re-run.
     vi.mocked(hasComponentChanged).mockResolvedValue(false);
     vi.mocked(hasOverrideEngineDrift).mockResolvedValue(false);
     vi.mocked(hasCustomEngineDrift).mockResolvedValueOnce(true);
@@ -465,9 +465,9 @@ describe('applyAllComponents', () => {
   });
 
   it('still honours the fast path when source and engine are both in sync', async () => {
-    // Regression guard: drift detection must NOT fire when the engine
-    // actually matches source. Both components are unchanged and drift-free;
-    // both should skip.
+    // Regression guard: drift detection must not fire when the engine
+    // actually matches source. Both components are unchanged and
+    // drift-free, so both should skip.
     vi.mocked(hasComponentChanged).mockResolvedValue(false);
     vi.mocked(hasOverrideEngineDrift).mockResolvedValue(false);
     vi.mocked(hasCustomEngineDrift).mockResolvedValue(false);
@@ -486,7 +486,7 @@ describe('applyAllComponents', () => {
   it('undeploys files removed from a custom component workspace and re-syncs jar.mn', async () => {
     // Scenario: previous apply deployed { panel.mjs, panel.css }. The
     // developer has since deleted panel.css. The new apply should remove
-    // panel.css from the engine and drop its jar.mn entry, but NOT
+    // panel.css from the engine and drop its jar.mn entry, but not
     // deregister the customElement (the .mjs is still present).
     vi.mocked(hasComponentChanged).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     vi.mocked(extractComponentChecksums).mockReturnValueOnce({}).mockReturnValueOnce({
@@ -519,7 +519,7 @@ describe('applyAllComponents', () => {
     expect(addJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel', [
       'moz-panel.mjs',
     ]);
-    // The .mjs is still present, so customElements registration is NOT
+    // The .mjs is still present, so customElements registration is not
     // touched. Only the deletion of the .mjs itself should trigger that.
     expect(removeCustomElementRegistration).not.toHaveBeenCalled();
     const panel = result.applied.find((entry) => entry.name === 'moz-panel');
@@ -564,7 +564,7 @@ describe('applyAllComponents', () => {
       persistState: false,
     });
 
-    // The override component is filtered out; only the named component runs.
+    // The override component is filtered out. Only the named component runs.
     expect(applyOverrideComponent).not.toHaveBeenCalled();
     // Orphaned helper is undeployed and jar.mn re-synced to the live set.
     expect(undeployCustomFiles).toHaveBeenCalledWith(
@@ -581,8 +581,8 @@ describe('applyAllComponents', () => {
     ]);
     // The main module still exists, so the custom element stays registered.
     expect(removeCustomElementRegistration).not.toHaveBeenCalled();
-    // persistState:false — named deploy owns its per-component state merge;
-    // the batch wholesale-replace must not run (it would wipe other
+    // persistState:false: named deploy owns its per-component state merge.
+    // The batch wholesale-replace must not run (it would wipe other
     // components' checksums).
     expect(updateFurnaceState).not.toHaveBeenCalled();
     expect(result.applied.map((entry) => entry.name)).toEqual(['moz-panel']);
@@ -681,7 +681,7 @@ describe('applyAllComponents', () => {
 
     const result = await applyAllComponents('/project', true);
 
-    // Real undeploy must NOT run in dry-run.
+    // Real undeploy must not run in dry-run.
     expect(undeployCustomFiles).not.toHaveBeenCalled();
     expect(undeployOverrideFiles).not.toHaveBeenCalled();
     expect(removeJarMnEntries).not.toHaveBeenCalled();
@@ -735,7 +735,7 @@ describe('applyAllComponents', () => {
       ],
       rolledBack: true,
     });
-    // Errors trigger rollback — state is NOT persisted
+    // Errors trigger rollback, so state is not persisted
     expect(updateFurnaceState).not.toHaveBeenCalled();
     expect(restoreRollbackJournalOrThrow).toHaveBeenCalledWith(
       expect.any(Object),
@@ -767,7 +767,7 @@ describe('applyAllComponents', () => {
     const result = await applyAllComponents('/project');
 
     /* eslint-disable @typescript-eslint/no-unsafe-assignment --
-     * vitest's `expect.objectContaining` returns `any`; the matcher itself
+     * vitest's `expect.objectContaining` returns `any`. The matcher itself
      * is correctly typed but the inner object slot is not. */
     expect(result.errors).toEqual(
       expect.arrayContaining([
@@ -854,7 +854,7 @@ describe('applyAllComponents', () => {
 
     it('honours an explicit markerComment from fireforge.json over the binaryName default', async () => {
       // An operator who has set `markerComment: "FRESHFORGE-CUSTOM"`
-      // (or any other string) explicitly must keep that value — the
+      // (or any other string) explicitly must keep that value. The
       // binaryName fallback is a default, not an override.
       vi.mocked(loadConfig).mockResolvedValueOnce({
         binaryName: 'freshforge',
@@ -936,7 +936,7 @@ describe('applyAllComponents', () => {
     const result = await applyAllComponents('/project');
 
     // Advisory degradation must not fail the run: no rollback, state
-    // persisted — a fork without a locale package can still ship the
+    // persisted. A fork without a locale package can still ship the
     // component's .mjs/.css.
     expect(result.rolledBack).toBeUndefined();
     expect(restoreRollbackJournalOrThrow).not.toHaveBeenCalled();

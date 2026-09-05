@@ -26,7 +26,7 @@ import { buildPatchSourceMetadata } from '../core/patch-source-metadata.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ExportOptions, PatchMetadata } from '../types/commands/index.js';
-import type { FireForgeConfig } from '../types/config.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
@@ -41,6 +41,7 @@ import { stripEnginePrefix } from '../utils/paths.js';
 import { parsePositiveIntegerFlag } from '../utils/validation.js';
 import { commitPlacementExport, type PlacementPlan, renderDryRunPreview } from './export-flow.js';
 import { gatePlacementPlan, patchMetadataExtras } from './export-placement-gate.js';
+import type { ExportPatchMetadata } from './export-shared.js';
 import {
   autoFixLicenseHeaders,
   promptExportPatchMetadata,
@@ -51,12 +52,12 @@ import {
 /** Collected export candidates, tracking which came from directory expansion. */
 interface CollectedExportFiles {
   files: string[];
-  /** Files discovered by expanding a DIRECTORY argument (not named explicitly). */
+  /** Files discovered by expanding a directory argument (not named explicitly). */
   fromDirectory: Set<string>;
 }
 
 async function collectExportFiles(
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   files: string[]
 ): Promise<CollectedExportFiles> {
   const collectedFiles = new Set<string>();
@@ -129,11 +130,11 @@ async function collectExportFiles(
 }
 
 /**
- * Auto-excludes directory-derived files already owned by OTHER patches.
+ * Auto-excludes directory-derived files already owned by other patches.
  *
  * A directory export otherwise plans files owned by earlier patches into the
  * new patch, and the duplicate-new-file-creation refusal surfaces only at
- * placement lint, suggesting `--force-unsafe` — the wrong tool for "leave
+ * placement lint, suggesting `--force-unsafe`, the wrong tool for "leave
  * that file with its owner". Explicitly named files are never excluded (the
  * overlap gates still confront the operator with those). Prints one notice
  * per exclusion.
@@ -202,12 +203,12 @@ async function generatePatchDiff(engineDir: string, allFiles: string[]): Promise
 
 /** Everything `exportCommand` resolves before the spinner starts. */
 interface ExportPreparation {
-  paths: ReturnType<typeof getProjectPaths>;
+  paths: ProjectPaths;
   placementFlagCount: number;
   diff: string;
   config: FireForgeConfig;
   isInteractive: boolean;
-  metadata: NonNullable<Awaited<ReturnType<typeof promptExportPatchMetadata>>>;
+  metadata: ExportPatchMetadata;
 }
 
 /**
@@ -307,7 +308,7 @@ async function prepareExport(
   const config = await loadConfig(projectRoot);
   const isInteractive = stdioIsInteractive();
 
-  // Auto-fix missing license headers on new files (interactive only;
+  // Auto-fix missing license headers on new files (interactive only, and
   // report-only under --dry-run so the preview never mutates engine/)
   const headersAdded = await autoFixLicenseHeaders(
     paths.engine,
@@ -364,19 +365,19 @@ export async function exportCommand(
     const patchQueueCtx = (await pathExists(paths.patches))
       ? await buildPatchQueueContext(paths.patches)
       : undefined;
-    await runPatchLint(
-      paths.engine,
+    await runPatchLint({
+      engineDir: paths.engine,
       filesAffected,
-      diff,
+      diffContent: diff,
       config,
-      options.skipLint,
+      skipLint: options.skipLint,
       patchQueueCtx,
-      exportIgnoreChecks,
-      options.tier
-    );
+      ignoreChecks: exportIgnoreChecks,
+      patchTier: options.tier,
+    });
 
     // Resolve placement (if any flag was given). Placement is mutually
-    // exclusive with supersede — the semantics overlap confusingly.
+    // exclusive with supersede, because the semantics overlap confusingly.
     let placementPlan: PlacementPlan | null = null;
     if (placementFlagCount > 0) {
       const gated = await gatePlacementPlan({

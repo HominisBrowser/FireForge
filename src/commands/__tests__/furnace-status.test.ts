@@ -423,7 +423,7 @@ describe('furnaceStatusCommand', () => {
         },
       },
     });
-    // Override is unchanged but engine drifted; custom workspace was edited.
+    // Override is unchanged but engine drifted. Custom workspace was edited.
     vi.mocked(hasComponentChanged)
       .mockResolvedValueOnce(false) // override
       .mockResolvedValueOnce(true); // custom

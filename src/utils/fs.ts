@@ -17,16 +17,11 @@ import {
 import { basename, dirname, join } from 'node:path';
 
 import { getNodeErrorCode } from './errors.js';
+import { sleep } from './sleep.js';
 
 const RETRIABLE_REMOVE_ERRORS = new Set(['ENOTEMPTY', 'EBUSY', 'EPERM']);
 
 const RETRIABLE_RENAME_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY']);
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
 
 /**
  * Checks if a path exists.
@@ -36,8 +31,7 @@ export async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
-  } catch (error: unknown) {
-    void error;
+  } catch {
     return false;
   }
 }
@@ -114,8 +108,7 @@ export async function removeFile(path: string): Promise<void> {
 export async function isSymlink(path: string): Promise<boolean> {
   try {
     return (await lstat(path)).isSymbolicLink();
-  } catch (error: unknown) {
-    void error;
+  } catch {
     return false;
   }
 }
@@ -242,9 +235,9 @@ export async function writeFileAtomic(path: string, content: string | Uint8Array
 /**
  * Renames the temp file over its destination, retrying transient sharing
  * violations. On Windows, a rename onto a target that another writer is
- * concurrently replacing — or that an antivirus/indexer briefly holds open —
+ * concurrently replacing (or that an antivirus/indexer briefly holds open)
  * fails with EPERM/EACCES/EBUSY even though the same rename succeeds a moment
- * later; POSIX renames never hit this. Non-retriable codes and exhausted
+ * later. POSIX renames never hit this. Non-retriable codes and exhausted
  * budgets rethrow, so a genuine permission problem still surfaces.
  */
 async function renameWithRetries(from: string, to: string): Promise<void> {
@@ -267,13 +260,14 @@ async function syncParentDir(path: string): Promise<void> {
   try {
     directoryHandle = await open(dirname(path), 'r');
     await directoryHandle.sync();
-  } catch (error: unknown) {
-    void error;
+  } catch {
+    // Best-effort durability: a directory that cannot be opened or fsynced
+    // (network mounts, Windows) must not fail the write it was protecting.
   } finally {
     try {
       await directoryHandle?.close();
-    } catch (error: unknown) {
-      void error;
+    } catch {
+      // Nothing left to do. The handle is being discarded either way.
     }
   }
 }
@@ -313,7 +307,7 @@ export async function copyDir(src: string, dest: string): Promise<void> {
  * artefacts out of their listings without racing the rename.
  *
  * Intentionally anchored so a legitimately-named backup file like
- * `.notes.fireforge-tmp-backup` (no PID+UUID continuation) is NOT treated
+ * `.notes.fireforge-tmp-backup` (no PID+UUID continuation) is not treated
  * as one of our temps. The full shape is `.<filename>.fireforge-tmp-<pid>-<uuid>`.
  */
 export const FIREFORGE_TMP_PATH_PATTERN = /(^|\/)\.[^/]+\.fireforge-tmp-\d+-[0-9a-f-]{36}$/i;
@@ -323,8 +317,8 @@ export const FIREFORGE_TMP_PATH_PATTERN = /(^|\/)\.[^/]+\.fireforge-tmp-\d+-[0-9
  *
  * Each invocation gets its own path via PID + UUID, so concurrent writers
  * targeting the same destination never interfere with each other. Cleanup of
- * the temp file is the caller's responsibility on error; we intentionally do
- * NOT glob-delete peer temp files here to avoid racing with other writers.
+ * the temp file is the caller's responsibility on error. We intentionally do
+ * not glob-delete peer temp files here to avoid racing with other writers.
  */
 function createAtomicTempPath(path: string): string {
   const directory = dirname(path);
@@ -353,7 +347,7 @@ export async function checkDiskSpace(
 ): Promise<number | undefined> {
   try {
     const stats = await statfs(path);
-    // bavail = blocks available to UNPRIVILEGED users; bfree includes the
+    // bavail = blocks available to UNPRIVILEGED users. bfree includes the
     // root-reserved blocks (typically 5% on ext4), so it over-reported free
     // space and silently suppressed the low-space warning exactly when it
     // mattered.
@@ -369,7 +363,7 @@ export async function checkDiskSpace(
     return availableBytes;
   } catch {
     // statfs may not be available on all platforms or the path may
-    // not exist yet — silently degrade rather than blocking the operation.
+    // not exist yet, so silently degrade rather than blocking the operation.
     return undefined;
   }
 }

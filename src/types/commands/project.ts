@@ -6,7 +6,7 @@
 /**
  * Result of a doctor check.
  *
- * `severity` is the single source of truth; consumers that want a boolean
+ * `severity` is the single source of truth. Consumers that want a boolean
  * derive it as `severity !== 'error'`.
  */
 export interface DoctorCheck {
@@ -26,7 +26,7 @@ export interface DoctorCheck {
 export interface TokenCoverageFileEntry {
   /** File path (relative to engine root) */
   file: string;
-  /** var(--{prefix}*) usages — fully tokenized */
+  /** var(--{prefix}*) usages, fully tokenized */
   tokenUsages: number;
   /** var(--*) usages referencing allowlisted tokens */
   allowlisted: number;
@@ -42,7 +42,7 @@ export interface TokenCoverageFileEntry {
 export interface TokenCoverageReport {
   /** Total CSS files scanned */
   filesScanned: number;
-  /** var(--{prefix}*) usages — fully tokenized */
+  /** var(--{prefix}*) usages, fully tokenized */
   tokenUsages: number;
   /** var(--*) usages referencing allowlisted tokens */
   allowlistedUsages: number;

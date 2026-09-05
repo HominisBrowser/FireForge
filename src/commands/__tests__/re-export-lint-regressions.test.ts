@@ -107,13 +107,13 @@ describe('computeProjectedLintRegressions', () => {
 
     const regressions = computeProjectedLintRegressions(baseline, projected);
     expect(regressions).toHaveLength(1);
-    // Consumption is stable left-to-right, so the *last* projected issue
+    // Consumption is stable left-to-right, so the last projected issue
     // on this key is the one flagged.
     expect(regressions[0]?.message).toBe('imports quux');
   });
 
   it('does not report a projected issue when baseline has spare counterparts', () => {
-    // Baseline has three, projected has two — not a regression.
+    // Baseline has three, projected has two, which is not a regression.
     const baseline = [
       issue('forward-import', 'foo.js', 'a', 'error', 'fi|foo.js|a'),
       issue('forward-import', 'foo.js', 'b', 'error', 'fi|foo.js|b'),

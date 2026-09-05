@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { loadConfig } from '../../core/config.js';
 import { applyAllComponents } from '../../core/furnace-apply.js';
 import { logApplyResult } from '../../core/furnace-apply-output.js';
+import type { FurnacePaths } from '../../core/furnace-config.js';
 import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
 import { runFurnaceMutation, waitLockMutationOptions } from '../../core/furnace-operation.js';
@@ -17,6 +18,7 @@ import {
 } from '../../core/furnace-version-drift.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceSyncOptions } from '../../types/commands/index.js';
+import type { FurnaceConfig } from '../../types/furnace.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { info, intro, outro, spinner, warn } from '../../utils/logger.js';
 import { furnaceRefreshCommand } from './refresh.js';
@@ -27,8 +29,8 @@ import { furnaceRefreshCommand } from './refresh.js';
  * (sorted, unique) that must be resolved before an apply may run.
  */
 async function findComponentsWithConflictMarkers(
-  furnacePaths: ReturnType<typeof getFurnacePaths>,
-  config: Awaited<ReturnType<typeof loadFurnaceConfig>>
+  furnacePaths: FurnacePaths,
+  config: FurnaceConfig
 ): Promise<string[]> {
   const conflicted = new Set<string>();
 
@@ -112,12 +114,12 @@ export async function furnaceSyncCommand(
     info('All overrides are up-to-date with the current Firefox version.');
   }
 
-  // Phase 2.5: post-refresh gates. Refresh deliberately leaves conflict
-  // markers in workspace files and does NOT bump baseVersion on conflict —
-  // so without this gate sync warns about conflicts and then copies the
-  // marker-laden files straight into the engine via Phase 3, producing a
-  // broken build from the one command whose whole purpose is a safe upgrade.
-  // Apply and deploy both enforce a drift gate; sync must not be the back
+  // Phase 2.5: post-refresh gates. Refresh leaves conflict markers in
+  // workspace files and does not bump baseVersion on conflict, so without
+  // this gate sync warns about conflicts and then copies the marker-laden
+  // files straight into the engine via Phase 3, producing a broken build
+  // from the one command meant to make an upgrade safe.
+  // Apply and deploy both enforce a drift gate. Sync must not be the back
   // door around it.
   if (!options.dryRun) {
     const refreshedConfig = await loadFurnaceConfig(projectRoot);

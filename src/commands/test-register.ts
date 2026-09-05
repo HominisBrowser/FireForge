@@ -37,7 +37,7 @@ const TEST_HELP_TEXT = [
   'Machine-readable verdict: every run (single, sharded, --canary,',
   '--doctor) ends with exactly one raw stdout line',
   '  FIREFORGE-VERDICT: PASS|FAIL [reason=crash|test-failures|',
-  '  no-tests|preflight|inconclusive|lock-timeout] [checks=<n>]',
+  '  no-tests|preflight|inconclusive|lock-timeout|killed] [checks=<n>]',
   '  [unexpected=<n>] [shards=<p>/<t>] [(<note>)] [log=<path>]',
   "log=<path> names this run's complete output, written to",
   '.fireforge/logs/ as the run streams, so a piped or truncated run',
@@ -50,7 +50,9 @@ const TEST_HELP_TEXT = [
   'errors); reason=inconclusive means engine/ changed while the',
   'tests ran, so the harness result cannot be trusted;',
   'reason=lock-timeout means the run never started because another',
-  'engine-mutating command held the lock past the wait budget. A sharded',
+  'engine-mutating command held the lock past the wait budget;',
+  'reason=killed means a signal terminated the run before it reached',
+  'any other outcome (written from the signal handler). A sharded',
   'aggregate reason is the most structural failing shard (crash,',
   'then no-tests, then test-failures). Count keys are omitted when',
   'the embedded summary did not print them. A trailing parenthetical',
@@ -120,7 +122,7 @@ export function registerTest(
     )
     .option(
       '--harness-retries <n>',
-      `Retry budget for recognized harness crashes (resource-monitor tracebacks, pre-test hangs, post-green shutdown re-entry). 0 disables retries. Default: ${String(DEFAULT_HARNESS_RETRIES)}.`,
+      `Retry budget for recognized harness crashes (resource-monitor tracebacks, pre-test hangs, post-green shutdown re-entry). 0 disables retries. Default: ${DEFAULT_HARNESS_RETRIES}.`,
       commanderArgParser((raw: string) => {
         const n = Number.parseInt(raw, 10);
         if (!Number.isFinite(n) || n < 0 || n > 10) {

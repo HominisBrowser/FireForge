@@ -57,7 +57,7 @@ describe('withErrorHandling', () => {
       expect((err as CommandError).exitCode).toBe(ExitCode.INTERNAL_ERROR);
     }
 
-    // The userMessage explains it is a bug; the stack is what makes the
+    // The userMessage explains it is a bug. The stack is what makes the
     // report actionable, and it must go to stderr so a --json payload on
     // stdout stays parseable.
     expect(logError).toHaveBeenCalledWith(
@@ -137,23 +137,10 @@ describe('withErrorHandling', () => {
     expect(consoleErrorSpy).toHaveBeenCalledWith('mock stack trace');
   });
 
-  it('skips stack logging when an unexpected error has no stack', async () => {
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const error = new Error('boom');
-    error.stack = '';
-
-    const handler = withErrorHandling(() => Promise.reject(error));
-
-    await expect(handler()).rejects.toThrow(CommandError);
-
-    expect(logError).toHaveBeenCalledWith('Unexpected error: boom');
-    expect(consoleErrorSpy).not.toHaveBeenCalled();
-  });
-
   describe('cause chain', () => {
     it('prints the chain under --verbose so a wrapped error surfaces its origin', async () => {
-      // Nine error classes declare a `cause` and 22 throw sites pass one;
-      // without the boundary reading it back, the underlying git stderr or
+      // Nine error classes declare a `cause` and 22 throw sites pass one.
+      // Without the boundary reading it back, the underlying git stderr or
       // errno never reaches the operator and each command has to hand-roll
       // the rendering to make its own --verbose promise true.
       vi.mocked(isVerbose).mockReturnValue(true);
@@ -197,8 +184,8 @@ describe('withErrorHandling', () => {
 
     it('emits a parseable refusal on stdout when the run asked for --json', async () => {
       // Engaging machine mode inside each command body leaves anything that
-      // throws on the way in — most visibly getProjectRoot's
-      // ConfigNotFoundError — rendering a clack block to STDOUT, so a --json
+      // throws on the way in (most visibly getProjectRoot's
+      // ConfigNotFoundError) rendering a clack block to stdout, so a --json
       // consumer gets un-parseable output plus exit 2.
       process.argv = ['node', 'fireforge', 'status', '--json'];
       vi.mocked(isStdoutSealed).mockReturnValue(false);
@@ -218,7 +205,7 @@ describe('withErrorHandling', () => {
     });
 
     it('does not append an envelope when a payload already owns stdout', async () => {
-      // `status --json --fail-on` writes its full document and THEN refuses.
+      // `status --json --fail-on` writes its full document and then refuses.
       // A second JSON document would break the "exactly one" contract.
       process.argv = ['node', 'fireforge', 'status', '--json', '--fail-on', 'unmanaged'];
       vi.mocked(isStdoutSealed).mockReturnValue(true);

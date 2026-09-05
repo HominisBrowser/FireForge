@@ -144,9 +144,9 @@ describe('resolveArtifactByRegistration', () => {
 
   it('prefers the registration target over an unrelated same-basename file', async () => {
     // Source lives under browser/base/content/ and jar.mn maps it to
-    // content/browser/mybrowser.js; dist contains that artifact AND an
+    // content/browser/mybrowser.js, and dist contains that artifact and an
     // unrelated pref file of the same basename. The basename heuristic
-    // cannot distinguish them; registration must.
+    // cannot distinguish them. Registration must.
     await ensureDir(join(engineDir, 'browser/base/content'));
     await writeText(
       join(engineDir, 'browser/base/jar.mn'),
@@ -185,7 +185,7 @@ describe('resolveArtifactByRegistration', () => {
     );
     await writeText(join(engineDir, 'browser/base/content/mybrowser.js'), '');
 
-    // Only the unrelated pref file lives in dist — not the content/browser/ path.
+    // Only the unrelated pref file lives in dist, not the content/browser/ path.
     await ensureDir(join(distRoot, 'bin/browser/defaults/preferences'));
     await writeText(join(distRoot, 'bin/browser/defaults/preferences/mybrowser.js'), '');
 

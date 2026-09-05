@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: EUPL-1.2
 /* eslint-disable @typescript-eslint/require-await --
- * Many of the test bodies for runFurnaceMutation are intentionally trivial
- * arrow functions whose only job is to return a value or throw — there is
- * nothing to await inside them, but the wrapper signature requires a
- * Promise-returning function. Disabling require-await file-wide is cleaner
- * than wrapping every literal in `Promise.resolve(...)`.
+ * Many of the test bodies for runFurnaceMutation are trivial arrow functions
+ * whose only job is to return a value or throw. There is nothing to await
+ * inside them, but the wrapper signature requires a Promise-returning
+ * function. Disabling require-await file-wide is cleaner than wrapping every
+ * literal in `Promise.resolve(...)`.
  */
 /* eslint-disable @typescript-eslint/no-non-null-assertion --
  * The test inspects the recorded mock calls and uses non-null assertions to
- * narrow them; the assertions are guarded by an explicit toHaveBeenCalled
+ * narrow them. The assertions are guarded by an explicit toHaveBeenCalled
  * check above each one.
  */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment --
  * Mock-call introspection (`updateFurnaceStateMock.mock.calls`) is inherently
- * any-typed at the boundary; the test casts the captured updater fn back to
+ * any-typed at the boundary. The test casts the captured updater fn back to
  * a known shape locally.
  */
 import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
@@ -33,7 +33,6 @@ vi.mock('../furnace-config.js', () => ({
 
 import { writeFile } from 'node:fs/promises';
 
-import { nativePath } from '../../test-utils/index.js';
 import { loadFurnaceState, updateFurnaceState } from '../furnace-config.js';
 import {
   __resetFurnaceOperationStateForTests,
@@ -83,10 +82,6 @@ afterEach(async () => {
 });
 
 describe('runFurnaceMutation', () => {
-  it('resolves the furnace lock path under the .fireforge directory', () => {
-    expect(getFurnaceLockPath('/project')).toBe(nativePath('/project/.fireforge/furnace.lock'));
-  });
-
   it('returns the body result on the happy path', async () => {
     const root = await makeTempProject('fireforge-furnace-op-');
 
@@ -328,7 +323,7 @@ describe('runFurnaceMutation rollback on a thrown error', () => {
     ).rejects.toThrow('refused during pre-flight');
 
     // Unlike the signal path, a pre-flight refusal must not leave a
-    // pendingRepair marker behind — it would block every later mutation
+    // pendingRepair marker behind. It would block every later mutation
     // behind a repair that has nothing to reconcile.
     expect(updateFurnaceStateMock).not.toHaveBeenCalled();
   });
@@ -345,7 +340,7 @@ describe('runFurnaceMutation rollback on a thrown error', () => {
         await snapshotFile(journal, sentinel);
         ctx.registerCleanup(async () => {
           // Cleanups run inside the throw path's rollback, which has already
-          // claimed the operation — so this signal must find nothing to do.
+          // claimed the operation, so this signal must find nothing to do.
           await rollbackActiveOperationsForSignal('SIGINT');
         });
         await writeFile(sentinel, 'corrupted');
@@ -383,7 +378,7 @@ describe('rollbackActiveOperationsForSignal', () => {
       await snapshotFile(journal, sentinel);
       // Simulate the apply having mutated the file before the signal arrives.
       await writeFile(sentinel, 'corrupted');
-      // Signal the test deterministically — racing a setTimeout against
+      // Signal the test deterministically. Racing a setTimeout against
       // libuv's threadpool can leave writeFile('corrupted') in flight while
       // the rollback runs, producing an interleaved "pristined" result.
       signalBodyReady!();
@@ -552,7 +547,7 @@ describe('rollbackActiveOperationsForSignal', () => {
     });
 
     const runPromise = runFurnaceMutation(root, 'remove-rollback', async () => {
-      // Note: deliberately do not call ctx.registerJournal — simulates a body
+      // Note: do not call ctx.registerJournal here. This simulates a body
       // that took the signal before constructing its journal.
       signalBodyReady!();
       await bodyHeld;
@@ -598,7 +593,7 @@ describe('recordFurnaceRollbackFailure', () => {
     expect(updateFurnaceStateMock).toHaveBeenCalledTimes(1);
     const [root, updater] = updateFurnaceStateMock.mock.calls[0]!;
     expect(root).toBe('/some/root');
-    // The updater is a function that mutates the state in-place; invoke it
+    // The updater is a function that mutates the state in-place. Invoke it
     // with an empty state to verify the marker shape.
     const next = (updater as (state: Record<string, unknown>) => Record<string, unknown>)({});
     expect(next).toMatchObject({

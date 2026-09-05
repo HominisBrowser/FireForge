@@ -2,8 +2,8 @@
 /**
  * Build identity: `--version` reports
  * `<semver>+g<short-sha>[.dirty[.<content-hash>]]` from live git in a
- * checkout or from the stamped dist/build-info.json in an installed package
- * — and must degrade to the plain semver (never throw) on any misread.
+ * checkout or from the stamped dist/build-info.json in an installed
+ * package. It must degrade to the plain semver (never throw) on any misread.
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -122,8 +122,8 @@ describe('readGitBuildIdentity', () => {
 describe('getCliVersion', () => {
   it('reports semver plus live git identity when running from the repo checkout', () => {
     // The test process runs inside the FireForge git checkout, so the
-    // git-first precedence path resolves a real identity. Shape only —
-    // the sha and dirty state vary by checkout.
+    // git-first precedence path resolves a real identity. Shape only,
+    // since the sha and dirty state vary by checkout.
     expect(getCliVersion()).toMatch(
       /^\d+\.\d+\.\d+(\+g[0-9a-f]{7,40}(\.dirty(\.[0-9a-f]{8})?)?)?$/
     );
@@ -152,7 +152,7 @@ describe('formatVersionWithIdentity', () => {
   });
 
   it('never appends a content hash to a CLEAN identity', () => {
-    // A released build has no uncommitted content to hash; a stray value
+    // A released build has no uncommitted content to hash. A stray value
     // must not leak into the identity a consumer pins.
     expect(
       formatVersionWithIdentity('0.41.0', {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `furnace chrome-doc remove` — the absent/failing half.
+ * `furnace chrome-doc remove`: the absent/failing half.
  *
  * The round-trip cases in `chrome-doc.test.ts` only exercise the happy path
  * where every source file and every jar entry is present, leaving every
@@ -28,7 +28,7 @@ vi.mock('@clack/prompts', async (importOriginal) => ({
 }));
 
 // `isCancel` is FireForge's wrapper in utils/logger.js, not clack's export,
-// and clack does not publish its cancel sentinel — so the Ctrl+C arm is
+// and clack does not publish its cancel sentinel, so the Ctrl+C arm is
 // reached by making the wrapper report a cancellation once.
 vi.mock('../../../utils/logger.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../utils/logger.js')>();
@@ -136,7 +136,7 @@ describe('furnaceChromeDocRemoveCommand — absent, refused, and failing paths',
 
     const xpcshellParent = join(engineDir, 'browser/base/content/test/mybrowser-xpcshell');
     expect(await pathExists(join(xpcshellParent, 'mybrowser'))).toBe(false);
-    // The parent is NOT empty — otherdoc still lives there — so it stays.
+    // The parent is not empty (otherdoc still lives there), so it stays.
     expect(await pathExists(xpcshellParent)).toBe(true);
     expect(await pathExists(join(xpcshellParent, 'otherdoc'))).toBe(true);
   });
@@ -237,8 +237,8 @@ describe('furnaceChromeDocRemoveCommand — absent, refused, and failing paths',
     const xhtmlPath = join(engineDir, 'browser/base/content/mybrowser.xhtml');
     const xhtmlBefore = await readFile(xhtmlPath, 'utf8');
 
-    // Fail on the LAST jar file so the first two have already been rewritten
-    // and the source files already deleted — the journal must undo all of it.
+    // Fail on the last jar file so the first two have already been rewritten
+    // and the source files already deleted. The journal must undo all of it.
     const fsUtils = await import('../../../utils/fs.js');
     const realWriteText = fsUtils.writeText;
     vi.spyOn(fsUtils, 'writeText').mockImplementation(
@@ -267,8 +267,8 @@ describe('furnaceChromeDocRemoveCommand — absent, refused, and failing paths',
   });
 
   it('records a repair breadcrumb when the rollback itself fails', async () => {
-    // Seven sibling mutation sites do this; these two did not, so a failed
-    // rollback discarded the original error AND left no marker for
+    // Seven sibling mutation sites do this. These two did not, so a failed
+    // rollback discarded the original error and left no marker for
     // `doctor --repair-furnace` to find.
     await scaffoldEngine();
     await furnaceChromeDocCreateCommand(projectRoot, 'mybrowser');
@@ -292,8 +292,8 @@ describe('furnaceChromeDocRemoveCommand — absent, refused, and failing paths',
       furnaceChromeDocRemoveCommand(projectRoot, 'mybrowser', { yes: true })
     ).rejects.toThrow(/restore failed too/);
 
-    // Asserts the OUTCOME — a pending-repair marker persisted to furnace
-    // state — rather than the internal call. The rollback sequence now lives
+    // Asserts the outcome (a pending-repair marker persisted to furnace
+    // state) rather than the internal call. The rollback sequence now lives
     // in `completeJournalRollback`, whose call to the recorder is
     // intra-module and so invisible to a module-level spy.
     const updater = persistSpy.mock.calls.at(-1)?.[1] as

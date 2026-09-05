@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge rebase` — semi-automated Firefox source version upgrade.
+ * `fireforge rebase`: semi-automated Firefox source version upgrade.
  *
  * Orchestrates the full patch-rebase workflow:
  *   1. Reset engine to baseline
@@ -19,7 +19,7 @@ import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { getHead, resetChanges } from '../../core/git.js';
 import { discoverPatches } from '../../core/patch-files.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
-import { getPatchSourceProduct, getPatchSourceVersion } from '../../core/patch-source-metadata.js';
+import { getPatchSourceVersion } from '../../core/patch-source-metadata.js';
 import type { RebaseSession } from '../../core/rebase-session.js';
 import {
   getRebaseSessionPath,
@@ -51,7 +51,7 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
 
   intro(isDryRun ? 'FireForge Rebase (dry run)' : 'FireForge Rebase');
 
-  // One read decides liveness AND validity: a pathExists pre-probe here left
+  // One read decides liveness and validity: a pathExists pre-probe here left
   // a window where the file vanished between probe and read, reporting
   // "already in progress" with no session on disk.
   const existing = await readRebaseSession(projectRoot);
@@ -82,9 +82,7 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
 
   // Determine the "from" version from the patches
   const patchVersions = new Set(manifest.patches.map((p) => getPatchSourceVersion(p)));
-  const patchProducts = new Set(
-    manifest.patches.map((p) => getPatchSourceProduct(p)).filter(Boolean)
-  );
+  const patchProducts = new Set(manifest.patches.map((p) => p.sourceProduct).filter(Boolean));
   const sortedVersions = [...patchVersions].sort();
   const fromVersion = sortedVersions[0] ?? currentVersion;
   const fromProduct = [...patchProducts].sort()[0] ?? config.firefox.product;
@@ -128,7 +126,7 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
   await resetChanges(paths.engine);
   resetSpinner.stop('Engine reset to baseline');
 
-  // Clear Furnace state — the engine no longer contains deployed components.
+  // Clear Furnace state: the engine no longer contains deployed components.
   await clearAppliedFurnaceState(projectRoot);
 
   // Create rebase session

@@ -3,9 +3,9 @@
  * Typed `vi.mock` factories for the modules the suite replaces most.
  *
  * Each enumerates the full export surface of its module. The `satisfies`
- * clauses are the point: `tsc --noEmit` fails the moment the real module
+ * clauses do the work: `tsc --noEmit` fails the moment the real module
  * gains an export the factory does not provide, so the breakage is a compile
- * error in ONE file rather than a runtime "No X export defined on mock" in
+ * error in one file rather than a runtime "No X export defined on mock" in
  * every suite whose hand-rolled factory happened to omit it.
  *
  * Usage:
@@ -51,8 +51,8 @@ function makeSpinnerHandle(): SpinnerHandle {
  * Full-surface mock for `src/utils/logger.ts`.
  *
  * Output helpers are inert. The mode accessors return `false` so a suite that
- * does not care about machine mode behaves as if it is off; override them per
- * test when that is the subject.
+ * does not care about machine mode behaves as if it is off. Override them
+ * per test when that is the subject.
  *
  * @returns An object providing every export of the real logger module
  */
@@ -79,7 +79,7 @@ export function createLoggerMock(): LoggerModule {
     formatErrorText: vi.fn((text: string) => text),
     spinner: vi.fn(() => makeSpinnerHandle()),
     cancel: vi.fn(),
-    // `isCancel` is a type predicate on the real module; the mock must keep
+    // `isCancel` is a type predicate on the real module. The mock must keep
     // that signature or every non-cancelled branch loses its narrowing.
     isCancel: vi.fn(
       (value: unknown) => typeof value === 'symbol'
@@ -106,7 +106,7 @@ export function createFsMock(): FsModule {
     removeFile: vi.fn(() => Promise.resolve()),
     isSymlink: vi.fn(() => Promise.resolve(false)),
     copyFile: vi.fn(() => Promise.resolve()),
-    // `readJson` is generic on the real module; the cast is scoped to this
+    // `readJson` is generic on the real module. The cast is scoped to this
     // one property so the rest of the object keeps its exhaustiveness check.
     readJson: vi.fn(() => Promise.resolve({})) as unknown as FsModule['readJson'],
     writeJson: vi.fn(() => Promise.resolve()),
@@ -124,12 +124,12 @@ export function createFsMock(): FsModule {
  * Full-surface mock for `src/core/run-log.ts`, opening no log at all.
  *
  * A command suite that asserts the `FIREFORGE-VERDICT:` line by exact string
- * needs the run log ABSENT, because the line carries an open log's path as a
+ * needs the run log absent, because the line carries an open log's path as a
  * ` log=<path>` suffix. Those suites used to get that for free: they pass
  * `/project` as the project root, and `mkdir('/project/.fireforge/logs')`
  * fails at the filesystem root on POSIX, so the best-effort open degraded to
  * "no log". On Windows the same path resolves against the current drive, the
- * mkdir SUCCEEDS, and every one of those assertions fails — while the run
+ * mkdir succeeds, and every one of those assertions fails, while the run
  * also leaves real directories behind on the runner's drive root. Saying "no
  * log" here states the precondition instead of inheriting it from a
  * permission error.

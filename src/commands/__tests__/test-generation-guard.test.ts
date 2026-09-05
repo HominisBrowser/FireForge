@@ -2,10 +2,10 @@
 /**
  * Command-level tests for the engine-generation guard's verdict ordering: a
  * run invalidated by a concurrent `engine/` mutation must emit
- * `FAIL reason=inconclusive` as its single verdict line — the sharded
+ * `FAIL reason=inconclusive` as its single verdict line: the sharded
  * aggregate `PASS shards=N/N` must never print first, and single runs must
- * not end verdict-less. Kept separate from `test.test.ts`, which
- * deliberately leaves `engine-session-lock.js` unmocked (its probes fail
+ * not end verdict-less. Kept separate from `test.test.ts`, which leaves
+ * `engine-session-lock.js` unmocked (its probes fail
  * against the fake `/project/engine` and take the warn-only branch).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,8 +14,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // FIREFORGE-VERDICT line as ` log=<path>`, so these exact-string verdict
 // assertions require no log to be open. Stating that here replaces the
 // accident they used to rely on: `/project` is a filesystem root on POSIX,
-// so the best-effort open failed and degraded to "no log" — while on
-// Windows the same path resolves against the current drive and succeeds.
+// so the best-effort open failed and degraded to "no log". On Windows the
+// same path resolves against the current drive and succeeds.
 vi.mock('../../core/run-log.js', async () =>
   (await import('../../test-utils/module-mocks.js')).createRunLogMock()
 );
@@ -51,9 +51,7 @@ vi.mock('../../core/mach.js', () => {
     ),
     buildArtifactMismatchMessage: vi.fn(() => undefined),
     runProtectedMachBuild: vi.fn(),
-    testWithOutput: captureDispatch,
-    xpcshellTestWithOutput: captureDispatch,
-    mochitestWithOutput: captureDispatch,
+    runMachTestSuite: captureDispatch,
     withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
   };
 });
@@ -151,7 +149,7 @@ vi.mock('../../core/tree-store.js', () => ({
 }));
 
 import { assertEngineGenerationUnchanged } from '../../core/engine-session-lock.js';
-import { testWithOutput } from '../../core/mach.js';
+import { runMachTestSuite } from '../../core/mach.js';
 import { GeneralError } from '../../errors/base.js';
 import { testCommand } from '../test.js';
 
@@ -188,7 +186,7 @@ describe('engine-generation guard verdict ordering', () => {
   });
 
   it('a green sharded run whose engine mutated emits FAIL reason=inconclusive, never PASS shards=', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue(GREEN);
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
     vi.mocked(assertEngineGenerationUnchanged).mockRejectedValue(GENERATION_ERROR);
 
     const capture = captureVerdictLines();
@@ -206,7 +204,7 @@ describe('engine-generation guard verdict ordering', () => {
   });
 
   it('a green single run whose engine mutated emits FAIL reason=inconclusive instead of nothing', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue(GREEN);
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
     vi.mocked(assertEngineGenerationUnchanged).mockRejectedValue(GENERATION_ERROR);
 
     const capture = captureVerdictLines();
@@ -221,7 +219,7 @@ describe('engine-generation guard verdict ordering', () => {
   });
 
   it('an unchanged engine leaves the sharded aggregate verdict intact', async () => {
-    vi.mocked(testWithOutput).mockResolvedValue(GREEN);
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
 
     const capture = captureVerdictLines();
     try {

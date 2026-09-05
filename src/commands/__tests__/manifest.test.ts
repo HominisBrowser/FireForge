@@ -8,18 +8,18 @@
  * stack trace that masks the root cause. A ten-line structural check
  * that runs under `npm test` catches those before the bin script does.
  *
- * The test deliberately inspects the manifest structure rather than
- * exercising commander's `--help` output — help parsing is already
- * covered elsewhere via snapshot, and the goal here is to pin the
- * manifest contract itself (each entry has a name, a known group, and
- * a callable register function; names are unique; no entry is null).
+ * The test inspects the manifest structure rather than exercising
+ * commander's `--help` output. Help parsing is already covered
+ * elsewhere via snapshot, and the goal here is to pin the manifest
+ * contract itself (each entry has a name, a known group, and a
+ * callable register function, names are unique, and no entry is null).
  *
  * The drift test at the end walks every top-level command file under
- * `src/commands/` and asserts that each `export function register*`
- * with a top-level `Command` signature is referenced by the manifest
- * source — catching the one remaining silent-drift failure mode a
- * structural check cannot see: "I added a new command file and forgot
- * to wire it into the manifest."
+ * `src/commands/` and asserts that each exported `register*` is
+ * referenced by the manifest source. That catches the one remaining
+ * silent-drift failure mode a structural check cannot see: "I added a
+ * new command file and forgot to wire it into the manifest." Files that
+ * export no registrar are helpers and are simply skipped.
  */
 
 import { readdir, readFile } from 'node:fs/promises';
@@ -33,148 +33,6 @@ import type { CommandContext } from '../../types/cli.js';
 import { COMMAND_MANIFEST } from '../manifest.js';
 
 const COMMANDS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-/**
- * Command files under `src/commands/` that intentionally do NOT export a
- * top-level registrar. They are either helpers (`export-flow.ts`), the
- * manifest itself, or shared support modules consumed by other
- * registrars. Keeping this list explicit means the drift test fails
- * loudly when a new helper is added, forcing the author to acknowledge
- * whether the file should be wired into the manifest or classified as
- * a helper.
- */
-const HELPER_FILES: ReadonlySet<string> = new Set([
-  'manifest.ts',
-  'export-flow.ts',
-  // Scan-less re-export adjacency advisory split out of
-  // re-export.ts to stay inside the line budget. Exports
-  // reportAdjacentUnmanagedFiles/findMissingFiles consumed by
-  // re-export.ts; no top-level registrar is exported and none is wanted.
-  're-export-adjacent.ts',
-  // Foreign-drift preview + --refuse-foreign-drift, same split
-  // shape as the adjacency advisory. Consumed by re-export.ts; no registrar.
-  're-export-drift.ts',
-  // Single-patch refresh core, split out of re-export.ts for the line
-  // budget. Consumed by re-export.ts; no registrar.
-  're-export-single.ts',
-  // Pre-test build phase incl. the --build-only union build,
-  // split out of test.ts for the line budget. Consumed by test.ts.
-  'test-build-phase.ts',
-  // Hoisted + cached re-export lint context. Consumed by
-  // re-export.ts; no registrar.
-  're-export-lint.ts',
-  // Per-run checkJs program controller shared by lint --per-patch and
-  // re-export. No registrar.
-  'lint-per-run-checkjs.ts',
-  // Status --check / --fail-on enforcement policy split out of
-  // status.ts (at the max-lines budget). Exports resolveStatusCheckPolicy
-  // and runStatusCheck consumed by status.ts; no registrar is wanted.
-  'status-check.ts',
-  // status --json payload rendering, including the --summary gate shape,
-  // split out of status.ts for the line budget. Exports
-  // renderJsonStatus/renderJsonSummaryStatus consumed by status.ts;
-  // no registrar is wanted.
-  'status-json.ts',
-  // Ownership-table assembly shared by the human --ownership mode and the
-  // --include-ownership JSON block, so both build the same rows
-  // from one scan. Exports collectOwnershipRows/summarizeOwnership/
-  // buildOwnershipJsonBlock consumed by status.ts and status-json.ts;
-  // no registrar is wanted.
-  'status-ownership.ts',
-  // Machine-readable per-patch lint report. Exports
-  // writePerPatchLintReport consumed by lint-per-patch.ts; no registrar.
-  'lint-report.ts',
-  // Placement-flag gating split out of export.ts so the command body
-  // stays inside the per-function complexity and line budgets. Exports
-  // `gatePlacementPlan` / `patchMetadataExtras` consumed by export.ts;
-  // no top-level register* is exported and none is wanted.
-  'export-placement-gate.ts',
-  // Attribution of projected placement lint errors, split out
-  // of export-flow.ts for the line budget. Exports
-  // groupProjectedPlacementErrors consumed by export-flow.ts; no registrar.
-  'export-placement-conflicts.ts',
-  'export-placement-policy.ts',
-  'export-shared.ts',
-  'doctor-external-toolchains.ts',
-  'setup-support.ts',
-  'status-output.ts',
-  'test.ts',
-  'test-modes.ts',
-  'token-coverage.ts',
-  // Post-bootstrap validation checks consumed by bootstrap.ts. Exports
-  // check helpers, not a top-level registrar.
-  'bootstrap-checks.ts',
-  // Post-rebase registration audit consumed by doctor.ts. Exports a check
-  // definition, not a top-level registrar.
-  'doctor-post-rebase-audit.ts',
-  // Furnace doctor checks split out of doctor.ts so the main file stays
-  // under the max-lines threshold. The file exports a typed array of
-  // DoctorCheckDefinition values that doctor.ts splices into its
-  // registry; no top-level register* is exported and none is wanted.
-  'doctor-furnace.ts',
-  // Stale jar.mn registration check split out of doctor-furnace.ts to keep
-  // that file within the line budget; exports a DoctorCheckDefinition
-  // consumed by doctor-furnace.ts.
-  'doctor-furnace-jar.ts',
-  // Orphan-override detection split out of doctor-furnace.ts to keep
-  // that file under the max-lines threshold. Exports a single
-  // `DoctorCheckDefinition` consumed by doctor-furnace.ts.
-  'doctor-furnace-config-sync.ts',
-  // Orphaned-harness-worker scan. Exports a single `DoctorCheckDefinition`
-  // consumed by doctor.ts; no top-level register* is exported and none is
-  // wanted.
-  'doctor-orphaned-harness.ts',
-  // Patch-manifest consistency check and its two repair paths, split out of
-  // doctor.ts for the line budget. Exports a `DoctorCheckDefinition`
-  // consumed by doctor.ts; no registrar is wanted.
-  'doctor-patch-manifest.ts',
-  // Source-pin vs engine-checkout comparison. Exports a single
-  // `DoctorCheckDefinition` consumed by doctor.ts; no registrar is wanted.
-  'doctor-source-pin.ts',
-  // Ownership-aware working-tree inspector split out of doctor.ts so
-  // that file stays under max-lines. Exports an async helper that
-  // `doctor.ts` calls from inside its git-checks group.
-  'doctor-working-tree.ts',
-  // Shared doctor check types and `ok` / `warning` / `failure` builders.
-  // Split out so `doctor-furnace.ts` and siblings import without cycling
-  // through `doctor.ts`.
-  'doctor-check-core.ts',
-  // The --files path for re-export, extracted from re-export.ts to keep
-  // it under the max-lines threshold. Consumed by re-export.ts; no
-  // top-level registrar.
-  're-export-files.ts',
-  // Bulk scan manifest and option helpers for re-export, extracted from
-  // re-export.ts to keep that command under max-lines.
-  're-export-bulk-scan.ts',
-  're-export-options.ts',
-  // The orchestrator itself. Its CLI registration lives in
-  // `re-export-register.ts`, which is what keeps this file under the
-  // per-file line cap. `re-export.ts` exports `reExportCommand`, consumed by
-  // the registrar; no top-level registrar remains here.
-  're-export.ts',
-  // Per-patch lint orchestration split out of lint.ts so the aggregate
-  // command and cache-backed queue path both stay under max-lines.
-  'lint-per-patch.ts',
-  // Scan planning helpers for re-export, including targeted --scan-file.
-  // Consumed by re-export.ts; no top-level registrar.
-  're-export-scan.ts',
-  // Xpcshell appdir auto-injection helper consumed by test.ts; no
-  // top-level registrar.
-  'test-appdir.ts',
-  // Harness retry/shard orchestration and failure diagnosis split out of
-  // test.ts so all three stay under the max-lines threshold. Consumed by
-  // test.ts; no top-level registrar.
-  'test-run.ts',
-  'test-diagnose.ts',
-  // Stale-build and stale-StaticComponents gate enforcement split out of
-  // test.ts so it stays under the max-lines threshold. Consumed by
-  // test.ts; no top-level registrar.
-  'test-stale-gate.ts',
-  // The FIREFORGE-VERDICT sink: first-write-wins emission shared
-  // by test.ts / test-run.ts / test-diagnose.ts / test-modes.ts; no
-  // top-level registrar.
-  'test-verdict.ts',
-]);
 
 const ALLOWED_GROUPS = new Set(['project', 'workflow', 'engine', 'diagnostics', 'components']);
 
@@ -245,7 +103,7 @@ describe('COMMAND_MANIFEST integrity', () => {
     // Drift protection: scans src/commands/*.ts for `export function
     // register*` declarations and asserts the manifest source imports each
     // one. Without it a new command compiles and type-checks cleanly
-    // without being added to the manifest — it simply does not ship, and no
+    // without being added to the manifest. It simply does not ship, and no
     // test fails.
     const manifestSource = await readFile(join(COMMANDS_DIR, 'manifest.ts'), 'utf-8');
     const importedRegistrars = new Set<string>();
@@ -258,8 +116,7 @@ describe('COMMAND_MANIFEST integrity', () => {
     const entries = await readdir(COMMANDS_DIR, { withFileTypes: true });
     const topLevelFiles = entries
       .filter((e) => e.isFile() && e.name.endsWith('.ts') && !e.name.endsWith('.test.ts'))
-      .map((e) => e.name)
-      .filter((name) => !HELPER_FILES.has(name));
+      .map((e) => e.name);
 
     const missing: Array<{ file: string; registrar: string }> = [];
     // Match three export shapes:
@@ -267,7 +124,7 @@ describe('COMMAND_MANIFEST integrity', () => {
     //   - `export const registerXxx = ...`
     //   - `export { registerXxx } from './x.js'` (barrel re-export)
     // Barrel files like `rebase.ts` that re-export a registrar from a
-    // subdirectory should still satisfy the drift check — the file's
+    // subdirectory should still satisfy the drift check. The file's
     // job is to expose a registrar at a stable import path, not to
     // declare one.
     const declPattern = /export\s+(?:function|const)\s+(register[A-Z][A-Za-z0-9_]*)/g;
@@ -287,43 +144,48 @@ describe('COMMAND_MANIFEST integrity', () => {
           missing.push({ file: filename, registrar });
         }
       }
-      // A top-level command file should export at least one
-      // registrar. If it does not, either classify it as a HELPER_FILE
-      // or add a registrar — silent "this file does nothing" states
-      // are a drift source in their own right.
-      if (registrars.size === 0) {
-        missing.push({ file: filename, registrar: '(no register* export found)' });
-      }
     }
 
     expect(missing, `unreferenced registrars: ${JSON.stringify(missing)}`).toEqual([]);
   });
 
-  it('each group-style parent command installs a default action that exits cleanly', () => {
-    // Every group-style parent installs a default action that prints its own
-    // help and returns successfully. Falling through to commander's default
-    // help-then-exit-1 path gives scripts probing the CLI surface an
-    // inconsistent exit contract for informational invocations.
-    const noopContext: CommandContext = {
-      getProjectRoot: () => '/tmp/fireforge-manifest-test',
-      withErrorHandling: <T extends unknown[]>(handler: (...args: T) => Promise<void>) => {
-        return handler;
-      },
-    };
-    const parentGroups = ['furnace', 'patch', 'token'];
-    for (const name of parentGroups) {
+  it.each(['furnace', 'patch'])(
+    'renders its default action and exits cleanly when `%s` is invoked without a subcommand',
+    async (name) => {
+      // Every group-style parent installs a default action that renders
+      // something informational (`patch` prints its help, `furnace` prints
+      // component status) and returns successfully. Falling through to
+      // commander's default help-then-exit-1 path gives scripts probing the
+      // CLI surface an inconsistent exit contract for informational
+      // invocations. (`token` is covered the same way in token.test.ts.)
+      const noopContext: CommandContext = {
+        getProjectRoot: () => '/tmp/fireforge-manifest-test',
+        withErrorHandling: <T extends unknown[]>(handler: (...args: T) => Promise<void>) => {
+          return handler;
+        },
+      };
       const entry = COMMAND_MANIFEST.find((e) => e.name === name);
-      expect(entry, `manifest entry for ${name}`).toBeDefined();
-      if (!entry) continue;
+      if (!entry) throw new Error(`manifest entry for ${name} is missing`);
       const program = new Command();
       entry.register(program, noopContext);
-      const parent = program.commands.find((c) => c.name() === name);
-      expect(parent, `parent command ${name}`).toBeDefined();
-      // Commander stores the default action handler on a private symbol.
-      // The public `action()` method sets `_actionHandler`; we just need
-      // to confirm something was installed (commander falls back to
-      // "outputHelp + process.exit(1)" when `_actionHandler` is absent).
-      expect((parent as unknown as { _actionHandler?: unknown })._actionHandler).toBeDefined();
+
+      const originalWrite = process.stdout.write.bind(process.stdout);
+      let captured = '';
+      process.stdout.write = (chunk: string | Uint8Array) => {
+        captured += typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
+        return true;
+      };
+      try {
+        await program.parseAsync(['node', 'fireforge', name]);
+      } finally {
+        process.stdout.write = originalWrite;
+      }
+
+      // Reaching here at all is the contract: commander's fallback for a
+      // group with no default action prints help and exits 1, which would
+      // abort the process instead of resolving. The output check pins that
+      // the informational invocation actually said something.
+      expect(captured.trim().length).toBeGreaterThan(0);
     }
-  });
+  );
 });

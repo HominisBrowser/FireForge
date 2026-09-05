@@ -18,7 +18,7 @@ import { InvalidArgumentError } from '../errors/base.js';
 import type { ExportOptions, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import type { SpinnerHandle } from '../utils/logger.js';
-import { outro } from '../utils/logger.js';
+import { proceedAfterDecision } from './destructive-decision.js';
 import {
   type PlacementPlan,
   placementSummary,
@@ -29,7 +29,7 @@ import {
 /**
  * Spreadable optional metadata (`tier`, `lintIgnore`) derived from the
  * export flags. Every manifest-row construction site in this command
- * shares this shape; with exactOptionalPropertyTypes the keys must be
+ * shares this shape. With exactOptionalPropertyTypes the keys must be
  * omitted entirely (not set to undefined) when the flags are absent.
  */
 export function patchMetadataExtras(
@@ -50,7 +50,7 @@ export function patchMetadataExtras(
  * projected manifest, and routes destructive renumbers (or dry-runs)
  * through `confirmDestructive`. Returns the plan to commit, or `'stop'`
  * when the command should end here (dry-run rendered or operator
- * cancelled — the corresponding outro has already been printed).
+ * cancelled, and the corresponding outro has already been printed).
  */
 export async function gatePlacementPlan(args: {
   patchesDir: string;
@@ -83,7 +83,7 @@ export async function gatePlacementPlan(args: {
     );
   }
   // resolvePlacementPlan runs the reserved-range gate itself when config
-  // is passed — one up-front error per run instead of per-patch findings.
+  // is passed: one up-front error per run instead of per-patch findings.
   const placementPlan = await resolvePlacementPlan(
     patchesDir,
     options,
@@ -121,9 +121,9 @@ export async function gatePlacementPlan(args: {
   const renameCount = placementPlan.renameMap.size;
 
   // Route through confirmDestructive when the operation is destructive
-  // enough to warrant a prompt (more than one rename) OR when the user asked
+  // enough to warrant a prompt (more than one rename) or when the user asked
   // for a dry-run. The dry-run branch must always print the placement
-  // summary; otherwise single-rename and no-rename dry-runs exit silently
+  // summary. Otherwise single-rename and no-rename dry-runs exit silently
   // with no filename or projected layout.
   if (renameCount > 1 || isDryRun) {
     s.stop();
@@ -136,14 +136,7 @@ export async function gatePlacementPlan(args: {
       unsafeOverride: options.forceUnsafe === true,
       conflicts,
     });
-    if (decision === 'dry-run') {
-      outro('Dry run complete — no changes made');
-      return 'stop';
-    }
-    if (decision === 'declined') {
-      outro('Export cancelled');
-      return 'stop';
-    }
+    if (!proceedAfterDecision(decision, 'Export cancelled')) return 'stop';
   } else if (conflicts && options.forceUnsafe !== true) {
     s.stop();
     throw new InvalidArgumentError(

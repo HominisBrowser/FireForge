@@ -56,7 +56,7 @@ vi.mock('../../core/patch-apply.js', async (importOriginal) => {
       })
     ),
     // Real matcher: --until scope-set resolution must share the apply
-    // loop's identifier semantics (filenames AND bare ordinals).
+    // loop's identifier semantics (filenames and bare ordinals).
     matchesUntilFilename: actual.matchesUntilFilename,
     PatchError: class PatchError extends Error {},
   };
@@ -134,9 +134,9 @@ function setStdinIsTTY(value: boolean): () => void {
   const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
   const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
 
-  // import's interactivity check requires BOTH streams to be TTYs (a piped
+  // import's interactivity check requires both streams to be TTYs (a piped
   // stdout would render the confirm prompt into the pipe), matching
-  // discard/reset — stub both.
+  // discard/reset, so stub both.
   Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value });
   Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value });
 
@@ -559,7 +559,7 @@ describe('importCommand drift handling', () => {
 
     // updateState is called with a transactional updater function. Invoke it
     // with a freshly-loaded state to verify the shape of the write, since
-    // the caller-captured state must NOT flow into the write path.
+    // the caller-captured state must not flow into the write path.
     expect(updateState).toHaveBeenCalledTimes(1);
     const [root, updater] = vi.mocked(updateState).mock.calls[0] ?? [];
     expect(root).toBe('/fake/root');
@@ -640,7 +640,7 @@ describe('importCommand drift handling', () => {
   });
 
   it('still blocks --until when the in-range patch itself has an integrity issue', async () => {
-    // Defensive complement to the scoping test: if the failing patch IS in
+    // Defensive complement to the scoping test: if the failing patch is in
     // the `--until` range, the integrity block still fires. Without this, the
     // filter above would accidentally be a blanket suppression.
     vi.mocked(getHead).mockResolvedValue('base-commit');
@@ -685,8 +685,8 @@ describe('importCommand drift handling', () => {
   });
 
   it('resolves a bare-ordinal --until so in-range integrity issues still block', async () => {
-    // `--until 5` matching FILENAMES only makes the scope set come back
-    // empty — integrity issues inside the range are silently dropped,
+    // `--until 5` matching filenames only makes the scope set come back
+    // empty. Integrity issues inside the range are silently dropped,
     // dry-run previews "0 patches", and the apply loop (whose matcher
     // accepts ordinals) applies 1..5 anyway.
     vi.mocked(getHead).mockResolvedValue('base-commit');

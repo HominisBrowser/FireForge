@@ -179,7 +179,7 @@ describe('patch delete', () => {
 
   it('refuses when a later patch imports a module owned by the target', async () => {
     restoreTTY = setInteractiveMode(false);
-    // Patch A creates B.sys.mjs; patch C (order 2) imports from it.
+    // Patch A creates B.sys.mjs. Patch C (order 2) imports from it.
     const diffA = createDiff('foo/B.sys.mjs', 'export const B = 1;');
     const diffC = createDiff(
       'foo/C.sys.mjs',
@@ -424,7 +424,7 @@ describe('patch reorder', () => {
     await patchReorderCommand(projectRoot, '003-infra-c.patch', { to: 1, yes: true });
 
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
-    // C should now be first; A and B shift down.
+    // C should now be first. A and B shift down.
     expect(entries).toEqual(['001-infra-c.patch', '002-infra-a.patch', '003-infra-b.patch']);
 
     const history = await readFile(join(patchesDir, HISTORY_LOG_FILENAME), 'utf-8');
@@ -435,9 +435,10 @@ describe('patch reorder', () => {
     // Two patches at orders 1 and 2, moving the second to position 1 with
     // `--yes`. The failure mode this guards is a manifest that ends up with
     // renamed filenames while the on-disk files stay at their pre-reorder
-    // names — `verify` then fails ENOENT opening the manifest-renamed file.
-    // The postcondition assert in `renumberPatchesInManifest` guarantees the
-    // disk and manifest stay in agreement, or the whole reorder aborts.
+    // names, so `verify` then fails ENOENT opening the manifest-renamed
+    // file. The postcondition assert in `renumberPatchesInManifest`
+    // guarantees the disk and manifest stay in agreement, or the whole
+    // reorder aborts.
     restoreTTY = setInteractiveMode(false);
     await seed(patchesDir, [
       {
@@ -610,7 +611,7 @@ describe('patch reorder', () => {
   it('preserves intentional gaps when moving a patch earlier', async () => {
     restoreTTY = setInteractiveMode(false);
     // Orders 1, 3, 7 with gaps. Move 7 → 3. Expect only 003 to bump
-    // (to 004) and 007 to land at 003; 001 must be untouched.
+    // (to 004) and 007 to land at 003. Patch 001 must be untouched.
     await seed(patchesDir, [
       {
         metadata: makeMetadata('001-infra-a.patch', 1, ['foo/A.sys.mjs']),
@@ -766,7 +767,7 @@ describe('patch reorder', () => {
   });
 
   // Self-reference footgun: `--before <target>` resolves to the target's
-  // own order, which hit computeRenameMap's silent no-op branch;
+  // own order, which hit computeRenameMap's silent no-op branch.
   // `--after <target>` set destinationOrder = order + 1 and renumbered
   // the target plus everything after it. Both are rejected loudly now
   // so typos and scripted misuse don't mutate (or silently no-op) the

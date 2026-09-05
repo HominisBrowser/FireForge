@@ -1,27 +1,27 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Recognizes the one shape where the undefined-identifier hint sends the
- * operator at the wrong remedy — and where taking that remedy would MASK a
+ * operator at the wrong remedy, and where taking that remedy would mask a
  * real bug.
  *
  * The shape: helpers are hoisted out of duplicated test files into a new
  * `head_settings.js` that a managed `head.js` pulls in with
  * `loadSubScript`. Until that companion is exported it belongs to no patch,
- * so the per-patch checkJs program — which only ever loads patch-owned
- * roots — cannot see any of its declarations. Every use of every hoisted
+ * so the per-patch checkJs program, which only ever loads patch-owned
+ * roots, cannot see any of its declarations. Every use of every hoisted
  * helper is then reported as `Cannot find name`, and the generic hint
  * offers three remedies of which the shim is the easiest: adding the
- * globals to `extraShim` makes all of the warnings disappear AND makes a
+ * globals to `extraShim` makes all of the warnings disappear and makes a
  * genuinely missing helper undetectable forever after.
  *
- * The warnings themselves are correct — the per-patch program's honest view
- * of a file that is in no patch. Only the advice is wrong. FireForge
- * already knows ownership, so when every undefined name in a file is
- * declared at the top level of an UNMANAGED file that a managed head loads,
- * it can name that file and the adoption command instead.
+ * The warnings themselves are correct: they are the per-patch program's
+ * honest view of a file that is in no patch. Only the advice is wrong.
+ * FireForge already knows ownership, so when every undefined name in a file
+ * is declared at the top level of an unmanaged file that a managed head
+ * loads, it can name that file and the adoption command instead.
  *
- * Detection is deliberately conservative on both halves: a companion must
- * be reachable from an actual `loadSubScript` call, and EVERY undefined
+ * Detection is conservative on both halves: a companion must
+ * be reachable from an actual `loadSubScript` call, and every undefined
  * name must resolve inside it. One unresolved name means the file may
  * genuinely be missing a helper, and the generic hint stays.
  */
@@ -38,13 +38,13 @@ import { UNDEFINED_IDENTIFIER_HINT } from './typecheck-shim.js';
  * The mochitest idiom is
  * `Services.scriptloader.loadSubScript(getRootDirectory(gTestPath) + "head_settings.js", this)`,
  * so the useful signal is the `.js` literal inside the call, not a
- * resolvable URL — the path half is computed at runtime.
+ * resolvable URL. The path half is computed at runtime.
  */
 export function findLoadSubScriptTargets(source: string): string[] {
   const targets: string[] = [];
   // Scanned to the statement terminator rather than to a closing paren:
   // the idiomatic argument is itself a call (`getRootDirectory(gTestPath) +
-  // "head_settings.js"`), so a non-greedy `\)` stops on the INNER paren and
+  // "head_settings.js"`), so a non-greedy `\)` stops on the inner paren and
   // never reaches the literal.
   for (const call of source.matchAll(/loadSubScript\s*\(/g)) {
     const from = call.index + call[0].length;
@@ -66,7 +66,7 @@ const CALL_SCAN_LIMIT = 400;
  * Top-level declaration names in a script-scope file.
  *
  * Regex rather than a TS program on purpose: this runs only to decide the
- * WORDING of a hint, the file is by definition outside every program the
+ * wording of a hint, the file is outside every program the
  * pass built, and a missed declaration degrades to the generic hint rather
  * than to a wrong answer. Matching is anchored at column zero so a nested
  * declaration inside a function body is not mistaken for a global.
@@ -110,8 +110,8 @@ export interface UnmanagedCompanion {
  * Resolves the unmanaged companions reachable from a set of managed head
  * files, given a reader for repo-relative file content.
  *
- * A candidate qualifies only when it is NOT in `ownedFiles` and its content
- * can be read — an unreadable or absent target is simply not a companion,
+ * A candidate qualifies only when it is not in `ownedFiles` and its content
+ * can be read. An unreadable or absent target is simply not a companion,
  * and the generic hint applies.
  *
  * @param heads - Repo-relative managed head files, with their sources
@@ -149,10 +149,10 @@ export async function resolveUnmanagedCompanions(
  * The replacement hint, when every undefined name resolves in one
  * unmanaged companion.
  *
- * States the ownership fact first (that is the diagnosis), then the
- * adoption command, and explicitly rules the shim OUT — the shim is what an
- * operator reaches for by default here, and it is the one remedy that
- * permanently hides a genuinely missing helper.
+ * States the ownership fact first (the diagnosis), then the adoption
+ * command, and explicitly rules the shim out. The shim is what an operator
+ * reaches for by default here, and it is the one remedy that permanently
+ * hides a genuinely missing helper.
  */
 export function formatUnmanagedCompanionHint(companion: UnmanagedCompanion): string {
   return (
@@ -166,7 +166,7 @@ export function formatUnmanagedCompanionHint(companion: UnmanagedCompanion): str
 }
 
 /**
- * Picks the companion that explains EVERY undefined identifier in
+ * Picks the companion that explains every undefined identifier in
  * `messages`, or undefined when none does.
  *
  * @param messages - Diagnostic messages reported for one file
@@ -180,17 +180,17 @@ export function explainUndefinedIdentifiers(
     .map((message) => extractUndefinedIdentifier(message))
     .filter((name): name is string => name !== undefined);
   if (names.length === 0) return undefined;
-  // Only the undefined-identifier diagnostics are explained here; a file
-  // carrying OTHER type errors still gets those reported untouched.
+  // Only the undefined-identifier diagnostics are explained here. A file
+  // carrying other type errors still gets those reported untouched.
   return companions.find((companion) => names.every((name) => companion.declarations.has(name)));
 }
 
 /**
- * Reads the head files in the owned test set and resolves the UNMANAGED
+ * Reads the head files in the owned test set and resolves the unmanaged
  * companions they pull in with `loadSubScript`. Hoisting shared helpers
  * into such a companion leaves it unowned until export, and every use of
  * every helper then reports `Cannot find name` from an honest per-patch
- * program — see `patch-lint-unmanaged-companion.ts` for why the generic
+ * program. See `patch-lint-unmanaged-companion.ts` for why the generic
  * hint is actively harmful there.
  *
  * Best-effort: an unreadable head simply contributes no companions.
@@ -222,7 +222,7 @@ export async function collectUnmanagedCompanions(
 
 /**
  * Swaps the generic undefined-identifier hint for the ownership hint when
- * one unmanaged companion explains EVERY undefined name in the file. Any
+ * one unmanaged companion explains every undefined name in the file. Any
  * other issue in the list is returned untouched.
  */
 export function retargetUnmanagedCompanionHints(

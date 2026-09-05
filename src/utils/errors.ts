@@ -2,9 +2,9 @@
 /**
  * Throwable normalisation primitives.
  *
- * **This module must import nothing.** It sits at the very bottom of the
- * dependency graph — 81 modules across `core/`, `commands/`, `utils/` and
- * `bin/` reach it — so it is the one place a shared helper can live and be
+ * This module must import nothing. It sits at the very bottom of the
+ * dependency graph (81 modules across `core/`, `commands/`, `utils/` and
+ * `bin/` reach it), so it is the one place a shared helper can live and be
  * provably cycle-immune. Adding an import here makes that whole subtree
  * reachable from every util, and any future `src/errors/*` module wanting a
  * util back (`errors/git.ts` already carries a mirrored index-lock heuristic
@@ -35,9 +35,9 @@ export function toError(error: unknown): Error {
  * Extracts a Node errno string (`ENOENT`, `EACCES`, `EPERM`, …) from an
  * unknown throwable, or `undefined` when the value carries no string `code`.
  *
- * The check is deliberately structural rather than `error instanceof Error`:
- * a plain object carrying `.code` — exactly the shape {@link toError} exists
- * to normalise — reaches errno consumers through rejected promises and
+ * The check is structural rather than `error instanceof Error`: a plain
+ * object carrying `.code` (exactly the shape {@link toError} exists to
+ * normalise) reaches errno consumers through rejected promises and
  * cross-realm throws, and an `instanceof Error` gate misclassifies it as "no
  * code".
  */
@@ -56,9 +56,9 @@ export function getNodeErrorCode(error: unknown): string | undefined {
 
 /**
  * Checks whether a process with the given PID is still running, using
- * `kill(pid, 0)` — no signal is sent, only the existence check is performed.
+ * `kill(pid, 0)`: no signal is sent, only the existence check is performed.
  *
- * Only `ESRCH` ("no such process") means dead. **`EPERM` means ALIVE**: the
+ * Only `ESRCH` ("no such process") means dead. `EPERM` means alive: the
  * process exists but is owned by another uid, which happens routinely with
  * root-owned builds, `sudo`, shared CI runners and container UID mismatches.
  * Reading EPERM as dead in a predicate that gates a recursive delete removes

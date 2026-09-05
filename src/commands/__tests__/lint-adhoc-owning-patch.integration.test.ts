@@ -104,7 +104,7 @@ describe('lint <files> ad-hoc owning-patch size resolution (item A)', () => {
     engineDir = join(projectRoot, 'engine');
     await writeFireForgeConfig(projectRoot);
     await initCommittedRepo(engineDir, { 'browser/x/.gitkeep': '' });
-    // New (untracked) clean CSS files — they trip no per-file rule, so the
+    // New (untracked) clean CSS files. They trip no per-file rule, so the
     // only size signal is the patch-cardinality rule under test.
     await writeFiles(engineDir, Object.fromEntries(allFiles.map((f) => [f, CLEAN_CSS])));
 
@@ -130,7 +130,7 @@ describe('lint <files> ad-hoc owning-patch size resolution (item A)', () => {
 
   it('A1: a cross-patch file list does not synthesise a phantom oversized patch', async () => {
     // 6 files across two 3-file patches: the old aggregate path counted 6 (> 5)
-    // and fired; per-owner resolution sees 3 and 3, so it must not fire.
+    // and fired. Per-owner resolution sees 3 and 3, so it must not fire.
     await lintCommand(projectRoot, [...smallA, ...smallB]);
     expect(largePatchFilesLines()).toEqual([]);
   });

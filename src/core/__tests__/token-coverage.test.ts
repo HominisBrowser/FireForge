@@ -98,7 +98,7 @@ describe('measureTokenCoverage', () => {
   it('counts --moz-* platform vars as allowlisted by default, not unknown', async () => {
     // A fork that overrides moz-button (CSS-only) may declare one fork-owned
     // token while the copied upstream baseline references ~84 `--moz-*`
-    // platform vars; counting those as unknown reports 1% coverage. The
+    // platform vars. Counting those as unknown reports 1% coverage. The
     // default allowlist maps them to the platform bucket so fork-owned
     // coverage is not dragged down by untouched upstream material.
     mockedLoadFurnaceConfig.mockResolvedValue({

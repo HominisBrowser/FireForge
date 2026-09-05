@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
 
-/** Formats elapsed milliseconds for progress messages. */
+/**
+ * Formats a duration in milliseconds as `Xm Ys`, or `Ys` under a minute.
+ *
+ * The single spelling of FireForge's elapsed-time wording: `build` and
+ * `package` each hand-rolled the same minute/second split, so a change to
+ * the format silently applied to some progress lines and not others.
+ *
+ * @param ms - Duration in milliseconds. Negative input is clamped to zero.
+ * @returns The duration as `Xm Ys`, or `Ys` when under one minute.
+ */
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);

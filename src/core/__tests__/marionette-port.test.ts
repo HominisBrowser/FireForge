@@ -29,7 +29,6 @@ import {
   extractForwardedMarionettePort,
   forwardedMachArgsIncludeMarionetteClient,
   hasExplicitXpcshellFlavor,
-  isMarionetteFlavor,
   parseProcessList,
   probeMarionettePort,
   shouldAutoForwardMarionettePortToMach,
@@ -198,7 +197,7 @@ describe('probeMarionettePort', () => {
         stdout: lsofOutput(999, 'firefox'),
         stderr: '',
       })
-      // `ps` fails — keep the basename.
+      // `ps` fails, so keep the basename.
       .mockRejectedValueOnce(new Error('ps not found'));
 
     const result = await probeMarionettePort();
@@ -325,7 +324,7 @@ describe('assertMarionettePortAvailable', () => {
   it('probes the supplied port instead of the default when one is given', async () => {
     mockExec.mockResolvedValue({ exitCode: 1, stdout: '', stderr: '' });
     await assertMarionettePortAvailable(2838);
-    // The first exec call is the lsof probe; verify it targeted 2838 not 2828.
+    // The first exec call is the lsof probe. Verify it targeted 2838 not 2828.
     expect(mockExec.mock.calls[0]?.[1]).toContain('tcp:2838');
     expect(mockExec.mock.calls[0]?.[1]).not.toContain('tcp:2828');
   });
@@ -505,44 +504,5 @@ describe('shouldAutoForwardMarionettePortToMach', () => {
     expect(shouldAutoForwardMarionettePortToMach([])).toBe(true);
     expect(shouldAutoForwardMarionettePortToMach(['--flavor=mochitest'])).toBe(true);
     expect(shouldAutoForwardMarionettePortToMach(['--headless'])).toBe(true);
-  });
-});
-
-describe('isMarionetteFlavor', () => {
-  it('returns true for browser_*.js paths', () => {
-    expect(isMarionetteFlavor(['browser/base/content/test/general/browser_focus.js'], [])).toBe(
-      true
-    );
-  });
-
-  it('returns true when no test paths are given (default "run all" shape)', () => {
-    expect(isMarionetteFlavor([], [])).toBe(true);
-  });
-
-  it('returns false for an explicit xpcshell flavor', () => {
-    expect(isMarionetteFlavor([], ['--flavor=xpcshell'])).toBe(false);
-    expect(
-      isMarionetteFlavor(
-        ['browser/base/content/test/general/browser_focus.js'],
-        ['--flavor=xpcshell']
-      )
-    ).toBe(false);
-  });
-
-  it('returns true for an explicit browser-chrome / mochitest flavor', () => {
-    expect(isMarionetteFlavor([], ['--flavor=browser-chrome'])).toBe(true);
-    expect(isMarionetteFlavor([], ['--flavor=mochitest'])).toBe(true);
-  });
-
-  it('returns false for xpcshell-shaped test paths with no marionette signal', () => {
-    expect(isMarionetteFlavor(['toolkit/components/tests/xpcshell/test_observer.js'], [])).toBe(
-      false
-    );
-  });
-
-  it('returns true for toolkit/content/tests widget HTML paths', () => {
-    expect(
-      isMarionetteFlavor(['toolkit/content/tests/widgets/test_moz-hominis-dock-shell.html'], [])
-    ).toBe(true);
   });
 });

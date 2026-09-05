@@ -3,7 +3,7 @@
  * Tree store integration: real tempdir + real git, cloning
  * with capability 'none' (plain `cp`) so the suite runs identically on
  * CoW and non-CoW filesystems. The CoW-specific argv layer is covered by
- * `tree-cow.test.ts`; a real clonefile/reflink clone is exercised by the
+ * `tree-cow.test.ts`. A real clonefile/reflink clone is exercised by the
  * capability-gated case in `tree.integration.test.ts`.
  */
 import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -62,7 +62,7 @@ describe('tree store', () => {
       '.fireforge/state.json': '{"brand":"test"}\n',
       '.fireforge-history.jsonl': '{"op":"secret"}\n',
     });
-    // Simulate an objdir and a held root lock — neither may be cloned.
+    // Simulate an objdir and a held root lock. Neither may be cloned.
     await mkdir(join(projectRoot, 'engine', 'obj-x86_64', 'dist'), { recursive: true });
     await mkdir(join(projectRoot, '.fireforge-build.lock'), { recursive: true });
   });
@@ -130,17 +130,17 @@ describe('tree store', () => {
 
     const treeRoot = await createTestTree('shard-obj', { withObjdir: { objDir: 'obj-x86_64' } });
 
-    // The named objdir survives; every other obj-* is still pruned.
+    // The named objdir survives. Every other obj-* is still pruned.
     await expect(pathExists(join(treeRoot, 'engine', 'obj-x86_64', 'dist'))).resolves.toBe(true);
     await expect(pathExists(join(treeRoot, 'engine', 'obj-debug-marker'))).resolves.toBe(false);
-    // mozinfo now names the TREE, not the primary.
+    // mozinfo now names the tree, not the primary.
     const mozinfo = JSON.parse(
       await readFile(join(treeRoot, 'engine', 'obj-x86_64', 'mozinfo.json'), 'utf8')
     ) as Record<string, string>;
     expect(mozinfo['topsrcdir']).toBe(join(treeRoot, 'engine'));
     expect(mozinfo['topobjdir']).toBe(join(treeRoot, 'engine', 'obj-x86_64'));
     expect(mozinfo['mozconfig']).toBe(join(treeRoot, 'engine', 'mozconfig'));
-    // Cloned venvs carry primary shebangs — they must be gone.
+    // Cloned venvs carry primary shebangs, so they must be gone.
     await expect(pathExists(join(treeRoot, 'engine', 'obj-x86_64', '_virtualenvs'))).resolves.toBe(
       false
     );
@@ -152,7 +152,7 @@ describe('tree store', () => {
       schemaVersion: 1,
       clonedObjdir: 'obj-x86_64',
     });
-    // The PRIMARY objdir's mozinfo is untouched.
+    // The primary objdir's mozinfo is untouched.
     const primaryMozinfo = JSON.parse(
       await readFile(join(engineDir, 'obj-x86_64', 'mozinfo.json'), 'utf8')
     ) as Record<string, string>;
@@ -161,7 +161,7 @@ describe('tree store', () => {
 
   it('withObjdir refuses fail-closed when the mozinfo rewrite cannot prove safety', async () => {
     // A topobjdir outside topsrcdir means the workspace was configured
-    // differently — the rewriter refuses, and the clone must too, because
+    // differently. The rewriter refuses, and the clone must too, because
     // keeping the objdir would leave it operating against the primary.
     const engineDir = join(projectRoot, 'engine');
     await writeSyntheticObjdir(engineDir, 'obj-x86_64', { topobjdir: '/somewhere/else/obj' });
@@ -195,8 +195,8 @@ describe('tree store', () => {
 
     await createTestTree('shard-cfg', { withObjdir: { objDir: 'obj-x86_64', reconfigure } });
 
-    // The hook saw the TREE engine, an already-rewritten mozinfo, and no
-    // marker yet — configure output is regenerated before anything vouches
+    // The hook saw the tree engine, an already-rewritten mozinfo, and no
+    // marker yet: configure output is regenerated before anything vouches
     // for the objdir as usable.
     expect(observed.engineDir).toBe(join(treeRoot, 'engine'));
     expect(observed.mozinfoTopsrcdir).toBe(join(treeRoot, 'engine'));
@@ -224,7 +224,7 @@ describe('tree store', () => {
 
   it('withObjdir refuses a symlinked primary objdir BEFORE any copying and mutates nothing', async () => {
     // An external build linked into engine/: every cp mode preserves the
-    // link, so a clone would rewrite the ORIGINAL build through it.
+    // link, so a clone would rewrite the original build through it.
     const externalBuild = join(projectRoot, 'external-build', 'obj-linked');
     await writeSyntheticObjdir(join(projectRoot, 'external-build'), 'obj-linked');
     const externalMozinfoBefore = await readFile(join(externalBuild, 'mozinfo.json'), 'utf8');
@@ -254,7 +254,7 @@ describe('tree store', () => {
 
   it('defense in depth: a symlink that materialises inside the tree after cloning is refused before any write', async () => {
     // The primary objdir is a legitimate real directory, but the (hooked)
-    // copy carries a symlink into the tree — the cloned-role re-check must
+    // copy carries a symlink into the tree, so the cloned-role re-check must
     // refuse before the mozinfo rewrite or the _virtualenvs removal runs.
     const engineDir = join(projectRoot, 'engine');
     await writeSyntheticObjdir(engineDir, 'obj-x86_64');
@@ -392,7 +392,7 @@ describe('tree store', () => {
       killSpy.mockRestore();
     }
 
-    // ESRCH is the only errno that means dead — removal then proceeds.
+    // ESRCH is the only errno that means dead, so removal then proceeds.
     const esrchSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
       throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
     });
@@ -467,9 +467,9 @@ describe('tree store', () => {
 
     // A marker from a NEWER FireForge is reported as `unsupported`, not
     // `corrupt`. The distinction is load-bearing: tree-guard is default-deny
-    // on corrupt AND offers "recreate the tree / delete the stray marker" —
-    // destructive advice for a file that is merely newer, which would have
-    // locked the operator out of their own tree.
+    // on corrupt and offers "recreate the tree / delete the stray marker",
+    // which is destructive advice for a file that is merely newer and would
+    // have locked the operator out of their own tree.
     await writeFile(markerPath, JSON.stringify({ ...valid, schemaVersion: 2 }), 'utf-8');
     const newer = await readTreeMarker(treeRoot);
     expect(newer.kind).toBe('unsupported');
@@ -499,8 +499,8 @@ describe('tree store', () => {
     await expect(readTreeMarker(treeRoot)).resolves.toMatchObject({ kind: 'corrupt' });
   });
 
-  // POSIX mode bits are the refusal mechanism here; NTFS ignores
-  // `chmod`, so this cannot be ported to Windows — only skipped honestly.
+  // POSIX mode bits are the refusal mechanism here. NTFS ignores
+  // `chmod`, so this cannot be ported to Windows, only skipped honestly.
   it.skipIf(process.platform === 'win32')(
     'distinguishes an absent marker from an unreadable one',
     async () => {
@@ -514,7 +514,7 @@ describe('tree store', () => {
   );
 
   // chmod 0o000 bars neither root (some CI containers) nor Windows, which
-  // ignores POSIX mode bits outright — the directory stays readable and the
+  // ignores POSIX mode bits outright. The directory stays readable and the
   // marker parses, so there is no EACCES to assert on.
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'reports an inaccessible .fireforge directory as corrupt, not absent',
@@ -545,9 +545,9 @@ describe('tree store', () => {
   });
 
   it('removeTree refuses a lock directory whose owner cannot be identified', async () => {
-    // `withFileLock` takes the lock by creating the directory and only THEN
-    // writes the owner record, treating a write failure as non-fatal — so a
-    // lock dir with no readable pid is a state a LIVE holder produces. Reading
+    // `withFileLock` takes the lock by creating the directory and only then
+    // writes the owner record, treating a write failure as non-fatal, so a
+    // lock dir with no readable pid is a state a live holder produces. Reading
     // it as "not held" recursively deleted the tree out from under a build.
     const treeRoot = await createTestTree('shard-a');
     const lockDir = join(treeRoot, '.fireforge-build.lock');
@@ -575,7 +575,7 @@ describe('tree store', () => {
       withObjdir: { objDir: 'obj-x86_64' },
     });
 
-    // The vouched-for objdir passes; a foreign one and "none found" refuse.
+    // The vouched-for objdir passes. A foreign one and "none found" refuse.
     await expect(assertObjdirMatchesTreeMarker(treeRoot, 'obj-x86_64')).resolves.toBeUndefined();
     await expect(assertObjdirMatchesTreeMarker(treeRoot, 'obj-other')).rejects.toThrow(
       /records "obj-x86_64".*"obj-other"/s

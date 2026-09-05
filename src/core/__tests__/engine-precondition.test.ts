@@ -2,7 +2,7 @@
 /**
  * Shared engine precondition ladder.
  *
- * A truncated ladder — two rungs, no unborn-HEAD guard — lets a command
+ * A truncated ladder (two rungs, no unborn-HEAD guard) lets a command
  * enumerate working-tree status against an unborn HEAD, where the whole
  * ~300k-file Firefox tree reads as untracked.
  */

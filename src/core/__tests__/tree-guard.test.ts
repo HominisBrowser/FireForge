@@ -144,7 +144,7 @@ describe('tree guard hook: unreadable markers fail closed', () => {
   }
 
   it('refuses a mutating command when the marker exists but does not parse', async () => {
-    // Dropping ONE field was enough to make the marker read as "not a tree",
+    // Dropping one field was enough to make the marker read as "not a tree",
     // which allowed `reset` to run against the snapshot.
     await writeFile(
       join(root, '.fireforge', 'tree.json'),
@@ -183,19 +183,19 @@ describe('tree guard hook: unreadable markers fail closed', () => {
 
   it('lets unconditionally-allowed read-only commands run under a corrupt marker', async () => {
     // An 'allowed' verdict never consults marker fields, so an unreadable
-    // marker cannot change its answer — and blocking it left the operator
+    // marker cannot change its answer. Blocking it left the operator
     // unable to even run `status` on the tree they need to diagnose.
     await writeFile(join(root, '.fireforge', 'tree.json'), '{ truncated', 'utf-8');
     await expect(runTreeGuardHook('fireforge', actionCommand('status'))).resolves.toBeUndefined();
-    // 'conditional' verdicts can write; they stay behind the refusal.
+    // 'conditional' verdicts can write, so they stay behind the refusal.
     await expect(runTreeGuardHook('fireforge', actionCommand('doctor'))).rejects.toThrow(
       /could not be read/
     );
   });
 
   it('keeps test refused under a corrupt marker even when the garbage claims a cloned objdir', async () => {
-    // `test` is 'conditional' and its predicate reads marker.clonedObjdir — a
-    // marker we could not validate must never satisfy it.
+    // `test` is 'conditional' and its predicate reads marker.clonedObjdir, and
+    // a marker we could not validate must never satisfy it.
     await writeFile(
       join(root, '.fireforge', 'tree.json'),
       '{ "clonedObjdir": "obj-x86_64", truncated',

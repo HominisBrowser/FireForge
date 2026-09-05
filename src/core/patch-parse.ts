@@ -4,13 +4,41 @@ import { assert } from '../utils/assert.js';
  * Pure parsing functions for extracting information from patch files. All
  * functions are synchronous and operate on string content.
  *
- * This module is the ONE unified-diff walker in the codebase. Hand-rolled
+ * This module is the one unified-diff walker in the codebase. Hand-rolled
  * `diff --git` walkers diverge in ways that matter: CRLF handling (a
  * CRLF-saved patch file silently fails target-file matching and
  * `\ No newline` detection on Windows), quoted-path support, and greedy path
  * captures that mis-split any path containing ` b/`. New diff-shaped parsing
  * must build on {@link parseDiffSections} rather than re-walking lines.
  */
+
+/** Width of the zero-padded numeric prefix on a patch filename ("001-…"). */
+const PATCH_ORDER_WIDTH = 3;
+
+/**
+ * Renders a patch order as the zero-padded prefix used in filenames and in
+ * every message that names an order.
+ *
+ * Eleven call sites across `patch-policy`, `patch-export`, `export-flow`,
+ * `export-placement-policy` and `patch move-files` spelled this as
+ * `String(order).padStart(3, '0')`, so the padding width lived in eleven
+ * places while the filenames it has to agree with are produced in one.
+ * @param order - Numeric patch order.
+ * @param width - Prefix width. Defaults to the on-disk convention.
+ * @returns The zero-padded order, e.g. `007`.
+ */
+export function formatPatchOrder(order: number, width: number = PATCH_ORDER_WIDTH): string {
+  return String(order).padStart(width, '0');
+}
+
+/**
+ * Renders an inclusive order range the way `patchPolicy` diagnostics name it.
+ * @param range - Inclusive `from`/`to` order bounds.
+ * @returns The range label, e.g. `100-199`.
+ */
+export function formatOrderRange(range: { from: number; to: number }): string {
+  return `${formatPatchOrder(range.from)}-${formatPatchOrder(range.to)}`;
+}
 
 /**
  * Extracts the order number from a patch filename.
@@ -34,7 +62,7 @@ export function extractOrder(filename: string): number {
  * `Infinity` for a prefix-less filename, which sorts such a patch last and
  * is the right answer for a read: an unparseable name should not crash a
  * status listing. Persisting `Infinity` (or the `0` some call sites used to
- * fall back to) is a different matter — it puts an order in the manifest
+ * fall back to) is a different matter: it puts an order in the manifest
  * that no filename on disk agrees with, and the queue then applies in an
  * order the operator cannot see. Callers here have always just built or
  * looked up a real prefixed filename, so absence is a bug, not input.
@@ -59,7 +87,7 @@ export function requirePatchOrder(filename: string): number {
 export interface DiffGitHeader {
   /** Old-side (`a/`) path. */
   sourcePath: string;
-  /** New-side (`b/`) path — the file the patch produces. */
+  /** New-side (`b/`) path: the file the patch produces. */
   targetPath: string;
 }
 
@@ -75,8 +103,8 @@ function unquoteGitPath(quoted: string): string {
   for (let i = 0; i < quoted.length; i++) {
     const ch = quoted[i];
     if (ch !== '\\') {
-      // Plain character — may itself be multi-byte when the diff already
-      // contains raw UTF-8; push its bytes.
+      // Plain character, which may itself be multi-byte when the diff already
+      // contains raw UTF-8. Push its bytes.
       const encoded = Buffer.from(quoted[i] ?? '', 'utf-8');
       for (const b of encoded) bytes.push(b);
       continue;
@@ -104,8 +132,8 @@ function unquoteGitPath(quoted: string): string {
  * (`diff --git "a/x y" "b/x y"`), and disambiguates the unquoted form for
  * paths that themselves contain ` b/`: for the overwhelmingly common
  * non-rename case the two paths are identical, so a symmetric split
- * (`a/<p> b/<p>`) is tried first — a greedy `a\/.+ b\/(.+)$` splits such
- * lines at the LAST ` b/` and returns a truncated path. Falls back to a
+ * (`a/<p> b/<p>`) is tried first: a greedy `a\/.+ b\/(.+)$` splits such
+ * lines at the last ` b/` and returns a truncated path. Falls back to a
  * non-greedy split for renames.
  *
  * @returns null when the line is not a diff --git header.
@@ -150,7 +178,7 @@ export function parseDiffGitHeader(line: string): DiffGitHeader | null {
  * One `diff --git` section of a unified diff, fully structured.
  */
 export interface DiffSection {
-  /** New-side (`b/`) path — the file this section produces. */
+  /** New-side (`b/`) path: the file this section produces. */
   targetPath: string;
   /** Old-side (`a/`) path. */
   sourcePath: string;
@@ -160,21 +188,21 @@ export interface DiffSection {
   isDeletedFile: boolean;
   /**
    * True for binary sections (`GIT binary patch` or `Binary files … differ`).
-   * Binary sections have no parseable hunks; text-oriented consumers must
+   * Binary sections have no parseable hunks. Text-oriented consumers must
    * refuse them rather than treat base85 lines starting with `+` as content.
    */
   isBinary: boolean;
   /**
-   * True ONLY for `GIT binary patch` sections — the body carries a
+   * True only for `GIT binary patch` sections, whose body carries a
    * reconstructable literal/delta payload. False for `Binary files … differ`,
-   * which records THAT the bytes changed but carries none of them and cannot
+   * which records that the bytes changed but carries none of them and cannot
    * be replayed by `git apply`.
    *
    * The distinction is not cosmetic: the stub form still carries a correct
    * `index <old>..<new>` line, so identity checks keyed on {@link indexNewHash}
    * alone happily conclude "the recorded bytes match the live file" for a body
    * that can no longer produce those bytes. Consumers deciding whether a patch
-   * can RECREATE a file must read this flag, never `isBinary` plus a hash.
+   * can recreate a file must read this flag, never `isBinary` plus a hash.
    */
   hasBinaryDelta: boolean;
   /**
@@ -183,7 +211,7 @@ export interface DiffSection {
    * parseable index line (hand-written diffs, `Binary files … differ`).
    */
   indexOldHash?: string;
-  /** New-side blob hash from the `index` line; see {@link indexOldHash}. */
+  /** New-side blob hash from the `index` line. See {@link indexOldHash}. */
   indexNewHash?: string;
   /** Parsed hunks, in file order. Empty for binary or metadata-only sections. */
   hunks: ParsedHunk[];
@@ -193,10 +221,10 @@ export interface DiffSection {
  * Splits raw diff content into lines, tolerating CRLF-saved patch files.
  *
  * The distinction matters: a patch file saved with CRLF endings (Windows
- * editor, `core.autocrlf` checkout) has `\r` on EVERY line including
- * structural ones — strip it, or headers, `@@` lines and the
+ * editor, `core.autocrlf` checkout) has `\r` on every line including
+ * structural ones. Strip it, or headers, `@@` lines and the
  * `\ No newline at end of file` marker all fail to match. But an LF patch
- * of a file whose CONTENT is CRLF has `\r` only on payload lines, where it
+ * of a file whose content is CRLF has `\r` only on payload lines, where it
  * is significant and must be preserved. Detect the former by checking the
  * structural lines themselves for a trailing `\r`.
  */
@@ -213,8 +241,8 @@ function splitDiffLines(diffContent: string): string[] {
 }
 
 /**
- * Parses a unified diff into structured per-file sections — the single
- * shared walker every diff consumer builds on.
+ * Parses a unified diff into structured per-file sections. This is the
+ * single shared walker every diff consumer builds on.
  */
 export function parseDiffSections(diffContent: string): DiffSection[] {
   const sections: DiffSection[] = [];
@@ -269,7 +297,7 @@ export function parseDiffSections(diffContent: string): DiffSection[] {
         continue;
       }
       // `git diff --binary` always records full blob hashes here (git
-      // apply requires them); text sections carry abbreviated ones. The
+      // apply requires them). Text sections carry abbreviated ones. The
       // hashes let binary sections be compared by identity when their
       // payload cannot be applied as text.
       const indexMatch = /^index ([0-9a-f]{7,64})\.\.([0-9a-f]{7,64})(?: \d{6})?$/.exec(line);
@@ -302,7 +330,7 @@ export function parseDiffSections(diffContent: string): DiffSection[] {
     if (line === '\\ No newline at end of file') {
       // The marker is an annotation on the immediately preceding body
       // line. Peek the last collected line to decide which side(s) the
-      // annotation applies to — a single boolean cannot represent the
+      // annotation applies to. A single boolean cannot represent the
       // asymmetric case where only one side lacks the trailing newline.
       const previous = currentHunk.lines[currentHunk.lines.length - 1] ?? '';
       if (previous.startsWith('-')) {
@@ -313,12 +341,12 @@ export function parseDiffSections(diffContent: string): DiffSection[] {
         // Context line: present in both sides, so the trailing-newline
         // absence applies to both. This is rare (it only happens when
         // the hunk ends on an unchanged line that itself is the last
-        // line of the file) but real — git emits it.
+        // line of the file) but real: git emits it.
         currentHunk.noNewlineAtEndOld = true;
         currentHunk.noNewlineAtEndNew = true;
       }
       // If the marker appears with no preceding body line (malformed
-      // diff), leave both flags false — the downstream apply logic
+      // diff), leave both flags false. The downstream apply logic
       // will still produce a defined result.
       continue;
     }
@@ -372,7 +400,7 @@ export function extractAffectedFiles(diffContent: string): string[] {
 
 /**
  * A single parsed hunk. `noNewlineAtEndOld` / `noNewlineAtEndNew` track the
- * `\ No newline at end of file` marker per side — the marker is a trailing
+ * `\ No newline at end of file` marker per side. The marker is a trailing
  * annotation on the immediately preceding body line, and a `-` precedent
  * sets only the old-side flag, a `+` sets only the new-side flag, and a
  * context ` ` line sets both. Collapsing the two into one boolean makes the

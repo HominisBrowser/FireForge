@@ -16,7 +16,6 @@ describe('download errors', () => {
     const error = new DownloadError('connection timed out', 'https://archive.mozilla.org/test');
 
     expect(error.code).toBe(ExitCode.DOWNLOAD_ERROR);
-    expect(error.url).toBe('https://archive.mozilla.org/test');
     expect(error.userMessage).toContain('Download Error: connection timed out');
     expect(error.userMessage).toContain('URL: https://archive.mozilla.org/test');
   });
@@ -36,7 +35,6 @@ describe('download errors', () => {
     );
 
     expect(error.code).toBe(ExitCode.DOWNLOAD_ERROR);
-    expect(error.product).toBe('firefox-devedition');
     expect(error.userMessage).toContain('Product: firefox-devedition');
     expect(error.userMessage).toContain(
       'URL: https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz'
@@ -48,7 +46,6 @@ describe('download errors', () => {
     const error = new ExtractionError('/tmp/firefox-140.0.tar.xz');
 
     expect(error.code).toBe(ExitCode.DOWNLOAD_ERROR);
-    expect(error.archivePath).toBe('/tmp/firefox-140.0.tar.xz');
     expect(error.userMessage).toContain('Archive: /tmp/firefox-140.0.tar.xz');
     expect(error.userMessage).toContain('disk space');
   });
@@ -57,7 +54,6 @@ describe('download errors', () => {
     const error = new VersionNotFoundError('999.0');
 
     expect(error.code).toBe(ExitCode.DOWNLOAD_ERROR);
-    expect(error.version).toBe('999.0');
     expect(error.userMessage).toContain('"999.0"');
     expect(error.userMessage).toContain('archive.mozilla.org');
   });
@@ -66,7 +62,6 @@ describe('download errors', () => {
     const error = new EngineExistsError('/project/engine');
 
     expect(error.code).toBe(ExitCode.DOWNLOAD_ERROR);
-    expect(error.enginePath).toBe('/project/engine');
     expect(error.userMessage).toContain('Path: /project/engine');
     expect(error.userMessage).toContain('--force');
   });
@@ -75,7 +70,6 @@ describe('download errors', () => {
     const error = new PartialEngineExistsError('/project/engine');
 
     expect(error.code).toBe(ExitCode.DOWNLOAD_ERROR);
-    expect(error.enginePath).toBe('/project/engine');
     expect(error.userMessage).toContain('not fully initialized');
     expect(error.userMessage).toContain('--force');
   });

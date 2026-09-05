@@ -3,8 +3,8 @@
  * Direct unit tests for the harness-verdict application layer: the
  * green-summary rejection surfacing and the non-zero-exit diagnosis branches
  * that only fire on specific captured output shapes. The classifier itself
- * is covered by `src/core/__tests__/test-harness-crash.test.ts`; the
- * command-level composition by `test.test.ts`.
+ * is covered by `src/core/__tests__/test-harness-crash.test.ts`. The
+ * command-level composition is covered by `test.test.ts`.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,7 +18,7 @@ import { diagnoseShardOutcome, finalizeSingleRunOutcome } from '../test-diagnose
 import type { TestRunOutcome } from '../test-run.js';
 import { resetVerdictEmission } from '../test-verdict.js';
 
-// The verdict sink is first-write-wins per run; `testCommand` re-arms it at
+// The verdict sink is first-write-wins per run. `testCommand` re-arms it at
 // entry, so direct unit invocations re-arm it here.
 beforeEach(() => {
   resetVerdictEmission();

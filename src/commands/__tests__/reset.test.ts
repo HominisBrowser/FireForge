@@ -221,7 +221,7 @@ describe('resetCommand', () => {
   });
 
   it('clears the furnace state after a successful reset', async () => {
-    // Simulate: engine dir exists AND furnace state exists
+    // Simulate: engine dir exists and furnace state exists
     vi.mocked(pathExists).mockResolvedValue(true);
 
     await resetCommand('/project', { yes: true });

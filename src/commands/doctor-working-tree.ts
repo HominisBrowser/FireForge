@@ -4,11 +4,11 @@
  *
  * Partitions engine-tree dirtiness into `branding`, `patch-backed`,
  * `furnace`, `conflict`, and `unmanaged` buckets, and only warns on the
- * last two — everything else is tool-managed state that the operator
+ * last two. Everything else is tool-managed state that the operator
  * did not author directly.
  *
  * Split out of `doctor.ts` so that file stays under the per-file LOC
- * budget; see the call site in `runEngineGitChecks`.
+ * budget. See the call site in `runEngineGitChecks`.
  */
 
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
@@ -41,7 +41,7 @@ function formatManagedDetail(counts: {
 /**
  * Inspects the engine working tree and returns a single `DoctorCheck`.
  * Ownership-aware: patch-backed / branding / furnace rows are reported as OK
- * with an ownership summary; unmanaged drift warns; cross-patch conflicts
+ * with an ownership summary. Unmanaged drift warns. Cross-patch conflicts
  * warn loudly with a pointer at `fireforge status --ownership` +
  * `fireforge verify`.
  *

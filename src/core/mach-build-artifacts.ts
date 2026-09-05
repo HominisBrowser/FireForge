@@ -27,7 +27,7 @@ export interface BuildArtifactCheck {
    * Objdir name the active mozconfig declares via `MOZ_OBJDIR`, when the
    * candidates were ambiguous and the declaration did not resolve to exactly
    * one of them. Carried so the refusal can say the declaration was seen and
-   * did not help — that is itself the diagnosis.
+   * did not help. That is itself the diagnosis.
    */
   declaredObjDir?: string;
   /** Build metadata points at a different source or objdir */
@@ -80,7 +80,7 @@ function validateBuildMozinfo(data: unknown): BuildMozinfo {
  * Reads the objdir name the engine's mozconfig declares, or undefined when
  * there is no mozconfig, it cannot be read, or it declares nothing.
  *
- * Fail-open by construction: this only ever narrows an ambiguity that would
+ * Fail-open: this only ever narrows an ambiguity that would
  * otherwise refuse, so an unreadable mozconfig costs nothing beyond the
  * refusal the caller was already going to raise.
  */
@@ -98,8 +98,8 @@ async function readDeclaredObjDirName(engineDir: string): Promise<string | undef
 /**
  * Checks if build artifacts exist in the engine directory.
  * Looks for obj-* directories with a dist subdirectory. Detection is
- * deliberately symlink-agnostic — building/running against a symlinked
- * objdir in place is the user's own arrangement; the clone path, where a
+ * symlink-agnostic on purpose: building/running against a symlinked
+ * objdir in place is the user's own arrangement. The clone path, where a
  * symlink would route writes into the original build, refuses separately
  * (`assertCloneSafeObjdir` in tree-store.ts).
  * @param engineDir - Path to the engine directory
@@ -131,7 +131,7 @@ export async function hasBuildArtifacts(engineDir: string): Promise<BuildArtifac
     let declaredObjDir: string | undefined;
     if (validObjDirs.length > 1) {
       // An ambiguous glob is a question the mozconfig may already answer.
-      // Refusing when the active configuration NAMES the objdir sends the
+      // Refusing when the active configuration names the objdir sends the
       // operator to rename a directory to satisfy a scan, when the thing
       // that decides the build has said which one it is. The refusal is
       // kept for the genuinely ambiguous case: a declaration that does not
@@ -204,16 +204,16 @@ export async function hasBuildArtifacts(engineDir: string): Promise<BuildArtifac
  * message instead of the generic build-artifacts-missing line.
  */
 export interface RunnableBundleCheck {
-  /** True when an objdir is present AND the expected binary was found under it. */
+  /** True when an objdir is present and the expected binary was found under it. */
   runnable: boolean;
-  /** Repo-relative (engine-rooted) path we probed; populated even on failure for error copy. */
+  /** Repo-relative (engine-rooted) path we probed. Populated even on failure for error copy. */
   expectedPath?: string;
 }
 
 /**
  * Checks whether the built browser's launchable binary exists under
  * `<engineDir>/<objDir>/dist/...`. `hasBuildArtifacts` only confirms that
- * an obj tree with a `dist/` subdir exists; a partial or in-progress build
+ * an obj tree with a `dist/` subdir exists. A partial or in-progress build
  * can satisfy that check without ever writing the executable, which is the
  * failure mode that makes `fireforge run` throw `mach run` after having
  * reported the build as usable. Separating the probes lets `run` fail fast
@@ -223,19 +223,19 @@ export interface RunnableBundleCheck {
  *
  * Platform layout:
  * - macOS: `<objDir>/dist/*.app/Contents/MacOS/<binaryName>` (the `.app`
- *   display casing can differ from `binaryName` — e.g. `MyBrowser.app` for
+ *   display casing can differ from `binaryName`, e.g. `MyBrowser.app` for
  *   binary `mybrowser`, so we enumerate the `*.app` bundles rather than
  *   compute the name.
  * - Linux: `<objDir>/dist/bin/<binaryName>`.
  * - Windows: `<objDir>/dist/bin/<binaryName>.exe`.
  *
  * Returns `runnable: false` with no `expectedPath` when the `objDir`
- * itself cannot be scanned — same degraded contract as `hasBuildArtifacts`.
+ * itself cannot be scanned. Same degraded contract as `hasBuildArtifacts`.
  *
  * @param engineDir Path to the engine directory
  * @param binaryName Lowercase binary name from `fireforge.json`
  * @param objDir The single matching `obj-*` directory name (caller
- *   resolves it; typically from `hasBuildArtifacts().objDir`)
+ *   resolves it, typically from `hasBuildArtifacts().objDir`)
  * @returns Structured check result
  */
 export async function hasRunnableBundle(
@@ -319,7 +319,7 @@ export function buildArtifactMismatchMessage(
 
 /**
  * Outcome of an in-place mozinfo.json rewrite attempt. A successful rewrite
- * returns the paths written; a refused rewrite returns a human-readable
+ * returns the paths written. A refused rewrite returns a human-readable
  * reason so the build flow can surface it alongside the original mismatch
  * message before falling back to the clean-rebuild instruction.
  */
@@ -340,26 +340,26 @@ export interface MozinfoRewriteResult {
  * Safe-relocation rewriter for mozinfo.json under the active obj-* tree.
  *
  * Firefox build artefacts bake the topsrcdir into many generated files
- * (Makefiles, config.status, backend.mk, .deps dependency files — anything
+ * (Makefiles, config.status, backend.mk, .deps dependency files, anything
  * produced by `mach configure`). A fresh `mach configure` rebuilds those
  * from the top, so the rewriter only needs to patch the one file `mach`
  * reads to learn where its checkout actually lives. Once mozinfo.json
  * agrees with the on-disk layout, `mach configure` regenerates the rest.
  *
- * Safety rules — the rewrite is refused when any of them are violated:
+ * Safety rules. The rewrite is refused when any of them are violated:
  *   - `topsrcdir` and `topobjdir` must both be present and non-empty.
- *   - `topobjdir` must resolve to `<topsrcdir>/<objDir>`; a non-in-tree
+ *   - `topobjdir` must resolve to `<topsrcdir>/<objDir>`. A non-in-tree
  *     objdir means the previous workspace was configured differently,
  *     so a blind prefix-rewrite could point mach at the wrong tree.
- *   - The computed new `topobjdir` must be `<engineDir>/<objDir>`; if it
+ *   - The computed new `topobjdir` must be `<engineDir>/<objDir>`. If it
  *     is not, the objDir name itself changed and we cannot prove safety.
  *
  * When any rule trips, the caller should fall back to the clean-rebuild
- * instruction — that's always a correct (if expensive) recovery path.
+ * instruction, which is always a correct (if expensive) recovery path.
  *
  * @param engineDir Absolute path to the current engine checkout.
  * @param objDir Name of the obj-* directory to rewrite against.
- * @returns Result object; callers inspect `rewritten` and surface `reason`.
+ * @returns Result object. Callers inspect `rewritten` and surface `reason`.
  */
 export async function attemptMozinfoRewrite(
   engineDir: string,
@@ -433,10 +433,10 @@ export async function attemptMozinfoRewrite(
       newMozconfig = resolve(newSrc, rel);
       patched['mozconfig'] = newMozconfig;
     }
-    // A mozconfig living outside the old topsrcdir is left as-is — it
+    // A mozconfig living outside the old topsrcdir is left as-is. It
     // probably points at a shared configuration file the user kept in
     // place across the relocation. A relocated checkout that also moved
-    // its mozconfig will still fail configure; operator can re-point
+    // its mozconfig will still fail configure. The operator can re-point
     // with `MOZCONFIG=…` or run a full clean rebuild.
   }
 
@@ -468,7 +468,7 @@ export interface BuildArtifactPreflightOptions {
 /**
  * Shared build-artifact preflight: rejects ambiguous multi-objdir checkouts,
  * artifacts whose metadata points at another tree, and (when
- * `requireExisting`) missing or incomplete builds — each with the actionable
+ * `requireExisting`) missing or incomplete builds, each with the actionable
  * message for that case.
  *
  * Takes an already-probed {@link BuildArtifactCheck} rather than probing
@@ -504,13 +504,13 @@ export function assertBuildArtifacts(
  * the four configure-generated root files (`config.status`, `backend.mk`,
  * `Makefile`, `config/autoconf.mk`) still names `forbiddenDir` (the
  * primary engine a relocated clone must never consult). Exit code 0 alone
- * proves neither — a stray MOZCONFIG/MOZ_OBJDIR can steer configure at a
+ * proves neither: a stray MOZCONFIG/MOZ_OBJDIR can steer configure at a
  * different objdir entirely. Nested Makefiles are products of the verified
- * `config.status` and are not scanned; `.deps` files are build products a
- * configure cannot regenerate and are explicitly out of scope — any
+ * `config.status` and are not scanned. `.deps` files are build products a
+ * configure cannot regenerate and are explicitly out of scope, and any
  * primary-path strings they retain are read-only staleness corrected by
  * the first in-tree rebuild. Pure checker: returns a human-readable
- * violation, or `undefined` when clean; callers own the error type and
+ * violation, or `undefined` when clean. Callers own the error type and
  * remediation copy. Unreadable metadata is itself a violation (fail
  * closed).
  */
@@ -551,9 +551,9 @@ export async function findObjdirRelocationViolation(args: {
   // The canonical no-primary-paths assertion (mirrored by the opt-in
   // real-mach proof in scripts/run-full-firefox-integration.mjs): substring
   // search on the resolved primary engine dir is collision-safe against the
-  // tree's own paths — `<primary>/.fireforge/trees/<name>/engine` never
+  // tree's own paths: `<primary>/.fireforge/trees/<name>/engine` never
   // contains the substring `<primary>/engine`. Scans exactly the
-  // configure-generated root files; `config.status` is mandatory (checked
+  // configure-generated root files. `config.status` is mandatory (checked
   // above), the rest are optional-if-absent because not every configure
   // backend writes them.
   const forbidden = resolve(forbiddenDir);

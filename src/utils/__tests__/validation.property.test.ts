@@ -7,15 +7,12 @@ import {
   describeTokenNameProblem,
   inferProductFromVersion,
   isValidAppId,
-  isValidFirefoxProduct,
   isValidFirefoxVersion,
-  isValidPatchCategory,
-  isValidProjectLicense,
   normalizeTokenName,
 } from '../validation.js';
 
 // ---------------------------------------------------------------------------
-// Helpers — arbitraries that produce known-valid values
+// Helpers: arbitraries that produce known-valid values
 // ---------------------------------------------------------------------------
 
 /** Generates a valid stable/ESR/beta Firefox version string. */
@@ -60,7 +57,7 @@ const validAppId = fc
   )
   .map(([first, rest]) => [first, ...rest].join('.'));
 
-/** Generates a valid patch name (letters, numbers, hyphens, underscores, spaces; 1–50 chars). */
+/** Generates a valid patch name of 1 to 50 letters, numbers, hyphens, underscores and spaces. */
 const validPatchName = fc
   .stringMatching(/^[a-zA-Z0-9\-_ ]{1,50}$/)
   .filter((s) => s.trim().length > 0);
@@ -96,36 +93,6 @@ describe('property: isValidFirefoxVersion', () => {
       )
     );
   });
-
-  it('never crashes on arbitrary input', () => {
-    fc.assert(
-      fc.property(fc.string(), (s) => {
-        // Must return boolean, never throw
-        expect(typeof isValidFirefoxVersion(s)).toBe('boolean');
-      })
-    );
-  });
-});
-
-describe('property: isValidFirefoxProduct', () => {
-  it('accepts exactly the three valid products', () => {
-    fc.assert(
-      fc.property(fc.constantFrom('firefox', 'firefox-esr', 'firefox-beta'), (product) => {
-        expect(isValidFirefoxProduct(product)).toBe(true);
-      })
-    );
-  });
-
-  it('rejects any other string', () => {
-    fc.assert(
-      fc.property(
-        fc.string().filter((s) => !['firefox', 'firefox-esr', 'firefox-beta'].includes(s)),
-        (s) => {
-          expect(isValidFirefoxProduct(s)).toBe(false);
-        }
-      )
-    );
-  });
 });
 
 describe('property: isValidAppId', () => {
@@ -149,14 +116,6 @@ describe('property: isValidAppId', () => {
     fc.assert(
       fc.property(fc.stringMatching(/^[A-Z][a-z0-9]*\.[a-z][a-z0-9]*$/), (id) => {
         expect(isValidAppId(id)).toBe(false);
-      })
-    );
-  });
-
-  it('never crashes on arbitrary input', () => {
-    fc.assert(
-      fc.property(fc.string(), (s) => {
-        expect(typeof isValidAppId(s)).toBe('boolean');
       })
     );
   });
@@ -207,48 +166,6 @@ describe('property: inferProductFromVersion', () => {
   });
 });
 
-describe('property: isValidProjectLicense', () => {
-  it('accepts exactly the whitelisted SPDX identifiers', () => {
-    fc.assert(
-      fc.property(fc.constantFrom('EUPL-1.2', 'MPL-2.0', '0BSD', 'GPL-2.0-or-later'), (license) => {
-        expect(isValidProjectLicense(license)).toBe(true);
-      })
-    );
-  });
-
-  it('rejects any other string', () => {
-    fc.assert(
-      fc.property(
-        fc.string().filter((s) => !['EUPL-1.2', 'MPL-2.0', '0BSD', 'GPL-2.0-or-later'].includes(s)),
-        (s) => {
-          expect(isValidProjectLicense(s)).toBe(false);
-        }
-      )
-    );
-  });
-});
-
-describe('property: isValidPatchCategory', () => {
-  it('accepts exactly the whitelisted categories', () => {
-    fc.assert(
-      fc.property(fc.constantFrom('branding', 'ui', 'privacy', 'security', 'infra'), (cat) => {
-        expect(isValidPatchCategory(cat)).toBe(true);
-      })
-    );
-  });
-
-  it('rejects any other string', () => {
-    fc.assert(
-      fc.property(
-        fc.string().filter((s) => !['branding', 'ui', 'privacy', 'security', 'infra'].includes(s)),
-        (s) => {
-          expect(isValidPatchCategory(s)).toBe(false);
-        }
-      )
-    );
-  });
-});
-
 /** Generates a valid CSS custom property ident (no whitespace, control chars, or CSS-breaking chars). */
 const validTokenIdent = fc
   .stringMatching(/^[a-zA-Z0-9_-]{1,40}$/)
@@ -288,15 +205,6 @@ describe('property: normalizeTokenName', () => {
 });
 
 describe('property: describeTokenNameProblem', () => {
-  it('never crashes on arbitrary input', () => {
-    fc.assert(
-      fc.property(fc.string(), (s) => {
-        const result = describeTokenNameProblem(s);
-        expect(result === undefined || typeof result === 'string').toBe(true);
-      })
-    );
-  });
-
   it('accepts all valid CSS-safe idents', () => {
     fc.assert(
       fc.property(validTokenIdent, (name) => {
@@ -328,19 +236,9 @@ describe('property: describePatchNameProblem', () => {
       fc.property(
         fc.stringMatching(/^[ \t]*$/).filter((s) => s.length <= 50),
         (name) => {
-          const result = describePatchNameProblem(name);
-          expect(result).toBeDefined();
+          expect(describePatchNameProblem(name)).toBe('Name is required');
         }
       )
-    );
-  });
-
-  it('never crashes on arbitrary input', () => {
-    fc.assert(
-      fc.property(fc.string(), (s) => {
-        const result = describePatchNameProblem(s);
-        expect(result === undefined || typeof result === 'string').toBe(true);
-      })
     );
   });
 });

@@ -18,7 +18,7 @@
  * report an unambiguous "registered but not packaged" miss when none exists.
  *
  * When no jar.mn registration is found, the caller falls back to the
- * similarity heuristic — which covers sources registered through moz.build
+ * similarity heuristic, which covers sources registered through moz.build
  * (`FINAL_TARGET_FILES`, `JS_PREFERENCE_FILES`) or `package-manifest.in`.
  * Parsing every Firefox registration surface would bloat the audit, and the
  * heuristic's weak case is surfaced to the operator in the warning copy.
@@ -27,6 +27,7 @@
 import { basename, dirname, join, relative, sep } from 'node:path';
 
 import { pathExists, readText } from '../utils/fs.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { findAllByBasename } from './build-audit-resolve.js';
 
 /** Ceiling on ancestor-directory hops when searching for an owning jar.mn. */
@@ -80,14 +81,14 @@ export function parseJarMnEntry(line: string): { target: string; source: string 
 /**
  * Scans a jar.mn file's contents for an entry whose source reference
  * matches `relativeSource` (POSIX, relative to the jar.mn directory).
- * Returns the first match; jar.mn enforces uniqueness of `(source)` in
+ * Returns the first match. jar.mn enforces uniqueness of `(source)` in
  * practice, so a first-match wins behaviour is adequate.
  */
 export function findJarMnEntryForSource(
   content: string,
   relativeSource: string
 ): { target: string; source: string } | undefined {
-  const normalized = relativeSource.replace(/\\/g, '/');
+  const normalized = normalizePathSlashes(relativeSource);
   for (const line of content.split('\n')) {
     const parsed = parseJarMnEntry(line);
     if (!parsed) continue;
@@ -101,7 +102,7 @@ export function findJarMnEntryForSource(
  * the first jar.mn entry that registers the given source. Returns undefined
  * when no ancestor jar.mn claims the source.
  *
- * @param engineDir Absolute engine root; walk halts here.
+ * @param engineDir Absolute engine root. The walk halts here.
  * @param source Engine-relative POSIX source path.
  */
 export async function findRegisteredTarget(
@@ -122,7 +123,7 @@ export async function findRegisteredTarget(
       try {
         content = await readText(jarMn);
       } catch {
-        // An unreadable jar.mn contributes no registration hints; the resolver falls
+        // An unreadable jar.mn contributes no registration hints. The resolver falls
         // through to its other strategies.
         content = '';
       }
@@ -146,13 +147,13 @@ export async function findRegisteredTarget(
  * independent.
  */
 function toPosix(path: string): string {
-  return path.split(sep).join('/');
+  return normalizePathSlashes(path);
 }
 
 /**
  * Probes the dist tree for the artifact registered against the given
  * source. Returns the matched candidate and the registration hit that
- * anchored it; undefined when the source has no owning jar.mn or when
+ * anchored it. Undefined when the source has no owning jar.mn or when
  * no same-basename candidate under the search roots ends with the
  * registered target path.
  *
@@ -191,8 +192,8 @@ export async function resolveArtifactByRegistration(
 
 /**
  * Returns the absolute paths of every same-basename candidate under the
- * given search roots. Used by the audit to enumerate ALL false-match
- * candidates when the heuristic fallback downgrades to "missing" — the
+ * given search roots. Used by the audit to enumerate all false-match
+ * candidates when the heuristic fallback downgrades to "missing". The
  * operator needs to see the full set, not just the scorer's pick, to
  * distinguish a registration bug from a genuine packaging drop.
  *

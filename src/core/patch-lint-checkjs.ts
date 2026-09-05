@@ -4,17 +4,17 @@
  *
  * Loads the TypeScript compiler API via dynamic import so it is only
  * required when `patchLint.checkJs` is enabled in `fireforge.json`.
- * TypeScript remains a dev-dependency — if a user enables checkJs
+ * TypeScript remains a dev-dependency. If a user enables checkJs
  * without installing it, the pass emits a clear error explaining
  * how to fix it.
  *
  * Separated from `patch-lint.ts` to keep both files within the
  * project's per-file line budget. The shim itself and the suppressed
  * diagnostic code list now live in `typecheck-shim.ts` and are shared
- * with the whole-project `fireforge typecheck` command — keeping a
+ * with the whole-project `fireforge typecheck` command, keeping a
  * single source of truth for the Firefox-globals coverage.
  * `patchLint.checkJsStrict` only tightens `strict` / `noImplicitAny`
- * and optional allowlisted `checkJsCompilerOptions`; it does not change
+ * and optional allowlisted `checkJsCompilerOptions`. It does not change
  * shim composition or suppressed diagnostic codes.
  *
  * Resolution scope vs reporting scope: the TS program is built over a
@@ -59,11 +59,12 @@ import {
  * Converts a native path into the form TypeScript uses for `fileName`.
  *
  * TypeScript normalizes every path it hands a `CompilerHost` to forward
- * slashes on ALL platforms, while `resolve()` here yields the platform
+ * slashes on all platforms, while `resolve()` here yields the platform
  * separator. On Windows that mismatch made every `ownedAbsolute.has(fileName)`
  * and `relByAbsolute.get(fileName)` lookup miss, so the host served an empty
- * source file for each owned file and the whole pass reported zero findings —
- * silently, because "no diagnostics" is indistinguishable from "clean code".
+ * source file for each owned file and the whole pass reported zero findings.
+ * It did so silently, because "no diagnostics" is indistinguishable from
+ * "clean code".
  * Every path that crosses the TS boundary goes through here.
  */
 function toTsPath(path: string): string {
@@ -76,8 +77,8 @@ function toTsPath(path: string): string {
  * segment uniquely matches an owned file. URL specifiers
  * (chrome://browser/content/Foo.sys.mjs, resource:///modules/Foo.sys.mjs)
  * are matched by basename, with a `.mjs` → `.sys.mjs` fallback for deployed
- * widget URLs. Ambiguous or unknown basenames stay unresolved — loose
- * wildcard typing beats guessing the wrong module — and relative specifiers
+ * widget URLs. Ambiguous or unknown basenames stay unresolved (loose
+ * wildcard typing beats guessing the wrong module), and relative specifiers
  * are left to fail resolution (the relative-import lint rule bans them).
  */
 function createOwnedSpecifierResolver(
@@ -126,8 +127,8 @@ function extensionForFile(
 
 /**
  * Builds a resolver for a reviewed `paths` mapping (route 2 of the
- * cross-patch resolution work). Each pattern may contain a single `*`;
- * matching targets are resolved relative to `baseDir` (the engine dir, like
+ * cross-patch resolution work). Each pattern may contain a single `*`.
+ * Matching targets are resolved relative to `baseDir` (the engine dir, like
  * the rest of `patchLint` which is engine-relative). Resolved files are
  * recorded via `onResolved` so the compiler host knows to read them from
  * disk rather than returning empty content. No `baseUrl` is set, so this is
@@ -157,7 +158,7 @@ function createPathsResolver(
       }
       for (const target of targets) {
         // A `paths` target carries at most one `*`, and TypeScript substitutes
-        // that one wildcard — spelled as index arithmetic (mirroring the
+        // that one wildcard. It is spelled as index arithmetic (mirroring the
         // prefix/suffix split on the pattern side above) rather than
         // `replace('*', …)`, whose first-occurrence-only behaviour reads as an
         // incomplete rewrite (CodeQL `js/incomplete-sanitization`).
@@ -178,13 +179,13 @@ function createPathsResolver(
   };
 }
 
-/** How a checkJs run controls reporting and resolution; see module docs. */
+/** How a checkJs run controls reporting and resolution. See module docs. */
 export interface CheckJsMode {
   strict: boolean;
   compilerOptions?: PatchLintCheckJsCompilerOptions;
   /**
    * How to report undefined free identifiers (TS2304/TS2552). Default
-   * 'warning' — see `patchLint.undefinedIdentifiers`.
+   * 'warning'. See `patchLint.undefinedIdentifiers`.
    */
   undefinedIdentifiers?: PatchLintSeverityGate;
 }
@@ -192,7 +193,7 @@ export interface CheckJsMode {
 /**
  * Result of {@link runCheckJsGrouped}: diagnostics attributed to the
  * patch-owned file they originate in (`byFile`, keyed by repo-relative
- * path), plus run-level errors that have no owning file (`global` — e.g.
+ * path), plus run-level errors that have no owning file (`global`, e.g.
  * TypeScript missing or an unreadable extra shim).
  */
 export interface GroupedCheckJsResult {
@@ -200,44 +201,57 @@ export interface GroupedCheckJsResult {
   global: PatchLintIssue[];
 }
 
+/** Inputs for {@link runCheckJsGrouped}. */
+export interface RunCheckJsGroupedInput {
+  /** Absolute engine (repository) directory. */
+  repoDir: string;
+  /**
+   * Patch-owned `.sys.mjs` paths (relative to `repoDir`) the program should
+   * see and resolve against.
+   */
+  resolutionOwned: Set<string>;
+  /**
+   * Optional project-relative extra `.d.ts` appended to the built-in
+   * Firefox-globals shim (from `patchLint.checkJsExtraShim`).
+   */
+  extraShimPath?: string;
+  /** Absolute project root for resolving `extraShimPath`. */
+  projectRoot?: string;
+  /** Strictness preset plus allowlisted compiler-option overrides. */
+  mode?: CheckJsMode;
+  /** Optional shim text appended after the consumer shim. */
+  builtinShimSuffix?: string;
+  /**
+   * When set, only these repo-relative files become program roots.
+   * Resolution (and the host allowlist) still spans all of
+   * `resolutionOwned`, so a subset root's cross-patch imports type-check
+   * against the real owning sources while unrelated owned files are never
+   * parsed. `.mjs` files are module-scoped, so a root's diagnostics are
+   * identical whether other owned files are roots or mere resolution
+   * targets.
+   */
+  rootScope?: ReadonlySet<string>;
+}
+
 /**
- * Builds the checkJs program **once** over `resolutionOwned` and returns its
+ * Builds the checkJs program once over `resolutionOwned` and returns its
  * diagnostics grouped by originating file. Callers slice the result by their
- * own report scope — per-patch lint attributes each file to its owning patch,
+ * own report scope: per-patch lint attributes each file to its owning patch,
  * export/re-export keeps only the patch under export. Resolution always spans
  * every file in `resolutionOwned`, so cross-patch `resource:///`/`chrome://`
  * imports resolve to real sources.
  *
- * @param repoDir - Absolute engine (repository) directory
- * @param resolutionOwned - Patch-owned `.sys.mjs` paths (relative to repoDir)
- *   the program should see and resolve against
- * @param extraShimPath - Optional project-relative extra `.d.ts` appended to
- *   the built-in Firefox-globals shim (from `patchLint.checkJsExtraShim`)
- * @param projectRoot - Absolute project root for resolving `extraShimPath`
- * @param mode - Strictness preset plus allowlisted compiler-option overrides
- * @param builtinShimSuffix - Optional shim text appended AFTER the consumer
- *   shim
- * @param rootScope - When set, only these repo-relative files become program
- *   ROOTS; resolution (and the host allowlist) still spans all of
- *   `resolutionOwned`, so a subset root's cross-patch imports type-check
- *   against the real owning sources while unrelated owned files are never
- *   parsed. `.mjs` files are module-scoped, so a root's diagnostics are
- *   identical whether other owned files are roots or mere resolution targets.
+ * @param input - Program inputs. See {@link RunCheckJsGroupedInput}
  * @returns Diagnostics grouped per owning file plus run-level errors
  */
 export async function runCheckJsGrouped(
-  repoDir: string,
-  resolutionOwned: Set<string>,
-  extraShimPath?: string,
-  projectRoot?: string,
-  mode?: CheckJsMode,
-  builtinShimSuffix?: string,
-  rootScope?: ReadonlySet<string>
+  input: RunCheckJsGroupedInput
 ): Promise<GroupedCheckJsResult> {
+  const { repoDir, resolutionOwned, extraShimPath, rootScope } = input;
   const empty: GroupedCheckJsResult = { byFile: new Map(), global: [] };
   if (resolutionOwned.size === 0) return empty;
 
-  // Dynamic import — typescript stays as a dev dependency
+  // Dynamic import: typescript stays as a dev dependency
   let ts: typeof import('typescript');
   try {
     ts = await import('typescript');
@@ -259,7 +273,7 @@ export async function runCheckJsGrouped(
 
   // Resolve absolute paths for root files, filtering to files that exist.
   // Under a rootScope, non-scoped owned files stay resolvable (host
-  // allowlist + relByAbsolute) but are not program roots — they are only
+  // allowlist + relByAbsolute) but are not program roots. They are only
   // parsed if a scoped root's import closure reaches them.
   const rootFiles: string[] = [];
   const ownedAbsolute = new Set<string>();
@@ -276,18 +290,20 @@ export async function runCheckJsGrouped(
   if (rootFiles.length === 0) return empty;
 
   // Compose the shim. `extraShimPath` is project-relative (validated
-  // by config-validate); resolve it against `projectRoot`. When the
-  // caller passes neither, fall back to `repoDir` — the only way the
+  // by config-validate). Resolve it against `projectRoot`. When the
+  // caller passes neither, fall back to `repoDir`. The only way the
   // shim path is ever read in that case is when extraShimPath is
   // also undefined, so the resolution target is irrelevant.
   let shimSource: string;
   try {
-    const composed = await composeShimSource(projectRoot ?? repoDir, extraShimPath);
+    const composed = await composeShimSource(input.projectRoot ?? repoDir, extraShimPath);
     // The suffix (e.g. the loose test-harness baseline) goes
-    // AFTER the consumer's extra shim: TypeScript resolves conflicting
-    // `declare var` redeclarations to the FIRST declaration, so a typed
+    // after the consumer's extra shim: TypeScript resolves conflicting
+    // `declare var` redeclarations to the first declaration, so a typed
     // consumer declaration must precede the loose fallback to win.
-    shimSource = builtinShimSuffix ? `${composed.source}\n${builtinShimSuffix}` : composed.source;
+    shimSource = input.builtinShimSuffix
+      ? `${composed.source}\n${input.builtinShimSuffix}`
+      : composed.source;
     if (composed.extraShimAppended) {
       verbose(`checkJs: extra shim ${extraShimPath ?? ''} appended to Firefox globals shim`);
     }
@@ -308,22 +324,22 @@ export async function runCheckJsGrouped(
   const shimPath = toTsPath(resolve(repoDir, SHIM_FILENAME));
   rootFiles.push(shimPath);
 
-  const strict = mode?.strict === true;
+  const strict = input.mode?.strict === true;
   const strictness: import('typescript').CompilerOptions = strict
     ? { strict: true, noImplicitAny: true }
     : {
-        // Loose default — implicit `any` is allowed unless `patchLint.checkJsStrict`.
+        // Loose default: implicit `any` is allowed unless `patchLint.checkJsStrict`.
         strict: false,
         noImplicitAny: false,
       };
 
-  // Allowlisted overrides. Booleans merge directly; a reviewed `paths`
-  // mapping is applied to the compiler options AND wired into the host
+  // Allowlisted overrides. Booleans merge directly. A reviewed `paths`
+  // mapping is applied to the compiler options and wired into the host
   // resolver below so patch-owned modules can be typed from their real
   // sources without a hand-generated ambient stub shim.
   const overrides: import('typescript').CompilerOptions = {};
   let pathsMapping: Record<string, string[]> | undefined;
-  const co = mode?.compilerOptions;
+  const co = input.mode?.compilerOptions;
   if (co) {
     for (const key of Object.keys(co) as (keyof PatchLintCheckJsCompilerOptions)[]) {
       const v = co[key];
@@ -348,10 +364,10 @@ export async function runCheckJsGrouped(
     // Module resolution is host-controlled (see resolveOwnedSpecifier
     // below): imports that match a patch-owned file resolve to the real
     // source so JSDoc type-guard predicates and @template generics
-    // survive the module boundary; everything else deliberately fails
+    // survive the module boundary. Everything else is left to fail
     // resolution, falling back to the chrome:*/resource:* ambient
     // wildcards plus the suppressed "cannot find module" codes. The
-    // host resolver is authoritative — TS never crawls the Firefox
+    // host resolver is authoritative: TS never crawls the Firefox
     // tree looking for upstream modules.
     ...strictness,
     ...overrides,
@@ -363,7 +379,7 @@ export async function runCheckJsGrouped(
   // the shim for the shim path, and returns empty content for
   // anything else to avoid reading the full Firefox tree.
   const defaultHost = ts.createCompilerHost(options);
-  // Files pulled in via a reviewed `paths` mapping — outside the owned set
+  // Files pulled in via a reviewed `paths` mapping: outside the owned set
   // but read from disk so the resolver's targets actually type-check.
   const pathsResolved = new Set<string>();
   const resolveViaPaths = pathsMapping
@@ -416,7 +432,7 @@ export async function runCheckJsGrouped(
     ts,
     [...program.getSemanticDiagnostics(), ...program.getSyntacticDiagnostics()],
     relByAbsolute,
-    mode?.undefinedIdentifiers ?? 'warning'
+    input.mode?.undefinedIdentifiers ?? 'warning'
   );
 
   verbose(`checkJs: analyzed ${rootFiles.length - 1} file(s) across ${byFile.size} owning file(s)`);
@@ -427,7 +443,7 @@ export async function runCheckJsGrouped(
  * Groups TS diagnostics by the patch-owned file they originate in,
  * suppressing module-resolution / unknown-name noise inherent to checking
  * Firefox JS outside Mozilla's build system. Diagnostics from `paths`-resolved
- * or shim files are dropped — only owned files (in `relByAbsolute`) carry
+ * or shim files are dropped. Only owned files (in `relByAbsolute`) carry
  * findings.
  */
 function groupOwnedDiagnostics(
@@ -477,8 +493,8 @@ function groupOwnedDiagnostics(
 /**
  * Flattens a {@link runCheckJsGrouped} run into a single issue list. When
  * `reportScope` is supplied, only diagnostics from files in that set are
- * returned (resolution still spans every owned file); omitting it reports
- * every owned file's diagnostics — the historical whole-set behaviour.
+ * returned (resolution still spans every owned file). Omitting it reports
+ * every owned file's diagnostics, the historical whole-set behaviour.
  *
  * @param repoDir - Absolute engine (repository) directory
  * @param patchOwnedFiles - Patch-owned `.sys.mjs` paths to resolve against
@@ -497,13 +513,13 @@ export async function runCheckJs(
   mode?: CheckJsMode,
   reportScope?: ReadonlySet<string>
 ): Promise<PatchLintIssue[]> {
-  const { byFile, global } = await runCheckJsGrouped(
+  const { byFile, global } = await runCheckJsGrouped({
     repoDir,
-    patchOwnedFiles,
-    extraShimPath,
-    projectRoot,
-    mode
-  );
+    resolutionOwned: patchOwnedFiles,
+    ...(extraShimPath !== undefined ? { extraShimPath } : {}),
+    ...(projectRoot !== undefined ? { projectRoot } : {}),
+    ...(mode !== undefined ? { mode } : {}),
+  });
   const issues = [...global];
   for (const [rel, list] of byFile) {
     if (reportScope && !reportScope.has(rel)) continue;
@@ -543,15 +559,15 @@ export async function invokePatchLintCheckJs(
 
 /**
  * Runs the checkJs pass over patch-owned test `.js` files (
- * `patchLint.checkJsTestFiles`). Each test file gets its OWN small
- * program — mochitest scripts share top-level scope only with their
- * directory's `head*.js` helpers, so one multi-script program would emit
- * false cross-file redeclaration errors — with roots = the test file plus
- * any same-directory patch-owned `head*.js`, checked against the built-in
- * Firefox shim + {@link TEST_HARNESS_SHIM} + the optional consumer
- * `checkJsTestShim`. Only the target file's diagnostics are reported per
- * program (head helpers report from their own program), and run-level
- * errors are de-duplicated across programs.
+ * `patchLint.checkJsTestFiles`). Each test file gets its own small
+ * program, with roots = the test file plus any same-directory patch-owned
+ * `head*.js`, checked against the built-in Firefox shim +
+ * {@link TEST_HARNESS_SHIM} + the optional consumer `checkJsTestShim`.
+ * Mochitest scripts share top-level scope only with their directory's
+ * `head*.js` helpers, so one multi-script program would emit false
+ * cross-file redeclaration errors. Only the target file's diagnostics are
+ * reported per program (head helpers report from their own program), and
+ * run-level errors are de-duplicated across programs.
  *
  * @param repoDir - Absolute engine (repository) directory
  * @param testFiles - Patch-owned test-script paths (repo-relative)
@@ -586,14 +602,16 @@ export async function runCheckJsTestFilesGrouped(
         roots.add(candidate);
       }
     }
-    const result = await runCheckJsGrouped(
+    const result = await runCheckJsGrouped({
       repoDir,
-      roots,
-      patchLint.checkJsTestShim,
+      resolutionOwned: roots,
+      ...(patchLint.checkJsTestShim !== undefined
+        ? { extraShimPath: patchLint.checkJsTestShim }
+        : {}),
       projectRoot,
       mode,
-      TEST_HARNESS_SHIM
-    );
+      builtinShimSuffix: TEST_HARNESS_SHIM,
+    });
     const own = result.byFile.get(file);
     if (own && own.length > 0) {
       merged.byFile.set(file, [
@@ -627,7 +645,7 @@ function modeFromPatchLintConfig(patchLint: PatchLintConfig): CheckJsMode {
 /**
  * Grouped variant of {@link invokePatchLintCheckJs}: builds one queue-wide
  * checkJs program over `patchOwnedFiles` and returns its findings grouped by
- * owning file. The per-patch lint orchestrator calls this **once per run**
+ * owning file. The per-patch lint orchestrator calls this once per run
  * and attributes each file's findings to its owning patch, instead of
  * rebuilding the same program for every patch in the queue.
  *
@@ -636,7 +654,7 @@ function modeFromPatchLintConfig(patchLint: PatchLintConfig): CheckJsMode {
  * @param patchLint - The resolved `patchLint` config block
  * @param projectRoot - FireForge project root for shim resolution
  * @param rootScope - Optional subset of files to use as program roots
- * (`--patches`); resolution still spans the whole queue
+ * (`--patches`). Resolution still spans the whole queue
  */
 export async function invokePatchLintCheckJsGrouped(
   repoDir: string,
@@ -645,20 +663,21 @@ export async function invokePatchLintCheckJsGrouped(
   projectRoot: string,
   rootScope?: ReadonlySet<string>
 ): Promise<GroupedCheckJsResult> {
-  return runCheckJsGrouped(
+  return runCheckJsGrouped({
     repoDir,
-    patchOwnedFiles,
-    patchLint.checkJsExtraShim,
+    resolutionOwned: patchOwnedFiles,
+    ...(patchLint.checkJsExtraShim !== undefined
+      ? { extraShimPath: patchLint.checkJsExtraShim }
+      : {}),
     projectRoot,
-    modeFromPatchLintConfig(patchLint),
-    undefined,
-    rootScope
-  );
+    mode: modeFromPatchLintConfig(patchLint),
+    ...(rootScope !== undefined ? { rootScope } : {}),
+  });
 }
 
 /**
  * Cheap probe reproducing the only run-level ("global") checkJs findings the
- * build path can produce — a missing `typescript` package and an unreadable
+ * build path can produce: a missing `typescript` package and an unreadable
  * consumer shim (`checkJsExtraShim`, and `checkJsTestShim` when
  * `checkJsTestFiles` is on). The built program itself never contributes
  * globals (see {@link runCheckJsGrouped}), so a warm all-cache-hit run can

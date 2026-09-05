@@ -5,17 +5,16 @@
  * `.js` files loaded via `Services.scriptloader.loadSubScript`).
  *
  * Why a separate module from {@link ./patch-lint-jsdoc.ts}: chrome
- * subscripts are NOT ES modules. They are parsed as scripts (no static
+ * subscripts are not ES modules. They are parsed as scripts (no static
  * `export`) and their top-level `class`/`function` declarations are
  * exposed to the loading window as globals rather than declared exports.
  * The export-walker in `patch-lint-jsdoc.ts` would never visit them.
  *
- * The rule shape — "every top-level class needs a JSDoc, every method
- * needs one when `chromeScriptJsDoc` is at `warning`/`error`, every
- * top-level function needs a matching @param/@returns block" — is
- * identical to the `.sys.mjs` rule once you remove the `export` framing,
- * so the per-declaration validators are reused verbatim from the export
- * module.
+ * The rule shape is identical to the `.sys.mjs` rule once you remove the
+ * `export` framing: every top-level class needs a JSDoc, every method
+ * needs one when `chromeScriptJsDoc` is at `warning`/`error`, and every
+ * top-level function needs a matching @param/@returns block. So the
+ * per-declaration validators are reused verbatim from the export module.
  */
 
 import type * as acorn from 'acorn';
@@ -33,13 +32,13 @@ import {
 
 /**
  * Validates JSDoc on top-level declarations in a chrome-subscript `.js`
- * source file. A parse failure returns an empty issue list — chrome
+ * source file. A parse failure returns an empty issue list. Chrome
  * subscripts that use module-only syntax (rare) silently disable the
  * rule rather than emitting confusing parse-error issues.
  *
  * @param source - File content
  * @param options - Optional gates (e.g. class-method JSDoc severity).
- *   `classMethodMode` defaults to `'off'` — the orchestrator passes the
+ *   `classMethodMode` defaults to `'off'`. The orchestrator passes the
  *   `chromeScriptJsDoc` severity here so a single knob controls both
  *   class-level and method-level enforcement.
  * @returns Array of JSDoc issues found
@@ -57,7 +56,7 @@ export function validateChromeScriptJsDoc(
     // Deliberate carve-out, unlike the `.sys.mjs` walker in
     // `patch-lint-jsdoc.ts` (which reports a parse failure as an issue).
     // `parseScript` rejects `import`/`export`, so a chrome subscript that was
-    // misclassified as a `.js` file — or that mistakenly uses module syntax —
+    // misclassified as a `.js` file (or that mistakenly uses module syntax)
     // would emit a pseudo-issue for every rule here. The orchestrator already
     // runs the export walker on `.sys.mjs` separately, so silently declining
     // to lint an unparseable script is the correct degradation for this file
@@ -78,7 +77,7 @@ export function validateChromeScriptJsDoc(
       }
     }
     // Top-level `var Foo = class {...}` / `let Foo = function() {...}`
-    // patterns are intentionally out of scope for V1 — chrome subscripts
+    // patterns are out of scope for V1: chrome subscripts
     // overwhelmingly use bare `class`/`function` declarations and the
     // variable-init form would require unwrapping the initializer. Add
     // it later if a real chrome subscript uses that shape.

@@ -92,7 +92,7 @@ import { furnaceValidateCommand } from '../furnace/validate.js';
 describe('furnaceValidateCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default to "all entries were new"; tests that simulate an idempotent
+    // Default to "all entries were new". Tests that simulate an idempotent
     // no-op (jar.mn already has the entries) override this to 0.
     vi.mocked(addJarMnEntries).mockImplementation((_engine, _name, files) =>
       Promise.resolve(files.length)
@@ -366,6 +366,7 @@ describe('furnaceValidateCommand', () => {
       isSymbolicLink: () => false,
       name,
       parentPath: '',
+      path: '',
     });
 
     const staleJarIssue = (component: string): ValidationIssue => ({
@@ -401,54 +402,51 @@ describe('furnaceValidateCommand', () => {
       );
     });
 
-    it('warns when pruning stale jar.mn lines fails', async () => {
+    // A non-Error rejection has to survive the same warning path, so the
+    // operator sees the reason rather than "[object Object]".
+    it.each<[string, unknown, string]>([
+      ['an Error', new Error('jar.mn is read-only'), 'jar.mn is read-only'],
+      ['a non-Error throwable', 'disk detached', 'disk detached'],
+    ])('warns when pruning stale jar.mn lines fails with %s', async (_label, failure, expected) => {
       vi.mocked(validateComponent)
         .mockResolvedValueOnce([staleJarIssue('moz-sidebar')])
         .mockResolvedValueOnce([staleJarIssue('moz-sidebar')]);
-      vi.mocked(pruneStaleJarMnEntries).mockRejectedValueOnce(new Error('jar.mn is read-only'));
+      vi.mocked(pruneStaleJarMnEntries).mockRejectedValueOnce(failure);
 
       await expect(
         furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
       ).rejects.toThrow();
 
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('Could not prune stale jar.mn lines: jar.mn is read-only')
+        expect.stringContaining(`Could not prune stale jar.mn lines: ${expected}`)
       );
     });
 
-    it('stringifies a non-Error prune failure', async () => {
-      vi.mocked(validateComponent)
-        .mockResolvedValueOnce([staleJarIssue('moz-sidebar')])
-        .mockResolvedValueOnce([staleJarIssue('moz-sidebar')]);
-      vi.mocked(pruneStaleJarMnEntries).mockRejectedValueOnce('disk detached');
+    // A fixable issue whose component is not in `config.custom` (unknown to
+    // furnace.json, or registered as an override instead) is skipped rather
+    // than crashing the fix pass. An unknown component is dropped from the
+    // issue list entirely (the run completes). An override-registered one
+    // stays an unfixed issue and still fails the run. Neither writes jar.mn.
+    it.each<[string, string, 'resolves' | 'rejects']>([
+      ['unknown to furnace.json', 'moz-ghost', 'resolves'],
+      ['registered as an override, not custom', 'moz-card', 'rejects'],
+    ])('skips the jar.mn fix for a component %s', async (_label, component, outcome) => {
+      vi.mocked(validateComponent).mockResolvedValue([mjsIssue(component)]);
 
-      await expect(
-        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
-      ).rejects.toThrow();
-
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('Could not prune stale jar.mn lines: disk detached')
-      );
-    });
-
-    it('skips fixable issues for components not present in furnace.json custom', async () => {
-      // A fixable check id whose component is unknown (e.g. removed from
-      // furnace.json between validate and --fix) is skipped rather than
-      // crashing the fix pass; re-validation also skips the unknown
-      // component, so the run completes without a write.
-      vi.mocked(validateComponent).mockResolvedValueOnce([mjsIssue('moz-ghost')]);
-
-      await expect(
-        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
-      ).resolves.toBeUndefined();
+      const run = furnaceValidateCommand('/project', 'moz-sidebar', { fix: true });
+      if (outcome === 'resolves') {
+        await expect(run).resolves.toBeUndefined();
+      } else {
+        await expect(run).rejects.toThrow(/Validation failed/i);
+      }
 
       expect(addJarMnEntries).not.toHaveBeenCalled();
     });
 
     it('auto-fixes jar.mn mjs issues and reports fixed count from a true re-validation', async () => {
-      // Initial validation surfaces the fixable issue; re-validation after
+      // Initial validation surfaces the fixable issue. Re-validation after
       // the fix returns no issues, which is what justifies the "Auto-fixed"
-      // count. The fix counter is now derived from the *real* drop in
+      // count. The fix counter is now derived from the actual drop in
       // fixable issues, not from autoFixIssues' return value.
       vi.mocked(validateComponent)
         .mockResolvedValueOnce([mjsIssue('moz-sidebar')])
@@ -470,7 +468,7 @@ describe('furnaceValidateCommand', () => {
     it('warns when an auto-fix attempt did not actually clear the fixable issue', async () => {
       // autoFixIssues returns a positive number, but the underlying issue
       // remains on re-validation. The user must learn that the reported
-      // fix did not actually land — the previous behaviour silently
+      // fix did not actually land. The previous behaviour silently
       // inflated the fixed count.
       vi.mocked(validateComponent)
         .mockResolvedValueOnce([mjsIssue('moz-sidebar')])
@@ -522,8 +520,8 @@ describe('furnaceValidateCommand', () => {
 
     it('logs a no-op line when jar.mn entries were already present', async () => {
       // `addJarMnEntries` returns 0 when every requested entry was already
-      // on disk. The caller must not claim "Fixed: …" — that would lie to
-      // the user — but it must still report the honest outcome.
+      // on disk. The caller must not claim "Fixed: …" (that would lie to
+      // the user), but it must still report the honest outcome.
       vi.mocked(validateComponent)
         .mockResolvedValueOnce([mjsIssue('moz-sidebar')])
         .mockResolvedValueOnce([]);
@@ -544,8 +542,8 @@ describe('furnaceValidateCommand', () => {
 
     it('counts warning-severity issues separately from errors during re-validation', async () => {
       // Exercises the post-fix re-validation branch that classifies each
-      // remaining issue by severity. A warning-only residue must NOT be
-      // counted as an error and must NOT cause the command to reject.
+      // remaining issue by severity. A warning-only residue must not be
+      // counted as an error and must not cause the command to reject.
       const warningIssue: ValidationIssue = {
         component: 'moz-sidebar',
         check: 'non-fixable-observation',
@@ -590,17 +588,6 @@ describe('furnaceValidateCommand', () => {
       expect(addJarMnEntries).not.toHaveBeenCalled();
     });
 
-    it('skips jar.mn fix for components not in config.custom', async () => {
-      vi.mocked(validateComponent).mockResolvedValue([mjsIssue('moz-card')]);
-
-      await expect(furnaceValidateCommand('/project', 'moz-card', { fix: true })).rejects.toThrow(
-        /Validation failed/i
-      );
-
-      // moz-card is in overrides, not custom — autoFixIssues skips it
-      expect(addJarMnEntries).not.toHaveBeenCalled();
-    });
-
     it('calls addCustomElementRegistration for components with register:true and .mjs', async () => {
       vi.mocked(validateComponent).mockResolvedValue([mjsIssue('moz-sidebar')]);
       vi.mocked(readdir).mockResolvedValue([mockDirent('moz-sidebar.mjs')] as never);
@@ -619,7 +606,7 @@ describe('furnaceValidateCommand', () => {
     it('does not register components absent from the issue list', async () => {
       // Iterating every entry in `config.custom` makes
       // `furnace validate <one> --fix` write customElements.js
-      // registrations for EVERY custom component — outside the issue list it
+      // registrations for every custom component, outside the issue list it
       // was handed, and invisibly, since `fixed` is never incremented there.
       vi.mocked(loadFurnaceConfig).mockResolvedValue({
         version: 1,
@@ -656,10 +643,10 @@ describe('furnaceValidateCommand', () => {
     });
 
     it('repairs a registration-only defect via missing-custom-element-registration', async () => {
-      // The defect the scoped repair loop exists for: a component whose ONLY
+      // The defect the scoped repair loop exists for: a component whose only
       // issue is that customElements.js never mentions it. Scoping --fix to
-      // the issue list removed the old (over-broad) path that repaired this;
-      // the new validate check is what routes it back into FIXABLE_CHECKS.
+      // the issue list removed the old (over-broad) path that repaired this.
+      // The new validate check is what routes it back into FIXABLE_CHECKS.
       const missingRegIssue: ValidationIssue = {
         component: 'moz-sidebar',
         check: 'missing-custom-element-registration',
@@ -775,7 +762,7 @@ describe('furnaceValidateCommand', () => {
       ).rejects.toThrow(/Validation failed/i);
 
       // wrong-registration-pattern is in FIXABLE_CHECKS so autoFixIssues is called,
-      // but the actual loop is a no-op — no jar.mn entries added
+      // but the actual loop is a no-op, with no jar.mn entries added
       expect(addJarMnEntries).not.toHaveBeenCalled();
       // fixedCount stays 0, so no "Auto-fixed" message
       expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Auto-fixed'));
@@ -799,7 +786,7 @@ describe('furnaceValidateCommand', () => {
       vi.mocked(validateAllComponents).mockResolvedValue(
         new Map([['moz-sidebar', [mjsIssue('moz-sidebar')]]])
       );
-      // Re-validation pass uses validateComponent per component; return
+      // Re-validation pass uses validateComponent per component. Return
       // empty so the actual fixed-count is honest.
       vi.mocked(validateComponent).mockResolvedValueOnce([]);
       vi.mocked(readdir).mockResolvedValue([mockDirent('moz-sidebar.mjs')] as never);

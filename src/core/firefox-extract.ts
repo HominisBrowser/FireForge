@@ -22,17 +22,42 @@ function isUnsafeArchivePath(path: string): boolean {
 }
 
 /**
- * Validates entry names from a `tar -tf` listing.
- * @param names - Listing lines (one member name per line)
- * @returns The first unsafe member name, or null when all are safe
+ * Returns true when an archive member path has a `.git` segment at any
+ * depth (`.git`, `.git/config`, `foo/.git/hooks/pre-commit`). Such a member
+ * lands inside the extraction root, so the traversal check passes it, but
+ * the extracted tree is immediately turned into a git repository and
+ * committed, and git honours a pre-seeded `.git/config` (`core.fsmonitor`,
+ * `core.hooksPath`) or `.git/hooks/*` on that first commit. Only the `.git`
+ * directory/file is rejected. `.gitmodules`, `.gitignore` and the like are
+ * legitimate upstream files.
  */
-export function findUnsafeArchiveEntryName(names: readonly string[]): string | null {
+function hasGitSegment(path: string): boolean {
+  return path.split(/[\\/]/).some((segment) => segment.toLowerCase() === '.git');
+}
+
+/**
+ * Returns true when an archive member name must be rejected: an escaping
+ * path, or a `.git` segment (see {@link hasGitSegment}). Link targets use
+ * the narrower {@link isUnsafeArchivePath}: a target can only be reached
+ * through a member name that was checked here.
+ */
+function isUnsafeArchiveMemberName(name: string): boolean {
+  return isUnsafeArchivePath(name) || hasGitSegment(name);
+}
+
+/**
+ * Validates entry names from a `tar -tf` listing: escaping paths and
+ * `.git` members are both rejected.
+ * @param names - Listing lines (one member name per line)
+ * @returns The first unsafe member name, or undefined when all are safe
+ */
+export function findUnsafeArchiveEntryName(names: readonly string[]): string | undefined {
   for (const raw of names) {
     const name = raw.trim();
     if (name.length === 0) continue;
-    if (isUnsafeArchivePath(name)) return name;
+    if (isUnsafeArchiveMemberName(name)) return name;
   }
-  return null;
+  return undefined;
 }
 
 /**
@@ -40,14 +65,14 @@ export function findUnsafeArchiveEntryName(names: readonly string[]): string | n
  *
  * A relative link target without `..` segments can only resolve inside the
  * extraction root, so only absolute or `..`-containing targets are rejected.
- * Symlinks are `l`-typed lines with a ` -> target` suffix (the LAST arrow is
+ * Symlinks are `l`-typed lines with a ` -> target` suffix (the last arrow is
  * taken, so a link whose own name contains ` -> ` still parses to its real
- * target); hardlinks print ` link to target` on GNU tar and bsdtar alike.
+ * target). Hardlinks print ` link to target` on GNU tar and bsdtar alike.
  *
  * @param verboseLines - `tar -tvf` listing lines
- * @returns A description of the first unsafe link found, or null
+ * @returns A description of the first unsafe link found, or undefined
  */
-export function findUnsafeArchiveLink(verboseLines: readonly string[]): string | null {
+export function findUnsafeArchiveLink(verboseLines: readonly string[]): string | undefined {
   for (const line of verboseLines) {
     if (line.startsWith('l')) {
       const arrow = line.lastIndexOf(' -> ');
@@ -63,20 +88,20 @@ export function findUnsafeArchiveLink(verboseLines: readonly string[]): string |
       if (isUnsafeArchivePath(target)) return `hardlink target: ${target}`;
     }
   }
-  return null;
+  return undefined;
 }
 
 /**
  * Lists the archive and rejects members that could escape the extraction
  * root before anything is written to disk: absolute names, `..` traversal,
  * and symlink/hardlink targets that are absolute or `..`-escaping. Modern
- * GNU tar / bsdtar refuse most of these at extraction time; the preflight
+ * GNU tar / bsdtar refuse most of these at extraction time. The preflight
  * makes the guarantee explicit and independent of the host tar's defaults.
  *
  * Two listings are needed because they answer different questions and
  * neither is safe to derive from the other: member names come from `-tf`,
- * where the whole line IS the name, while link targets only appear in
- * `-tvf`. Names are deliberately NOT parsed out of the `-tvf` columns — the
+ * where the whole line is the name, while link targets only appear in
+ * `-tvf`. Names are not parsed out of the `-tvf` columns, on purpose: the
  * adjacent uname/gname fields are attacker-controlled in a crafted archive,
  * so a date-shaped owner name could shift the column boundary and hide an
  * absolute member name from the check. Each listing pass costs one full
@@ -115,28 +140,28 @@ function createLineScanner(onLine: (line: string) => void): {
 
 /**
  * Runs one tar listing pass, streaming lines through `checkLine` and
- * returning the first unsafe finding (or null) plus the exit code.
+ * returning the first unsafe finding (or undefined) plus the exit code.
  *
  * Streaming matters for safety, not just memory: a buffered `exec` collector
  * silently truncates at 50 MB, and a full Firefox `-tvf` listing already
- * sits in the 40–50 MB range — so a buffered implementation scans only the
+ * sits in the 40-50 MB range, so a buffered implementation scans only the
  * head of the listing while reporting the archive safe. A crafted archive
- * could exploit exactly that by padding benign entries first and hiding a
+ * could exploit that by padding benign entries first and hiding a
  * traversal name or absolute link target past the cap. Per-line streaming
- * scans EVERY entry with bounded memory.
+ * scans every entry with bounded memory.
  */
 async function runListingScan(
   archivePath: string,
   tarFlag: '-tf' | '-tvf',
-  checkLine: (line: string) => string | null
-): Promise<{ unsafe: string | null; exitCode: number; stderrTail: string }> {
+  checkLine: (line: string) => string | undefined
+): Promise<{ unsafe: string | undefined; exitCode: number; stderrTail: string }> {
   // LC_ALL=C keeps the -tvf column format stable for the link parse.
   const listEnv = { LC_ALL: 'C', LANG: 'C' };
-  let unsafe: string | null = null;
+  let unsafe: string | undefined;
   let stderrTail = '';
 
   const scanner = createLineScanner((line) => {
-    if (unsafe === null) {
+    if (unsafe === undefined) {
       unsafe = checkLine(line);
     }
   });
@@ -147,7 +172,7 @@ async function runListingScan(
       scanner.push(chunk);
     },
     onStderr: (chunk) => {
-      // Keep a small diagnostic tail; the listing itself is the big stream.
+      // Keep a small diagnostic tail. The listing itself is the big stream.
       stderrTail = (stderrTail + chunk).slice(-4096);
     },
   });
@@ -158,11 +183,7 @@ async function runListingScan(
 
 async function preflightArchiveEntries(archivePath: string): Promise<void> {
   const [nameScan, linkScan] = await Promise.all([
-    runListingScan(archivePath, '-tf', (line) => {
-      const name = line.trim();
-      if (name.length === 0) return null;
-      return isUnsafeArchivePath(name) ? name : null;
-    }),
+    runListingScan(archivePath, '-tf', (line) => findUnsafeArchiveEntryName([line])),
     runListingScan(archivePath, '-tvf', (line) => findUnsafeArchiveLink([line])),
   ]);
 
@@ -172,11 +193,11 @@ async function preflightArchiveEntries(archivePath: string): Promise<void> {
       new Error(`tar -tf preflight exited with code ${nameScan.exitCode}:\n${nameScan.stderrTail}`)
     );
   }
-  if (nameScan.unsafe !== null) {
+  if (nameScan.unsafe !== undefined) {
     throw new ExtractionError(
       archivePath,
       new Error(
-        `Archive rejected: member name could escape the extraction root: ${nameScan.unsafe}`
+        `Archive rejected: member name could escape the extraction root or seed .git: ${nameScan.unsafe}`
       )
     );
   }
@@ -187,7 +208,7 @@ async function preflightArchiveEntries(archivePath: string): Promise<void> {
       new Error(`tar -tvf preflight exited with code ${linkScan.exitCode}:\n${linkScan.stderrTail}`)
     );
   }
-  if (linkScan.unsafe !== null) {
+  if (linkScan.unsafe !== undefined) {
     throw new ExtractionError(
       archivePath,
       new Error(`Archive rejected: link could escape the extraction root (${linkScan.unsafe})`)

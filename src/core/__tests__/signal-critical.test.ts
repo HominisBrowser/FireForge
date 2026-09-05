@@ -5,8 +5,13 @@
  * exercised directly: bodies run to completion, results and throws pass
  * through, and waitForActiveCriticalSections blocks until every active
  * section resolves or the bounded timeout elapses.
+ *
+ * Timing is asserted through fake timers and callback ordering, never
+ * through wall-clock bounds: "resolved without advancing the clock" is the
+ * immediate-return contract, and "still pending at timeout-1, resolved at
+ * timeout" is the bounded-wait contract.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runInSignalCriticalSection, waitForActiveCriticalSections } from '../signal-critical.js';
 
@@ -18,6 +23,19 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+/** Attaches a settled flag so a pending promise can be observed without awaiting it. */
+function observe(promise: Promise<unknown>): { readonly settled: boolean } {
+  const state = { settled: false };
+  void promise.then(() => {
+    state.settled = true;
+  });
+  return state;
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('runInSignalCriticalSection', () => {
   it('returns the body result', async () => {
     await expect(runInSignalCriticalSection('test', () => Promise.resolve(42))).resolves.toBe(42);
@@ -28,19 +46,24 @@ describe('runInSignalCriticalSection', () => {
       runInSignalCriticalSection('test', () => Promise.reject(new Error('body failed')))
     ).rejects.toThrow('body failed');
 
-    // Registry must be empty again: the wait resolves immediately even with
-    // a zero timeout budget.
-    const start = Date.now();
-    await waitForActiveCriticalSections(5_000);
-    expect(Date.now() - start).toBeLessThan(1_000);
+    // Registry must be empty again: with the clock frozen, the wait can only
+    // resolve by taking the "nothing active" early return.
+    vi.useFakeTimers();
+    const wait = observe(waitForActiveCriticalSections(5_000));
+    await Promise.resolve();
+    expect(wait.settled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
 describe('waitForActiveCriticalSections', () => {
   it('resolves immediately when no section is active', async () => {
-    const start = Date.now();
-    await waitForActiveCriticalSections(5_000);
-    expect(Date.now() - start).toBeLessThan(1_000);
+    vi.useFakeTimers();
+    const wait = observe(waitForActiveCriticalSections(5_000));
+    await Promise.resolve();
+    expect(wait.settled).toBe(true);
+    // No timeout was armed: the early return never reaches the race.
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('waits for an active section to finish', async () => {
@@ -89,17 +112,22 @@ describe('waitForActiveCriticalSections', () => {
   });
 
   it('gives up after the bounded timeout when a section never finishes', async () => {
+    vi.useFakeTimers();
     const gate = deferred();
     const section = runInSignalCriticalSection('stuck', () => gate.promise);
 
-    const start = Date.now();
-    await waitForActiveCriticalSections(100);
-    expect(Date.now() - start).toBeLessThan(5_000);
+    const wait = observe(waitForActiveCriticalSections(100));
+    await vi.advanceTimersByTimeAsync(99);
+    expect(wait.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(wait.settled).toBe(true);
 
     // Unstick and drain so the section does not leak into other tests.
     gate.resolve();
     await section;
-    await waitForActiveCriticalSections(1_000);
+    const drained = observe(waitForActiveCriticalSections(1_000));
+    await Promise.resolve();
+    expect(drained.settled).toBe(true);
   });
 
   it('treats a throwing section as completed, not as a rejection', async () => {

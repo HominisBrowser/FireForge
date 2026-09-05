@@ -8,7 +8,6 @@
 import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
 import type { TestPackagingCoverage } from '../core/build-baseline-types.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
-import type { getProjectPaths, loadConfig } from '../core/config.js';
 import {
   checkExtendCoverageAnchor,
   checkExtendMozconfigAnchor,
@@ -20,6 +19,7 @@ import { buildHarnessCrashMessage } from '../core/test-harness-crash.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
+import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { info, notice, spinner, verbose } from '../utils/logger.js';
 import type { HarnessClassification } from './test-modes.js';
@@ -27,20 +27,44 @@ import { reportBuildOnlyCompletion } from './test-modes.js';
 import { enforceStaleBuildGate, enforceStaticComponentsGate } from './test-stale-gate.js';
 import { emitPassVerdict } from './test-verdict.js';
 
-async function runPreTestBuild(
-  projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  projectConfig: Awaited<ReturnType<typeof loadConfig>>,
-  harnessRetries: number,
-  testPackagingCoverage: TestPackagingCoverage,
-  refuseUnexportedDrift: boolean,
-  extend?: { requestedPaths: string[] }
-): Promise<void> {
+interface RunPreTestBuildOptions {
+  /** Root directory of the project. */
+  projectRoot: string;
+  /** Resolved project paths. */
+  paths: ProjectPaths;
+  /** Loaded project configuration. */
+  projectConfig: FireForgeConfig;
+  /** Harness-crash retry budget for the build. */
+  harnessRetries: number;
+  /** Coverage claim to record on the baseline this build writes. */
+  testPackagingCoverage: TestPackagingCoverage;
+  /** Whether unexported engine drift must refuse the build. */
+  refuseUnexportedDrift: boolean;
+  /** `--extend-coverage` request paths, when the flag is in force. */
+  extend?: { requestedPaths: string[] } | undefined;
+}
+
+/**
+ * Runs the incremental pre-test build under the build lock and records the
+ * baseline it produced.
+ *
+ * @param options - See {@link RunPreTestBuildOptions}
+ */
+async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
+  const {
+    projectRoot,
+    paths,
+    projectConfig,
+    harnessRetries,
+    testPackagingCoverage,
+    refuseUnexportedDrift,
+    extend,
+  } = options;
   await withBuildLock(projectRoot, async () => {
     // Pass the previous baseline exactly like `fireforge build` does, so
     // auto-configure runs under the same conditions on both paths. The
     // pre-test build must never invalidate more of the objdir than a plain
-    // `mach build faster` would — a failed pre-test build followed by a full
+    // `mach build faster` would: a failed pre-test build followed by a full
     // rebuild is an hour where an incremental one would have sufficed.
     const previousBaseline = await readBuildBaseline(projectRoot);
     const preparation = await prepareBuildEnvironment(projectRoot, paths, projectConfig, {
@@ -50,8 +74,8 @@ async function runPreTestBuild(
 
     // The mozconfig half of the --extend-coverage anchor can
     // only be checked once prepareBuildEnvironment has regenerated
-    // engine/mozconfig — that is the file this build will configure with —
-    // and must still be checked before mach, so a refusal costs no build.
+    // engine/mozconfig (the file this build will configure with), and must
+    // still be checked before mach, so a refusal costs no build.
     if (extend !== undefined) {
       const mozconfigAnchor = await checkExtendMozconfigAnchor(paths.engine, previousBaseline);
       if (!mozconfigAnchor.ok) {
@@ -61,7 +85,7 @@ async function runPreTestBuild(
 
     const buildKind = preparation.fullBuildRequired ? 'full' : 'faster';
     if (preparation.fullBuildRequired) {
-      // Warning severity, not info: agent-facing output filters
+      // Warning severity rather than info: agent-facing output filters
       // keep warnings and errors only, and this is the line that explains an
       // otherwise unexplained multi-minute build.
       notice(
@@ -78,7 +102,7 @@ async function runPreTestBuild(
     // `fireforge build` / `build --ui`: in-venv resource-monitor guard plus
     // the uniform recognized-crash retry budget, with a fresh mach process
     // (and fresh guard install) per attempt. prepareBuildEnvironment runs
-    // ONCE, outside the retry loop — retries never re-run mach configure.
+    // once, outside the retry loop. Retries never re-run mach configure.
     const result = await runProtectedMachBuild(buildKind, paths.engine, {
       retries: harnessRetries,
       onRetry: (signature, nextAttempt, maxAttempts) => {
@@ -97,10 +121,10 @@ async function runPreTestBuild(
       // coverage claim is scoped to the requested test paths, since a
       // file-scoped `test --build` only guarantees packaging for those
       // manifests. The previous baseline is passed through so a scoped write
-      // carries the static-components anchor forward — `mach build faster`
-      // does not rebake components.conf into the compiled table.
+      // carries the static-components anchor forward, since `mach build
+      // faster` does not rebake components.conf into the compiled table.
       try {
-        // Under --extend-coverage the claim is the UNION of the previous
+        // Under --extend-coverage the claim is the union of the previous
         // record and this build's paths, and the static-components anchor
         // is always carried forward: that union can evaluate to 'full'
         // while the build behind it was a scoped `mach build faster` that
@@ -112,20 +136,20 @@ async function runPreTestBuild(
                 extend.requestedPaths
               )
             : testPackagingCoverage;
-        await writeBuildBaseline(
+        await writeBuildBaseline({
           projectRoot,
-          paths.engine,
-          projectConfig.binaryName,
-          recordedCoverage,
+          engineDir: paths.engine,
+          binaryName: projectConfig.binaryName,
+          testPackagingCoverage: recordedCoverage,
           previousBaseline,
-          describeBuildInvocation(extend !== undefined, testPackagingCoverage),
-          preparation.fullBuildRequired
+          recordedBy: describeBuildInvocation(extend !== undefined, testPackagingCoverage),
+          staticComponentsHandling: preparation.fullBuildRequired
             ? 'refresh'
             : extend !== undefined
               ? 'carry-forward'
               : 'auto',
-          buildKind
-        );
+          buildKind,
+        });
       } catch (baselineError: unknown) {
         verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
       }
@@ -142,10 +166,10 @@ async function runPreTestBuild(
 }
 
 /**
- * `--extend-coverage` only means something for a SCOPED build: it unions
+ * `--extend-coverage` only means something for a scoped build: it unions
  * this build's paths onto the recorded claim. Without `--build`/
  * `--build-only` there is no build to extend from, and a path-less build
- * records `'full'`, which already covers everything — refusing both is more
+ * records `'full'`, which already covers everything. Refusing both is more
  * honest than silently ignoring the flag.
  */
 function assertExtendCoverageUsage(options: TestOptions, normalizedPaths: string[]): void {
@@ -165,9 +189,9 @@ function assertExtendCoverageUsage(options: TestOptions, normalizedPaths: string
 
 /**
  * Refuses `--refuse-unexported-drift` on a run that dispatches no build.
- * The flag governs the PRE-TEST build only, so accepting it without
- * `--build`/`--build-only` would arm a belt over work that never happens —
- * exactly the silent no-op this release fixes elsewhere.
+ * The flag governs the pre-test build only, so accepting it without
+ * `--build`/`--build-only` would arm a belt over work that never happens,
+ * the same silent no-op this release fixes elsewhere.
  */
 function assertRefuseUnexportedDriftUsage(options: TestOptions): void {
   if (options.refuseUnexportedDrift !== true) return;
@@ -188,15 +212,15 @@ function describeBuildInvocation(extending: boolean, coverage: TestPackagingCove
 
 /**
  * Runs the pre-test build (or the stale-build gate when no build was
- * requested). Returns `true` when the run is COMPLETE — the `--build-only`
+ * requested). Returns `true` when the run is complete: the `--build-only`
  * union-build shape, which packages every requested path
  * (mixed harnesses legal, nothing dispatches), prints the per-harness
  * next steps, and emits the run's single `PASS` verdict.
  */
 export async function runTestBuildPhase(
   projectRoot: string,
-  paths: ReturnType<typeof getProjectPaths>,
-  projectConfig: Awaited<ReturnType<typeof loadConfig>>,
+  paths: ProjectPaths,
+  projectConfig: FireForgeConfig,
   harnessRetries: number,
   options: TestOptions,
   request: { classification: HarnessClassification; normalizedPaths: string[] }
@@ -208,8 +232,8 @@ export async function runTestBuildPhase(
   }
   assertRefuseUnexportedDriftUsage(options);
   if (options.build || options.buildOnly) {
-    // A path-less `test --build` runs (and packages for) the full suite;
-    // a scoped invocation only vouches for the requested paths. A SCOPED
+    // A path-less `test --build` runs (and packages for) the full suite.
+    // A scoped invocation only vouches for the requested paths. A scoped
     // rebuild also cannot regenerate the compiled StaticComponents table,
     // so it runs the components.conf gate up-front (the path-less shape
     // refreshes the anchor itself and skips it).
@@ -226,20 +250,20 @@ export async function runTestBuildPhase(
         }
       }
     }
-    await runPreTestBuild(
+    await runPreTestBuild({
       projectRoot,
       paths,
       projectConfig,
       harnessRetries,
-      coverage,
-      options.refuseUnexportedDrift === true,
-      extending ? { requestedPaths: normalizedPaths } : undefined
-    );
+      testPackagingCoverage: coverage,
+      refuseUnexportedDrift: options.refuseUnexportedDrift === true,
+      extend: extending ? { requestedPaths: normalizedPaths } : undefined,
+    });
     info('');
     if (options.buildOnly) {
       // Union build for mixed harnesses: the coverage claim
       // above lists every requested path, so each harness half can run
-      // build-less against this packaging. Nothing dispatches here; the
+      // build-less against this packaging. Nothing dispatches here. The
       // run still ends with exactly one verdict line.
       reportBuildOnlyCompletion(classification, normalizedPaths);
       emitPassVerdict();

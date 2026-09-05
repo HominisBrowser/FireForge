@@ -92,7 +92,7 @@ describe('classifyFiles (batched + concurrent)', () => {
     await writeFiles(projectRoot, {
       'patches/001-ui-app.patch': modifyPatch(APP, 'line1', 'line2'),
       'patches/002-ui-new.patch': newFilePatch(NEW_FILE, 'hello'),
-      // Context mismatch against BROKEN's committed content — the per-file
+      // Context mismatch against BROKEN's committed content. The per-file
       // comparison throws and must settle as patch-owned-drift.
       'patches/003-ui-broken.patch': modifyPatch(BROKEN, 'never-there', 'still-not'),
       'patches/patches.json': manifestJson([

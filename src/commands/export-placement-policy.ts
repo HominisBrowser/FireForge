@@ -3,6 +3,7 @@
  * Policy-aware checks for export placement plans.
  */
 
+import { formatOrderRange, formatPatchOrder } from '../core/patch-parse.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig, PatchPolicyReservedRange } from '../types/config.js';
@@ -10,10 +11,6 @@ import type { FireForgeConfig, PatchPolicyReservedRange } from '../types/config.
 export interface PlacementPolicyPlan {
   insertionOrder: number;
   renameMap: ReadonlyMap<string, { newFilename: string; newOrder: number }>;
-}
-
-function reservedRangeLabel(range: { from: number; to: number }): string {
-  return `${String(range.from).padStart(3, '0')}-${String(range.to).padStart(3, '0')}`;
 }
 
 function findReservedRange(
@@ -44,7 +41,7 @@ function firstFreeOrderBelowReservedRange(
 
 /**
  * Refuses positional placement plans whose renumber would touch a
- * `patchPolicy.reservedRanges` block — either by moving a patch INTO a
+ * `patchPolicy.reservedRanges` block, either by moving a patch into a
  * reserved range or by moving a patch that currently sits inside one.
  * Throws a single up-front error for the first reserved range hit (the
  * per-patch alternative surfaced one confusing finding per shifted
@@ -66,12 +63,12 @@ export function assertPlacementAvoidsReservedRanges(
       (oldOrder !== undefined ? findReservedRange(config, oldOrder) : null);
     if (reserved === null) continue;
 
-    const label = reservedRangeLabel(reserved);
+    const label = formatOrderRange(reserved);
     const freeOrder = firstFreeOrderBelowReservedRange(manifestPatches, reserved);
     if (freeOrder !== null) {
       throw new InvalidArgumentError(
         `Positional insert would renumber the reserved range ${label}; ` +
-          `pass --order ${String(freeOrder).padStart(3, '0')} (first free order below the ` +
+          `pass --order ${formatPatchOrder(freeOrder)} (first free order below the ` +
           'reserved block) to place the new patch without renumbering reserved patches.',
         'export placement'
       );

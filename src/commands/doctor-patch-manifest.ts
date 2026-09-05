@@ -2,7 +2,8 @@
 /**
  * The patch-manifest consistency check and its two repair paths, split out of
  * `doctor.ts` for the line budget. Exports a single `DoctorCheckDefinition`
- * consumed by the doctor registry; no registrar is exported and none is wanted.
+ * consumed by the doctor registry. No registrar is exported and none is
+ * wanted.
  */
 
 import {
@@ -107,8 +108,8 @@ function describeCount(count: number): string {
 async function runManifestRebuild(ctx: DoctorCheckContext): Promise<DoctorCheck> {
   // Repair stamps sourceEsrVersion into every recovered entry. If the
   // earlier "fireforge.json is valid" check failed, ctx.config is
-  // undefined and we must refuse rather than fabricate a fallback —
-  // persisting 'unknown' into manifest metadata is hard to reverse
+  // undefined and we must refuse rather than fabricate a fallback.
+  // Persisting 'unknown' into manifest metadata is hard to reverse
   // and would mislead every later command that reads it.
   if (!ctx.config) {
     return failure(
@@ -132,7 +133,7 @@ async function runManifestRebuild(ctx: DoctorCheckContext): Promise<DoctorCheck>
   // trustworthy as an audit trail. The rebuilder returns the list of
   // filenames whose metadata was entirely invented, named explicitly
   // here so the operator knows which patches to review. Entries that
-  // WERE preserved (only `filesAffected` / ordering drifted) are not
+  // were preserved (only `filesAffected` / ordering drifted) are not
   // flagged.
   for (const filename of repaired.recoveredFilenames) {
     // Telling the operator to hand-edit patches.json contradicts the
@@ -151,8 +152,8 @@ async function runManifestRebuild(ctx: DoctorCheckContext): Promise<DoctorCheck>
     );
   }
   // A row whose patch file is gone is dropped by the rebuild. That is
-  // correct — the patch file is the source of truth — but a manifest that
-  // quietly loses rows is exactly what makes a repair hard to audit
+  // correct, since the patch file is the source of truth, but a manifest
+  // that quietly loses rows is what makes a repair hard to audit
   // afterwards, so each one is named.
   for (const filename of repaired.droppedFilenames) {
     warn(

@@ -13,6 +13,7 @@ import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-
 import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
 import { createRollbackJournal, snapshotFile } from '../../core/furnace-rollback.js';
 import { DEEP_SCAN_PATHS, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
+import type { ScannedComponent } from '../../types/furnace.js';
 import {
   cancel,
   info,
@@ -32,7 +33,7 @@ import { furnaceOverrideCommand } from './override.js';
  * @param projectRoot - Root directory of the project
  */
 async function promptAddComponents(
-  components: Awaited<ReturnType<typeof scanWidgetsDirectory>>,
+  components: ScannedComponent[],
   tracked: Map<string, 'stock' | 'override' | 'custom'>,
   projectRoot: string
 ): Promise<void> {
@@ -94,7 +95,7 @@ async function promptAddComponents(
 /**
  * Persists discovered component tag names into the `stock` section of
  * furnace.json. Shared by the interactive confirm flow and the
- * non-interactive `--track` flag — without it, scan prints a full inventory
+ * non-interactive `--track` flag. Without it, scan prints a full inventory
  * but persists nothing and says nothing about where the inventory goes.
  *
  * Wraps the furnace.json mutation in the standard furnace lifecycle so the
@@ -118,7 +119,7 @@ async function persistStockComponents(projectRoot: string, names: string[]): Pro
       // re-filter catches the edge case where the config on disk changed
       // between the scan's read and the write (concurrent scan / manual
       // edit). Without it a duplicate scan would introduce duplicate
-      // entries into stock; writeFurnaceConfig's validator would then
+      // entries into stock. writeFurnaceConfig's validator would then
       // reject the write, but the error would be less actionable than
       // silently de-duplicating here.
       const toAdd = names.filter((s) => !config.stock.includes(s));
@@ -221,7 +222,7 @@ export async function furnaceScanCommand(
 
   // --track: persist the discovered untracked inventory into the `stock`
   // section without prompting (works non-interactively). Without it, scan
-  // stays report-only; the interactive confirm flow below is the other
+  // stays report-only. The interactive confirm flow below is the other
   // persistence path.
   if (options.track) {
     if (untrackedCount === 0) {

@@ -2,17 +2,17 @@
 /**
  * Bounded stdio drain for delayed process exits.
  *
- * `process.exit()` discards whatever is still queued in an async writable —
- * and stdout IS async when it is a pipe, with a 64 KiB kernel buffer on
+ * `process.exit()` discards whatever is still queued in an async writable,
+ * and stdout is async when it is a pipe, with a 64 KiB kernel buffer on
  * macOS/Linux. The observed failure: `status --json --fail-on` writes a
  * 176 KB payload, the refusal makes `bin/fireforge.ts` exit non-zero, and a
  * piped consumer receives exactly 65 536 bytes. The bin entry point awaits
- * this helper before every delayed exit; the helper itself never calls
+ * this helper before every delayed exit. The helper itself never calls
  * `process.exit` (the process-boundary test keeps that a bin-only right).
  */
 
 /**
- * The structural slice of `Writable` the drain wait needs — accepted instead
+ * The structural slice of `Writable` the drain wait needs. Accepted instead
  * of `NodeJS.WriteStream` so unit tests can drive synthetic streams.
  */
 export interface DrainableStream {
@@ -30,8 +30,8 @@ function isFlushed(stream: DrainableStream): boolean {
 
 /**
  * Resolves once `stream` has drained its queued writes, and always within
- * `timeoutMs`. Never rejects: `'error'` and `'close'` (an EPIPE'd pipe —
- * `installBrokenPipeHandler` already swallows the error itself) resolve
+ * `timeoutMs`. Never rejects: `'error'` and `'close'` (an EPIPE'd pipe,
+ * whose error `installBrokenPipeHandler` already swallows) resolve
  * immediately, because a destroyed pipe can never drain and must not stall
  * the exit behind it.
  */
@@ -60,9 +60,9 @@ function waitForStreamDrain(stream: DrainableStream, timeoutMs: number): Promise
 }
 
 /**
- * Waits (bounded by `timeoutMs`) for every given stream — stdout and stderr
- * by default — to drain. Resolution is unconditional; the caller exits
- * either way, the bound only decides how much queued output survives.
+ * Waits (bounded by `timeoutMs`) for every given stream (stdout and stderr
+ * by default) to drain. Resolution is unconditional. The caller exits
+ * either way, and the bound only decides how much queued output survives.
  */
 export async function waitForStdioDrain(
   timeoutMs: number,

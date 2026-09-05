@@ -6,13 +6,12 @@ import {
   compileAllowlistFromStrings,
   matchAllowlist,
   matchesSmokeError,
-  SMOKE_ERROR_PATTERNS,
 } from '../smoke-patterns.js';
 
 // A chrome:// URL that resolves to nothing is a printf outside automation
 // and a MOZ_CRASH under it. The probe runs outside automation, so counting
 // the printed line is the only way its exit code can agree with its own
-// capture — a downstream build hung EVERY harness run on this while the
+// capture. A downstream build hung every harness run on this while the
 // probe reported "Unallowed errors: 0".
 describe('missing chrome or resource URL', () => {
   it('counts the non-automation spelling as an error', () => {
@@ -62,7 +61,7 @@ describe('matchesSmokeError', () => {
 
   it('ignores embedded mentions that do not start the line', () => {
     // Avoids treating descriptive prose as a runtime error. A line has to
-    // *start* with the prefix to count.
+    // start with the prefix to count.
     expect(matchesSmokeError('see the JavaScript error: pattern documented above')).toBe(false);
     expect(matchesSmokeError('notes on console.error: prefixes in Firefox logs')).toBe(false);
   });
@@ -71,13 +70,6 @@ describe('matchesSmokeError', () => {
     expect(matchesSmokeError('Launching browser...')).toBe(false);
     expect(matchesSmokeError('INFO: started browser_delayed_startup_finished')).toBe(false);
     expect(matchesSmokeError('')).toBe(false);
-  });
-
-  it('exports the pattern list so operators can audit it', () => {
-    expect(SMOKE_ERROR_PATTERNS.length).toBeGreaterThan(0);
-    for (const pattern of SMOKE_ERROR_PATTERNS) {
-      expect(pattern).toBeInstanceOf(RegExp);
-    }
   });
 });
 
@@ -118,7 +110,7 @@ describe('compileAllowlistFromFile', () => {
     expect(result[0]?.pattern.test('JavaScript error: synthetic test error observed')).toBe(true);
     expect(result[1]?.pattern.test('console.error: AsyncShutdown blocker')).toBe(true);
     expect(result[0]?.source).toBe('synthetic test error');
-    // Origins carry the ORIGINAL file line numbers, comments/blanks included.
+    // Origins carry the original file line numbers, comments/blanks included.
     expect(result[0]?.origin).toBe('/tmp/allow.txt:3');
     expect(result[1]?.origin).toBe('/tmp/allow.txt:5');
   });

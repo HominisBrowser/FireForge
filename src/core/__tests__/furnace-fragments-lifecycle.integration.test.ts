@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Real-filesystem lifecycle test for shared CSS fragments through
- * `applyAllComponents`. The single most important invariant: a deploy
- * followed by an unchanged re-deploy must SKIP — if the drift oracle
- * compared the raw (un-expanded) workspace source against the expanded
- * engine copy, every fragment-using component would loop as permanently
- * drifted.
+ * `applyAllComponents`. The main invariant: a deploy followed by an
+ * unchanged re-deploy must skip. If the drift oracle compared the raw
+ * (un-expanded) workspace source against the expanded engine copy, every
+ * fragment-using component would loop as permanently drifted.
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -58,7 +57,7 @@ describe('CSS fragment deploy lifecycle (applyAllComponents, real fs)', () => {
     await mkdir(componentDir, { recursive: true });
     await mkdir(sharedDir, { recursive: true });
     await mkdir(join(projectRoot, 'engine', 'toolkit', 'content'), { recursive: true });
-    // jar.mn registration runs for every copied component file; seed a
+    // jar.mn registration runs for every copied component file, so seed a
     // minimal jar.mn with one existing elements line as insertion anchor.
     await writeFile(
       join(projectRoot, 'engine', 'toolkit', 'content', 'jar.mn'),
@@ -108,7 +107,7 @@ describe('CSS fragment deploy lifecycle (applyAllComponents, real fs)', () => {
   });
 
   it('expands on deploy, skips an unchanged re-deploy, and refreshes on fragment edits', async () => {
-    // First deploy: engine copy carries the fenced expansion; the
+    // First deploy: the engine copy carries the fenced expansion. The
     // workspace source keeps only the directive.
     const first = await applyAllComponents(projectRoot);
     expect(first.errors).toEqual([]);
@@ -119,8 +118,8 @@ describe('CSS fragment deploy lifecycle (applyAllComponents, real fs)', () => {
     expect(deployed).toContain('/* @fireforge-end-include shared-anims.css */');
     expect(await readFile(join(componentDir, 'moz-fancy.css'), 'utf-8')).toBe(WIDGET_CSS);
 
-    // CRITICAL regression: an unchanged second deploy must skip, not loop
-    // on false drift between directive-source and expanded-engine copy.
+    // Regression guard: an unchanged second deploy must skip, not loop on
+    // false drift between directive-source and expanded-engine copy.
     const second = await applyAllComponents(projectRoot);
     expect(second.errors).toEqual([]);
     expect(second.applied).toEqual([]);

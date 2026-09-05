@@ -39,7 +39,7 @@ describe('describeEngineGenerationDelta', () => {
   });
 
   it('consumes both path fields of a rename so later records stay aligned', () => {
-    // `-z` puts the ORIGIN path in a second NUL-separated field. Consuming
+    // `-z` puts the origin path in a second NUL-separated field. Consuming
     // only one desynchronises the parse and turns one rename into a report
     // that everything after it moved.
     const before = token('aaa', []);

@@ -57,7 +57,7 @@ vi.mock('../../core/git-status.js', () => ({
 vi.mock('../../core/status-classify.js', () => ({
   // Default classifier mirrors the real contract just enough for the doctor
   // tests: anything under browser/branding/ or browser/moz.configure becomes
-  // `branding`; other entries become `unmanaged`. Individual tests override
+  // `branding`. Other entries become `unmanaged`. Individual tests override
   // this with a custom implementation when they need to exercise the
   // patch-backed / furnace / conflict buckets.
   classifyFiles: vi.fn(
@@ -87,7 +87,7 @@ vi.mock('../../core/mach.js', () => ({
 }));
 
 // Furnace checks default to "not a furnace project" so every existing test
-// stays on the same check count — the furnace checks all skipIf when
+// stays on the same check count, since the furnace checks all skipIf when
 // `furnaceConfigExists` is false. Tests that exercise the furnace path
 // override these mocks individually.
 vi.mock('../../core/furnace-config.js', () => ({
@@ -111,8 +111,8 @@ vi.mock('../../core/furnace-config.js', () => ({
   loadFurnaceState: vi.fn(() => Promise.resolve({})),
   updateFurnaceState: vi.fn(() => Promise.resolve()),
   writeFurnaceConfig: vi.fn(() => Promise.resolve()),
-  // Non-furnace projects contribute no managed prefixes — mirror the
-  // real helper's contract so the ownership-aware doctor check can call
+  // Non-furnace projects contribute no managed prefixes, so mirror the
+  // real helper's contract and let the ownership-aware doctor check call
   // it unconditionally.
   collectFurnaceManagedPrefixes: vi.fn(() => Promise.resolve(new Set<string>())),
 }));
@@ -131,7 +131,7 @@ vi.mock('../../core/furnace-apply.js', () => ({
 
 // The manifest-sync repair now performs its load→mutate→write under the
 // furnace lock (it previously raced the very lost-write it repairs). This
-// suite mocks the filesystem, so a real lock cannot be acquired — run the
+// suite mocks the filesystem, so a real lock cannot be acquired. Run the
 // body directly.
 vi.mock('../../core/file-lock.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../core/file-lock.js')>()),
@@ -140,8 +140,8 @@ vi.mock('../../core/file-lock.js', async (importOriginal) => ({
 
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
-  // comes from the real module.
+  // the pending-repair marker, which is the behaviour these suites assert,
+  // so it comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
     async (_root: string, _kind: string, body: (ctx: unknown) => Promise<unknown>) =>
@@ -151,8 +151,8 @@ vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
         markRolledBack: vi.fn(),
       })
   ),
-  // Required by the new `furnaceStaleLockCheck` in doctor-furnace.ts; returns
-  // a stable, never-on-disk path so `pathExists` reports absent in the
+  // Required by the new `furnaceStaleLockCheck` in doctor-furnace.ts. It
+  // returns a stable, never-on-disk path so `pathExists` reports absent in the
   // default mock configuration (which then short-circuits the check to ok).
   getFurnaceLockPath: vi.fn((root: string) => `${root}/.fireforge/furnace.lock`),
 }));
@@ -227,7 +227,7 @@ vi.mock('../verify.js', () => ({
   ),
 }));
 
-import { readdir, rm, rmdir } from 'node:fs/promises';
+import { readdir, rm } from 'node:fs/promises';
 
 import { configExists, loadConfig, loadState, updateState } from '../../core/config.js';
 import { applyAllComponents } from '../../core/furnace-apply.js';
@@ -237,7 +237,6 @@ import {
   loadFurnaceConfig,
   loadFurnaceState,
   updateFurnaceState,
-  writeFurnaceConfig,
 } from '../../core/furnace-config.js';
 import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import { validateAllComponents } from '../../core/furnace-validate.js';
@@ -252,7 +251,7 @@ import {
   validatePatchIntegrity,
 } from '../../core/patch-manifest.js';
 import { classifyFiles } from '../../core/status-classify.js';
-import { pathExists, readJson, readText } from '../../utils/fs.js';
+import { pathExists, readText } from '../../utils/fs.js';
 import { error, outro, success, warn } from '../../utils/logger.js';
 import {
   DOCTOR_CHECK_ORDER,
@@ -410,7 +409,7 @@ describe('doctorCommand', () => {
 
   it('reports an unreadable test tree as unreadable, not as "no browser.toml files"', async () => {
     // An EACCES on the walk root used to degrade into "no browser.toml files
-    // found" — the opposite diagnosis from "could not look".
+    // found", the opposite diagnosis from "could not look".
     mockCleanShapeProbes();
     vi.mocked(readdir).mockRejectedValue(
       Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
@@ -443,8 +442,8 @@ describe('doctorCommand', () => {
 
     expect(result.exitCode).toBe(0);
     const warnMessages = vi.mocked(warn).mock.calls.map(([message]) => message);
-    // A browser.toml WAS found, but the subtree that could not be read is
-    // still reported — one unreadable directory is not a clean subtree.
+    // A browser.toml was found, but the subtree that could not be read is
+    // still reported: one unreadable directory is not a clean subtree.
     expect(warnMessages.some((message) => message.includes('locked'))).toBe(true);
   });
 
@@ -1004,7 +1003,7 @@ describe('doctorCommand', () => {
     expect(rebuildPatchesManifest).toHaveBeenCalledWith(
       nativePath('/project/patches'),
       '140.9.0esr',
-      // doctor honours `--wait-lock`; the repair rebuilds the manifest under
+      // doctor honours `--wait-lock`. The repair rebuilds the manifest under
       // the patch-directory lock.
       expect.objectContaining({ command: 'doctor --repair-patches-manifest' })
     );
@@ -1092,7 +1091,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand('/project', { repairPatchesManifest: true });
 
-    // rebuildPatchesManifest must NOT have been called — no 'unknown'
+    // rebuildPatchesManifest must not have been called: no 'unknown'
     // string ever reaches manifest metadata on disk.
     expect(rebuildPatchesManifest).not.toHaveBeenCalled();
 
@@ -1131,11 +1130,11 @@ describe('doctorCommand', () => {
     expect(rebuildPatchesManifest).toHaveBeenCalledWith(
       nativePath('/project/patches'),
       '142.0esr',
-      // doctor honours `--wait-lock`; the repair rebuilds the manifest under
+      // doctor honours `--wait-lock`. The repair rebuilds the manifest under
       // the patch-directory lock.
       expect.objectContaining({ command: 'doctor --repair-patches-manifest' })
     );
-    // And critically: NOT called with 'unknown'.
+    // And it must not be called with 'unknown'.
     expect(rebuildPatchesManifest).not.toHaveBeenCalledWith(expect.anything(), 'unknown');
   });
 
@@ -1419,7 +1418,7 @@ describe('doctorCommand', () => {
     it('"Furnace engine paths" scans tokenHostDocuments instead of browser.xhtml when configured', async () => {
       // Simulate a fork that replaced browser.xhtml with a custom chrome doc.
       // pathExists returns false for browser.xhtml (it was deleted by the
-      // fork) and true for the configured host document; the check should
+      // fork) and true for the configured host document. The check should
       // then pass without warning about the missing browser.xhtml.
       vi.mocked(loadFurnaceConfig).mockResolvedValue({
         version: 1,
@@ -1484,7 +1483,7 @@ describe('doctorCommand', () => {
     });
 
     it('"Furnace engine paths" falls back to browser.xhtml when tokenHostDocuments is not set', async () => {
-      // No tokenHostDocuments in the config — old default applies.
+      // No tokenHostDocuments in the config, so the old default applies.
       vi.mocked(pathExists).mockImplementation((p: string) => {
         if (p.endsWith(nativePath('browser/base/content/browser.xhtml')))
           return Promise.resolve(false);
@@ -1542,7 +1541,7 @@ describe('doctorCommand', () => {
             m.includes('moz-phantom')
         )
       ).toBe(true);
-      // Without --repair-furnace, updateFurnaceState must NOT be called —
+      // Without --repair-furnace, updateFurnaceState must not be called:
       // the read-only doctor run has to stay side-effect-free.
       expect(updateFurnaceState).not.toHaveBeenCalled();
     });
@@ -1566,7 +1565,7 @@ describe('doctorCommand', () => {
           'override/moz-ghost/moz-ghost.css': 'def',
         },
       });
-      // The in-config moz-card entry survives; the ghost is dropped.
+      // The in-config moz-card entry survives. The ghost is dropped.
       expect(result.appliedChecksums).toEqual({
         'override/moz-card/moz-card.css': 'abc',
       });
@@ -1575,7 +1574,7 @@ describe('doctorCommand', () => {
     it('reports "Furnace lock" as passing when no lock directory is present', async () => {
       // Default `pathExists` mock returns true for every probe (see top of
       // file). Override it for the furnace-lock path so the check takes the
-      // ok branch — this matches the steady-state scenario where no furnace
+      // ok branch, matching the steady-state scenario where no furnace
       // command is in flight.
       vi.mocked(pathExists).mockImplementation((p: string) => {
         if (p.endsWith('furnace.lock')) return Promise.resolve(false);
@@ -1665,7 +1664,7 @@ describe('doctorCommand', () => {
       expect(typeof operationContext.registerJournal).toBe('function');
       expect(typeof operationContext.registerCleanup).toBe('function');
       // The pendingRepair marker is cleared by a rewrite, not a merge.
-      // Our implementation calls updateFurnaceState with a function; the
+      // Our implementation calls updateFurnaceState with a function. The
       // returned state must not contain pendingRepair.
       expect(updateFurnaceState).toHaveBeenCalled();
       const updater = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1];
@@ -1705,9 +1704,9 @@ describe('doctorCommand', () => {
 
       const result = await doctorCommand('/project', { repairFurnace: true });
 
-      // applyAllComponents reported a failure; the pendingRepair marker
+      // applyAllComponents reported a failure. The pendingRepair marker
       // must stay set so the next doctor run re-flags the issue. The
-      // clearing updateFurnaceState call must NOT happen.
+      // clearing updateFurnaceState call must not happen.
       expect(runFurnaceMutation).toHaveBeenCalledWith(
         '/project',
         'apply-rollback',
@@ -1783,7 +1782,11 @@ describe('doctorCommand', () => {
     it('surfaces orphaned override directories not listed in furnace.json', async () => {
       // A concurrent-override race leaves components/overrides/<name> on
       // disk but drops its furnace.json entry. `doctor` lists the orphan so
-      // the operator sees it before the next apply fails.
+      // the operator sees it before the next apply fails. This asserts only
+      // that the sync check is wired into the doctor run. The repair
+      // behaviour (empty-orphan deletion, non-empty retention, sidecar
+      // restore, single reconciliation) is covered against a real
+      // filesystem in doctor-furnace-config-sync.integration.test.ts.
       vi.mocked(checkFurnaceConfigExists).mockResolvedValue(true);
       vi.mocked(loadFurnaceConfig).mockResolvedValue({
         version: 1,
@@ -1814,207 +1817,6 @@ describe('doctorCommand', () => {
           .mocked(warn)
           .mock.calls.some(
             ([message]) => message.includes('Furnace config sync') && message.includes('moz-button')
-          )
-      ).toBe(true);
-      expect(result.exitCode).toBe(0);
-    });
-
-    it('repairs orphan overrides from their override.json sidecars', async () => {
-      vi.mocked(checkFurnaceConfigExists).mockResolvedValue(true);
-      vi.mocked(loadFurnaceConfig).mockResolvedValue({
-        version: 1,
-        componentPrefix: 'moz-',
-        stock: [],
-        overrides: {},
-        custom: {},
-      });
-      vi.mocked(readdir).mockImplementation(((
-        path: string
-      ): Promise<Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>> => {
-        if (typeof path === 'string' && path.endsWith('overrides')) {
-          return Promise.resolve([
-            {
-              name: 'moz-button',
-              isDirectory: () => true,
-              isFile: () => false,
-            },
-          ]);
-        }
-        return Promise.resolve([]);
-      }) as unknown as typeof readdir);
-      vi.mocked(readJson).mockImplementation((path: string): Promise<unknown> => {
-        if (typeof path === 'string' && path.endsWith(nativePath('moz-button/override.json'))) {
-          return Promise.resolve({
-            type: 'css-only',
-            description: 'Recovered',
-            basePath: 'toolkit/content/widgets/moz-button',
-            baseVersion: '145.0',
-          });
-        }
-        return Promise.reject(new Error('not found'));
-      });
-
-      const result = await doctorCommand('/project', { repairFurnace: true });
-
-      expect(vi.mocked(writeFurnaceConfig)).toHaveBeenCalled();
-      const writeCall = vi.mocked(writeFurnaceConfig).mock.calls[0];
-      expect(writeCall?.[0]).toBe('/project');
-      const written = writeCall?.[1] as
-        { overrides?: Record<string, { type?: string; description?: string }> } | undefined;
-      expect(written?.overrides?.['moz-button']?.type).toBe('css-only');
-      expect(written?.overrides?.['moz-button']?.description).toBe('Recovered');
-      expect(result.exitCode).toBe(0);
-    });
-
-    it('deletes empty custom orphan directories during furnace repair', async () => {
-      vi.mocked(checkFurnaceConfigExists).mockResolvedValue(true);
-      vi.mocked(loadFurnaceConfig).mockResolvedValue({
-        version: 1,
-        componentPrefix: 'moz-',
-        stock: [],
-        overrides: {},
-        custom: {},
-      });
-      vi.mocked(readdir).mockImplementation(((
-        path: string
-      ): Promise<Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>> => {
-        if (typeof path === 'string' && path.endsWith(nativePath('components/custom'))) {
-          return Promise.resolve([
-            {
-              name: 'moz-empty',
-              isDirectory: () => true,
-              isFile: () => false,
-            },
-          ]);
-        }
-        if (typeof path === 'string' && path.endsWith(nativePath('components/custom/moz-empty'))) {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      }) as unknown as typeof readdir);
-
-      const result = await doctorCommand('/project', { repairFurnace: true });
-
-      expect(rmdir).toHaveBeenCalledWith(nativePath('/project/components/custom/moz-empty'));
-      expect(
-        vi
-          .mocked(warn)
-          .mock.calls.some(([message]) =>
-            message.includes('Deleted 1 empty custom orphan directory (moz-empty)')
-          )
-      ).toBe(true);
-      expect(result.exitCode).toBe(0);
-    });
-
-    it('keeps non-empty custom orphan directories for manual follow-up', async () => {
-      vi.mocked(checkFurnaceConfigExists).mockResolvedValue(true);
-      vi.mocked(loadFurnaceConfig).mockResolvedValue({
-        version: 1,
-        componentPrefix: 'moz-',
-        stock: [],
-        overrides: {},
-        custom: {},
-      });
-      vi.mocked(readdir).mockImplementation(((
-        path: string
-      ): Promise<Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>> => {
-        if (typeof path === 'string' && path.endsWith(nativePath('components/custom'))) {
-          return Promise.resolve([
-            {
-              name: 'moz-lived-in',
-              isDirectory: () => true,
-              isFile: () => false,
-            },
-          ]);
-        }
-        if (
-          typeof path === 'string' &&
-          path.endsWith(nativePath('components/custom/moz-lived-in'))
-        ) {
-          return Promise.resolve([
-            {
-              name: 'moz-lived-in.mjs',
-              isDirectory: () => false,
-              isFile: () => true,
-            },
-          ]);
-        }
-        return Promise.resolve([]);
-      }) as unknown as typeof readdir);
-
-      const result = await doctorCommand('/project', { repairFurnace: true });
-
-      expect(rmdir).not.toHaveBeenCalledWith(nativePath('/project/components/custom/moz-lived-in'));
-      expect(
-        vi
-          .mocked(warn)
-          .mock.calls.some(
-            ([message]) =>
-              message.includes('non-empty custom orphan directory requires manual action') &&
-              message.includes('moz-lived-in')
-          )
-      ).toBe(true);
-      expect(result.exitCode).toBe(0);
-    });
-
-    it('reports mixed override recovery and custom orphan cleanup together', async () => {
-      vi.mocked(checkFurnaceConfigExists).mockResolvedValue(true);
-      vi.mocked(loadFurnaceConfig).mockResolvedValue({
-        version: 1,
-        componentPrefix: 'moz-',
-        stock: [],
-        overrides: {},
-        custom: {},
-      });
-      vi.mocked(readdir).mockImplementation(((
-        path: string
-      ): Promise<Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>> => {
-        if (typeof path === 'string' && path.endsWith('overrides')) {
-          return Promise.resolve([
-            {
-              name: 'moz-button',
-              isDirectory: () => true,
-              isFile: () => false,
-            },
-          ]);
-        }
-        if (typeof path === 'string' && path.endsWith(nativePath('components/custom'))) {
-          return Promise.resolve([
-            {
-              name: 'moz-empty',
-              isDirectory: () => true,
-              isFile: () => false,
-            },
-          ]);
-        }
-        if (typeof path === 'string' && path.endsWith(nativePath('components/custom/moz-empty'))) {
-          return Promise.resolve([]);
-        }
-        return Promise.resolve([]);
-      }) as unknown as typeof readdir);
-      vi.mocked(readJson).mockImplementation((path: string): Promise<unknown> => {
-        if (typeof path === 'string' && path.endsWith(nativePath('moz-button/override.json'))) {
-          return Promise.resolve({
-            type: 'css-only',
-            description: 'Recovered',
-            basePath: 'toolkit/content/widgets/moz-button',
-            baseVersion: '145.0',
-          });
-        }
-        return Promise.reject(new Error('not found'));
-      });
-
-      const result = await doctorCommand('/project', { repairFurnace: true });
-
-      expect(writeFurnaceConfig).toHaveBeenCalled();
-      expect(rmdir).toHaveBeenCalledWith(nativePath('/project/components/custom/moz-empty'));
-      expect(
-        vi
-          .mocked(warn)
-          .mock.calls.some(
-            ([message]) =>
-              message.includes('Re-registered 1 override') &&
-              message.includes('Deleted 1 empty custom orphan directory')
           )
       ).toBe(true);
       expect(result.exitCode).toBe(0);
@@ -2149,7 +1951,7 @@ describe('registerDoctor', () => {
     expect(rebuildPatchesManifest).toHaveBeenCalledWith(
       nativePath('/project/patches'),
       '140.9.0esr',
-      // doctor honours `--wait-lock`; the repair rebuilds the manifest under
+      // doctor honours `--wait-lock`. The repair rebuilds the manifest under
       // the patch-directory lock.
       expect.objectContaining({ command: 'doctor --repair-patches-manifest' })
     );
@@ -2167,50 +1969,19 @@ describe('registerDoctor', () => {
 });
 
 /**
- * Pins the exact order of the declarative doctor check registry.
+ * Guards the ordering invariants of the declarative doctor check registry.
  *
  * The order matters beyond presentation: later checks read state that
  * earlier checks populate via the shared DoctorCheckContext. "fireforge.json
  * is valid" writes `ctx.config`, and "Patch manifest consistency" reads
  * `ctx.config?.firefox.version` to stamp a rebuilt manifest during a repair
  * run. Swapping those two still produces a passing suite on a fresh clone,
- * because the repair path is rarely exercised — which is exactly what this
- * test catches. A legitimate reorder updates this list and the dependency
- * comment on DOCTOR_CHECKS together.
+ * because the repair path is rarely exercised, which is what these tests
+ * catch. Only the producer/consumer relationships are pinned, so a
+ * legitimate reorder stays cheap. `validateCheckDependencies` enforces the
+ * declared `dependsOn` edges at runtime.
  */
 describe('DOCTOR_CHECK_ORDER', () => {
-  it('matches the expected declarative order', () => {
-    expect(DOCTOR_CHECK_ORDER).toEqual([
-      'Git installed',
-      'Python supported by mach',
-      'fireforge.json exists',
-      'fireforge.json is valid',
-      'External toolchains',
-      'Engine directory exists',
-      'Pending Resolution',
-      'Source pin matches engine',
-      'Engine is git repository',
-      'mach available',
-      'Watchman available',
-      'Orphaned harness workers',
-      'Patches directory exists',
-      'Patches found',
-      'Patch manifest consistency',
-      'Patch integrity',
-      'Post-rebase registration audit',
-      'Furnace configuration',
-      'Furnace state consistency',
-      'Furnace jar.mn registrations',
-      'Furnace engine paths',
-      'Furnace Storybook backend',
-      'Furnace lock',
-      'Furnace engine state',
-      'Furnace component validation',
-      'Furnace config sync',
-      'Configs directory exists',
-    ]);
-  });
-
   it('runs "fireforge.json is valid" before any consumer of ctx.config', () => {
     // Context-populating checks must come before the checks that read
     // from them. `ctx.config` is set by "fireforge.json is valid" and
@@ -2221,7 +1992,7 @@ describe('DOCTOR_CHECK_ORDER', () => {
     expect(manifestConsumer).toBeGreaterThan(configProducer);
   });
 
-  it('has no duplicate check names (each name is pinned in the exact-order assertion)', () => {
+  it('has no duplicate check names', () => {
     const seen = new Set<string>();
     for (const name of DOCTOR_CHECK_ORDER) {
       expect(seen.has(name)).toBe(false);

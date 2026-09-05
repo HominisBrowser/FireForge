@@ -178,12 +178,12 @@ describe('engine generation guard', () => {
   });
 
   it('warns instead of silently passing when the probe cannot measure the engine', async () => {
-    // `dir` is not a git checkout, so both probes fail with the SAME
+    // `dir` is not a git checkout, so both probes fail with the same
     // message. Comparing failure tokens for equality makes them compare
-    // EQUAL, take the `after === before` early return, and bless a verdict
-    // the guard never verified — with no output at all. engine/ legitimately
+    // equal, take the `after === before` early return, and bless a verdict
+    // the guard never verified, with no output at all. engine/ legitimately
     // may not be a git checkout (download extracts a tarball), so this must
-    // not throw; it must not be silent either.
+    // not throw, and it must not be silent either.
     const before = await snapshotEngineGeneration(dir);
     expect(before).toMatch(/^unavailable:/);
 
@@ -215,8 +215,8 @@ describe('engine generation guard', () => {
     expect(before).not.toMatch(/^unavailable:/);
     await expect(assertEngineGenerationUnchanged(dir, before)).resolves.toBeUndefined();
 
-    // A real mutation is still detected as a change, and the refusal NAMES
-    // it — reconstructing the writer by hand (`find -newermt` against the
+    // A real mutation is still detected as a change, and the refusal names
+    // it. Reconstructing the writer by hand (`find -newermt` against the
     // run window, minus the objdir, minus git's own bookkeeping) is the
     // cost this diagnostic exists to remove.
     await writeFile(join(dir, 'b.txt'), 'y');
@@ -236,7 +236,7 @@ describe('engine generation guard', () => {
   });
 
   it('throws when a measurable engine becomes unmeasurable mid-run', async () => {
-    // The tolerance covers a probe that fails BOTH times — the steady state of
+    // The tolerance covers a probe that fails both times, the steady state of
     // a non-git engine/. An available -> unavailable transition is a different
     // thing: the second probe measured nothing about a checkout that
     // demonstrably had something to measure, so the verdict is unverifiable.

@@ -3,23 +3,23 @@
  * Detects the new-file-plus-moved-code slice shape and names the working
  * sequence through it.
  *
- * A slice that ADDS new files and MOVES lines into them from an existing
+ * A slice that adds new files and moves lines into them from an existing
  * patch has no path through the two refusal flags:
  *
  *  - `re-export --refuse-adjacent-unmanaged` refuses while the new files are
- *    still unmanaged; and
+ *    still unmanaged, and
  *  - exporting the new files as their own patch fails cross-patch lint,
- *    because at the projected placement the OLD patch still contains the
+ *    because at the projected placement the old patch still contains the
  *    moved code.
  *
  * Each guard is individually correct. Together they dead-end, and the way out
- * is non-obvious: adopt the new files into the OLD patch first
+ * is non-obvious: adopt the new files into the old patch first
  * (`re-export --scan --scan-file`), then split them out into a patch of their
  * own (`patch move-files --create --order N`).
  *
- * This module recognises the shape from evidence FireForge already has — the
+ * This module recognises the shape from evidence FireForge already has (the
  * pending diff's new-file content versus the added lines the existing patches
- * carry — so the refusal can name the sequence instead of leaving the
+ * carry), so the refusal can name the sequence instead of leaving the
  * operator to derive it.
  */
 
@@ -59,7 +59,7 @@ const MOVED_CODE_LINE_THRESHOLD = 3;
 
 /**
  * Finds existing patches that still carry substantive lines the pending
- * diff's NEW files would add — the fingerprint of code moved out of an
+ * diff's new files would add, the fingerprint of code moved out of an
  * existing patch into a new file.
  *
  * Pure. Overlaps are returned strongest-first so the message names the
@@ -131,20 +131,20 @@ export function formatAdoptThenSplitRemedy(
   if (strongest === undefined) return [];
   const fileArgs = strongest.files.map((file) => `--scan-file ${file}`).join(' ');
   const moveArgs = strongest.files.map((file) => `--file ${file}`).join(' ');
-  // `patch move-files --create` takes the new patch's NAME, not a
+  // `patch move-files --create` takes the new patch's name, not a
   // filename: strip the order prefix and the `.patch` suffix so the
   // suggested command is copy-pasteable.
   const suggestedName = newPatchName.replace(/^\d+-/, '').replace(/\.patch$/, '');
   return [
     '',
-    `This looks like a new-file + moved-code slice: ${String(strongest.sharedLines)} substantive ` +
+    `This looks like a new-file + moved-code slice: ${strongest.sharedLines} substantive ` +
       `line(s) the new file(s) would add are still carried by ${strongest.sourcePatch}. ` +
       'Exporting them as their own patch cannot pass cross-patch lint while the source patch ' +
       'still owns the same code, and re-exporting cannot adopt them while they are unmanaged — ' +
       'each guard is right, and together they dead-end.',
     'Working sequence (adopt, then split):',
     `  1. fireforge re-export ${strongest.sourcePatch} --scan ${fileArgs}`,
-    `  2. fireforge patch move-files ${strongest.sourcePatch} ${suggestedName} --create --order ${String(insertionOrder)} ${moveArgs}`,
+    `  2. fireforge patch move-files ${strongest.sourcePatch} ${suggestedName} --create --order ${insertionOrder} ${moveArgs}`,
     'Step 1 adopts the new files into the patch that already owns the moved lines; step 2 ' +
       'splits them back out as one transaction, so the queue is never in a state where two ' +
       'patches own the same code.',

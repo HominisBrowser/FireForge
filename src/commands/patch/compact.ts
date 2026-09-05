@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge patch compact` — closes ordinal gaps in the patch queue.
+ * `fireforge patch compact`: closes ordinal gaps in the patch queue.
  *
  * After deletes or splits, patch ordinals may have gaps (e.g. 1, 3, 7).
  * This command renumbers patches to close those gaps in a single atomic
  * operation, preserving relative order. Without a patch policy the whole
- * queue is renumbered from 1; with `patchPolicy.ranges` configured the
+ * queue is renumbered from 1. With `patchPolicy.ranges` configured the
  * compaction is range-aware (each category range compacts independently,
  * reserved ranges and out-of-range strays are left untouched).
  */
@@ -13,7 +13,8 @@
 import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
-import { appendHistory, confirmDestructive, type HistoryEntry } from '../../core/destructive.js';
+import { confirmDestructive, type HistoryEntry } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
   loadPatchesManifest,
@@ -25,9 +26,10 @@ import { GeneralError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchCompactOptions, PatchMetadata } from '../../types/commands/index.js';
 import type { PatchPolicyConfig } from '../../types/config.js';
-import { toError } from '../../utils/errors.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
+import { renameMapsEqual } from '../patch-rename-map.js';
 import { requirePatchQueue } from './patch-context.js';
 import { rebuildFilenameForOrder } from './reorder.js';
 
@@ -41,9 +43,9 @@ function isReservedOrder(policyCfg: PatchPolicyConfig, order: number): boolean {
  *
  * Without a patch policy, all patches are renumbered to 1, 2, 3, … in
  * current sort order (historical behaviour). With `patchPolicy.ranges`
- * configured, compaction happens *within* each category range instead:
+ * configured, compaction happens within each category range instead:
  * each range's members are renumbered consecutively starting at the
- * range's first occupied ordinal, skipping reserved orders — mirroring
+ * range's first occupied ordinal, skipping reserved orders, mirroring
  * what `evaluateGaps` treats as gapless under `allowGaps: false`.
  * Reserved-range patches and patches outside their category's range are
  * never moved (a global renumber would project them across range
@@ -102,7 +104,7 @@ function computeCompactRenameMap(
 /**
  * Patches a range-aware compact leaves in place because they sit outside
  * their category's configured range (or outside all ranges) without a
- * reserved-range exception. They already violate `category-range`; moving
+ * reserved-range exception. They already violate `category-range`. Moving
  * them is a policy decision compact must not make silently.
  */
 function findCompactStrays(
@@ -175,14 +177,7 @@ export async function patchCompactCommand(
     unsafeOverride: options.forceUnsafe === true,
   });
 
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Compact cancelled');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Compact cancelled')) return;
 
   await withPatchDirectoryLock(
     paths.patches,
@@ -196,6 +191,16 @@ export async function patchCompactCommand(
       if (currentRenameMap.size === 0) {
         info('Patch queue was compacted by another process. Nothing to do.');
         return;
+      }
+      // The operator confirmed a specific plan. A queue that changed between
+      // the prompt and the lock (an export landing a new patch, a delete)
+      // yields a different plan whose renames were never shown, so refuse
+      // rather than commit them under a history entry that says "ok". This
+      // is the same gate `patch reorder` applies.
+      if (!renameMapsEqual(renameMap, currentRenameMap)) {
+        throw new GeneralError(
+          'Patch queue changed while waiting for confirmation. Re-run compact to recompute the rename plan.'
+        );
       }
 
       enforcePatchPolicy({
@@ -223,13 +228,7 @@ export async function patchCompactCommand(
         result: 'ok',
       };
 
-      try {
-        await appendHistory(paths.patches, historyEntry);
-      } catch (historyError: unknown) {
-        warn(
-          `History log append failed after patch compact committed: ${toError(historyError).message}`
-        );
-      }
+      await appendHistoryBestEffort(paths.patches, historyEntry, `patch compact committed`);
     },
     { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch compact' }
   );

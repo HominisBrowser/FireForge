@@ -143,7 +143,7 @@ describe('Furnace fault injection (integration)', () => {
 
     // The engine files must be back to their original (git baseline) content.
     // The button override was applied before the fault, so rollback must have
-    // restored it; the toggle was never reached, so it should also be pristine.
+    // restored it. The toggle was never reached, so it should also be pristine.
     const buttonAfter = await readFile(buttonCssEngine, 'utf8');
     const toggleAfter = await readFile(toggleCssEngine, 'utf8');
 

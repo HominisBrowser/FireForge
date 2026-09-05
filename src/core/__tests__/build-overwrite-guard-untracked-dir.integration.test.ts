@@ -4,13 +4,13 @@
  * instead of listing the files under it. Passing raw status entries to the
  * classifier gives it a directory with no content to match against a patch
  * body or the pristine baseline, so every untracked branding subdirectory
- * classifies `unmanaged` and gets named on every build — while
+ * classifies `unmanaged` and gets named on every build, while
  * `fireforge status --unmanaged` (which expands) calls the same tree clean.
  * `--refuse-unexported-drift` then hard-fails every scripted build on such a
  * checkout.
  *
- * These tests run against a REAL git repository on purpose: git's collapsing
- * is the trigger, and it only happens when the WHOLE directory is untracked.
+ * These tests run against a real git repository on purpose: git's collapsing
+ * is the trigger, and it only happens when the whole directory is untracked.
  * A fixture whose untracked files sit beside a tracked sibling produces
  * per-file entries and never exercises the path.
  */
@@ -48,7 +48,7 @@ async function writeFileAt(root: string, relative: string, content: string): Pro
  * Builds a project whose `engine/` is a real git checkout with committed
  * files (so HEAD exists and untracked siblings collapse) and whose
  * `patches/` manifest claims `claimedFiles`. `tracked` pins where git
- * collapses: git collapses at the HIGHEST wholly untracked directory, so
+ * collapses: git collapses at the highest wholly untracked directory, so
  * committing a file inside the branding root keeps the collapse at the
  * subdirectory level the consumer observed.
  */
@@ -147,14 +147,14 @@ describe('findUnexportedDriftAtRisk on collapsed untracked directories', () => {
   });
 
   it('walks only the owned subtree of a collapsed ancestor directory', async () => {
-    // The whole branding tree is untracked, so git collapses ABOVE the
+    // The whole branding tree is untracked, so git collapses above the
     // build-prepare-owned prefix: `?? browser/branding/`.
     const claimed = [`${BRANDING_ROOT}/content/about-logo.svg`];
     const projectRoot = await createProject('ancestor', {
       untracked: {
         [`${BRANDING_ROOT}/content/about-logo.svg`]: '<svg/>\n',
         [`${BRANDING_ROOT}/pref/scratch.js`]: 'pref("local.only", true);\n',
-        // A sibling branding tree build-prepare does NOT rewrite.
+        // A sibling branding tree build-prepare does not rewrite.
         'browser/branding/otherbrowser/content/logo.svg': '<svg/>\n',
       },
       claimedFiles: claimed,

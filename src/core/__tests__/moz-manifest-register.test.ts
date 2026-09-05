@@ -4,14 +4,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import {
   deregisterTestManifest,
-  registerBrowserContent,
-  registerFireForgeModule,
-  registerSharedCSS,
   registerTestManifest,
   registerToolkitWidget,
 } from '../moz-manifest-register.js';
 import {
-  getRules,
   isFileRegistered,
   matchesRegistrablePattern,
   registerFile,
@@ -67,161 +63,6 @@ beforeEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// registerSharedCSS
-// ---------------------------------------------------------------------------
-
-describe('registerSharedCSS', () => {
-  const MOCK_JAR_INC_MN = `
-  skin/classic/browser/autocomplete.css    (../shared/autocomplete.css)
-  skin/classic/browser/browser.css         (../shared/browser.css)
-  skin/classic/browser/zoom.css            (../shared/zoom.css)
-`.trimStart();
-
-  it('inserts CSS entry in alphabetical order (middle)', async () => {
-    mockReadText.mockResolvedValue(MOCK_JAR_INC_MN);
-
-    const result = await registerSharedCSS('/engine', 'custom.css');
-
-    expect(result.skipped).toBe(false);
-    expect(result.manifest).toBe('browser/themes/shared/jar.inc.mn');
-    expect(mockWriteText).toHaveBeenCalled();
-
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const customIdx = lines.findIndex((l: string) => l.includes('custom.css'));
-    const browserIdx = lines.findIndex((l: string) => l.includes('browser.css'));
-    const zoomIdx = lines.findIndex((l: string) => l.includes('zoom.css'));
-
-    expect(customIdx).toBeGreaterThan(browserIdx);
-    expect(customIdx).toBeLessThan(zoomIdx);
-    expect(mockWarn).not.toHaveBeenCalled();
-  });
-
-  it('inserts at the beginning', async () => {
-    mockReadText.mockResolvedValue(MOCK_JAR_INC_MN);
-
-    const result = await registerSharedCSS('/engine', 'aaa.css');
-
-    expect(result.skipped).toBe(false);
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const aaaIdx = lines.findIndex((l: string) => l.includes('aaa.css'));
-    const autoIdx = lines.findIndex((l: string) => l.includes('autocomplete.css'));
-    expect(aaaIdx).toBeLessThan(autoIdx);
-  });
-
-  it('inserts at the end', async () => {
-    mockReadText.mockResolvedValue(MOCK_JAR_INC_MN);
-
-    const result = await registerSharedCSS('/engine', 'zzz.css');
-
-    expect(result.skipped).toBe(false);
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const zzzIdx = lines.findIndex((l: string) => l.includes('zzz.css'));
-    const zoomIdx = lines.findIndex((l: string) => l.includes('zoom.css'));
-    expect(zzzIdx).toBeGreaterThan(zoomIdx);
-  });
-
-  it('is idempotent — skips if already registered', async () => {
-    mockReadText.mockResolvedValue(MOCK_JAR_INC_MN);
-
-    const result = await registerSharedCSS('/engine', 'browser.css');
-
-    expect(result.skipped).toBe(true);
-    expect(mockWriteText).not.toHaveBeenCalled();
-  });
-
-  it('inserts after --after target instead of alphabetical', async () => {
-    mockReadText.mockResolvedValue(MOCK_JAR_INC_MN);
-
-    const result = await registerSharedCSS('/engine', 'custom.css', 'autocomplete.css');
-
-    expect(result.skipped).toBe(false);
-    expect(result.afterFallback).toBeFalsy();
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const autoIdx = lines.findIndex((l: string) => l.includes('autocomplete.css'));
-    const customIdx = lines.findIndex((l: string) => l.includes('custom.css'));
-    // Should be immediately after autocomplete, not alphabetical position after browser
-    expect(customIdx).toBe(autoIdx + 1);
-  });
-
-  it('falls back to alphabetical if --after target not found', async () => {
-    mockReadText.mockResolvedValue(MOCK_JAR_INC_MN);
-
-    const result = await registerSharedCSS('/engine', 'custom.css', 'nonexistent.css');
-
-    expect(result.skipped).toBe(false);
-    expect(result.afterFallback).toBe(true);
-    // Should still be inserted in alphabetical position
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const customIdx = lines.findIndex((l: string) => l.includes('custom.css'));
-    const browserIdx = lines.findIndex((l: string) => l.includes('browser.css'));
-    const zoomIdx = lines.findIndex((l: string) => l.includes('zoom.css'));
-    expect(customIdx).toBeGreaterThan(browserIdx);
-    expect(customIdx).toBeLessThan(zoomIdx);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// registerBrowserContent
-// ---------------------------------------------------------------------------
-
-describe('registerBrowserContent', () => {
-  const MOCK_JAR_MN = `
-browser.jar:
-%  content/browser %content/browser/
-        content/browser/aboutDialog.js    (content/aboutDialog.js)
-        content/browser/browser-init.js   (content/browser-init.js)
-        content/browser/browser.js        (content/browser.js)
-`.trimStart();
-
-  it('inserts JS entry in alphabetical order', async () => {
-    mockReadText.mockResolvedValue(MOCK_JAR_MN);
-
-    const result = await registerBrowserContent('/engine', 'browser-custom.js');
-
-    expect(result.skipped).toBe(false);
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const customIdx = lines.findIndex((l: string) => l.includes('browser-custom.js'));
-    const initIdx = lines.findIndex((l: string) => l.includes('browser-init.js'));
-    const aboutIdx = lines.findIndex((l: string) => l.includes('aboutDialog.js'));
-
-    expect(customIdx).toBeGreaterThan(aboutIdx);
-    expect(customIdx).toBeLessThan(initIdx);
-  });
-
-  it('is idempotent — skips if already registered', async () => {
-    mockReadText.mockResolvedValue(MOCK_JAR_MN);
-
-    const result = await registerBrowserContent('/engine', 'browser.js');
-
-    expect(result.skipped).toBe(true);
-    expect(mockWriteText).not.toHaveBeenCalled();
-  });
-
-  it('uses custom sourcePath when provided', async () => {
-    mockReadText.mockResolvedValue(MOCK_JAR_MN);
-
-    const result = await registerBrowserContent(
-      '/engine',
-      'my-widget.js',
-      undefined,
-      '../components/mybrowser/my-widget.js'
-    );
-
-    expect(result.skipped).toBe(false);
-    expect(result.entry).toContain('(../components/mybrowser/my-widget.js)');
-    expect(result.entry).toContain('content/browser/my-widget.js');
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    expect(written).toContain('(../components/mybrowser/my-widget.js)');
-  });
-});
-
-// ---------------------------------------------------------------------------
 // registerTestManifest
 // ---------------------------------------------------------------------------
 
@@ -268,52 +109,6 @@ BROWSER_CHROME_MANIFESTS += [
     expect(result.entry).toContain('content/test/mybrowser/settings/browser.toml');
     const written = mockWriteText.mock.calls[0]?.[1] ?? '';
     expect(written).toContain('"content/test/mybrowser/settings/browser.toml",');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// registerFireForgeModule
-// ---------------------------------------------------------------------------
-
-describe('registerFireForgeModule', () => {
-  const MOCK_MOZ_BUILD = `
-EXTRA_JS_MODULES.testbrowser += [
-    "CanvasRenderer.sys.mjs",
-    "Telemetry.sys.mjs",
-]
-`.trimStart();
-
-  it('inserts module in alphabetical order', async () => {
-    mockReadText.mockResolvedValue(MOCK_MOZ_BUILD);
-
-    const result = await registerFireForgeModule(
-      '/engine',
-      'Overlay.sys.mjs',
-      'browser/modules/testbrowser'
-    );
-
-    expect(result.skipped).toBe(false);
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const overlayIdx = lines.findIndex((l: string) => l.includes('Overlay'));
-    const canvasIdx = lines.findIndex((l: string) => l.includes('CanvasRenderer'));
-    const telemetryIdx = lines.findIndex((l: string) => l.includes('Telemetry'));
-
-    expect(overlayIdx).toBeGreaterThan(canvasIdx);
-    expect(overlayIdx).toBeLessThan(telemetryIdx);
-  });
-
-  it('is idempotent — skips if already registered', async () => {
-    mockReadText.mockResolvedValue(MOCK_MOZ_BUILD);
-
-    const result = await registerFireForgeModule(
-      '/engine',
-      'CanvasRenderer.sys.mjs',
-      'browser/modules/testbrowser'
-    );
-
-    expect(result.skipped).toBe(true);
-    expect(mockWriteText).not.toHaveBeenCalled();
   });
 });
 
@@ -402,7 +197,7 @@ describe('registerFile', () => {
 
   it('dispatches test manifests to registerTestManifest', async () => {
     // A real moz.build list, header included. A bare list body only parses
-    // under the lax legacy regex scanner; the tokenizer, now the only path,
+    // under the lax legacy regex scanner. The tokenizer, now the only path,
     // needs the header.
     mockReadText.mockResolvedValue(
       ['BROWSER_CHROME_MANIFESTS += [', '    "content/test/aaa/browser.toml",', ']', ''].join('\n')
@@ -496,8 +291,8 @@ describe('registerFile', () => {
     // `furnace create --test-style xpcshell` and `furnace chrome-doc create
     // --with-tests` scaffold `xpcshell.toml` under a dedicated
     // subdirectory. Routing `register <path>/xpcshell.toml` through the
-    // generic testMatch branch suggests registering browser.toml — wrong
-    // manifest type AND a path that does not exist. The dedicated xpcshell
+    // generic testMatch branch suggests registering browser.toml: the wrong
+    // manifest type, and a path that does not exist. The dedicated xpcshell
     // branch points operators at XPCSHELL_TESTS_MANIFESTS in the appropriate
     // moz.build.
     await expect(
@@ -658,7 +453,7 @@ describe('registerFile with createManifest', () => {
 });
 
 // ---------------------------------------------------------------------------
-// matchesRegistrablePattern — .inc.xhtml carve-out (status heuristic)
+// matchesRegistrablePattern: .inc.xhtml carve-out (status heuristic)
 // ---------------------------------------------------------------------------
 
 describe('matchesRegistrablePattern — .inc.xhtml carve-out', () => {
@@ -681,7 +476,7 @@ describe('matchesRegistrablePattern — .inc.xhtml carve-out', () => {
 
   it('returns false for browser-chrome test files', () => {
     // `status --unmanaged` must not flag `browser_<fork>_<case>.js` under
-    // `browser/base/content/test/<dir>/` as "potentially unregistered" —
+    // `browser/base/content/test/<dir>/` as "potentially unregistered".
     // `register` would then add it to jar.mn as chrome content, the wrong
     // manifest (the right one is the sibling browser.toml). The pattern
     // excludes the test subtree so these paths fall through to the
@@ -699,103 +494,7 @@ describe('matchesRegistrablePattern — .inc.xhtml carve-out', () => {
 });
 
 // ---------------------------------------------------------------------------
-// registerBrowserContent — branch coverage
-// ---------------------------------------------------------------------------
-
-describe('registerBrowserContent (branch coverage)', () => {
-  it('inserts after a specific --after target in the tokenized path', async () => {
-    const content = `browser.jar:
-%  content/browser %content/browser/
-        content/browser/aboutDialog.js    (content/aboutDialog.js)
-        content/browser/browser-init.js   (content/browser-init.js)
-        content/browser/browser.js        (content/browser.js)
-`;
-    mockReadText.mockResolvedValue(content);
-
-    const result = await registerBrowserContent('/engine', 'custom.js', 'aboutDialog.js');
-
-    expect(result.skipped).toBe(false);
-    expect(result.afterFallback).toBeFalsy();
-    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
-    const lines = written.split('\n');
-    const aboutIdx = lines.findIndex((l: string) => l.includes('aboutDialog.js'));
-    const customIdx = lines.findIndex((l: string) => l.includes('custom.js'));
-    expect(customIdx).toBe(aboutIdx + 1);
-  });
-
-  it('falls back to alphabetical when --after target is not found', async () => {
-    const content = `browser.jar:
-%  content/browser %content/browser/
-        content/browser/aboutDialog.js    (content/aboutDialog.js)
-        content/browser/browser.js        (content/browser.js)
-`;
-    mockReadText.mockResolvedValue(content);
-
-    const result = await registerBrowserContent('/engine', 'custom.js', 'nonexistent.js');
-
-    expect(result.skipped).toBe(false);
-    expect(result.afterFallback).toBe(true);
-  });
-
-  it('throws when content/browser/ section is missing and jar has no header', async () => {
-    mockReadText.mockResolvedValue('');
-
-    await expect(registerBrowserContent('/engine', 'custom.js')).rejects.toThrow(/Could not find/);
-  });
-
-  it('does not write when dryRun is true', async () => {
-    const content = `browser.jar:
-%  content/browser %content/browser/
-        content/browser/aboutDialog.js    (content/aboutDialog.js)
-`;
-    mockReadText.mockResolvedValue(content);
-
-    const result = await registerBrowserContent('/engine', 'custom.js', undefined, undefined, true);
-
-    expect(result.skipped).toBe(false);
-    expect(mockWriteText).not.toHaveBeenCalled();
-  });
-
-  it('throws when manifest file does not exist', async () => {
-    mockPathExists.mockResolvedValue(false);
-
-    await expect(registerBrowserContent('/engine', 'custom.js')).rejects.toThrow(
-      /Manifest not found/
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// registerSharedCSS — branch coverage
-// ---------------------------------------------------------------------------
-
-describe('registerSharedCSS (branch coverage)', () => {
-  it('throws when skin/classic/browser/ section is missing and content is empty', async () => {
-    mockReadText.mockResolvedValue('');
-
-    await expect(registerSharedCSS('/engine', 'custom.css')).rejects.toThrow(/Could not find/);
-  });
-
-  it('throws when manifest file does not exist', async () => {
-    mockPathExists.mockResolvedValue(false);
-
-    await expect(registerSharedCSS('/engine', 'custom.css')).rejects.toThrow(/Manifest not found/);
-  });
-
-  it('does not write when dryRun is true', async () => {
-    mockReadText.mockResolvedValue(
-      '  skin/classic/browser/browser.css    (../shared/browser.css)\n'
-    );
-
-    const result = await registerSharedCSS('/engine', 'custom.css', undefined, true);
-
-    expect(result.skipped).toBe(false);
-    expect(mockWriteText).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// manifest-rules — branch coverage
+// manifest-rules: error paths when a manifest is absent
 // ---------------------------------------------------------------------------
 
 describe('isFileRegistered (manifest not found)', () => {
@@ -878,7 +577,7 @@ describe('registerFile (toolkit widget dispatch)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// isFileRegistered — full rule dispatch coverage
+// isFileRegistered: full rule dispatch coverage
 // ---------------------------------------------------------------------------
 
 describe('isFileRegistered (all rule paths)', () => {
@@ -972,7 +671,7 @@ describe('isFileRegistered (all rule paths)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// matchesRegistrablePattern — additional pattern coverage
+// matchesRegistrablePattern: additional pattern coverage
 // ---------------------------------------------------------------------------
 
 describe('matchesRegistrablePattern (additional patterns)', () => {
@@ -1018,7 +717,7 @@ describe('matchesRegistrablePattern (additional patterns)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// isFileRegistered — Windows path normalization
+// isFileRegistered: Windows path normalization
 // ---------------------------------------------------------------------------
 
 describe('isFileRegistered (Windows path normalization)', () => {
@@ -1056,7 +755,7 @@ describe('isFileRegistered (Windows path normalization)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// registerFile — Windows path normalization
+// registerFile: Windows path normalization
 // ---------------------------------------------------------------------------
 
 describe('registerFile (Windows path normalization)', () => {
@@ -1093,86 +792,6 @@ describe('registerFile (Windows path normalization)', () => {
     await expect(registerFile('/project', 'docs\\notes.txt')).rejects.toThrow(
       'Unknown file pattern'
     );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// getRules — extractArgs ?? '' fallback branches
-// ---------------------------------------------------------------------------
-
-describe('getRules extractArgs fallback branches', () => {
-  const rules = getRules('testbrowser');
-
-  it('falls back to empty string when shared CSS capture group is undefined', () => {
-    // Simulate a match array where group 1 is undefined
-    const fakeMatch = Object.assign(['browser/themes/shared/custom.css'], {
-      index: 0,
-      input: 'browser/themes/shared/custom.css',
-      groups: undefined,
-    }) as unknown as RegExpMatchArray;
-    fakeMatch[1] = undefined as unknown as string;
-
-    const rule = rules[0];
-    expect(rule).toBeDefined();
-    const args = rule?.extractArgs(fakeMatch);
-    expect(args).toEqual(['']);
-  });
-
-  it('falls back to empty string when browser content capture group is undefined', () => {
-    const fakeMatch = Object.assign(['browser/base/content/panel.js'], {
-      index: 0,
-      input: 'browser/base/content/panel.js',
-      groups: undefined,
-    }) as unknown as RegExpMatchArray;
-    fakeMatch[1] = undefined as unknown as string;
-
-    const rule = rules[1];
-    expect(rule).toBeDefined();
-    const args = rule?.extractArgs(fakeMatch);
-    expect(args).toEqual(['']);
-  });
-
-  it('falls back to empty string when test manifest capture group is undefined', () => {
-    const fakeMatch = Object.assign(['browser/base/content/test/widget/browser.toml'], {
-      index: 0,
-      input: 'browser/base/content/test/widget/browser.toml',
-      groups: undefined,
-    }) as unknown as RegExpMatchArray;
-    fakeMatch[1] = undefined as unknown as string;
-
-    const rule = rules[2];
-    expect(rule).toBeDefined();
-    const args = rule?.extractArgs(fakeMatch);
-    expect(args).toEqual(['']);
-  });
-
-  it('falls back to empty string when fireforge module capture group is undefined', () => {
-    const fakeMatch = Object.assign(['browser/modules/testbrowser/Overlay.sys.mjs'], {
-      index: 0,
-      input: 'browser/modules/testbrowser/Overlay.sys.mjs',
-      groups: undefined,
-    }) as unknown as RegExpMatchArray;
-    fakeMatch[1] = undefined as unknown as string;
-
-    const rule = rules[3];
-    expect(rule).toBeDefined();
-    const args = rule?.extractArgs(fakeMatch);
-    expect(args).toEqual(['']);
-  });
-
-  it('falls back to empty strings when toolkit widget capture groups are undefined', () => {
-    const fakeMatch = Object.assign(['toolkit/content/widgets/moz-toggle/moz-toggle.mjs'], {
-      index: 0,
-      input: 'toolkit/content/widgets/moz-toggle/moz-toggle.mjs',
-      groups: undefined,
-    }) as unknown as RegExpMatchArray;
-    fakeMatch[1] = undefined as unknown as string;
-    fakeMatch[2] = undefined as unknown as string;
-
-    const rule = rules[4];
-    expect(rule).toBeDefined();
-    const args = rule?.extractArgs(fakeMatch);
-    expect(args).toEqual(['', '']);
   });
 });
 
@@ -1252,27 +871,5 @@ describe('--after support', () => {
       c[0].includes('--after is not supported')
     );
     expect(afterWarnings).toHaveLength(0);
-  });
-
-  it('declares which manifests honour --after, so the discard is never silent', () => {
-    // Four of the six rules took `--after` as `_after` and inserted
-    // alphabetically anyway, so an operator who asked for placement got none
-    // and no indication of it.
-    const rules = getRules('mybrowser');
-    const ignoring = rules.filter((r) => !r.supportsAfter);
-    const honouring = rules.filter((r) => r.supportsAfter);
-
-    // Both groups exist: this is a real split, not a blanket capability.
-    expect(ignoring.length).toBeGreaterThan(0);
-    expect(honouring.length).toBeGreaterThan(0);
-
-    // Every adapter that names its `after` parameter `_after` must declare
-    // `supportsAfter: false`, or the warning goes missing again.
-    for (const rule of ignoring) {
-      expect(String(rule.register)).toMatch(/_after/);
-    }
-    for (const rule of honouring) {
-      expect(String(rule.register)).not.toMatch(/_after/);
-    }
   });
 });

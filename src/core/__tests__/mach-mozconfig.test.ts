@@ -41,9 +41,9 @@ const config = {
  * `--with-branding=browser/branding/<binaryName>` directive and (b) the
  * branding tree's `moz.build` exists under `engine/`. The existing tests
  * exercise the generator with minimal templates that do not carry a
- * branding directive; the legacy path through `generateMozconfig` now
+ * branding directive. The legacy path through `generateMozconfig` now
  * runs the preflight at the tail, so every happy-path test needs a
- * concrete branding directive in its rendered output AND a `true` return
+ * concrete branding directive in its rendered output and a `true` return
  * from the branding-tree path probe. These helpers keep that plumbing in
  * one place so the individual tests stay focused on what they actually
  * assert.
@@ -149,8 +149,8 @@ describe('assertBrandingMozconfigAgreement', () => {
  * Drives readText by routing on path: common.mozconfig / platform.mozconfig
  * templates are served from the caller's strings, and any other path (the
  * preflight re-reads the written mozconfig) echoes back the last
- * `writeTextIfChanged` call's content. Routing on path instead of call-count keeps
- * the helper honest when the generator skips common because
+ * `writeTextIfChanged` call's content. Routing on path instead of
+ * call-count keeps the helper honest when the generator skips common because
  * `pathExists(common)` returned false.
  */
 function stubReadTemplates(common: string, platform: string): void {
@@ -164,8 +164,8 @@ function stubReadTemplates(common: string, platform: string): void {
       // A platform template (e.g. linux.mozconfig).
       return Promise.resolve(platform);
     }
-    // Fallback path — the preflight re-reads the written mozconfig;
-    // echo whatever writeTextIfChanged last saw.
+    // Fallback path: the preflight re-reads the written mozconfig, so echo
+    // whatever writeTextIfChanged last saw.
     const lastWrite = mockWriteText.mock.calls.at(-1)?.[1];
     return Promise.resolve(lastWrite ?? '');
   });
@@ -190,7 +190,7 @@ describe('generateMozconfig', () => {
 
   it('emits --with-distribution-id from the appId prefix ahead of the templates', async () => {
     // Upstream composes the mac bundle id as
-    // <distribution-id>.<MOZ_MACBUNDLE_ID>; branding configure.sh carries
+    // <distribution-id>.<MOZ_MACBUNDLE_ID>. Branding configure.sh carries
     // the leaf, the generated mozconfig must carry the prefix. appId
     // 'test.browser.id' → prefix 'test.browser'.
     mockBrandingMozBuildExists();
@@ -206,7 +206,7 @@ describe('generateMozconfig', () => {
 
   it('skips common template when it does not exist', async () => {
     mockPathExists.mockImplementation((probedPath: string) => {
-      // Common does not exist; platform does; branding moz.build does.
+      // Common does not exist. Platform and branding moz.build do.
       if (probedPath.endsWith('common.mozconfig')) return Promise.resolve(false);
       return Promise.resolve(true);
     });

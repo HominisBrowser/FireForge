@@ -22,7 +22,7 @@ What you expected to happen.
 
 - OS: [e.g. macOS 14, Fedora Silverblue 43, Windows 11]
 - Node.js version: [e.g. 22.22.2]
-- FireForge version: [e.g. 0.9.0]
+- FireForge version: [x.y.z — paste the output of `npx fireforge --version`]
 - Firefox version target: [e.g. 140 esr]
 
 **Additional context**

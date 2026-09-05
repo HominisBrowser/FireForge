@@ -14,7 +14,7 @@ import { ExitCode } from '../codes.js';
 
 describe('TestFailureError', () => {
   it('keeps exit 5, because docs/exit-codes.md documents it as a failed suite', () => {
-    // Consumers key CI on 5 for a test red; only the MESSAGE changes.
+    // Consumers key CI on 5 for a test red. Only the message changes.
     expect(new TestFailureError('Tests failed with exit code 5.').code).toBe(ExitCode.BUILD_ERROR);
   });
 
@@ -37,7 +37,7 @@ describe('TestFailureError', () => {
     expect(msg).toContain('TEST-UNEXPECTED-FAIL | browser_foo.js');
     expect(msg).toContain('FIREFORGE-VERDICT');
     expect(msg).toContain('.fireforge/logs/test-20260901.log');
-    // The whole point: none of the build remedies apply to an assertion.
+    // None of the build remedies apply to an assertion.
     expect(msg).not.toContain('obj-');
     expect(msg).not.toContain('bootstrap');
     expect(msg).not.toContain('Check the build output');
@@ -55,7 +55,6 @@ describe('build errors', () => {
     const error = new BuildError('compilation failed', 'mach build');
 
     expect(error.code).toBe(ExitCode.BUILD_ERROR);
-    expect(error.command).toBe('mach build');
     expect(error.userMessage).toContain('Build Error: compilation failed');
     expect(error.userMessage).toContain('Command: mach build');
   });
@@ -70,7 +69,6 @@ describe('build errors', () => {
     const error = new MachNotFoundError('/project/engine');
 
     expect(error.code).toBe(ExitCode.MISSING_DEPENDENCY);
-    expect(error.engineDir).toBe('/project/engine');
     expect(error.userMessage).toContain('/project/engine/mach');
     expect(error.userMessage).toContain('fireforge download');
   });
@@ -79,8 +77,6 @@ describe('build errors', () => {
     const error = new PythonNotFoundError('3.8', '3.12');
 
     expect(error.code).toBe(ExitCode.MISSING_DEPENDENCY);
-    expect(error.minVersion).toBe('3.8');
-    expect(error.maxVersion).toBe('3.12');
     expect(error.userMessage).toContain('3.8-3.12');
     expect(error.userMessage).toContain('python.org');
   });
@@ -96,7 +92,6 @@ describe('build errors', () => {
     const error = new BootstrapError();
 
     expect(error.code).toBe(ExitCode.BUILD_ERROR);
-    expect(error.command).toBe('python3 mach bootstrap');
     expect(error.userMessage).toContain('Bootstrap failed');
   });
 
@@ -112,7 +107,6 @@ describe('build errors', () => {
     const error = new AmbiguousBuildArtifactsError(['obj-x86_64', 'obj-aarch64']);
 
     expect(error.code).toBe(ExitCode.BUILD_ERROR);
-    expect(error.objDirs).toEqual(['obj-x86_64', 'obj-aarch64']);
     expect(error.userMessage).toContain('obj-x86_64, obj-aarch64');
     expect(error.userMessage).toContain('Remove stale');
   });

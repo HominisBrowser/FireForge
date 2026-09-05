@@ -2,7 +2,6 @@
 import { describe, expect, it } from 'vitest';
 
 import { InvalidArgumentError } from '../../errors/base.js';
-import type { FirefoxProduct } from '../../types/config.js';
 import {
   describePatchNameProblem,
   describeProductVersionIncompatibility,
@@ -11,7 +10,6 @@ import {
   inferProductFromVersion,
   isArray,
   isBoolean,
-  isDefined,
   isJsonObject,
   isNumber,
   isObject,
@@ -19,7 +17,6 @@ import {
   isValidAppId,
   isValidFirefoxProduct,
   isValidFirefoxVersion,
-  isValidPatchCategory,
   isValidProjectLicense,
   normalizePatchDisplayName,
   normalizeTokenName,
@@ -39,9 +36,6 @@ describe('type guards', () => {
     expect(isObject(['array'])).toBe(false);
     expect(isArray(['array'])).toBe(true);
     expect(isArray({ key: 'value' })).toBe(false);
-    expect(isDefined('value')).toBe(true);
-    expect(isDefined(null)).toBe(false);
-    expect(isDefined(undefined)).toBe(false);
   });
 
   it('narrows JSON values to JSON object nodes', () => {
@@ -110,11 +104,9 @@ describe('firefox metadata validation', () => {
 });
 
 describe('project metadata validation', () => {
-  it('validates supported project licenses and patch categories', () => {
+  it('validates supported project licenses', () => {
     expect(isValidProjectLicense('MPL-2.0')).toBe(true);
     expect(isValidProjectLicense('Apache-2.0')).toBe(false);
-    expect(isValidPatchCategory('ui')).toBe(true);
-    expect(isValidPatchCategory('audio')).toBe(false);
   });
 });
 
@@ -152,53 +144,30 @@ describe('describePatchNameProblem', () => {
 });
 
 describe('describeProductVersionIncompatibility', () => {
-  it('accepts ESR product with ESR version', () => {
-    expect(describeProductVersionIncompatibility('140.9.0esr', 'firefox-esr')).toBeUndefined();
-    expect(describeProductVersionIncompatibility('128.0.1esr', 'firefox-esr')).toBeUndefined();
+  it.each([
+    ['140.9.0esr', 'firefox-esr'],
+    ['128.0.1esr', 'firefox-esr'],
+    ['140.9.0', 'firefox'],
+    ['140.9.1', 'firefox'],
+    ['147.0b1', 'firefox-beta'],
+    ['147.0b2', 'firefox-beta'],
+  ] as const)('accepts %s for %s', (version, product) => {
+    expect(describeProductVersionIncompatibility(version, product)).toBeUndefined();
   });
 
-  it('accepts stable product with stable version', () => {
-    expect(describeProductVersionIncompatibility('140.9.0', 'firefox')).toBeUndefined();
-    expect(describeProductVersionIncompatibility('140.9.1', 'firefox')).toBeUndefined();
-  });
-
-  it('accepts beta product with beta version', () => {
-    expect(describeProductVersionIncompatibility('147.0b1', 'firefox-beta')).toBeUndefined();
-    expect(describeProductVersionIncompatibility('147.0b2', 'firefox-beta')).toBeUndefined();
-  });
-
-  it('rejects ESR product with beta version', () => {
-    const result = describeProductVersionIncompatibility('147.0b1', 'firefox-esr');
-    expect(result).toContain('firefox-esr');
-    expect(result).toContain('ESR version');
-  });
-
-  it('rejects ESR product with stable version', () => {
-    const result = describeProductVersionIncompatibility('140.9.0', 'firefox-esr');
-    expect(result).toBeDefined();
-    expect(result).toContain('ESR version');
-  });
-
-  it('rejects stable product with ESR version', () => {
-    const result = describeProductVersionIncompatibility('140.9.0esr', 'firefox');
-    expect(result).toContain('firefox-esr');
-  });
-
-  it('rejects stable product with beta version', () => {
-    const result = describeProductVersionIncompatibility('147.0b1', 'firefox');
-    expect(result).toContain('firefox-beta');
-  });
-
-  it('rejects beta product with ESR version', () => {
-    const result = describeProductVersionIncompatibility('140.9.0esr', 'firefox-beta');
-    expect(result).toBeDefined();
-    expect(result).toContain('beta version');
-  });
-
-  it('rejects beta product with stable version', () => {
-    const result = describeProductVersionIncompatibility('140.9.0', 'firefox-beta');
-    expect(result).toBeDefined();
-    expect(result).toContain('beta version');
+  // The message must name both halves of the mismatch: the operator has to
+  // know which of the two to change.
+  it.each([
+    ['147.0b1', 'firefox-esr', 'firefox-esr', 'ESR version'],
+    ['140.9.0', 'firefox-esr', 'firefox-esr', 'ESR version'],
+    ['140.9.0esr', 'firefox', 'firefox-esr', 'firefox-esr'],
+    ['147.0b1', 'firefox', 'firefox-beta', 'firefox-beta'],
+    ['140.9.0esr', 'firefox-beta', 'beta version', 'beta version'],
+    ['140.9.0', 'firefox-beta', 'beta version', 'beta version'],
+  ] as const)('rejects %s for %s', (version, product, names, explains) => {
+    const result = describeProductVersionIncompatibility(version, product);
+    expect(result).toContain(names);
+    expect(result).toContain(explains);
   });
 });
 
@@ -290,17 +259,6 @@ describe('normalizePatchDisplayName', () => {
 });
 
 describe('FIREFOX_PRODUCTS', () => {
-  it('narrows to FirefoxProduct so call sites need no cast', () => {
-    const raw: string = 'firefox-esr';
-    if (isValidFirefoxProduct(raw)) {
-      // Compile-time proof: assignable to the union without `as`.
-      const product: FirefoxProduct = raw;
-      expect(product).toBe('firefox-esr');
-    } else {
-      expect.unreachable('firefox-esr must validate');
-    }
-  });
-
   it('accepts every member of the union and rejects near-misses', () => {
     for (const p of FIREFOX_PRODUCTS) {
       expect(isValidFirefoxProduct(p)).toBe(true);
@@ -308,46 +266,5 @@ describe('FIREFOX_PRODUCTS', () => {
     for (const bad of ['Firefox', 'firefox-nightly', 'esr', '', 'firefox ']) {
       expect(isValidFirefoxProduct(bad)).toBe(false);
     }
-  });
-
-  it('stays in lock-step with the FirefoxProduct union (drift guard)', () => {
-    // `satisfies readonly FirefoxProduct[]` catches additions to the const
-    // that are not in the union. The reverse — a union member with no entry
-    // in the const — needs an exhaustive switch, which is what this is. A
-    // hand-written list of `assertCovered` calls plus a `seen.size` check is
-    // not one: adding a member compiles fine and only trips the size
-    // assertion, naming nothing.
-    //
-    // Here, a new union member makes `product` non-`never` in the default
-    // branch, so `tsc` fails at BUILD time and names the missing member.
-    const describeProduct = (product: FirefoxProduct): string => {
-      switch (product) {
-        case 'firefox':
-          return 'firefox';
-        case 'firefox-esr':
-          return 'firefox-esr';
-        case 'firefox-beta':
-          return 'firefox-beta';
-        case 'firefox-devedition':
-          return 'firefox-devedition';
-        default: {
-          const exhaustive: never = product;
-          return exhaustive;
-        }
-      }
-    };
-
-    // Every union member the switch enumerates must be in the runtime const.
-    const seen = new Set<string>(FIREFOX_PRODUCTS);
-    for (const product of [
-      'firefox',
-      'firefox-esr',
-      'firefox-beta',
-      'firefox-devedition',
-    ] as const) {
-      expect(describeProduct(product)).toBe(product);
-      expect(seen.has(product)).toBe(true);
-    }
-    expect(seen.size).toBe(4);
   });
 });

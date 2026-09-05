@@ -166,15 +166,15 @@ describe('planDiscardBaselines', () => {
   });
 
   // chmod 0o000 bars neither root (some CI containers) nor Windows, which
-  // ignores POSIX mode bits outright — skip both, matching the
+  // ignores POSIX mode bits outright, so skip both, matching the
   // unreadable-marker test in tree-store.integration.test.ts.
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'refuses on an unreadable owning patch instead of degrading to upstream',
     async () => {
-      // Both reads of the owning patch — the baseline reconstruction and the
-      // deletion probe — must refuse, never degrade. A swallowed read in the
+      // Both reads of the owning patch (the baseline reconstruction and the
+      // deletion probe) must refuse, never degrade. A swallowed read in the
       // deletion probe reports "not deleted at baseline", which restores a
-      // path the patch DELETES as present: rewritten instead of removed.
+      // path the patch deletes as present: rewritten instead of removed.
       const { chmod } = await import('node:fs/promises');
       const patchPath = join(patchesDir, '0001-ui-edit.patch');
       await chmod(patchPath, 0o000);
@@ -254,7 +254,7 @@ describe('applyDiscardBaseline (rename and staged sides)', () => {
     await runGit(engineDir, ['commit', '-m', 'add other']);
     await runGit(engineDir, ['mv', '-f', 'browser/other.txt', TRACKED]);
 
-    // TRACKED (the new side) is claimed; browser/other.txt (original) is not.
+    // TRACKED (the new side) is claimed. browser/other.txt (original) is not.
     const plans = await planDiscardBaselines(patchesDir, engineDir, [
       makeGitStatusEntry({
         file: TRACKED,

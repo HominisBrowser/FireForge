@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Manifest registration barrel — re-exports all registration targets
+ * Manifest registration barrel. Re-exports all registration targets
  * and the shared RegisterResult interface (which lives in
  * `register-result.ts` so the leaf modules can import it without
  * creating a cycle through this barrel).
@@ -22,7 +22,7 @@ export { registerFireForgeModule } from './register-module.js';
 export { registerSharedCSS } from './register-shared-css.js';
 
 // ---------------------------------------------------------------------------
-// toolkit/content/jar.mn — widget registration
+// toolkit/content/jar.mn: widget registration
 // ---------------------------------------------------------------------------
 
 /**

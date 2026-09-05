@@ -2,8 +2,8 @@
 /**
  * Shape validation for `patch staged-dependency --add`.
  *
- * `--creates`/`--file` take engine-relative FILE paths and `--owner` takes a
- * patch FILENAME. Accepting all three as arbitrary strings lets a
+ * `--creates`/`--file` take engine-relative file paths, while `--owner`
+ * takes a patch filename. Accepting all three as arbitrary strings lets a
  * `--creates <patch-name>` mixup produce a declaration nothing can ever
  * discharge, surfacing only later as a `staged-dependency-unused` warning.
  * Refusals here fire only on a clear patch-name shape (slash-free values
@@ -51,7 +51,7 @@ function refusePatchShapedPath(
 
 /**
  * Validates the `--add` declaration fields against the loaded queue.
- * Throws on a clear flag mixup; warns (only) when `--owner` is
+ * Throws on a clear flag mixup. Warns (only) when `--owner` is
  * well-formed but absent from the queue, because the owner may
  * legitimately be exported moments later and renumbering rewrites owners.
  */

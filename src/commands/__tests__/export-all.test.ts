@@ -80,7 +80,7 @@ vi.mock('../../core/patch-lint.js', () => ({
 
 vi.mock('../../utils/fs.js', () => {
   // Shared instance: the manifest probes moved to pathExistsStrict, and the
-  // tests toggle existence via pathExists — keep both names in lockstep.
+  // tests toggle existence via pathExists, so keep both names in lockstep.
   const pathExists = vi.fn().mockResolvedValue(true);
   return {
     pathExists,
@@ -178,8 +178,9 @@ describe('exportAllCommand', () => {
     vi.mocked(lintExportedPatch).mockResolvedValue([]);
     vi.mocked(prompts.confirm).mockResolvedValue(true);
     // `clearAllMocks` resets call history but leaves the last mock
-    // implementation in place — tests that set `collectFurnaceManagedPrefixes`
-    // to a non-empty set would otherwise bleed into neighbors. Reset to
+    // implementation in place, so tests that set
+    // `collectFurnaceManagedPrefixes` to a non-empty set would otherwise
+    // bleed into neighbors. Reset to
     // the "no Furnace config" default here so each test starts clean.
     vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(new Set());
   });
@@ -509,7 +510,7 @@ describe('exportAllCommand', () => {
   it('filters Furnace-managed files out of the diff when --exclude-furnace is set', async () => {
     // Refusing outright on any Furnace-managed file makes export-all
     // unusable in realistic mixed workspaces. `--exclude-furnace` keeps the
-    // command running on the non-Furnace subset of the diff; the
+    // command running on the non-Furnace subset of the diff. The
     // Furnace-managed paths stay untouched in the working tree (they are
     // re-deployed by `furnace apply`), and the info line reports how many
     // paths were excluded so the operator can verify the carve-out.
@@ -558,7 +559,7 @@ describe('exportAllCommand', () => {
       expect.stringContaining('Excluded 1 furnace-managed file(s)')
     );
 
-    // The diff passed to the export path was the Furnace-filtered one —
+    // The diff passed to the export path was the Furnace-filtered one:
     // we rescope via `getDiffForFilesAgainstHead`, which should have
     // been called with only the non-Furnace path subset.
     const diffCall = vi.mocked(getDiffForFilesAgainstHead).mock.calls.at(-1);
@@ -680,7 +681,7 @@ describe('exportAllCommand', () => {
     vi.mocked(buildPatchQueueContext).mockResolvedValue({
       entries: [{ filename: '001-infra-other.patch', metadata: {} as never, diff: '' } as never],
     });
-    // Queue has creators recorded for an unrelated path — ours is not in the map.
+    // Queue has creators recorded for an unrelated path. Ours is not in the map.
     vi.mocked(collectNewFileCreatorsByPath).mockReturnValue(
       new Map([['browser/modules/labforge/Unrelated.sys.mjs', ['001-infra-other.patch']]])
     );

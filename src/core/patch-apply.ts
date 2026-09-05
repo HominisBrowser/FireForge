@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Patch orchestration — coordinates patch discovery, application, and validation.
+ * Patch orchestration. Coordinates patch discovery, application, and validation.
  * Pure parsing, content transformation, and lock management are in separate modules.
  */
 
@@ -19,7 +19,7 @@ import { pathExists, readText, writeFileAtomic, writeText } from '../utils/fs.js
 import { verbose } from '../utils/logger.js';
 import { isContainedRelativePath } from '../utils/paths.js';
 import { applyPatchIdempotent, reversePatch } from './git.js';
-import { getFileContentFromHead } from './git-file-ops.js';
+import { getFileContentAtRef } from './git-file-ops.js';
 import { discoverPatches } from './patch-files.js';
 import { loadPatchesManifest } from './patch-manifest.js';
 import {
@@ -32,16 +32,9 @@ import { applyPatchTextToContent, extractNewFileContentFromDiff } from './patch-
 
 // Re-export from split modules so existing import sites continue working
 export { PatchError } from '../errors/patch.js';
-export {
-  countPatches,
-  discoverPatches,
-  getAllTargetFilesFromPatch,
-  getTargetFileFromPatch,
-  isNewFilePatch,
-} from './patch-files.js';
+export { countPatches, discoverPatches } from './patch-files.js';
 export { withPatchDirectoryLock } from './patch-lock.js';
-export { extractAffectedFiles, extractOrder, isNewFileInPatch } from './patch-parse.js';
-export { applyPatchToContent, extractNewFileContent } from './patch-transform.js';
+export { extractAffectedFiles } from './patch-parse.js';
 
 /**
  * Applies a single patch.
@@ -49,7 +42,7 @@ export { applyPatchToContent, extractNewFileContent } from './patch-transform.js
  * @param patch - Patch info
  * @param engineDir - Path to the engine directory
  * @param protectedFiles - Files touched by patches already applied in the
- *   current run; the idempotent-recovery reset must not wipe them (see
+ *   current run. The idempotent-recovery reset must not wipe them (see
  *   applyPatchIdempotent). Overlapping queues (`--allow-overlap`) share files
  *   between patches, and resetting a shared file to HEAD during a later
  *   patch's recovery silently discards the earlier patch's changes.
@@ -88,7 +81,7 @@ async function applySinglePatch(
     // losslessly where a utf-8 decode of a binary file does not.
     const savedContents = new Map<string, Buffer>();
     // New-file sections keyed by target, so the binary discrimination below
-    // reads the ALREADY-parsed section instead of re-scanning the body per
+    // reads the already-parsed section instead of re-scanning the body per
     // file.
     const newFileSections = new Map(
       parseDiffSections(patchContent)
@@ -103,14 +96,14 @@ async function applySinglePatch(
         savedContents.set(file, await readFile(targetPath));
         const section = newFileSections.get(file);
         if (section?.isBinary === true) {
-          // A binary new file cannot be resolved by writing extracted text —
-          // the payload is base85, whose alphabet includes '+'. It does not
-          // need to be: `git apply` decodes a `GIT binary patch` itself. So
-          // the resolution is to REMOVE the blocking file and let the retry
-          // below create it from the payload, which is exactly what the
-          // text branch achieves by overwriting.
+          // A binary new file cannot be resolved by writing extracted
+          // text, because the payload is base85, whose alphabet includes
+          // '+'. It does not need to be: `git apply` decodes a `GIT binary
+          // patch` itself. So the resolution is to remove the blocking file
+          // and let the retry below create it from the payload, which is
+          // exactly what the text branch achieves by overwriting.
           if (!section.hasBinaryDelta) {
-            // `Binary files … differ` records THAT the bytes changed and
+            // `Binary files … differ` records that the bytes changed and
             // carries none of them, so nothing can recreate the file. Fail
             // honestly rather than deleting a file we cannot put back.
             throw new PatchError(
@@ -128,8 +121,8 @@ async function applySinglePatch(
         resolvedNewFiles = true;
       }
     } catch (extractError: unknown) {
-      // Resolution threw for a LATER target after earlier targets were
-      // already overwritten or removed — restore them before reporting
+      // Resolution threw for a later target after earlier targets were
+      // already overwritten or removed. Restore them before reporting
       // failure, instead of letting the exception skip the restore loop
       // entirely and crash the whole import.
       for (const [file, originalContent] of savedContents) {
@@ -143,7 +136,7 @@ async function applySinglePatch(
         await applyPatchIdempotent(patch.path, engineDir, {
           ...(protectedFiles ? { protectedFiles } : {}),
         });
-        // Keep the originals: rollbackPatches needs them if a LATER patch
+        // Keep the originals: rollbackPatches needs them if a later patch
         // fails, since reverse-applying this new-file patch deletes the
         // target and would otherwise permanently discard the pre-existing
         // content (recoverable from git only if it was tracked at HEAD).
@@ -195,8 +188,8 @@ async function rollbackPatches(results: PatchResult[], engineDir: string): Promi
     } catch (rollbackError: unknown) {
       verbose(`Failed to roll back ${result.patch.filename}: ${toError(rollbackError).message}`);
     }
-    // Reversing an auto-resolved new-file patch deletes the target; put
-    // back the pre-existing content the auto-resolve overwrote.
+    // Reversing an auto-resolved new-file patch deletes the target, so
+    // put back the pre-existing content the auto-resolve overwrote.
     if (result.autoResolvedOriginals) {
       for (const [file, originalContent] of result.autoResolvedOriginals) {
         try {
@@ -217,7 +210,7 @@ async function validatePatchTargets(
 ): Promise<void> {
   // realpath the engine root once so containment is checked against the
   // physical tree (the root itself may sit behind a symlink, e.g. /tmp on
-  // macOS). An unresolvable engine dir skips the symlink checks — a missing
+  // macOS). An unresolvable engine dir skips the symlink checks. A missing
   // engine surfaces through `git apply --check` with a better message.
   const engineRoot = engineDir ? await realpath(engineDir).catch(() => null) : null;
 
@@ -250,7 +243,7 @@ async function validatePatchTargets(
  * - Dangling symlink: `realpath` rejects it, but a write through the link
  *   would still be created at the link target, so the target is resolved
  *   against the link's (real) parent directory. The link target is taken
- *   textually — a loop or nested dangling link fails at apply time anyway.
+ *   textually. A loop or nested dangling link fails at apply time anyway.
  * - Not-yet-existing file: resolved against the nearest existing ancestor's
  *   real path. Components below that ancestor do not exist, so they cannot
  *   be symlinks and are appended verbatim.
@@ -300,14 +293,14 @@ export interface ApplyPatchesOptions {
  * The identifier is one of three shapes and the three shapes must stay
  * disjoint so the operator can reason about which patch they picked:
  *
- *   1. **Exact filename** — `005-foo.patch`. Matches only that filename.
- *   2. **Filename without extension** — `005-foo`. Matches `005-foo.patch`.
- *   3. **Bare numeric ordinal** — `5` or `005`. Matches the patch whose
+ *   1. Exact filename, `005-foo.patch`. Matches only that filename.
+ *   2. Filename without extension, `005-foo`. Matches `005-foo.patch`.
+ *   3. Bare numeric ordinal, `5` or `005`. Matches the patch whose
  *      order prefix parses to the same integer (so `5` and `005` both match
  *      `005-foo.patch`, and `05` matches too because parseInt normalizes
  *      leading zeros).
  *
- * A purely-numeric identifier is treated **only** as an ordinal: it does not
+ * A purely-numeric identifier is treated only as an ordinal: it does not
  * also match a filename that happens to literally equal the digits. That
  * would require a patch literally named `5` or `005`, which would collide
  * with the filename prefix anyway.
@@ -330,20 +323,14 @@ export function matchesUntilFilename(patchFilename: string, needle: string): boo
  * on the first failure to keep the engine directory in a clean state.
  * @param patchesDir - Path to the patches directory
  * @param engineDir - Path to the engine directory
- * @param optionsOrContinue - Options object, or the legacy continueOnFailure boolean
+ * @param options - Application options
  * @returns Import summary with all results
  */
 export async function applyPatchesWithContinue(
   patchesDir: string,
   engineDir: string,
-  optionsOrContinue: ApplyPatchesOptions | boolean = false
+  options: ApplyPatchesOptions = {}
 ): Promise<ImportSummary> {
-  // Accept both the legacy boolean positional and the new options object so
-  // existing call sites (tests and rebase) keep working without a rewrite.
-  const options: ApplyPatchesOptions =
-    typeof optionsOrContinue === 'boolean'
-      ? { continueOnFailure: optionsOrContinue }
-      : optionsOrContinue;
   const continueOnFailure = options.continueOnFailure ?? false;
   const untilFilename = options.untilFilename;
 
@@ -351,9 +338,9 @@ export async function applyPatchesWithContinue(
 
   // Resolve the --until stop index up front so callers get an immediate
   // error on an unknown identifier instead of a silent no-op. Detect
-  // ambiguity (two patches matching the same needle — should never happen
-  // in a well-formed manifest but surfaces queue corruption loudly
-  // instead of silently picking the first match).
+  // ambiguity (two patches matching the same needle). That should never
+  // happen in a well-formed manifest, but it surfaces queue corruption
+  // loudly instead of silently picking the first match.
   let stopIndex = patches.length - 1;
   if (untilFilename !== undefined) {
     const matchingIndexes: number[] = [];
@@ -391,8 +378,8 @@ export async function applyPatchesWithContinue(
     if (!patch) continue;
 
     if (i > stopIndex) {
-      // Patches beyond the --until cutoff are intentionally skipped. They
-      // are not failures — record them in `skipped` so the summary still
+      // Patches beyond the --until cutoff are skipped on purpose. They
+      // are not failures. Record them in `skipped` so the summary still
       // reflects what the full queue contained.
       skipped.push(patch);
       continue;
@@ -455,11 +442,11 @@ export interface PatchedContentContext {
 
 /**
  * Builds a batched patched-content context that loads the manifest and
- * discovers patch files ONCE for many lookups, and memoizes each patch body
+ * discovers patch files once for many lookups, and memoizes each patch body
  * read across the batch. A per-call helper re-runs `loadPatchesManifest` +
- * `discoverPatches` and re-reads every affecting patch body for every file —
- * O(dirtyFiles × patches) redundant IO when classifying a broad engine edit
- * session during `status` or `import`.
+ * `discoverPatches` and re-reads every affecting patch body for every file,
+ * which is O(dirtyFiles × patches) redundant IO when classifying a broad
+ * engine edit session during `status` or `import`.
  */
 export async function createPatchedContentContext(
   patchesDir: string,
@@ -504,7 +491,7 @@ export async function createPatchedContentContext(
     getAffectingPatches,
     readPatchBody,
     computePatched: async (filePath: string): Promise<string | null> => {
-      let content = await getFileContentFromHead(engineDir, filePath);
+      let content = await getFileContentAtRef(engineDir, filePath);
       for (const patch of getAffectingPatches(filePath)) {
         content = applyPatchTextToContent(content, await readPatchBody(patch), filePath);
       }

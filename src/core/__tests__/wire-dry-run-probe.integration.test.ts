@@ -96,7 +96,7 @@ describe('probeDomFragmentInsertionPoint', () => {
     // A `furnace chrome-doc create`-scaffolded top-level chrome document
     // exists and is registered in `tokenHostDocuments[0]`, but lacks both
     // `#include browser-sets.inc` and `<html:body>`. The real run throws
-    // inside `addDomFragment`; the probe throws the same error so dry-run
+    // inside `addDomFragment`. The probe throws the same error so dry-run
     // catches it too.
     const engineDir = await createEngine();
     const domFilePath = 'browser/base/content/fragments/panel.inc.xhtml';

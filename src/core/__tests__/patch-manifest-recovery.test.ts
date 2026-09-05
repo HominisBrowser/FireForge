@@ -137,7 +137,7 @@ describe('patch manifest recovery paths', () => {
       )
     ).toBe(true);
     // The original patches.json was unparseable, so every rebuilt
-    // entry is synthetic — the rebuilder must flag all three as
+    // entry is synthetic, so the rebuilder must flag all three as
     // recovered.
     expect(rebuilt.recoveredFilenames).toEqual(
       expect.arrayContaining(['001-ui-toolbar.patch', '002-sidebar.patch', 'plain.patch'])
@@ -147,7 +147,7 @@ describe('patch manifest recovery paths', () => {
   it('waits for the patch-directory lock before rewriting the manifest', async () => {
     // Invariant 2 (docs/lifecycle-invariants.md): manifest writes
     // serialize on the patch lock. doctor --repair-patches-manifest used
-    // to call this rebuild WITHOUT the lock, so a repair racing a
+    // to call this rebuild without the lock, so a repair racing a
     // concurrent export/reorder could clobber the other writer's
     // manifest.
     const patchesDir = await mkdtemp(join(tmpdir(), 'fireforge-manifest-recovery-'));

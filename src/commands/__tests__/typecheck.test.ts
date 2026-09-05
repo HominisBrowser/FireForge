@@ -20,7 +20,7 @@ vi.mock('../../core/config.js', () => ({
 
 vi.mock('../../core/typecheck.js', () => ({
   runTypecheck: vi.fn(),
-  // The CLI imports relativeForDisplay; pass-through implementation
+  // The CLI imports relativeForDisplay. The pass-through implementation
   // covers the unit assertions below.
   relativeForDisplay: (_root: string, file: string) => file,
 }));

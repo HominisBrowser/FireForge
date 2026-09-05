@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * `fireforge discard` on a patch-claimed path must restore the
- * PATCH-APPLIED baseline, not pristine upstream HEAD — and must
+ * patch-applied baseline rather than pristine upstream HEAD, and must
  * re-materialize (not delete) patch-created files. A purely git-mechanical
  * discard prints "File restored to original state" while reverting engine
  * files past their owning patch and deleting patch-created files outright.
  *
- * Real temp repo; the patch queue is applied through the production
+ * Real temp repo. The patch queue is applied through the production
  * `applyPatchesWithContinue` path so the worktree convention (patch edits =
  * unstaged ` M`, patch creations = `??`) is authentic.
  */
@@ -184,7 +184,7 @@ describe('discard restores the patch-applied baseline', () => {
 
     expect(await readProjectText(projectRoot, `engine/${TRACKED}`)).toBe(PATCHED_CONTENT);
     const status = await runGit(engineDir, ['status', '--short']);
-    // Unstaged modification (worktree column M, index clean) — the other
+    // Unstaged modification (worktree column M, index clean). The other
     // line is the still-untracked patch-created file from setup.
     expect(status).toContain(` M ${TRACKED}`);
     expect(status).not.toContain(`M  ${TRACKED}`);

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadState } from '../../core/config.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
-import { getRebaseSessionPath, tryReadRebaseSession } from '../../core/rebase-session.js';
+import { getRebaseSessionPath, readRebaseSession } from '../../core/rebase-session.js';
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
   createTempProject,
@@ -18,7 +18,7 @@ import {
 import { pathExists } from '../../utils/fs.js';
 import { escapeRegex } from '../../utils/regex.js';
 import { exportCommand } from '../export.js';
-import { rebaseCommand } from '../rebase.js';
+import { rebaseCommand } from '../rebase/index.js';
 import { setupCommand } from '../setup.js';
 
 vi.mock('../../utils/logger.js', () => ({
@@ -119,7 +119,7 @@ describe('rebase integration', () => {
       firefox: { version: '141.0esr', product: 'firefox-esr' },
     });
 
-    // Run rebase — patches should apply cleanly since engine is at post-patch state
+    // Run rebase. Patches should apply cleanly since engine is at post-patch state
     await rebaseCommand(projectRoot, { yes: true });
 
     // Verify version stamps updated
@@ -134,10 +134,10 @@ describe('rebase integration', () => {
   });
 
   it('absorbs upstream context drift via git apply -C (fuzz-like) instead of conflicting', async () => {
-    // End-to-end guard for the context-reduction path against REAL git.
+    // End-to-end guard for the context-reduction path against real git.
     // The original --fuzz=N implementation could never succeed here (git
     // has no --fuzz flag), so every drifted patch surfaced as a manual
-    // conflict; only mocked unit tests kept the feature looking alive.
+    // conflict. Only mocked unit tests kept the feature looking alive.
     const { warn } = await import('../../utils/logger.js');
     const engineDir = join(projectRoot, 'engine');
     const contextFile = [
@@ -229,12 +229,13 @@ describe('rebase integration', () => {
       firefox: { version: '141.0esr', product: 'firefox-esr' },
     });
 
-    // Rebase — should fail on the patch (context doesn't match)
+    // Rebase should fail on the patch (context doesn't match)
     await rebaseCommand(projectRoot, { yes: true });
 
     // Session should exist with failed patch
-    const session = await tryReadRebaseSession(projectRoot);
-    expect(session).not.toBeNull();
+    const read = await readRebaseSession(projectRoot);
+    expect(read.present).toBe(true);
+    const session = read.present && read.valid ? read.session : undefined;
     expect(session?.patches[0]?.status).toBe('failed');
 
     // pendingResolution should be set
@@ -290,7 +291,7 @@ describe('rebase integration', () => {
       firefox: { version: '141.0esr', product: 'firefox-esr' },
     });
 
-    // Start rebase — fails on conflict
+    // Start rebase, which fails on conflict
     await rebaseCommand(projectRoot, { yes: true });
     expect(await sessionFileExists(projectRoot)).toBe(true);
 
@@ -320,7 +321,7 @@ describe('rebase integration', () => {
       description: 'Change title',
     });
 
-    // DON'T change the version — rebase should say "not needed"
+    // Don't change the version. Rebase should say "not needed"
     await rebaseCommand(projectRoot, { yes: true });
 
     // No session should be created
@@ -328,10 +329,11 @@ describe('rebase integration', () => {
   });
 
   it('recovers from a corrupt session file instead of wedging', async () => {
-    // The wedge: with an unreadable session file, `rebase` reported "already
-    // in progress — use --continue or --abort", and BOTH of those reported
-    // "no rebase session in progress". No CLI path deleted the file and no
-    // message named it, so the only escape was knowing to rm it by hand.
+    // The wedge: with an unreadable session file, `rebase` reported that a
+    // rebase was already in progress and to use --continue or --abort, and
+    // both of those reported "no rebase session in progress". No CLI path
+    // deleted the file and no message named it, so the only escape was
+    // knowing to rm it by hand.
     const engineDir = join(projectRoot, 'engine');
     await initCommittedRepo(engineDir, {
       'browser/base/content/browser.js': 'export const title = "upstream";\n',

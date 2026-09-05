@@ -13,11 +13,11 @@ import { Command, Option } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
 import {
-  appendHistory,
   confirmDestructive,
   type ConflictReport,
   type HistoryEntry,
 } from '../../core/destructive.js';
+import { appendHistoryBestEffort } from '../../core/history-log.js';
 import {
   buildPatchQueueContext,
   formatPatchLintIssue,
@@ -37,8 +37,8 @@ import { applyRenameMapToManifest, enforcePatchPolicy } from '../../core/patch-p
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchReorderOptions } from '../../types/commands/index.js';
-import { toError } from '../../utils/errors.js';
-import { info, intro, outro, warn } from '../../utils/logger.js';
+import type { FireForgeConfig } from '../../types/config.js';
+import { info, intro, outro } from '../../utils/logger.js';
 import {
   addWaitLockOption,
   commanderArgParser,
@@ -46,6 +46,8 @@ import {
   resolveWaitLockSeconds,
 } from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
+import { proceedAfterDecision } from '../destructive-decision.js';
+import { getSortedRenameEntries, renameMapsEqual } from '../patch-rename-map.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /** Zero-pads an ordinal number to the given width. */
@@ -68,10 +70,10 @@ export function rebuildFilenameForOrder(existing: PatchMetadata, newOrder: numbe
  * blocks the destination slot is renumbered, so intentional gaps left by
  * prior `patch delete` calls survive the reorder.
  *
- * Algorithm: remove target from the sorted list, then cascade: if any
- * patch sits at the destination order, bump it to order+1; if that
- * collides with the next patch, bump that one too; continue until a free
- * slot is reached. The direction is symmetric — moving a patch earlier
+ * Algorithm: remove target from the sorted list, then cascade. If any
+ * patch sits at the destination order, bump it to order+1. If that
+ * collides with the next patch, bump that one too. Continue until a free
+ * slot is reached. The direction is symmetric: moving a patch earlier
  * and moving it later both reduce to "find a free slot at destination by
  * shifting the contiguous conflicting run upward".
  */
@@ -96,7 +98,7 @@ function computeRenameMap(
   if (clampedDest === target.order) return renames;
 
   // Build a mutable order-for-each map so cascading bumps compose. Keys are
-  // filenames; values start as current order and get rewritten as bumps
+  // filenames. Values start as current order and get rewritten as bumps
   // propagate. Only patches whose value changes end up in the rename map.
   const currentOrder = new Map<string, number>();
   for (const patch of withoutTarget) currentOrder.set(patch.filename, patch.order);
@@ -104,7 +106,7 @@ function computeRenameMap(
   // Cascade from the destination: while any surviving patch occupies the
   // slot we want, bump it to slot+1 and advance. Patches are processed in
   // ascending order so each bump's collision (if any) is with the immediate
-  // successor in the sort — no back-tracking needed.
+  // successor in the sort, so no back-tracking is needed.
   let slot = clampedDest;
   for (const patch of withoutTarget) {
     const order = currentOrder.get(patch.filename);
@@ -134,34 +136,6 @@ function computeRenameMap(
   return renames;
 }
 
-function getSortedRenameEntries(
-  renameMap: Map<string, PatchRenameEntry>
-): Array<[string, PatchRenameEntry]> {
-  return Array.from(renameMap.entries()).sort((a, b) => a[1].newOrder - b[1].newOrder);
-}
-
-function renameMapsEqual(
-  left: Map<string, PatchRenameEntry>,
-  right: Map<string, PatchRenameEntry>
-): boolean {
-  const leftEntries = getSortedRenameEntries(left);
-  const rightEntries = getSortedRenameEntries(right);
-  if (leftEntries.length !== rightEntries.length) {
-    return false;
-  }
-
-  return leftEntries.every(([leftFilename, leftEntry], index) => {
-    const rightTuple = rightEntries[index];
-    if (!rightTuple) return false;
-    const [rightFilename, rightEntry] = rightTuple;
-    return (
-      leftFilename === rightFilename &&
-      leftEntry.newFilename === rightEntry.newFilename &&
-      leftEntry.newOrder === rightEntry.newOrder
-    );
-  });
-}
-
 /**
  * Applies a rename map to a {@link PatchQueueContext} so cross-patch lint
  * can run against the projected state without touching disk. Exported for
@@ -175,7 +149,7 @@ export function projectReorder(
     renameMap.get(oldFilename)?.newFilename;
   const projectedEntries: PatchQueueEntry[] = base.entries.map((entry) => {
     // Project staged-dependency owner references through the rename map on
-    // every entry — owners point at *other* patches' filenames, so a
+    // every entry. Owners point at other patches' filenames, so a
     // projection that skips non-renamed entries would lint against stale
     // owners and report false forward-import regressions.
     const metadata = entry.metadata
@@ -213,10 +187,7 @@ function resolveDestination(
     // integers, but the function is reachable from tests that may pass
     // `{ to: NaN }` directly.
     if (!Number.isInteger(options.to) || options.to <= 0) {
-      throw new InvalidArgumentError(
-        `--to must be a positive integer, got ${String(options.to)}.`,
-        '--to'
-      );
+      throw new InvalidArgumentError(`--to must be a positive integer, got ${options.to}.`, '--to');
     }
     return { destinationOrder: options.to, anchorFilename: undefined };
   }
@@ -227,7 +198,7 @@ function resolveDestination(
       throw new InvalidArgumentError(`--before anchor "${options.before}" not found.`, '--before');
     }
     // Reject self-reference. `--before <target>` resolves to the target's
-    // current order, so computeRenameMap would take its no-op branch — but
+    // current order, so computeRenameMap would take its no-op branch, but
     // that masks a user-facing typo or scripted mistake instead of
     // surfacing it. The symmetric `--after` case is worse (mutates the
     // queue), so both reject for consistency.
@@ -261,15 +232,32 @@ function resolveDestination(
   return { destinationOrder: anchor.order + 1, anchorFilename: anchor.filename };
 }
 
-async function commitReorderPlan(
-  patchesDir: string,
-  target: PatchMetadata,
-  renameMap: Map<string, PatchRenameEntry>,
-  anchorFilename: string | undefined,
-  options: PatchReorderOptions,
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  buildHistoryEntry: (finalRenameMap: Map<string, PatchRenameEntry>) => HistoryEntry
-): Promise<void> {
+interface CommitReorderPlanOptions {
+  /** Patch directory holding the queue and its manifest. */
+  patchesDir: string;
+  /** Manifest row for the patch being moved. */
+  target: PatchMetadata;
+  /** Planned filename renames, keyed by current filename. */
+  renameMap: Map<string, PatchRenameEntry>;
+  /** Filename of the `--before`/`--after` anchor, when one was given. */
+  anchorFilename: string | undefined;
+  /** Parsed reorder options. */
+  options: PatchReorderOptions;
+  /** Project configuration. */
+  config: FireForgeConfig;
+  /** Builds the history entry from the rename map recomputed under the lock. */
+  buildHistoryEntry: (finalRenameMap: Map<string, PatchRenameEntry>) => HistoryEntry;
+}
+
+/**
+ * Re-validates the reorder against the freshly-loaded manifest and commits
+ * it, all under the patch directory lock.
+ *
+ * @param commitOptions - See {@link CommitReorderPlanOptions}
+ */
+async function commitReorderPlan(commitOptions: CommitReorderPlanOptions): Promise<void> {
+  const { patchesDir, target, renameMap, anchorFilename, options, config, buildHistoryEntry } =
+    commitOptions;
   await withPatchDirectoryLock(
     patchesDir,
     async () => {
@@ -351,13 +339,11 @@ async function commitReorderPlan(
       // permissions) is warned but not re-thrown: the mutation has already
       // succeeded and is not reversible, so surfacing it as a command
       // failure would mislead.
-      try {
-        await appendHistory(patchesDir, buildHistoryEntry(currentRenameMap));
-      } catch (historyError: unknown) {
-        warn(
-          `History log append failed after patch reorder committed: ${toError(historyError).message}`
-        );
-      }
+      await appendHistoryBestEffort(
+        patchesDir,
+        buildHistoryEntry(currentRenameMap),
+        `patch reorder committed`
+      );
     },
     { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch reorder' }
   );
@@ -416,7 +402,7 @@ export async function patchReorderCommand(
   }
 
   // Project the reorder through cross-patch lint. Forward-import violations
-  // that are introduced *by* the reorder become hard refusals.
+  // that the reorder itself introduces become hard refusals.
   const baseCtx = await buildPatchQueueContext(paths.patches);
   const projected = projectReorder(baseCtx, renameMap);
   const projectedIssues = lintPatchQueue(projected);
@@ -461,17 +447,10 @@ export async function patchReorderCommand(
     conflicts,
   });
 
-  if (decision === 'dry-run') {
-    outro('Dry run complete — no changes made');
-    return;
-  }
-  if (decision === 'declined') {
-    outro('Reorder cancelled');
-    return;
-  }
+  if (!proceedAfterDecision(decision, 'Reorder cancelled')) return;
 
   // The history entry is built inside commitReorderPlan (still under the
-  // lock) from the *final* rename map, not the pre-confirmation one, so
+  // lock) from the final rename map rather than the pre-confirmation one, so
   // the destinationOrder and renames mirror what actually landed on disk.
   const buildHistoryEntry = (finalRenameMap: Map<string, PatchRenameEntry>): HistoryEntry => {
     const finalEntries = getSortedRenameEntries(finalRenameMap);
@@ -493,15 +472,15 @@ export async function patchReorderCommand(
     };
   };
 
-  await commitReorderPlan(
-    paths.patches,
+  await commitReorderPlan({
+    patchesDir: paths.patches,
     target,
     renameMap,
     anchorFilename,
     options,
     config,
-    buildHistoryEntry
-  );
+    buildHistoryEntry,
+  });
 
   info(`Reordered ${renameMap.size} patch(es).`);
   outro('Reorder complete');

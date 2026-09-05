@@ -54,7 +54,7 @@ describe('attemptMozinfoRewrite', () => {
 
   it('leaves a mozconfig that lives outside the old topsrcdir untouched', async () => {
     // External mozconfigs (e.g. a shared config in $HOME) survive a
-    // relocation unchanged; the rewriter refuses to guess where they
+    // relocation unchanged. The rewriter refuses to guess where they
     // should now point.
     const oldSrc = '/Users/dev/project1/engine';
     const sharedMozconfig = '/Users/dev/configs/shared-mozconfig';
@@ -101,7 +101,7 @@ describe('attemptMozinfoRewrite', () => {
 
   it('refuses when the objdir name itself changed', async () => {
     // mozinfo recorded `obj-arm64` but we're detecting `obj-debug` on
-    // disk. That's not a pure prefix move — the configure shape changed —
+    // disk. That is not a pure prefix move (the configure shape changed),
     // so the rewrite is unsafe.
     await writeMozinfo({
       topsrcdir: '/Users/dev/project1/engine',

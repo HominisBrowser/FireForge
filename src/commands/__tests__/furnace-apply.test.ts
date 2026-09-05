@@ -32,7 +32,7 @@ vi.mock('../../core/furnace-apply.js', () => ({
 
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
+  // the pending-repair marker (the behaviour these suites assert), so it
   // comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
@@ -211,7 +211,7 @@ describe('furnaceApplyCommand', () => {
     await furnaceApplyCommand('/project', undefined, { dryRun: true });
 
     /* eslint-disable @typescript-eslint/no-unsafe-assignment --
-     * vitest's `expect.objectContaining` returns `any`; the matcher itself
+     * vitest's `expect.objectContaining` returns `any`. The matcher itself
      * is correctly typed but the inner object slot is not. */
     expect(applyAllComponents).toHaveBeenCalledWith(
       '/project',
@@ -362,10 +362,11 @@ describe('furnaceApplyCommand', () => {
 
   it('named apply disables the batch state persist and merges per-component state', async () => {
     // A named apply must not run the batch persist path, whose wholesale
-    // appliedChecksums replace wipes every OTHER component's checksum state
-    // — after which orphan detection and deleted-file undeploy, both keyed
-    // on that state, go blind. Named apply mirrors `furnace deploy <name>`:
-    // persistState: false plus a per-component merge.
+    // appliedChecksums replace wipes every other component's checksum
+    // state. After that, orphan detection and deleted-file undeploy, both
+    // keyed on that state, go blind. Named apply mirrors
+    // `furnace deploy <name>`: persistState: false plus a per-component
+    // merge.
     vi.mocked(loadConfig).mockResolvedValue({
       name: 'Test Browser',
       vendor: 'Test Vendor',

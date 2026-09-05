@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import type { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import { createProgram } from '../cli.js';
@@ -6,7 +7,6 @@ import { createProgram } from '../cli.js';
 describe('CLI help output', () => {
   it('documents kebab-case setup flags and configurable categories', () => {
     const program = createProgram();
-    const rootHelp = program.helpInformation();
     const setupHelp = program.commands
       .find((command) => command.name() === 'setup')
       ?.helpInformation();
@@ -16,16 +16,19 @@ describe('CLI help output', () => {
     const reExportHelp = program.commands
       .find((command) => command.name() === 're-export')
       ?.helpInformation();
+    // The test epilogue is `addHelpText('after')`, which `helpInformation()`
+    // omits, so capture it the way a terminal sees it.
+    let testHelp = '';
+    const test = program.commands.find((command) => command.name() === 'test');
+    test?.configureOutput({
+      writeOut: (chunk) => {
+        testHelp += chunk;
+      },
+    });
+    test?.outputHelp();
     const lint = program.commands.find((command) => command.name() === 'lint');
     const lintHelp = lint?.helpInformation();
-    const lintCacheClearHelp = lint?.commands
-      .find((command) => command.name() === 'cache')
-      ?.commands.find((command) => command.name() === 'clear')
-      ?.helpInformation();
 
-    expect(rootHelp).toMatchSnapshot();
-    expect(lintHelp).toMatchSnapshot('lint --help');
-    expect(lintCacheClearHelp).toMatchSnapshot('lint cache clear --help');
     expect(setupHelp).toContain('--app-id <appId>');
     expect(setupHelp).toContain('--binary-name <binaryName>');
     expect(setupHelp).toContain('--firefox-version <version>');
@@ -35,24 +38,24 @@ describe('CLI help output', () => {
     expect(exportHelp).toContain('--category <category>');
     expect(exportHelp).toContain('Place the new patch at this exact unused order');
     expect(exportHelp).toContain('without renumbering existing patches');
-    expect(exportHelp).not.toContain('(choices: "branding", "ui", "privacy", "security", "infra")');
     expect(reExportHelp).toContain('--scan-files <manifest>');
     expect(reExportHelp).toContain('bulk-assign generated files');
     expect(lintHelp).toContain('--no-cache');
+    // The epilogue's reason list must stay in step with FireforgeVerdictReason.
+    expect(testHelp).toContain('inconclusive|lock-timeout|killed]');
+    expect(testHelp).toContain('reason=killed means a signal terminated the run');
   });
 
-  it('exposes stable help text for every furnace subcommand', () => {
-    // Snapshot each `furnace <sub> --help` output so accidental CLI surface
-    // changes (renamed flags, dropped descriptions, reshuffled options)
-    // break the snapshot instead of silently shipping. The root `furnace`
-    // help is covered by `rootHelp` above via the parent program's command
-    // list, so we only snapshot the subcommands here.
+  it('exposes the full furnace subcommand set', () => {
+    // The per-subcommand flags are pinned by the CLI option inventory
+    // snapshot below. This case pins the subcommand set itself so a new
+    // subcommand cannot be added (or an old one dropped) unnoticed.
     const program = createProgram();
     const furnace = program.commands.find((command) => command.name() === 'furnace');
     expect(furnace).toBeDefined();
 
     // Sort subcommands by name so a reordering inside `registerFurnace`
-    // does not churn the snapshot file.
+    // does not churn the expected list.
     const subcommands = [...(furnace?.commands ?? [])].sort((left, right) =>
       left.name().localeCompare(right.name())
     );
@@ -78,23 +81,27 @@ describe('CLI help output', () => {
       'sync',
       'validate',
     ]);
-
-    for (const subcommand of subcommands) {
-      const help = subcommand.helpInformation();
-      expect(help).toMatchSnapshot(`furnace ${subcommand.name()} --help`);
-    }
   });
 
-  it('exposes stable help text for patch staged-dependency', () => {
-    const program = createProgram();
-    const patch = program.commands.find((command) => command.name() === 'patch');
-    const moveFiles = patch?.commands.find((command) => command.name() === 'move-files');
-    const stagedDependency = patch?.commands.find(
-      (command) => command.name() === 'staged-dependency'
-    );
-    expect(moveFiles).toBeDefined();
-    expect(stagedDependency).toBeDefined();
-    expect(moveFiles?.helpInformation()).toMatchSnapshot('patch move-files --help');
-    expect(stagedDependency?.helpInformation()).toMatchSnapshot('patch staged-dependency --help');
+  it('pins the CLI option inventory for every command', () => {
+    // A full-text help snapshot re-breaks on every wording tweak and on the
+    // terminal-width heuristics in `buildGroupedHelpFormatter`. The consumer
+    // contract is the set of flags: an accidentally renamed, removed, or
+    // newly shadowed option changes this inventory, while rewrapped prose
+    // does not.
+    const collect = (command: Command, path: string[]): string[] => {
+      const name = [...path, command.name()].join(' ');
+      const flags = command.options
+        .map((option) => [option.short, option.long].filter(Boolean).join(', '))
+        .sort((left, right) => left.localeCompare(right));
+      return [
+        `${name}: ${flags.join(' | ')}`,
+        ...[...command.commands]
+          .sort((left, right) => left.name().localeCompare(right.name()))
+          .flatMap((child) => collect(child, [...path, command.name()])),
+      ];
+    };
+
+    expect(collect(createProgram(), []).join('\n')).toMatchSnapshot('cli option inventory');
   });
 });

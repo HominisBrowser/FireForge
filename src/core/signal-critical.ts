@@ -14,13 +14,15 @@
  * for the slot to clear before calling `process.exit`, so a signal that
  * lands mid-body is held until the body's state write finishes.
  *
- * This module is a pure runtime registry — it installs no signal handlers
+ * This module is a pure runtime registry. It installs no signal handlers
  * itself. The bin entry point is responsible for awaiting
  * `waitForActiveCriticalSections` before terminating.
  */
 
+import { sleep } from '../utils/sleep.js';
+
 interface ActiveCriticalSection {
-  /** Human-readable label for telemetry/debugging; never surfaced to users. */
+  /** Human-readable label for telemetry/debugging. Never surfaced to users. */
   label: string;
   /** Resolved once the body has finished (success or throw). */
   promise: Promise<void>;
@@ -34,7 +36,7 @@ const activeSections = new Set<ActiveCriticalSection>();
  * SIGTERM that arrives during `fn` will hold exit until `fn` returns (or
  * rejects).
  *
- * `fn` should be short — anything that takes longer than the bounded wait in
+ * `fn` should be short. Anything that takes longer than the bounded wait in
  * the bin handler (`SIGNAL_CRITICAL_SECTION_TIMEOUT_MS`) will time out and
  * the handler will exit anyway. The intent is "guard the apply + state
  * persist pair," not "postpone exit indefinitely."
@@ -68,8 +70,5 @@ export async function runInSignalCriticalSection<T>(
 export async function waitForActiveCriticalSections(timeoutMs: number): Promise<void> {
   if (activeSections.size === 0) return;
   const snapshot = [...activeSections].map((s) => s.promise);
-  await Promise.race([
-    Promise.allSettled(snapshot).then(() => undefined),
-    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-  ]);
+  await Promise.race([Promise.allSettled(snapshot).then(() => undefined), sleep(timeoutMs)]);
 }

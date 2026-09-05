@@ -7,7 +7,7 @@
 # when it already exists, POSTed when it does not. The previous version
 # POSTed unconditionally, so a second run failed on "name already in use"
 # and drift between this file and the live ruleset could never be corrected
-# by running it — which is how the live ruleset came to require no status
+# by running it, which is how the live ruleset came to require no status
 # checks at all while this file claimed three.
 #
 # Usage: bash scripts/setup-rulesets.sh

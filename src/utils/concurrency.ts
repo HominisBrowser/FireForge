@@ -1,8 +1,8 @@
 /**
  * Bounded-concurrency helpers shared by commands that fan out per-file IO
  * (status classification, import's unmanaged-dirty guard, re-export scans,
- * the dry-run purity guard). Kept deliberately tiny: one order-preserving
- * mapper, no queues, no cancellation.
+ * the dry-run purity guard). Kept tiny: one order-preserving mapper, no
+ * queues, no cancellation.
  */
 
 /** Maps items with at most `limit` in-flight promises. Preserves order. */

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { warn } from '../../utils/logger.js';
 import { exec } from '../../utils/process.js';
@@ -33,8 +33,8 @@ describe('findOrphanedHarnessProcesses', () => {
     expect(found[0]?.elapsedSeconds).toBe(3731);
   });
 
-  // `xpcshell` and `server.js` are far too generic to report on their own;
-  // a developer's unrelated Node service must never be offered up for a kill.
+  // `xpcshell` and `server.js` are far too generic to report on their own.
+  // A developer's unrelated Node service must never be offered up for a kill.
   it('ignores a helper-shaped process with no objdir provenance', () => {
     const found = findOrphanedHarnessProcesses(
       ps(['  500     1 10:00 node /Users/dev/side-project/server.js']),
@@ -71,8 +71,8 @@ describe('findOrphanedHarnessProcesses', () => {
     expect(report).toContain('PID 411 (up 01:02:11)');
     expect(report).toContain('kill 411 412 413 414');
     expect(report).toContain('--reap-orphans');
-    // The census runs before this run spawns anything, so it must say so —
-    // that is what makes every hit a survivor rather than a suspicion.
+    // The census runs before this run spawns anything, so it must say so.
+    // Every hit is then a survivor rather than a suspicion.
     expect(report).toContain('EARLIER run');
   });
 });
@@ -80,8 +80,31 @@ describe('findOrphanedHarnessProcesses', () => {
 describe('reportOrphanedHarnessProcesses', () => {
   const LIVE = `  411     1 01:02:11 ${OBJ}/dist/bin/xpcshell -f ${OBJ}/_tests/testing/mochitest/server.js`;
 
+  // The census branches on `process.platform` directly and skips itself on
+  // Windows, so the `ps`-driven expectations below only hold when the
+  // branch is pinned to a POSIX host rather than inherited from the runner.
+  const originalPlatform = process.platform;
+
+  function stubPlatform(value: NodeJS.Platform): void {
+    Object.defineProperty(process, 'platform', { value, configurable: true });
+  }
+
+  afterAll(() => {
+    stubPlatform(originalPlatform);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    stubPlatform('darwin');
+  });
+
+  // There is no `ps -axo` on Windows. The preflight must step aside without
+  // even trying, because a failed probe there would be noise on every run.
+  it('skips the census on Windows without probing', async () => {
+    stubPlatform('win32');
+    expect(await reportOrphanedHarnessProcesses(OBJ)).toEqual([]);
+    expect(exec).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('warns with the census when survivors are found', async () => {

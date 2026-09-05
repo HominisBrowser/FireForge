@@ -248,10 +248,10 @@ export async function renderDefaultStatus(
 }
 
 /**
- * Renders `fireforge status --test-coverage`: a READ-ONLY view of the last
+ * Renders `fireforge status --test-coverage`: a read-only view of the last
  * build baseline's test-packaging coverage. Without it, the only way to
- * learn the recorded coverage scope — which concurrent sessions sharing one
- * engine tree overwrite constantly — is to trip the out-of-coverage refusal
+ * learn the recorded coverage scope (which concurrent sessions sharing one
+ * engine tree overwrite constantly) is to trip the out-of-coverage refusal
  * on a real test run.
  */
 export function renderTestCoverageStatus(baseline: BuildBaseline | undefined): void {
@@ -283,8 +283,8 @@ export function renderTestCoverageStatus(baseline: BuildBaseline | undefined): v
   }
   const list = coverage.map((path) => `  - ${path}`).join('\n');
   info(
-    `Test packaging coverage: scoped to ${String(coverage.length)} path(s):\n${list}\n` +
+    `Test packaging coverage: scoped to ${coverage.length} path(s):\n${list}\n` +
       'A "fireforge test" over paths outside this list will be refused as uncovered.'
   );
-  outro(`Coverage: scoped (${String(coverage.length)} paths)`);
+  outro(`Coverage: scoped (${coverage.length} paths)`);
 }

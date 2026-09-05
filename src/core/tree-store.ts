@@ -2,8 +2,8 @@
 /**
  * Verification-tree storage and lifecycle for `fireforge tree`.
  *
- * A tree is a FULL project-root CoW snapshot under
- * `.fireforge/trees/<name>` — `getProjectRoot()` walks up from cwd, so
+ * A tree is a full project-root CoW snapshot under
+ * `.fireforge/trees/<name>`. `getProjectRoot()` walks up from cwd, so
  * every read command (status, lint, typecheck, verify, doctor,
  * `export --dry-run`) runs inside the tree unmodified and its build /
  * engine-session locks key on the tree root automatically. Trees are
@@ -20,6 +20,7 @@ import { GeneralError } from '../errors/base.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getNodeErrorCode, isProcessAlive, toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { verbose, warn } from '../utils/logger.js';
 import { isObject } from '../utils/validation.js';
 import { getBuildBaselinePath } from './build-baseline.js';
@@ -34,7 +35,7 @@ const TREE_MARKER_FILENAME = 'tree.json';
 const TREES_DIRNAME = 'trees';
 const TREE_CLONE_CONCURRENCY = 8;
 
-/** `.fireforge/tree.json` — identifies a directory as a verification tree. */
+/** `.fireforge/tree.json`, which identifies a directory as a verification tree. */
 export interface TreeMarker {
   schemaVersion: 1;
   name: string;
@@ -46,10 +47,10 @@ export interface TreeMarker {
   patchesFingerprint: string | null;
   /**
    * Name of the obj-* directory cloned into this tree, written only after
-   * its mozinfo.json was successfully rewritten to the tree's paths AND the
+   * its mozinfo.json was successfully rewritten to the tree's paths and the
    * caller's in-tree reconfigure regenerated the remaining configure output.
    * Its presence is what lets the guard admit build-less `test` in-tree
-   * (`tree-guard.ts`); absent on trees created without `--with-objdir`.
+   * (`tree-guard.ts`). Absent on trees created without `--with-objdir`.
    */
   clonedObjdir?: string;
 }
@@ -133,7 +134,7 @@ function isTreeMarker(value: unknown): value is TreeMarker {
  * The three states must stay distinct because they carry opposite safety
  * meanings. `absent` means "this directory is not a tree", which is what
  * lets every mutating command run. `corrupt` means "this directory claims to
- * be a tree but we cannot read the claim" — collapsing it into `absent` (as
+ * be a tree but we cannot read the claim". Collapsing it into `absent` (as
  * a bare `undefined` return does) hands a snapshot the full mutating command
  * set on the strength of a file we failed to parse, inverting
  * `tree-guard.ts`'s default-deny design. Deleting one field from a marker is
@@ -144,7 +145,7 @@ export type TreeMarkerRead =
   | { kind: 'valid'; marker: TreeMarker }
   | { kind: 'corrupt'; reason: string }
   /**
-   * Written by a NEWER FireForge. Distinct from `corrupt` because the remedy
+   * Written by a newer FireForge. Distinct from `corrupt` because the remedy
    * is the opposite: upgrade, do not delete.
    */
   | { kind: 'unsupported'; reason: string };
@@ -162,23 +163,23 @@ export function getTreeMarkerPath(root: string): string {
  *
  * Only ENOENT/ENOTDIR mean `absent`: any other probe failure (EACCES on the
  * `.fireforge` directory, EIO, …) reports `corrupt`, because "we cannot read
- * the marker" is not evidence that there is no marker — a `pathExists`
+ * the marker" is not evidence that there is no marker: a `pathExists`
  * pre-check classifies a tree with an unreadable `.fireforge` as `absent`
  * and hands it the full mutating command set.
  */
 /**
  * Naming convention for state-file readers:
- *   - `readX(): Promise<XRead>` — the TRI-STATE read: absent, corrupt, or
+ *   - `readX(): Promise<XRead>` is the tri-state read: absent, corrupt, or
  *     valid.
- *   - `tryReadX(): Promise<X | undefined>` — collapses absent and corrupt.
+ *   - `tryReadX(): Promise<X | undefined>` collapses absent and corrupt.
  */
 export async function readTreeMarker(root: string): Promise<TreeMarkerRead> {
   const markerPath = getTreeMarkerPath(root);
   try {
     const raw = await readJson<unknown>(markerPath);
-    // Version FIRST, and reported distinctly. Folding the schemaVersion
-    // check into `isTreeMarker` makes a marker from a NEWER FireForge read
-    // as "missing or mistypes a required field" — and `tree-guard.ts` is
+    // Version first, and reported distinctly. Folding the schemaVersion
+    // check into `isTreeMarker` makes a marker from a newer FireForge read
+    // as "missing or mistypes a required field", and `tree-guard.ts` is
     // default-deny on corrupt, so the operator is locked out of every
     // mutating command inside the tree by a message claiming the file is
     // malformed when it is merely newer.
@@ -197,14 +198,14 @@ export async function readTreeMarker(root: string): Promise<TreeMarkerRead> {
   } catch (error: unknown) {
     const code = getNodeErrorCode(error);
     if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
-    verbose(`Unreadable tree marker at ${markerPath}: ${String(error)}`);
+    verbose(`Unreadable tree marker at ${markerPath}: ${toError(error).message}`);
     return { kind: 'corrupt', reason: `the marker could not be read (${toError(error).message})` };
   }
 }
 
 /**
  * Reads the tree marker for a project root, or undefined when it is absent
- * OR unreadable.
+ * or unreadable.
  *
  * For display and best-effort paths only (`tree list` renders an unreadable
  * marker as staleness 'unknown'). Anything that decides whether a mutation may
@@ -220,8 +221,8 @@ export async function tryReadTreeMarker(root: string): Promise<TreeMarker | unde
  * the one this tree's marker vouched for as rewritten-and-reconfigured. A
  * mismatch means an objdir appeared in the tree through some path other than
  * `tree create --with-objdir` (manual copy, partial restore), so nothing
- * proves it was relocated — running against it could consult primary paths.
- * No-op outside a tree; a corrupt marker is already refused by the guard.
+ * proves it was relocated, and running against it could consult primary paths.
+ * No-op outside a tree. A corrupt marker is already refused by the guard.
  */
 export async function assertObjdirMatchesTreeMarker(
   projectRoot: string,
@@ -257,9 +258,7 @@ export async function computePrimaryFingerprint(primaryRoot: string): Promise<{
   }
   let engineFingerprint: string | null;
   try {
-    engineFingerprint = createHash('sha256')
-      .update(await getAllDiff(engineDir))
-      .digest('hex');
+    engineFingerprint = sha256Hex(await getAllDiff(engineDir));
   } catch {
     engineFingerprint = null;
   }
@@ -297,17 +296,17 @@ export function assertValidTreeName(name: string): void {
 
 /**
  * Refuses an objdir that is not a plain directory physically inside
- * `engineDir` — every `cp` mode `cloneEntry` uses preserves symlinks, so
+ * `engineDir`. Every `cp` mode `cloneEntry` uses preserves symlinks, so
  * a symlinked `engine/obj-*` would be cloned as a symlink pointing back
  * at the original (primary or fully external) build, and the clone's
  * mozinfo rewrite and `_virtualenvs` removal would then mutate that
  * original through the link. Checks lstat (the entry itself must be a
- * real directory) AND realpath containment (a real directory reached
- * through a symlinked parent resolves elsewhere) — the rewriter's
+ * real directory) and realpath containment (a real directory reached
+ * through a symlinked parent resolves elsewhere). The rewriter's
  * lexical `resolve()` paths cannot detect either. Also validates the
  * name as a single `obj-*` path segment. Role `'primary'` guards before
- * any copying starts; `'cloned'` re-checks the tree's copy before any
- * write goes through it (defense in depth).
+ * any copying starts. Role `'cloned'` re-checks the tree's copy before
+ * any write goes through it (defense in depth).
  */
 async function assertCloneSafeObjdir(
   engineDir: string,
@@ -356,8 +355,8 @@ async function assertCloneSafeObjdir(
  * Materialises the tree at `treeRoot` from `primaryRoot` using `capability`
  * ('none' = plain copy, already gated on --force-copy by the caller).
  *
- * The engine is cloned one TOP-LEVEL entry at a time so unwanted `obj-*`
- * directories are never traversed or materialised — on a Firefox tree, even
+ * The engine is cloned one top-level entry at a time so unwanted `obj-*`
+ * directories are never traversed or materialised. On a Firefox tree, even
  * CoW-cloning and then deleting an objdir touches metadata for millions of
  * build outputs. With `withObjdir` exactly that objdir is included (after
  * {@link assertCloneSafeObjdir} refuses symlinked or engine-escaping objdirs
@@ -376,7 +375,7 @@ export async function cloneTree(args: {
 }): Promise<TreeMarker> {
   const { primaryRoot, treeRoot, name, capability, createdAt, withObjdir } = args;
   if (withObjdir) {
-    // Refuse a symlinked/escaping primary objdir BEFORE any copying: the
+    // Refuse a symlinked/escaping primary objdir before any copying: the
     // clone would carry the symlink and every later write would land in
     // the original build (see assertCloneSafeObjdir).
     await assertCloneSafeObjdir(join(primaryRoot, 'engine'), withObjdir.objDir, 'primary');
@@ -406,8 +405,8 @@ export async function cloneTree(args: {
   });
 
   // A selected objdir embeds absolute topsrcdir/topobjdir paths back into
-  // the PRIMARY tree. It is rewritten below before the marker records it as
-  // usable; no other objdir ever enters the snapshot.
+  // the primary tree. It is rewritten below before the marker records it as
+  // usable. No other objdir ever enters the snapshot.
   if (await pathExists(engineDir)) {
     // Defensive: never inherit a mid-operation git index lock.
     await rm(join(engineDir, '.git', 'index.lock'), { force: true });
@@ -416,7 +415,7 @@ export async function cloneTree(args: {
   if (withObjdir) {
     await rewriteClonedObjdir(engineDir, withObjdir.objDir);
     // Regenerate configure output (config.status, backend.mk, Makefile,
-    // config/autoconf.mk) against the tree's paths — the mozinfo rewrite
+    // config/autoconf.mk) against the tree's paths. The mozinfo rewrite
     // alone leaves those naming the primary. A failed reconfigure throws
     // before the marker below records the objdir as usable (fail-closed).
     await withObjdir.reconfigure(engineDir);
@@ -429,7 +428,7 @@ export async function cloneTree(args: {
   }
   if (withObjdir) {
     // The in-tree stale-build and static-components gates anchor on the
-    // last-build baseline; without the copy they would read `undefined`
+    // last-build baseline. Without the copy they would read `undefined`
     // and degrade to first-build semantics inside a fully built tree.
     const baseline = getBuildBaselinePath(primaryRoot);
     if (await pathExists(baseline)) {
@@ -457,7 +456,7 @@ export async function cloneTree(args: {
  * Points the cloned objdir at the tree: rewrites mozinfo.json's
  * topsrcdir/topobjdir (and an in-tree mozconfig) via the same
  * safe-relocation rewriter `build --rewrite-mozinfo` uses, refusing
- * fail-closed when its safety rules cannot prove the rewrite correct —
+ * fail-closed when its safety rules cannot prove the rewrite correct:
  * a tree must never hold an objdir that still names the primary. Before
  * any write, the cloned objdir is re-checked as a real directory inside
  * the tree ({@link assertCloneSafeObjdir}) so no write ever goes through
@@ -465,7 +464,7 @@ export async function cloneTree(args: {
  * removed outright: their scripts carry primary-tree shebang paths, and
  * mach rebuilds venvs in-tree on first use. The configure-generated root
  * files (config.status, backend.mk, Makefile, config/autoconf.mk) still
- * name the primary after this rewrite; they are regenerated by the
+ * name the primary after this rewrite. They are regenerated by the
  * in-tree `mach configure` the caller supplies to {@link cloneTree},
  * which runs before the marker is written.
  */
@@ -516,7 +515,7 @@ type TreeLockState =
 
 /**
  * Classifies a mkdir-style lock directory. Reads the lock's owner file
- * directly (line 1 = PID — the format `file-lock.ts` documents as stable,
+ * directly (line 1 = PID, the format `file-lock.ts` documents as stable,
  * whose name it shares via {@link LOCK_PID_FILE}) instead of exporting
  * file-lock internals.
  *
@@ -527,7 +526,7 @@ type TreeLockState =
  *
  * The `unknown` state is not theoretical. `withFileLock` takes the lock by
  * creating the directory and only *then* writes the owner file, treating a
- * write failure as non-fatal — so every acquisition passes through a window
+ * write failure as non-fatal, so every acquisition passes through a window
  * in which the lock is genuinely held and has no readable PID, and a
  * read-only or full filesystem leaves it that way for the lock's whole life.
  * Reporting that as `free` lets `removeTree` recursively delete a tree out
@@ -542,8 +541,9 @@ async function inspectTreeLock(lockPath: string): Promise<TreeLockState> {
     pidLine = (await readFile(join(lockPath, LOCK_PID_FILE), 'utf-8')).split('\n')[0] ?? '';
   } catch (error: unknown) {
     // A lock cleanly released between the existence probe above and this read
-    // leaves no directory behind — that is a release, not an unreadable owner,
-    // and demanding --force for it would be a spurious refusal.
+    // leaves no directory behind. That is a release rather than an
+    // unreadable owner, and demanding --force for it would be a spurious
+    // refusal.
     if (!existsSync(lockPath)) return { kind: 'free' };
     return {
       kind: 'unknown',
@@ -559,8 +559,8 @@ async function inspectTreeLock(lockPath: string): Promise<TreeLockState> {
 
 /**
  * Removes one tree. Refuses when a live process holds the tree's build
- * or engine-session lock — or when a lock directory exists whose ownership
- * cannot be established, which `--force` overrides — and never deletes a path
+ * or engine-session lock, or when a lock directory exists whose ownership
+ * cannot be established (which `--force` overrides). Never deletes a path
  * outside the trees directory (containment check before `rm -rf`).
  */
 export async function removeTree(
@@ -571,8 +571,9 @@ export async function removeTree(
   assertValidTreeName(name);
   // Both sides resolved: the containment prefix has to be in the same form as
   // the path it guards. `getTreesDir` is a `join`, so on Windows it yields a
-  // drive-less path while `resolve` below adds the drive letter — the prefix
-  // test then failed for EVERY tree and refused each removal as an escape.
+  // drive-less path while `resolve` below adds the drive letter, so the
+  // prefix test then failed for every tree and refused each removal as an
+  // escape.
   const treesDir = resolve(getTreesDir(primaryRoot));
   const treeRoot = resolve(treesDir, name);
   if (!treeRoot.startsWith(treesDir + sep) || basename(treeRoot) !== name) {
@@ -591,7 +592,7 @@ export async function removeTree(
     const state = await inspectTreeLock(lockPath);
     if (state.kind === 'held') {
       throw new GeneralError(
-        `Refusing to remove tree "${name}": a live process (pid ${String(state.pid)}) holds ${lockPath}. ` +
+        `Refusing to remove tree "${name}": a live process (pid ${state.pid}) holds ${lockPath}. ` +
           'Wait for it to finish, then retry.'
       );
     }

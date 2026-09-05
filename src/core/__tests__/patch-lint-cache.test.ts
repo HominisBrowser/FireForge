@@ -61,6 +61,7 @@ describe('per-patch lint cache', () => {
             '',
           ].join('\n'),
           newFiles: new Map([['browser/a.js', 'const a = 1;\n']]),
+          createdFiles: new Set<string>(),
           modifiedFileAdditions: new Map(),
         },
       ],
@@ -131,8 +132,8 @@ describe('per-patch lint cache', () => {
 
   it('invalidates when lintIgnore alone changes', async () => {
     // Isolated on purpose: the pre-existing metadata test changes four
-    // fields at once, so nothing pinned the waiver field by itself — the
-    // exact input whose omission would replay a pre-waiver verdict.
+    // fields at once, so nothing pinned the waiver field by itself. That is
+    // the exact input whose omission would replay a pre-waiver verdict.
     const before = await key();
     const changed: PatchMetadata = { ...patch, lintIgnore: ['checkjs-type-error'] };
     await expect(key({ patch: changed })).resolves.not.toBe(before);
@@ -146,10 +147,10 @@ describe('per-patch lint cache', () => {
   });
 
   it('engine-side content revert invalidates the per-patch cache', async () => {
-    // The cache-hit path in lint-per-patch returns BEFORE the empty-diff
+    // The cache-hit path in lint-per-patch returns before the empty-diff
     // probe. That is safe only because reverting an affected file (which
     // would empty the diff) always changes the file-content hash in the
-    // key — this test pins that invariant.
+    // key. This test pins that invariant.
     const dirty = await key();
     await writeFiles(engineDir, { 'browser/a.js': 'reverted to head content\n' });
 
@@ -222,8 +223,8 @@ describe('per-patch lint cache', () => {
     });
     const before = await key({ config: withTestShim });
 
-    // Content edit in place — the adoption-workflow shape that replays stale
-    // findings when the config block carries only the PATH.
+    // Content edit in place: the adoption-workflow shape that replays stale
+    // findings when the config block carries only the path.
     await writeFiles(projectRoot, {
       'types/test-shim.d.ts': 'declare var HominisTestHarness: number;\n',
     });
@@ -263,6 +264,7 @@ describe('per-patch lint cache', () => {
           metadata: null,
           diff: ctx.entries[0]?.diff ?? '',
           newFiles: new Map([['browser/a.js', 'const a = 1;\n']]),
+          createdFiles: new Set<string>(),
           modifiedFileAdditions: new Map(),
         },
       ],
@@ -274,11 +276,11 @@ describe('per-patch lint cache', () => {
   it('loads, reuses, and clears cached issues', async () => {
     const cacheKey = await key();
     const cache = await loadPerPatchLintCache(projectRoot);
-    setCachedPerPatchLintIssues(
+    setCachedPerPatchLintIssues({
       cache,
-      patch.filename,
-      cacheKey,
-      [
+      patchFilename: patch.filename,
+      key: cacheKey,
+      issues: [
         {
           file: 'browser/a.js',
           check: 'missing-modification-comment',
@@ -286,7 +288,7 @@ describe('per-patch lint cache', () => {
           severity: 'warning',
         },
       ],
-      [
+      suppressed: [
         {
           file: '(patch)',
           check: 'large-patch-lines',
@@ -294,8 +296,8 @@ describe('per-patch lint cache', () => {
           severity: 'error',
         },
       ],
-      4200
-    );
+      lineCount: 4200,
+    });
     await savePerPatchLintCache(projectRoot, cache);
 
     const loaded = await loadPerPatchLintCache(projectRoot);
@@ -320,22 +322,38 @@ describe('per-patch lint cache', () => {
       message: 'implicit any',
       severity: 'error' as const,
     };
-    // Entry computed with NO waiver in force.
-    setCachedPerPatchLintIssues(cache, patch.filename, cacheKey, [issue], [], 10, []);
+    // Entry computed with no waiver in force.
+    setCachedPerPatchLintIssues({
+      cache,
+      patchFilename: patch.filename,
+      key: cacheKey,
+      issues: [issue],
+      suppressed: [],
+      lineCount: 10,
+      lintIgnore: [],
+    });
     await savePerPatchLintCache(projectRoot, cache);
     const loaded = await loadPerPatchLintCache(projectRoot);
 
-    // Same key, same waiver set — replayed.
+    // Same key, same waiver set: replayed.
     expect(getCachedPerPatchLintIssues(loaded, patch.filename, cacheKey, [])?.issues).toHaveLength(
       1
     );
-    // Same key, a waiver written since — must MISS rather than replay the
-    // pre-waiver verdict the operator just waived.
+    // Same key, but a waiver written since: this must miss rather than
+    // replay the pre-waiver verdict the operator just waived.
     expect(
       getCachedPerPatchLintIssues(loaded, patch.filename, cacheKey, ['checkjs-type-error'])
     ).toBeUndefined();
     // Order and duplicates are not significant.
-    setCachedPerPatchLintIssues(cache, patch.filename, cacheKey, [issue], [], 10, ['b', 'a', 'a']);
+    setCachedPerPatchLintIssues({
+      cache,
+      patchFilename: patch.filename,
+      key: cacheKey,
+      issues: [issue],
+      suppressed: [],
+      lineCount: 10,
+      lintIgnore: ['b', 'a', 'a'],
+    });
     expect(getCachedPerPatchLintIssues(cache, patch.filename, cacheKey, ['a', 'b'])).toBeDefined();
   });
 

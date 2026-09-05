@@ -28,7 +28,7 @@ import { appendHistory, confirmDestructive, HISTORY_LOG_FILENAME } from '../dest
  * Stand-in for clack's cancellation sentinel. The real one is
  * `Symbol('clack:cancel')`, module-private inside `@clack/core` and therefore
  * unreachable from a test. `isCancel` is overridden below to recognise this
- * marker too, which is enough to drive the interrupt branch — `utils/logger.ts`
+ * marker too, which is enough to drive the interrupt branch. `utils/logger.ts`
  * imports `* as p from '@clack/prompts'`, so the override reaches
  * `logger.isCancel`, which is what `confirmDestructive` actually calls.
  */
@@ -164,9 +164,10 @@ describe('confirmDestructive', () => {
   });
 
   it('interactive interrupt (Esc/Ctrl+C) throws CancellationError, which exits 130', async () => {
-    // Answering "no" is a successful run that chose not to proceed (exit 0);
-    // Esc/Ctrl+C is an interrupt (exit 130 = 128+SIGINT). Collapsing both
-    // into one outcome leaves a script unable to tell them apart.
+    // Answering "no" is a successful run that chose not to proceed
+    // (exit 0). Esc/Ctrl+C is an interrupt (exit 130 = 128+SIGINT).
+    // Collapsing both into one outcome leaves a script unable to tell them
+    // apart.
     restoreTTY = setInteractiveMode(true);
     vi.mocked(confirm).mockResolvedValue(CANCEL_MARKER);
     await expect(

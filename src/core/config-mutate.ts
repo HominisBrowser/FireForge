@@ -24,10 +24,10 @@ function cloneConfigDocument(config: FireForgeConfig | JsonObject): JsonObject {
 }
 
 /**
- * The error every sentinel-segment refusal raises. Only the MESSAGE lives
+ * The error every sentinel-segment refusal raises. Only the message lives
  * here: the comparison itself is spelled inline at each write site, because
  * that is what both a reader and CodeQL's `js/prototype-pollution-utility`
- * barrier detection need — the latter is not interprocedural, so a check
+ * barrier detection need. That detection is not interprocedural, so a check
  * hidden behind a helper leaves the descent below looking unguarded.
  */
 function sentinelSegmentError(key: string, part: string): ConfigError {
@@ -79,8 +79,8 @@ export function mutateConfig(
   const parts = key.split('.');
   const raw = cloneConfigDocument(config);
 
-  // Every segment is checked at the point it is USED as a property name —
-  // the descent below and the leaf assignment — rather than once up front,
+  // Every segment is checked at the point it is used as a property name
+  // (the descent below and the leaf assignment) rather than once up front,
   // so `--force` cannot be used to mutate Object.prototype and neither write
   // can drift out from behind the guard. `raw` is a private clone, so a
   // refusal here has mutated nothing the caller can observe.

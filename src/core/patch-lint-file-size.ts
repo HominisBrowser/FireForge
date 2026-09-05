@@ -2,7 +2,7 @@
 /**
  * The `file-too-large` thresholds and their rendered message.
  *
- * Its own module for two reasons: the config validator needs the DEFAULTS
+ * Its own module for two reasons: the config validator needs the defaults
  * to validate an override triple against the merged result, and importing
  * `patch-lint.ts` from `config-validate.ts` for a constant would draw an
  * import edge (and a cycle) between the rule bodies and config parsing.
@@ -10,9 +10,9 @@
  * On the vocabulary: the bands were `notice` / `warning` / `error` with the
  * middle one described as a "soft limit". That description is false under
  * the posture FireForge itself recommends for a release gate,
- * `--max-warnings 0`, where a warning is a hard failure — so a file at 751
+ * `--max-warnings 0`, where a warning is a hard failure, so a file at 751
  * lines failed a gate with a message calling 750 soft. The message below
- * says what the band IS (a warning) and what a zero-warning gate does with
+ * says what the band is (a warning) and what a zero-warning gate does with
  * it, and the thresholds are now tunable, so a project whose file-size
  * policy differs has a dial instead of an argument.
  */
@@ -68,11 +68,11 @@ export function formatFileTooLargeMessage(args: {
 }): string {
   const { label, lineCount, thresholds, band, verb } = args;
   if (band === 'error') {
-    return `${label} has ${String(lineCount)} lines (error threshold: ${String(thresholds.error)}). Consider ${verb}.`;
+    return `${label} has ${lineCount} lines (error threshold: ${thresholds.error}). Consider ${verb}.`;
   }
   return (
-    `${label} has ${String(lineCount)} lines (warning threshold: ${String(thresholds.warning)}, ` +
-    `error threshold: ${String(thresholds.error)}). Consider ${verb}. ` +
+    `${label} has ${lineCount} lines (warning threshold: ${thresholds.warning}, ` +
+    `error threshold: ${thresholds.error}). Consider ${verb}. ` +
     `Reported as a ${band}, which a gate running --max-warnings 0 treats as a failure; ` +
     `tune "patchLint.fileSizeThresholds" if these limits are wrong for this project.`
   );

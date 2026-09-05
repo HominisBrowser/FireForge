@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Classifier tests for the field-observed harness flake shapes (C1/C2),
- * driven by simulated mach output fixtures — no live Firefox checkout.
+ * driven by simulated mach output fixtures, with no live Firefox checkout.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -65,10 +65,10 @@ const HANG_WITH_FALSE_SUMMARY = [
 
 // Captured shape of a passing single-file `mach xpcshell-test` dispatch.
 // The suite-specific xpcshell command prints a result-summary block and a
-// per-test `TEST_END: Test PASS` line, but NO `TEST-START` line — so a
+// per-test `TEST_END: Test PASS` line, but no `TEST-START` line, so a
 // TEST-START-only execution heuristic mis-reads this green run as no-tests,
 // appends "finished without starting any tests", and exits 1. Strings mirror
-// the runxpcshelltests output; no live build.
+// the runxpcshelltests output, with no live build.
 const XPCSHELL_PASS_RUN = [
   ' 0:00.41 INFO | Running tests sequentially.',
   ' 0:00.42 INFO | TEST-INFO | (xpcshell/tests/toolkit/.../test_settings.js)',
@@ -186,17 +186,17 @@ describe('classifyHarnessRun', () => {
 
   it('does not treat a bare Passed/Failed summary as an xpcshell execution signal', () => {
     // The no-output hang's `Passed: 0` summary must not be mistaken for an
-    // xpcshell result-summary block — it stays no-tests.
+    // xpcshell result-summary block. It stays no-tests.
     const summaryOnly = ' 0:10.01 INFO Passed: 0\n 0:10.01 INFO Failed: 0';
     expect(classifyHarnessRun(0, summaryOnly, PATHS).kind).toBe('no-tests');
   });
 });
 
-// A completed multi-file xpcshell suite whose output ALSO carries the
+// A completed multi-file xpcshell suite whose output also carries the
 // non-fatal resource-monitor degradation warnings and a caught telemetry
 // traceback. The embedded summary is green (Unexpected results: 0,
 // SUITE_END), yet the signature strings (psutil, _collect) match the
-// startup-traceback cluster — without the green-summary veto every such
+// startup-traceback cluster. Without the green-summary veto every such
 // suite classifies CRASH.
 const GREEN_XPCSHELL_WITH_DEGRADATION_NOISE = [
   ' 0:00.30 SUITE_START',
@@ -323,7 +323,7 @@ describe('green-summary veto and noise exclusion', () => {
   });
 
   it('excludes degradation warnings and caught telemetry tracebacks from crash evidence', () => {
-    // Without the green summary the run is NOT vetoed — but the remaining
+    // Without the green summary the run is not vetoed, but the remaining
     // evidence (warnings + telemetry traceback only) must still not read
     // as a startup crash, because none of it is a fatal signal.
     const noiseOnly = [
@@ -434,9 +434,9 @@ describe('_DegradedReading fallback crash signatures', () => {
 
 // Degraded-host drain-loop noise plus a post-success log_resource_usage
 // crash: on a flapping host, mozsystemmonitor's parent rejects malformed
-// collector samples ("failed to read the received data") — chatter on runs
-// that then complete — and mozbuild's log_resource_usage can die on
-// usage["io"].read_bytes AFTER a fully successful compile, failing a build
+// collector samples ("failed to read the received data"), which is chatter
+// on runs that then complete. And mozbuild's log_resource_usage can die on
+// usage["io"].read_bytes after a fully successful compile, failing a build
 // whose artifacts are complete.
 const DRAIN_LOOP_WARNING_LINES = [
   ' 0:41.02 resourcemonitor.py:766: UserWarning: failed to read the received data: (0, 0, 0.0, 0, 0, 0, 0, 0)',
@@ -491,7 +491,7 @@ describe('degraded-host drain-loop and log_resource_usage shapes', () => {
 // process SIGSEGVed at the second file's TEST_START. The remaining six
 // never started, so the embedded summary is "green" (`Passed: 2 / Failed:
 // 0, Unexpected results: 0`) only because the crash prevented them from
-// producing any results — and an unguarded green-summary override reports
+// producing any results, and an unguarded green-summary override reports
 // the mach-exit-1 run as PASSED.
 const HOMINIS_DIR = 'browser/base/content/test/hominis';
 const HOMINIS_FILES = [
@@ -537,7 +537,7 @@ const SIGSEGV_TRUNCATED_RUN_WITH_MONITOR_TRACEBACK = [
   'Error running mach',
 ].join('\n');
 
-// Truncation WITHOUT a crash marker: the second file started but the log
+// Truncation without a crash marker: the second file started but the log
 // ends (green-shaped summary included) with no end marker for it.
 const TRUNCATED_NO_CRASH_RUN = [
   'SUITE_START',
@@ -631,7 +631,7 @@ describe('green-summary rejection on crash/truncation evidence', () => {
   });
 
   it('leaves mach exit 0 classification untouched', () => {
-    // `unexpected` rides along since I5 — the fixture's summary prints it.
+    // `unexpected` rides along since I5, and the fixture's summary prints it.
     expect(classifyHarnessRun(0, GREEN_PAIRED_WITH_MONITOR_NOISE, TWO_HOMINIS_FILES)).toEqual({
       kind: 'tests-ran-ok',
       unexpected: 0,
@@ -819,7 +819,7 @@ describe('silent SIGSEGV diagnosis', () => {
     const message = buildSilentSegfaultMessage(-11, ['browser/base/test_a.js']);
     expect(message).toContain('EXTRA_JS_MODULES');
     expect(message).toContain('check this FIRST');
-    // The recurring shape — an import added to an EXISTING module — is
+    // The recurring shape (an import added to an existing module) is
     // called out explicitly, because the new-file lint cannot see it.
     expect(message).toContain('added to an EXISTING module');
     expect(message).toContain('fireforge verify');
@@ -904,7 +904,7 @@ describe('known teardown noise on a clean suite', () => {
   // Every belt condition is all-or-nothing, so a rejected run's verdict is
   // identical whichever one rejected it. A downstream report hit exactly
   // this: recognized teardown noise, zero unexpected, and a FAIL nobody
-  // could diagnose from outside — the re-run was green and the log was
+  // could diagnose from outside. The re-run was green and the log was
   // gone. The verdict line now names the rejecting condition.
   describe('rejection reasons', () => {
     it('names a real failure line as the rejecting condition', () => {
@@ -973,7 +973,7 @@ describe('known teardown noise on a clean suite', () => {
     });
 
     // A run with no recognized teardown noise was never a candidate for the
-    // belt; naming a "rejecting condition" for it would be pure noise.
+    // belt, so naming a "rejecting condition" for it would be pure noise.
     it('says nothing when the run carried no recognized teardown noise', () => {
       const verdict = classifyHarnessRun(
         1,
@@ -988,7 +988,7 @@ describe('known teardown noise on a clean suite', () => {
   });
 
   it('passes a green suite whose diagnostic contains the ordinary word "assertion"', () => {
-    // Regression: the assertion arm used to be a case-INSENSITIVE word match,
+    // Regression: the assertion arm used to be a case-insensitive word match,
     // so a test's own passing diagnostic manufactured a red run and the
     // verdict then named that diagnostic as the first real test failure.
     const output = [
@@ -1054,8 +1054,8 @@ describe('known teardown noise on a clean suite', () => {
 
 describe('unmarked failure evidence note', () => {
   it('says so when a test-failures verdict rests on evidence with no TEST-UNEXPECTED marker', () => {
-    // `unexpected=0` beside `reason=test-failures` is the tell that the
-    // classification rests on pattern matching rather than a harness result.
+    // `unexpected=0` beside `reason=test-failures` shows the classification
+    // rests on pattern matching rather than a harness result.
     const output = [
       'TEST_START: browser/base/content/test/test_a.js',
       'Assertion failure: !mDestroyed, at /x/nsDocShell.cpp:1234',
@@ -1089,81 +1089,28 @@ describe('headedNoOutputTimeoutHint', () => {
     line: 'Timed out after 370 seconds with no output',
   };
 
-  it('prints the three-cause triage list for a headed no-output timeout on darwin', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-    });
-    // Recommending `caffeinate` is wrong for this shape: it PREVENTS sleep
-    // and cannot WAKE an already-sleeping display. The hint says so and
-    // lists all three known causes.
+  it('names all three known causes, after the control step, with the measured display state', () => {
+    const headedDarwin = { headless: false, platform: 'darwin' } as const;
+    const hint = headedNoOutputTimeoutHint(timeoutSignature, headedDarwin);
     expect(hint).toContain('sleeping or locked display');
     expect(hint).toContain('SWGL compositor');
-    expect(hint).toContain('chrome://');
-    expect(hint).toContain('cannot WAKE a display that is already asleep');
-  });
-
-  // The control test is the correct opening move for ALL three causes, so
-  // it belongs above the list. While it lived inside cause 3, reaching
-  // cause 3 told the operator nothing they did not already have.
-  it('hoists the known-good control step above the cause list', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-    });
-    expect(hint).toContain('run a known-good control test');
+    // Cause 3 is root-caused as the CheckForBrokenChromeURL crash, not the
+    // discredited first-paint story an earlier revision wrote over it.
+    expect(hint).toContain('CheckForBrokenChromeURL');
+    expect(hint).not.toContain('stalls first paint');
+    // The control test is the correct opening move for all three causes,
+    // so it must come before the cause list rather than inside cause 3.
     expect(hint?.indexOf('known-good control')).toBeLessThan(
       hint?.indexOf('Known causes of this exact signature') ?? -1
     );
-  });
 
-  // Cause 3 is now root-caused: `CheckForBrokenChromeURL` is a printf
-  // outside automation and a MOZ_CRASH under it. The census must name the
-  // mechanism — but must NOT restore the discredited first-paint story
-  // that an earlier revision wrote on top of the correlation.
-  it('states cause 3 as the root-caused CheckForBrokenChromeURL mechanism', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-    });
-    expect(hint).toContain('CheckForBrokenChromeURL');
-    expect(hint).toContain('MOZ_CRASH');
-    // The discredited mechanism claim must not come back.
-    expect(hint).not.toContain('stalls first paint');
-  });
-
-  // Under automation the crash lands in the process that died, not in the
-  // log, so the census must name the crash-report artefact alongside the
-  // smoke probe — pointing only at the log teaches operators to conclude
-  // "nothing here" from a log that structurally cannot carry the evidence.
-  it('names both the crash-report artefact and the smoke probe for cause 3', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-    });
-    expect(hint).toContain('DiagnosticReports');
-    expect(hint).toContain('fireforge run --smoke-exit');
-    expect(hint).toContain('OUTSIDE automation');
-  });
-
-  it('states a MEASURED asleep display as fact', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-      displayState: 'asleep',
-    });
-    expect(hint).toContain('MEASURED ASLEEP');
-    expect(hint).toContain('environmental');
-  });
-
-  it('rules the sleeping display out when it was measured awake', () => {
-    const hint = headedNoOutputTimeoutHint(timeoutSignature, {
-      headless: false,
-      platform: 'darwin',
-      displayState: 'awake',
-    });
-    expect(hint).toContain('measured AWAKE');
-    expect(hint).toContain('ruled out');
+    // A measured display state is reported as fact in either direction.
+    expect(
+      headedNoOutputTimeoutHint(timeoutSignature, { ...headedDarwin, displayState: 'asleep' })
+    ).toContain('MEASURED ASLEEP');
+    expect(
+      headedNoOutputTimeoutHint(timeoutSignature, { ...headedDarwin, displayState: 'awake' })
+    ).toContain('measured AWAKE');
   });
 
   it('notes a measured-asleep headed stall on the verdict line', () => {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Integration coverage for `fireforge patch split`. Real
- * git repo so the diff-generation path runs; exercises the one-transaction
+ * git repo so the diff-generation path runs. Exercises the one-transaction
  * contract: shrink + new-patch creation + staged-dependency owner rewrites,
  * with dry-run and rollback.
  */
@@ -165,14 +165,14 @@ describe('patch split integration', () => {
     const manifest = await readManifest(patchesDir);
     const created = manifest.patches.find((p) => p.filename === '002-infra-feature-styles.patch');
     expect(created).toBeDefined();
-    // The display name is the bare slug, not the typed filename — same G13
-    // normalization `export --name` applies.
+    // The display name is the bare slug, not the typed filename, using the
+    // same G13 normalization `export --name` applies.
     expect(created?.name).toBe('feature-styles');
   });
 
   it('rewrites staged-dependency owners pointing at moved files (the A4 flow)', async () => {
     // 001 forward-imports feature.css... modelled as a JS helper created by
-    // the source: 001 imports Helper.sys.mjs which 002 creates; the helper
+    // the source: 001 imports Helper.sys.mjs which 002 creates. The helper
     // moves to a new patch 003, so 001's owner must follow it.
     const helperPath = 'browser/modules/Helper.sys.mjs';
     const importerPath = 'browser/modules/Importer.sys.mjs';
@@ -225,11 +225,11 @@ describe('patch split integration', () => {
 
   it('auto-declares the forward edge a split introduces into the new patch', async () => {
     // The remaining source still imports a helper that moves into the new
-    // (later) patch — a forward edge the split itself creates, with no prior
+    // (later) patch, a forward edge the split itself creates, with no prior
     // declaration. Before the fix, the projected lint flagged it and the
     // split refused (the real per-patch gate would have been 0/0 once
     // declared). Now the split auto-declares it: the dry-run projection is
-    // clean (no refusal) AND the committed queue lints clean.
+    // clean (no refusal) and the committed queue lints clean.
     const helperPath = 'browser/modules/Helper.sys.mjs';
     const importerPath = 'browser/modules/Importer.sys.mjs';
     const mozBuildPath = 'browser/modules/moz.build';
@@ -274,7 +274,7 @@ describe('patch split integration', () => {
       owner: '002-infra-helper.patch',
     });
 
-    // The committed queue lints clean end to end — matching the real gate.
+    // The committed queue lints clean end to end, matching the real gate.
     const ctx = await buildPatchQueueContext(patchesDir);
     expect(lintPatchQueue(ctx).filter((i) => i.severity === 'error')).toEqual([]);
   });
@@ -392,7 +392,7 @@ describe('patch split integration', () => {
     ]);
 
     // --before the reserved patch would shift it 004 → 005 inside the
-    // reserved block; the refusal is one message keyed on the range, with
+    // reserved block. The refusal is one message keyed on the range, with
     // the first free order below the block (003) as the suggested fix.
     await expect(
       patchSplitCommand(projectRoot, '001-infra-feature.patch', {

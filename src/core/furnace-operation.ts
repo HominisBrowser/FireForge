@@ -22,7 +22,7 @@ const FURNACE_LOCK_FILENAME = 'furnace.lock';
 /**
  * The signal names the lifecycle wrapper knows how to react to. Spelled out
  * as a literal union (rather than `NodeJS.Signals`) so the public type
- * surface does not depend on the NodeJS global namespace — consumers of
+ * surface does not depend on the NodeJS global namespace. Consumers of
  * FireForge's published scoped npm package may compile against tsconfigs
  * that omit `@types/node`.
  */
@@ -56,9 +56,9 @@ export interface FurnaceOperationContext {
    * Bodies that catch-and-restore on their own (the `furnace/*` command
    * bodies, `furnace-apply`) call this from their catch block after the
    * restore, then re-throw. Without it the wrapper would restore the same
-   * journal again on the way out — harmless for the file writes, which are
-   * rename-based and converge, but it would race a second `pendingRepair`
-   * write against the state-file lock.
+   * journal again on the way out. That is harmless for the file writes,
+   * which are rename-based and converge, but it would race a second
+   * `pendingRepair` write against the state-file lock.
    */
   markRolledBack(): void;
 }
@@ -70,7 +70,7 @@ export interface RunFurnaceMutationOptions {
    * Used by dry-run paths where no engine mutation occurs.
    *
    * Note: a dry-run can overlap with a real mutation because it does not
-   * acquire the lock. This is safe because dry-runs only read; however, a
+   * acquire the lock. This is safe because dry-runs only read. However, a
    * dry-run that starts before a real mutation and finishes after it may
    * observe partially-written engine state. Accept this trade-off so that
    * concurrent dry-runs never block each other or a real apply.
@@ -79,11 +79,11 @@ export interface RunFurnaceMutationOptions {
   /**
    * Override the default 30 s furnace-lock timeout.
    *
-   * Set from the caller's resolved `--wait-lock` budget, so ONE flag governs
+   * Set from the caller's resolved `--wait-lock` budget, so one flag governs
    * both locks a furnace mutation takes. Before that it was declared and
    * never passed: `furnace deploy --wait-lock 1800` waited 1800 s for the
    * engine session lock and then met `.fireforge/furnace.lock` with a fixed
-   * 30 s, which is the worst shape a budget can have — it pays the whole
+   * 30 s, which is the worst shape a budget can have: it pays the whole
    * wait and still refuses. When absent, {@link sessionWaitLockMs} supplies
    * the session-wide budget so the twelve furnace mutators that declare no
    * flag are covered too.
@@ -100,7 +100,7 @@ export interface RunFurnaceMutationOptions {
 /**
  * Converts a resolved `--wait-lock` budget in seconds into the
  * {@link RunFurnaceMutationOptions} slice that applies it to the furnace
- * lock. Undefined in, empty out — so the caller can spread it
+ * lock. Undefined in, empty out, so the caller can spread it
  * unconditionally without assigning `undefined` under
  * `exactOptionalPropertyTypes`.
  *
@@ -120,7 +120,7 @@ export function waitLockMutationOptions(
 /**
  * Module-scoped registry of in-flight furnace operations. Indexed by an
  * incrementing token so multiple nested mutations (e.g. preview wrapping
- * apply) each get their own slot — though in practice the apply-wide lock
+ * apply) each get their own slot, though in practice the apply-wide lock
  * means only one slot is active at any time per process.
  */
 interface ActiveFurnaceOperation {
@@ -140,7 +140,7 @@ interface ActiveFurnaceOperation {
    * SIGINT landing mid-throw-path-restore finds the operation still in
    * `activeOperations` with `completed !== true`, because `completed` is
    * only set in the finally that runs after the catch. This field is the
-   * interlock — whichever path gets there first claims it synchronously,
+   * interlock: whichever path gets there first claims it synchronously,
    * before its first await, and the other skips. It is per-operation
    * rather than module-scoped because the registry is keyed to allow
    * concurrent operations.
@@ -153,7 +153,7 @@ interface ActiveFurnaceOperation {
  * already has it.
  *
  * Must stay synchronous and must be called before the caller's first
- * await — that is what makes the claim atomic against the signal handler.
+ * await. That is what makes the claim atomic against the signal handler.
  *
  * @param operation - The in-flight operation to claim
  * @returns True when the caller now owns the rollback
@@ -174,7 +174,7 @@ let signalRollbackInFlight = false;
  * Returns true while a signal-driven rollback is in progress. The bin entry
  * point uses this as a re-entrancy guard so a user mashing Ctrl+C cannot
  * trigger a second rollback that races the first. Exposed for the bin shim
- * (and the test suite); production callers should not need it.
+ * (and the test suite). Production callers should not need it.
  */
 export function isSignalRollbackInFlight(): boolean {
   return signalRollbackInFlight;
@@ -183,7 +183,7 @@ export function isSignalRollbackInFlight(): boolean {
 /**
  * Rolls back every in-flight furnace operation and writes a pendingRepair
  * marker for each. The bin entry point installs SIGINT/SIGTERM handlers that
- * call this and then exit; calling it directly from inside the library would
+ * call this and then exit. Calling it directly from inside the library would
  * violate the "process.exit only in bin" invariant. The function is also
  * exposed under this name so the test suite can exercise the teardown path
  * without going through `process.emit` / `process.exit`.
@@ -221,8 +221,9 @@ export async function rollbackActiveOperationsForSignal(
   // Snapshot the active operations so we don't race with `runFurnaceMutation`
   // clearing slots during normal completion. Filter completed bodies so a
   // body sitting in its finally-block cleanup window is not counted as live
-  // work — this would mis-trigger the rollback banner for plain `fireforge
-  // run` (which never registers a mutation but can receive SIGTERM).
+  // work. Counting it would mis-trigger the rollback banner for plain
+  // `fireforge run` (which never registers a mutation but can receive
+  // SIGTERM).
   const snapshot = [...activeOperations.values()].filter((op) => !op.completed);
 
   if (snapshot.length === 0) {
@@ -259,9 +260,9 @@ export async function rollbackActiveOperationsForSignal(
     }
 
     if (!op.journal) {
-      // The body had not yet handed us a journal — nothing to roll back. We
-      // still write a marker because the body may have started mutating the
-      // engine before reaching the registerJournal call.
+      // The body had not yet handed us a journal, so there is nothing to
+      // roll back. We still write a marker because the body may have started
+      // mutating the engine before reaching the registerJournal call.
       const cleanupSuffix =
         cleanupErrors.length > 0 ? `; cleanup errors: ${cleanupErrors.join('; ')}` : '';
       await persistPendingRepair(
@@ -339,7 +340,7 @@ async function rollbackOperationForThrow(operation: ActiveFurnaceOperation): Pro
 
   if (!operation.journal) {
     // Nothing was captured, so there is nothing to restore. Unlike the signal
-    // path we do NOT write a pendingRepair marker here: a body that threw
+    // path we do not write a pendingRepair marker here: a body that threw
     // before registering a journal is overwhelmingly a refusal raised during
     // pre-flight (a validation failure, a missing file), and marking the root
     // as needing repair would block every later furnace mutation behind a
@@ -408,7 +409,7 @@ async function persistPendingRepair(
 
 /**
  * Resolves the path of the lock directory used to serialize furnace mutations
- * for a given project root. Exposed for tests; production callers should not
+ * for a given project root. Exposed for tests. Production callers should not
  * touch this directly.
  */
 export function getFurnaceLockPath(root: string): string {
@@ -425,10 +426,10 @@ export function getFurnaceLockPath(root: string): string {
  * restructure control flow through the engine's rollback path for a
  * cosmetic gain.
  *
- * The ordering is the part worth centralising: `markRolledBack()` MUST run
+ * The ordering is the part worth centralising: `markRolledBack()` must run
  * before the restore, so a restore that itself fails does not leave the
- * lifecycle wrapper replaying the same journal on the way out. And the
- * ORIGINAL error is rethrown unless the rollback is what failed — the
+ * lifecycle wrapper replaying the same journal on the way out. The
+ * original error is rethrown unless the rollback is what failed: the
  * operator needs to know what went wrong, and separately whether the engine
  * could be put back.
  *
@@ -436,7 +437,7 @@ export function getFurnaceLockPath(root: string): string {
  * @param journal - Rollback journal this body populated
  * @param error - The error the body threw
  * @param options - Project root, pending-repair tag, and message fragments
- * @returns Never — always throws
+ * @returns Never, because it always throws
  */
 export async function completeJournalRollback(
   ctx: FurnaceOperationContext,
@@ -471,11 +472,11 @@ export async function completeJournalRollback(
  * Forcibly removes the furnace lock directory for every active operation.
  *
  * The bin-layer signal handler calls `process.exit` after rollback, which
- * short-circuits Node's normal unwinding — `withFileLock`'s `finally { rm
- * }` never runs, so the lock directory survives the process. The next
+ * short-circuits Node's normal unwinding, so `withFileLock`'s `finally { rm
+ * }` never runs and the lock directory survives the process. The next
  * FireForge command then has to either wait out the staleness window or
  * have the operator remove the lock manually. This sweeper runs inside
- * the signal-handler pipeline BEFORE `process.exit`, so the lock is gone
+ * the signal-handler pipeline before `process.exit`, so the lock is gone
  * by the time the next command starts.
  *
  * Errors are logged and swallowed: we do not want a slow I/O failure at
@@ -487,9 +488,9 @@ export async function forceReleaseFurnaceLocksForActiveOperations(): Promise<voi
   const paths = new Set([...activeOperations.values()].map((op) => getFurnaceLockPath(op.root)));
   for (const lockPath of paths) {
     // Ownership-checked, like every other release path. The bare `rm` this
-    // replaced would delete a lock a DIFFERENT process had acquired in the
-    // window between our operation dying and this sweep running — the exact
-    // race `releaseLock`'s PID verification was added to close, reopened
+    // replaced would delete a lock a different process had acquired in the
+    // window between our operation dying and this sweep running. That is the
+    // exact race `releaseLock`'s PID verification was added to close, reopened
     // here because the sweeper has no acquisition token to check.
     const removed = await releaseLockIfOwned(lockPath);
     verbose(
@@ -504,7 +505,7 @@ export async function forceReleaseFurnaceLocksForActiveOperations(): Promise<voi
  * Runs a furnace-mutating body under the apply-wide lock and registers it
  * with the process-wide SIGINT/SIGTERM rollback pathway. The lock prevents
  * two `furnace apply`/`deploy`/`create`/etc. runs from racing on the engine
- * working copy; the CLI entrypoint's global signal handlers consult this
+ * working copy. The CLI entrypoint's global signal handlers consult this
  * registry and invoke rollback (writing a `pendingRepair` marker when needed)
  * if the user hits Ctrl+C mid-run.
  *
@@ -512,7 +513,7 @@ export async function forceReleaseFurnaceLocksForActiveOperations(): Promise<voi
  * the lock entirely (concurrent dry-runs are safe and shouldn't block each
  * other).
  *
- * The body receives a {@link FurnaceOperationContext}; it must call
+ * The body receives a {@link FurnaceOperationContext}. It must call
  * `ctx.registerJournal(journal)` once it has constructed its rollback journal.
  * Bodies that don't manage a journal directly (e.g. apply, which delegates to
  * `applyAllComponents`) can pass an internal callback through.
@@ -551,10 +552,10 @@ export async function runFurnaceMutation<T>(
   const operation: ActiveFurnaceOperation = { root, kind, cleanups: [] };
 
   const lockPath = getFurnaceLockPath(root);
-  // An explicit budget wins; otherwise the session-wide one applies. Naming
-  // the lock in the refusal is load-bearing: a mutation takes two, and a
-  // message that says only "timed out" sends the operator to raise a budget
-  // that was already large enough for the OTHER lock.
+  // An explicit budget wins. Otherwise the session-wide one applies. Naming
+  // the lock in the refusal matters: a mutation takes two, and a message
+  // that says only "timed out" sends the operator to raise a budget that
+  // was already large enough for the other lock.
   const timeoutMs = options.lockTimeoutMs ?? sessionWaitLockMs();
   const lockOptions = {
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
@@ -574,17 +575,17 @@ export async function runFurnaceMutation<T>(
     async () => {
       // Everything the body does from here is serialized only by the furnace
       // lock, so confirm we are actually inside it before registering as a
-      // live mutation. The owner record is deliberately best-effort in
-      // `withFileLock` (a live holder can legitimately have no readable PID),
-      // so the PID half only tightens the check when a record is present —
-      // asserting on its existence would fire on a lock we really do hold.
+      // live mutation. The owner record is best-effort in `withFileLock`
+      // (a live holder can legitimately have no readable PID), so the PID
+      // half only tightens the check when a record is present. Asserting on
+      // its existence would fire on a lock we really do hold.
       const lockStatus = await readLockStatus(lockPath);
       assert(lockStatus.held, 'furnace lock held before the mutation body runs');
       assert(
         lockStatus.holder === undefined || lockStatus.holder.pid === process.pid,
         () =>
           `furnace lock is owned by this process ` +
-          `(held by PID ${String(lockStatus.holder?.pid)}, we are ${String(process.pid)})`
+          `(held by PID ${lockStatus.holder?.pid}, we are ${process.pid})`
       );
 
       activeOperations.set(token, operation);
@@ -605,8 +606,8 @@ export async function runFurnaceMutation<T>(
         // so it gets the same treatment. A bare finally here would
         // deregister the operation and mark it completed, removing it from
         // the signal handler's view too, so a body that threw outside its
-        // own catch — notably anywhere in `applyAllComponents` outside its
-        // two per-component try blocks — would leave the checkout torn with
+        // own catch (notably anywhere in `applyAllComponents` outside its
+        // two per-component try blocks) would leave the checkout torn with
         // no marker.
         //
         // This runs inside the withFileLock callback, so the furnace lock is
@@ -643,6 +644,9 @@ export async function recordFurnaceRollbackFailure(
  * reuse the module across tests, so the test suite must call this between
  * cases that exercise the signal pathway. Not exported from the package
  * entry point.
+ *
+ * @internal Exported only so tests can reach it. Not part of the public
+ * surface.
  */
 export function __resetFurnaceOperationStateForTests(): void {
   activeOperations.clear();

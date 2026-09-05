@@ -6,12 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ensureDir, writeJson } from '../../utils/fs.js';
-import {
-  BUILD_BASELINE_FILENAME,
-  getBuildBaselinePath,
-  readBuildBaseline,
-  writeBuildBaseline,
-} from '../build-baseline.js';
+import { getBuildBaselinePath, readBuildBaseline, writeBuildBaseline } from '../build-baseline.js';
 import { DELETED_FILE_FINGERPRINT } from '../build-baseline-types.js';
 import { FIREFORGE_DIR } from '../config-paths.js';
 import * as git from '../git.js';
@@ -28,11 +23,6 @@ describe('build-baseline', () => {
     vi.restoreAllMocks();
   });
 
-  it('resolves the canonical marker path under .fireforge/', () => {
-    const path = getBuildBaselinePath('/some/project');
-    expect(path).toBe(join('/some/project', FIREFORGE_DIR, BUILD_BASELINE_FILENAME));
-  });
-
   it('returns undefined when no baseline has been written yet', async () => {
     await expect(readBuildBaseline(projectRoot)).resolves.toBeUndefined();
   });
@@ -47,7 +37,7 @@ describe('build-baseline', () => {
 
   it('persists the engine HEAD SHA, timestamp, and binaryName on write', async () => {
     vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef1234');
-    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser');
+    await writeBuildBaseline({ projectRoot, engineDir: '/engine', binaryName: 'mybrowser' });
     const stored = await readBuildBaseline(projectRoot);
     expect(stored).toBeDefined();
     expect(stored?.engineHeadSha).toBe('deadbeef1234');
@@ -58,7 +48,7 @@ describe('build-baseline', () => {
   it('writes an empty SHA when the engine has no HEAD yet', async () => {
     const missingHeadError = Object.assign(new Error("ambiguous argument 'HEAD'"), {});
     vi.spyOn(git, 'getHead').mockRejectedValue(missingHeadError);
-    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser');
+    await writeBuildBaseline({ projectRoot, engineDir: '/engine', binaryName: 'mybrowser' });
     const stored = await readBuildBaseline(projectRoot);
     expect(stored?.engineHeadSha).toBe('');
   });
@@ -66,9 +56,9 @@ describe('build-baseline', () => {
   it('propagates non-missing-HEAD git errors rather than writing garbage', async () => {
     const realError = new Error('git executable not found in PATH');
     vi.spyOn(git, 'getHead').mockRejectedValue(realError);
-    await expect(writeBuildBaseline(projectRoot, '/engine', 'mybrowser')).rejects.toThrow(
-      'git executable not found in PATH'
-    );
+    await expect(
+      writeBuildBaseline({ projectRoot, engineDir: '/engine', binaryName: 'mybrowser' })
+    ).rejects.toThrow('git executable not found in PATH');
   });
 
   it('round-trips a pre-written baseline verbatim', async () => {
@@ -88,7 +78,12 @@ describe('build-baseline', () => {
 
   it('round-trips a full testPackagingCoverage claim', async () => {
     vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
-    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser', 'full');
+    await writeBuildBaseline({
+      projectRoot,
+      engineDir: '/engine',
+      binaryName: 'mybrowser',
+      testPackagingCoverage: 'full',
+    });
     const stored = await readBuildBaseline(projectRoot);
     expect(stored?.testPackagingCoverage).toBe('full');
   });
@@ -96,7 +91,12 @@ describe('build-baseline', () => {
   it('round-trips a scoped testPackagingCoverage path list', async () => {
     vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
     const scoped = ['browser/components/tiles/test/browser', 'toolkit/content/tests/chrome/a.js'];
-    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser', scoped);
+    await writeBuildBaseline({
+      projectRoot,
+      engineDir: '/engine',
+      binaryName: 'mybrowser',
+      testPackagingCoverage: scoped,
+    });
     const stored = await readBuildBaseline(projectRoot);
     expect(stored?.testPackagingCoverage).toEqual(scoped);
   });
@@ -105,21 +105,25 @@ describe('build-baseline', () => {
     // Callers that never pass a coverage claim must keep producing markers
     // without the field.
     vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
-    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser');
+    await writeBuildBaseline({ projectRoot, engineDir: '/engine', binaryName: 'mybrowser' });
     const raw = await readFile(getBuildBaselinePath(projectRoot), 'utf8');
     expect(raw).not.toContain('testPackagingCoverage');
   });
 
   it('omits packageableFingerprints when the outer git probe fails', async () => {
     // Defensive case: a broken `hasChanges` / `git diff` probe must not
-    // corrupt the on-disk baseline with `{}` — the fingerprint field is
+    // corrupt the on-disk baseline with `{}`. The fingerprint field is
     // left undefined so the stale-check falls back to the path-only
     // comparison on the next test run.
     vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
     const gitModule = await import('../git.js');
     vi.spyOn(gitModule, 'hasChanges').mockRejectedValue(new Error('git unavailable'));
 
-    await writeBuildBaseline(projectRoot, '/engine-does-not-exist', 'mybrowser');
+    await writeBuildBaseline({
+      projectRoot,
+      engineDir: '/engine-does-not-exist',
+      binaryName: 'mybrowser',
+    });
     const stored = await readBuildBaseline(projectRoot);
     expect(stored?.packageableFingerprints).toBeUndefined();
   });
@@ -144,7 +148,7 @@ describe('build-baseline', () => {
       await ensureDirLocal(join(engineDir, 'browser/base/content'));
       await writeText(join(engineDir, 'browser/base/content/present.js'), 'present\n');
 
-      await writeBuildBaseline(projectRoot, engineDir, 'mybrowser');
+      await writeBuildBaseline({ projectRoot, engineDir, binaryName: 'mybrowser' });
       const stored = await readBuildBaseline(projectRoot);
       const recorded = stored?.packageableFingerprints ?? {};
       expect(Object.keys(recorded)).toContain('browser/base/content/present.js');
@@ -179,13 +183,18 @@ describe('build-baseline', () => {
       await ensureDirLocal(join(engineDir, 'browser/base/content'));
       await writeText(join(engineDir, 'browser/base/content/browser-main.js'), '// js\n');
 
-      await writeBuildBaseline(projectRoot, engineDir, 'mybrowser', 'full');
+      await writeBuildBaseline({
+        projectRoot,
+        engineDir,
+        binaryName: 'mybrowser',
+        testPackagingCoverage: 'full',
+      });
       const stored = await readBuildBaseline(projectRoot);
 
       expect(stored?.staticComponentsBaseline).toBeDefined();
       expect(stored?.staticComponentsBaseline?.engineHeadSha).toBe('full-sha');
       const fingerprints = stored?.staticComponentsBaseline?.fingerprints ?? {};
-      // Only the XPCOM manifest is anchored — the packageable .js path
+      // Only the XPCOM manifest is anchored. The packageable .js path
       // belongs to packageableFingerprints, not the components anchor.
       expect(Object.keys(fingerprints)).toEqual(['browser/components/mybrowser/components.conf']);
       expect(fingerprints['browser/components/mybrowser/components.conf']).toMatch(
@@ -198,7 +207,7 @@ describe('build-baseline', () => {
 
   it('carries the previous staticComponentsBaseline forward verbatim on a scoped write', async () => {
     // A scoped `test --build` runs `mach build faster`, which does not
-    // rebake components.conf — the last FULL build stays the honest anchor.
+    // rebake components.conf, so the last full build stays the honest anchor.
     vi.spyOn(git, 'getHead').mockResolvedValue('scoped-sha');
     const gitModule = await import('../git.js');
     vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(false);
@@ -214,7 +223,13 @@ describe('build-baseline', () => {
       staticComponentsBaseline: anchor,
     };
 
-    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser', ['browser/foo/test'], previous);
+    await writeBuildBaseline({
+      projectRoot,
+      engineDir: '/engine',
+      binaryName: 'mybrowser',
+      testPackagingCoverage: ['browser/foo/test'],
+      previousBaseline: previous,
+    });
     const stored = await readBuildBaseline(projectRoot);
     expect(stored?.engineHeadSha).toBe('scoped-sha');
     expect(stored?.staticComponentsBaseline).toEqual(anchor);
@@ -225,7 +240,12 @@ describe('build-baseline', () => {
     const gitModule = await import('../git.js');
     vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(false);
 
-    await writeBuildBaseline(projectRoot, '/engine', 'mybrowser', ['browser/foo/test']);
+    await writeBuildBaseline({
+      projectRoot,
+      engineDir: '/engine',
+      binaryName: 'mybrowser',
+      testPackagingCoverage: ['browser/foo/test'],
+    });
     const raw = await readFile(getBuildBaselinePath(projectRoot), 'utf8');
     expect(raw).not.toContain('staticComponentsBaseline');
   });
@@ -238,7 +258,12 @@ describe('build-baseline', () => {
     const gitModule = await import('../git.js');
     vi.spyOn(gitModule, 'hasChanges').mockRejectedValue(new Error('git unavailable'));
 
-    await writeBuildBaseline(projectRoot, '/engine-does-not-exist', 'mybrowser', 'full');
+    await writeBuildBaseline({
+      projectRoot,
+      engineDir: '/engine-does-not-exist',
+      binaryName: 'mybrowser',
+      testPackagingCoverage: 'full',
+    });
     const stored = await readBuildBaseline(projectRoot);
     expect(stored?.staticComponentsBaseline).toBeUndefined();
     expect(stored?.packageableFingerprints).toBeUndefined();
@@ -270,7 +295,12 @@ describe('build-baseline', () => {
       const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
       try {
         await stubDirtyBuildInputs(engineDir);
-        await writeBuildBaseline(projectRoot, engineDir, 'mybrowser', 'full');
+        await writeBuildBaseline({
+          projectRoot,
+          engineDir,
+          binaryName: 'mybrowser',
+          testPackagingCoverage: 'full',
+        });
         const stored = await readBuildBaseline(projectRoot);
         const recorded = stored?.buildInputFingerprints ?? {};
         expect(Object.keys(recorded).sort()).toEqual([MOZBUILD, JAR].sort());
@@ -283,8 +313,8 @@ describe('build-baseline', () => {
     });
 
     it('refreshes backend inputs but carries jar.mn forward on a faster build', async () => {
-      // `mach build faster` never installs a new jar.mn destination — it is
-      // the build the escalation bypasses — so its write must not claim the
+      // `mach build faster` never installs a new jar.mn destination (it is
+      // the build the escalation bypasses), so its write must not claim the
       // live jar.mn was built. The previous record's entry stays.
       const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
       try {
@@ -295,16 +325,16 @@ describe('build-baseline', () => {
           binaryName: 'mybrowser',
           buildInputFingerprints: { [JAR]: 'ab'.repeat(32), [MOZBUILD]: 'cd'.repeat(32) },
         };
-        await writeBuildBaseline(
+        await writeBuildBaseline({
           projectRoot,
           engineDir,
-          'mybrowser',
-          'full',
-          previous,
-          'fireforge build --ui',
-          'auto',
-          'faster'
-        );
+          binaryName: 'mybrowser',
+          testPackagingCoverage: 'full',
+          previousBaseline: previous,
+          recordedBy: 'fireforge build --ui',
+          staticComponentsHandling: 'auto',
+          buildKind: 'faster',
+        });
         const stored = await readBuildBaseline(projectRoot);
         const recorded = stored?.buildInputFingerprints ?? {};
         expect(recorded[JAR]).toBe('ab'.repeat(32));
@@ -319,16 +349,16 @@ describe('build-baseline', () => {
       const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
       try {
         await stubDirtyBuildInputs(engineDir);
-        await writeBuildBaseline(
+        await writeBuildBaseline({
           projectRoot,
           engineDir,
-          'mybrowser',
-          ['browser/foo/test'],
-          undefined,
-          'fireforge test --build browser/foo/test',
-          'auto',
-          'faster'
-        );
+          binaryName: 'mybrowser',
+          testPackagingCoverage: ['browser/foo/test'],
+          previousBaseline: undefined,
+          recordedBy: 'fireforge test --build browser/foo/test',
+          staticComponentsHandling: 'auto',
+          buildKind: 'faster',
+        });
         const stored = await readBuildBaseline(projectRoot);
         const recorded = stored?.buildInputFingerprints ?? {};
         expect(Object.keys(recorded)).toEqual([MOZBUILD]);
@@ -344,7 +374,12 @@ describe('build-baseline', () => {
       vi.spyOn(git, 'getHead').mockResolvedValue('sha');
       const gitModule = await import('../git.js');
       vi.spyOn(gitModule, 'hasChanges').mockRejectedValue(new Error('git unavailable'));
-      await writeBuildBaseline(projectRoot, '/engine-does-not-exist', 'mybrowser', 'full');
+      await writeBuildBaseline({
+        projectRoot,
+        engineDir: '/engine-does-not-exist',
+        binaryName: 'mybrowser',
+        testPackagingCoverage: 'full',
+      });
       const raw = await readFile(getBuildBaselinePath(projectRoot), 'utf8');
       expect(raw).not.toContain('buildInputFingerprints');
     });
@@ -378,7 +413,7 @@ describe('build-baseline', () => {
         '// content of browser-main.js used for fingerprint hashing\n'
       );
 
-      await writeBuildBaseline(projectRoot, engineDir, 'mybrowser');
+      await writeBuildBaseline({ projectRoot, engineDir, binaryName: 'mybrowser' });
       const stored = await readBuildBaseline(projectRoot);
 
       expect(stored?.packageableFingerprints).toBeDefined();

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { FireForgeError } from './base.js';
+import { FireForgeError, remedies } from './base.js';
 import { ExitCode } from './codes.js';
 
 /**
@@ -15,10 +15,10 @@ export class FurnaceError extends FireForgeError {
     options?: {
       /**
        * Suppresses the "run furnace validate" advice line. Set by callers
-       * whose message already tells the user to run validate, or that ARE
+       * whose message already tells the user to run validate, or that are
        * the validate command. An explicit flag rather than sniffing the
        * message for `furnace validate`, which drops the advice from any
-       * error that merely MENTIONS the command.
+       * error that merely mentions the command.
        */
       omitValidateAdvice?: boolean;
     }
@@ -31,17 +31,17 @@ export class FurnaceError extends FireForgeError {
   private readonly omitValidateAdvice: boolean;
 
   override get userMessage(): string {
-    let msg = this.component
+    const head = this.component
       ? `Furnace Error (${this.component}): ${this.message}`
       : `Furnace Error: ${this.message}`;
 
-    msg += '\n\nTo fix this:\n';
-    msg += '  1. Check the error message above for specifics\n';
-    if (!this.omitValidateAdvice) {
-      msg += '  2. Run "fireforge furnace validate" to diagnose issues\n';
-    }
-    msg += `  ${this.omitValidateAdvice ? '2' : '3'}. Use "fireforge doctor --repair-furnace" if state is inconsistent`;
-
-    return msg;
+    return (
+      head +
+      remedies([
+        'Check the error message above for specifics',
+        ...(this.omitValidateAdvice ? [] : ['Run "fireforge furnace validate" to diagnose issues']),
+        'Use "fireforge doctor --repair-furnace" if state is inconsistent',
+      ])
+    );
   }
 }

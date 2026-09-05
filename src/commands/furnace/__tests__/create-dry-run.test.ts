@@ -30,14 +30,14 @@ describe('furnaceCreateCommand --dry-run', () => {
   });
 
   it('does not create any component files and does not write furnace.json', async () => {
-    // No furnace.json exists; a real create would persist one on disk. Dry-run
+    // No furnace.json exists. A real create would persist one on disk. Dry-run
     // must exit before any mutation so the authoring workspace is untouched.
     await furnaceCreateCommand(projectRoot, 'moz-preview-widget', {
       description: 'Preview only',
       dryRun: true,
     });
 
-    // No furnace.json was written — dry-run must not persist the auto-created
+    // No furnace.json was written: dry-run must not persist the auto-created
     // default config, which would otherwise strand config on disk for a
     // command the operator intended as a preview.
     expect(await pathExists(join(projectRoot, 'furnace.json'))).toBe(false);
@@ -91,7 +91,7 @@ describe('furnaceCreateCommand --dry-run', () => {
 
   it('does not scaffold test files even when --with-tests is set', async () => {
     // Pre-create the engine directory so the --with-tests path does not
-    // bail out on the "engine dir not found" preflight; the dry-run must
+    // bail out on the "engine dir not found" preflight. The dry-run must
     // still not write any test scaffolding into it.
     await mkdir(join(projectRoot, 'engine'), { recursive: true });
 

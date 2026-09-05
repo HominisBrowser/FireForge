@@ -126,8 +126,8 @@ describe('registerCommand', () => {
 
   it('surfaces the normalised engine-relative path in the not-found error', async () => {
     // When the file genuinely does not exist, the error message must name
-    // the normalised path the resolver actually probed — not the raw input
-    // — so the operator can map it against `engine/…` listings without
+    // the normalised path the resolver actually probed, not the raw input,
+    // so the operator can map it against `engine/…` listings without
     // mental substitution.
     vi.mocked(pathExists).mockResolvedValue(false);
 

@@ -72,7 +72,7 @@ export function orderFurnaceConfigForWrite(
 ): JsonObject {
   // FurnaceConfig is plain parsed-JSON data, but as an interface it carries
   // no index signature, so the compiler cannot verify the JsonObject
-  // contract structurally — hence the double assertion. This is the one
+  // contract structurally, hence the double assertion. This is the one
   // place a typed furnace config re-enters the raw-document world.
   // eslint-disable-next-line no-restricted-syntax -- see above
   const next = config as unknown as JsonObject;

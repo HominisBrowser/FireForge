@@ -2,9 +2,9 @@
 /**
  * Unit tests for the reserved-range placement gate. A positional insert
  * that would renumber patches through a `patchPolicy.reservedRanges`
- * block must fail with ONE up-front error (not one confusing per-patch
- * policy finding per shifted patch), suggesting the first free --order
- * below the reserved block when one exists.
+ * block must fail with one up-front error rather than one confusing
+ * per-patch policy finding per shifted patch, suggesting the first free
+ * --order below the reserved block when one exists.
  */
 
 import { writeFile } from 'node:fs/promises';
@@ -50,9 +50,9 @@ function reservedConfig(reserved: { from: number; to: number }): FireForgeConfig
 
 describe('assertPlacementAvoidsReservedRanges', () => {
   it('throws a single error when a positional insert shifts multiple patches through a reserved range', () => {
-    // Orders 90, 94 are regular; 95 and 96 sit inside the reserved block.
+    // Orders 90, 94 are regular, while 95 and 96 sit inside the reserved block.
     // Inserting before 94 shifts 94→95 (into the block) and 95→96, 96→97
-    // (out of their reserved slots) — three hits, one error.
+    // (out of their reserved slots): three hits, one error.
     const patches = [
       makeMetadata('090-ui-early.patch', 90),
       makeMetadata('094-ui-late.patch', 94),
@@ -193,7 +193,7 @@ describe('resolvePlacementPlan reserved-range wiring', () => {
 
   // `export --dry-run -d "…"` must not drop the
   // description and fails its own description-required policy check. The
-  // plumbing is intact end-to-end (cannot-reproduce); these pins keep it so.
+  // plumbing is intact end-to-end (cannot-reproduce). These pins keep it so.
   describe('dry-run carries --description into the policy projection', () => {
     const stubSpinner = (): SpinnerHandle => ({
       message: () => undefined,

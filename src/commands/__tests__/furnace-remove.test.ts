@@ -70,7 +70,7 @@ vi.mock('../../core/furnace-rollback.js', () => ({
 
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
+  // the pending-repair marker (the behaviour these suites assert), so it
   // comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
@@ -347,7 +347,7 @@ describe('furnaceRemoveCommand', () => {
 
     await furnaceRemoveCommand('/project', 'moz-card', { yes: true });
 
-    // override.json must be excluded by isOverrideCopyCandidate; only the .css
+    // override.json must be excluded by isOverrideCopyCandidate. Only the .css
     // file is restored.
     expect(restoreTrackedPath).toHaveBeenCalledWith(
       nativePath('/project/engine'),
@@ -432,7 +432,7 @@ describe('furnaceRemoveCommand', () => {
       },
     });
     vi.mocked(pathExists).mockResolvedValue(true);
-    // Workspace only has the .mjs now — the .css was deleted out of source.
+    // Workspace only has the .mjs now. The .css was deleted out of source.
     vi.mocked(readdir).mockResolvedValue([
       { name: 'moz-card.mjs', isFile: () => true },
     ] as unknown as Awaited<ReturnType<typeof readdir>>);
@@ -519,8 +519,8 @@ describe('furnaceRemoveCommand', () => {
     );
 
     expect(restoreTrackedPath).not.toHaveBeenCalled();
-    // The workspace directory must NOT be deleted when restoration aborts —
-    // rollback restores whatever snapshots were taken before the failure.
+    // The workspace directory must not be deleted when restoration aborts.
+    // Rollback restores whatever snapshots were taken before the failure.
     expect(writeFurnaceConfig).not.toHaveBeenCalled();
   });
 
@@ -529,7 +529,7 @@ describe('furnaceRemoveCommand', () => {
     // engine state (jar.mn, customElements.js, deployed widgets, optional
     // .ftl) and the rollback journal is the only safety net while the
     // command runs. Without git, those edits are unrecoverable after
-    // success — refuse rather than silently destroy them.
+    // success, so refuse rather than silently destroy them.
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(isGitRepository).mockResolvedValueOnce(false);
 
@@ -546,7 +546,7 @@ describe('furnaceRemoveCommand', () => {
     // Regression guard for B2: the state-file clear used to run post-commit
     // as warn-and-continue, outside the transactional block. A failing
     // update left furnace-state.json disagreeing with furnace.json. Now
-    // the state file is snapshotted into the journal BEFORE the update,
+    // the state file is snapshotted into the journal before the update,
     // and a failure triggers the full rollback.
     vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
@@ -572,7 +572,7 @@ describe('furnaceRemoveCommand', () => {
       /EPERM: state file locked/
     );
 
-    // The journal restore must have fired — remove is atomic end-to-end.
+    // The journal restore must have fired. Remove is atomic end-to-end.
     expect(restoreRollbackJournalOrThrow).toHaveBeenCalled();
     // The state file path must have been snapshotted inside the
     // transactional block before the update was attempted.
@@ -809,7 +809,7 @@ describe('furnaceRemoveCommand', () => {
 
 /**
  * Shared reset for the appended suites. Mirrors the main describe's
- * beforeEach — `vi.clearAllMocks()` clears calls but not implementations.
+ * beforeEach: `vi.clearAllMocks()` clears calls but not implementations.
  */
 function resetRemoveMocks(): void {
   vi.clearAllMocks();
@@ -839,7 +839,7 @@ function resetRemoveMocks(): void {
 /** Marks the given engine-relative suffixes as existing on disk. */
 function existsFor(...suffixes: string[]): void {
   vi.mocked(pathExists).mockImplementation((target: string) =>
-    // The suffixes are written POSIX-style; `target` carries the host's
+    // The suffixes are written POSIX-style. `target` carries the host's
     // separators, so render each suffix natively before matching.
     Promise.resolve(suffixes.some((suffix) => target.includes(nativePath(suffix))))
   );
@@ -863,8 +863,8 @@ describe('furnaceRemoveCommand — rollback failure', () => {
       furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true })
     ).rejects.toThrow(/could not restore moz-audit-widget\.mjs/);
 
-    // Asserts the OUTCOME — a pending-repair marker persisted to furnace
-    // state — rather than the internal call. The rollback sequence now lives
+    // Asserts the outcome (a pending-repair marker persisted to furnace
+    // state) rather than the internal call. The rollback sequence now lives
     // in `completeJournalRollback`, whose call to the recorder is
     // intra-module and so invisible to a module-level spy.
     const updater = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1] as
@@ -898,7 +898,7 @@ describe('furnaceRemoveCommand — concurrent mutation re-check', () => {
   beforeEach(resetRemoveMocks);
 
   it('refuses when the component disappears between the pre-lock check and the lock', async () => {
-    // The pre-lock read sees the component; the fresh in-lock read does not,
+    // The pre-lock read sees the component. The fresh in-lock read does not,
     // because a concurrent `furnace remove` won the race.
     vi.mocked(loadFurnaceConfig)
       .mockResolvedValueOnce(defaultRemoveConfig())

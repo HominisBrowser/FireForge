@@ -140,7 +140,7 @@ describe('bootstrapCommand', () => {
 
   it('returns a non-success exit code when post-bootstrap checks report errors', async () => {
     // Discarding reportDoctorResults' return used to make bootstrap exit 0
-    // with error-severity failures — CI gating on bootstrap then proceeded
+    // with error-severity failures, so CI gating on bootstrap then proceeded
     // to a build that could not succeed.
     vi.mocked(bootstrapWithOutput).mockResolvedValue({
       exitCode: 0,

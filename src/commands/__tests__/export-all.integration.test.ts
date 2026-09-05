@@ -150,7 +150,7 @@ describe('export-all lint integration', () => {
       'browser/base/content/browser.js': 'export const title = "unchanged";\n',
     });
 
-    // No modifications — should return cleanly
+    // No modifications, so it should return cleanly
     await expect(
       exportAllCommand(projectRoot, {
         name: 'empty-test',

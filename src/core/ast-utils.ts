@@ -6,7 +6,7 @@ import { walk } from 'estree-walker';
 /**
  * An ESTree node augmented with acorn's character-offset positions.
  * At runtime `acorn.parse` produces objects that carry both the ESTree
- * shape *and* `start`/`end` indices, but the type system doesn't know that.
+ * shape and `start`/`end` indices, but the type system doesn't know that.
  * This intersection type bridges the gap so we can safely use both APIs.
  */
 export type AcornESTreeNode<T extends estree.Node = estree.Node> = T & {
@@ -19,8 +19,8 @@ export type AcornESTreeNode<T extends estree.Node = estree.Node> = T & {
  * `acorn.parse` produces nodes that carry both the ESTree shape and
  * `start`/`end` offsets at runtime, but its static `acorn.Program` type is
  * nominally distinct from `estree.Program`, so the compiler cannot verify
- * the conversion structurally — hence the double assertion. This helper is
- * the single sanctioned crossing point between the two type worlds.
+ * the conversion structurally, hence the double assertion. This helper is the
+ * only sanctioned crossing point between the two types.
  */
 function toPositionedProgram(program: acorn.Program): AcornESTreeNode<estree.Program> {
   // eslint-disable-next-line no-restricted-syntax -- the sanctioned acorn→estree bridge this rule's message points at
@@ -28,7 +28,7 @@ function toPositionedProgram(program: acorn.Program): AcornESTreeNode<estree.Pro
 }
 
 /**
- * Parse JavaScript source as a **script** (not an ES module).
+ * Parse JavaScript source as a script, not an ES module.
  * All Mozilla chrome JS files (`browser-main.js`, `browser-init.js`,
  * `customElements.js`, etc.) are scripts that run in a privileged scope.
  *
@@ -49,7 +49,7 @@ export function parseScript(
 }
 
 /**
- * Parse JavaScript source as an **ES module**.
+ * Parse JavaScript source as an ES module.
  * Used for `.sys.mjs` files which use static import/export syntax.
  *
  * @param content - Source text to parse
@@ -73,12 +73,12 @@ export function parseModule(
  * Convenience cast from `acorn.Node` (or the generic ESTree union returned
  * by estree-walker callbacks) to a positioned, narrowly-typed node.
  *
- * **Caller obligation: you must already have discriminated on `node.type`.**
- * This performs no runtime check — it exists to attach acorn's `start`/`end`
- * offsets to a node the caller has *already* narrowed, typically inside an
+ * Caller obligation: you must already have discriminated on `node.type`.
+ * This performs no runtime check. It exists to attach acorn's `start`/`end`
+ * offsets to a node the caller has already narrowed, typically inside an
  * `if (node.type === 'CallExpression')` branch or an equivalent walker
  * guard. Calling it on an undiscriminated node produces a value whose type
- * is a lie.
+ * is wrong.
  *
  * No runtime `type` assertion: every call site sits in the hot loop of a lint
  * or registration walker and is already post-narrowing, so the check would

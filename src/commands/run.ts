@@ -28,21 +28,6 @@ import { pathExists, removeDir, removeFile } from '../utils/fs.js';
 import { info, intro, verbose, warn } from '../utils/logger.js';
 import { commanderArgParser, pickDefined, stringListOption } from '../utils/options.js';
 
-/**
- * Exit code returned by smoke-run mode when the captured console stream
- * produced one or more error lines that did NOT match the operator's
- * allowlist.
- */
-export const SMOKE_EXIT_FAILURE = ExitCode.SMOKE_EXIT_FAILURE;
-
-/**
- * Exit code returned by smoke-run mode when the browser itself exited
- * with a non-clean status before the smoke window elapsed — i.e. a
- * launch-side failure we could NOT observe as a console error line
- * (crash before console wiring, missing profile, etc.).
- */
-export const SMOKE_LAUNCH_FAILURE = ExitCode.SMOKE_LAUNCH_FAILURE;
-
 /** Recommendation surfaced when the smoke window is shorter than a typical cold start. */
 const SMOKE_COLD_START_THRESHOLD_MS = 30_000;
 
@@ -53,10 +38,10 @@ const SMOKE_UNALLOWED_PREVIEW_MAX = 10;
  * Cleans the dev profile to prevent stale-state startup failures.
  *
  * Removes two things:
- * 1. **startupCache/** — Firefox caches compiled chrome JS bytecode here.
+ * 1. `startupCache/`: Firefox caches compiled chrome JS bytecode here.
  *    When chrome scripts change between builds, the stale cache causes silent
  *    crashes on startup.
- * 2. **.parentlock** — A zero-byte lock file that persists if the previous
+ * 2. `.parentlock`: a zero-byte lock file that persists if the previous
  *    session was killed (Ctrl-C, crash, `kill`). Firefox checks this on
  *    startup and silently exits if it exists, assuming another instance owns
  *    the profile.
@@ -109,13 +94,13 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
     requireExisting: true,
   });
 
-  // `hasBuildArtifacts` only checks for an `obj-*/dist/` directory; a build
+  // `hasBuildArtifacts` only checks for an `obj-*/dist/` directory. A build
   // that configured but has not yet produced the launchable binary passes
   // that check, and `mach run` then fails on the missing binary path.
   // `hasRunnableBundle` narrows the probe to the actual executable so
   // `fireforge run` refuses with a targeted message before handing control
   // to mach. `fireforge watch` stays permissive and surfaces the same
-  // information as a banner suffix; watch exists to drive rebuilds of
+  // information as a banner suffix. Watch exists to drive rebuilds of
   // partially-built trees, so blocking there would defeat it.
   if (buildCheck.objDir) {
     const config = await loadConfig(projectRoot);
@@ -147,12 +132,12 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
   const exitCode = await run(paths.engine, options.headless ? ['--headless'] : []);
 
   // Exit-code whitelist:
-  //   0   — clean shutdown
-  //   130 — SIGINT (Ctrl+C), user-initiated termination
-  //   143 — SIGTERM, graceful-shutdown termination
-  // SIGKILL (137) and other signal-induced codes are intentionally NOT
-  // whitelisted: those indicate abnormal termination the operator should
-  // see surface as a build-time error.
+  //   0:   clean shutdown
+  //   130: SIGINT (Ctrl+C), user-initiated termination
+  //   143: SIGTERM, graceful-shutdown termination
+  // SIGKILL (137) and other signal-induced codes are not whitelisted: those
+  // indicate abnormal termination the operator should see surface as a
+  // build-time error.
   if (exitCode !== 0 && exitCode !== 130 && exitCode !== 143) {
     throw new BuildError(`Browser exited with code ${exitCode}`, 'mach run');
   }
@@ -199,12 +184,10 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
 
   const smokeTimeoutMs = smokeExit * 1000;
   if (smokeTimeoutMs < SMOKE_COLD_START_THRESHOLD_MS) {
-    // Not an error — cold starts just tend to exceed the window. Surfacing
+    // Not an error. Cold starts just tend to exceed the window. Surfacing
     // the hint here instead of failing lets agents run shorter windows
     // intentionally (e.g. warm-cache smoke checks).
-    verbose(
-      `Smoke window is ${String(smokeExit)}s; cold starts on slow machines often exceed 30s.`
-    );
+    verbose(`Smoke window is ${smokeExit}s; cold starts on slow machines often exceed 30s.`);
   }
 
   const allowlist = await buildAllowlist(options);
@@ -214,9 +197,9 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
   // createWriteStream opens the fd asynchronously, so ENOENT / EACCES /
   // EISDIR / EROFS surface as an 'error' event *after* the constructor
   // returns. Without a listener Node re-throws as uncaughtException and
-  // kills the CLI mid-smoke-run — orphaning the mach → python → firefox
+  // kills the CLI mid-smoke-run, orphaning the mach → python → firefox
   // tree because the deadline timer never fires. Swallow the event into a
-  // warning so the smoke run still terminates cleanly; subsequent mirror
+  // warning so the smoke run still terminates cleanly. Subsequent mirror
   // writes on the errored stream are silent no-ops.
   captureStream?.on('error', (err: Error) => {
     warn(`--capture-console stream error: ${err.message}`);
@@ -235,10 +218,10 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
     sink.write(`${line}\n`);
 
     // Count allowlist hits up-front, regardless of error-pattern match.
-    // Incrementing only when the line ALSO matches an error pattern makes an
+    // Incrementing only when the line also matches an error pattern makes an
     // allowlist regex that visibly matches `console.warn: RSLoader:` report 0
-    // hits, because `console.warn:` is not a smoke error class — confusing
-    // for operators tuning their allowlist. Two numbers are surfaced: the
+    // hits, because `console.warn:` is not a smoke error class, which
+    // confuses operators tuning their allowlist. Two numbers are surfaced: the
     // total set of allowlisted lines (what the operator sees in the console)
     // and the subset that were error-class (what the smoke exit contract
     // cares about). The exit contract itself is unchanged.
@@ -257,8 +240,8 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
   };
 
   // A headed smoke window on a developer desktop absorbs live input: a human
-  // interacting with the window mid-run can trigger console errors — a
-  // password-manager import scan probing an unreadable profile dir, say —
+  // interacting with the window mid-run can trigger console errors (a
+  // password-manager import scan probing an unreadable profile dir, say)
   // that fail the smoke run looking like a product regression. CI hosts (CI
   // env var set) are assumed display-free and unattended, so the notice
   // stays quiet there.
@@ -270,7 +253,7 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
     );
   }
 
-  info(`Launching browser (smoke-exit after ${String(smokeExit)}s)...\n`);
+  info(`Launching browser (smoke-exit after ${smokeExit}s)...\n`);
 
   const startedAt = Date.now();
   let result;
@@ -305,13 +288,13 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
   // Exit contract (precedence: unallowed errors dominate timed-out).
   if (findings.length > 0) {
     throw new SmokeRunError(
-      `Smoke run observed ${String(findings.length)} unallowed console error(s).`,
-      SMOKE_EXIT_FAILURE
+      `Smoke run observed ${findings.length} unallowed console error(s).`,
+      ExitCode.SMOKE_EXIT_FAILURE
     );
   }
 
   if (result.timedOut) {
-    // Clean window — SIGTERM from us. Treat as success.
+    // Clean window: SIGTERM came from us. Treat as success.
     return;
   }
 
@@ -320,16 +303,16 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
   }
 
   throw new SmokeRunError(
-    `Browser exited with code ${String(result.exitCode)} before smoke-exit window elapsed.`,
-    SMOKE_LAUNCH_FAILURE
+    `Browser exited with code ${result.exitCode} before smoke-exit window elapsed.`,
+    ExitCode.SMOKE_LAUNCH_FAILURE
   );
 }
 
 /**
  * Compiles the active allowlist from `--console-allow` CLI values and
- * the optional `--console-allow-file`. Fails fast on a bad regex —
- * better to surface the typo at parse time than to silently let it
- * match nothing and turn every allowed hit into a smoke failure.
+ * the optional `--console-allow-file`. Fails fast on a bad regex, so the
+ * typo surfaces at parse time instead of silently matching nothing and
+ * turning every allowed hit into a smoke failure.
  */
 async function buildAllowlist(options: RunOptions): Promise<CompiledAllowlistEntry[]> {
   const allow: CompiledAllowlistEntry[] = [];
@@ -376,38 +359,38 @@ function reportSmokeSummary(args: {
   const suffix = args.timedOut ? ' (deadline fired — SIGTERM sent to process group)' : '';
   info('');
   info(`Smoke run complete: ${seconds}s elapsed of ${windowSeconds}s window${suffix}`);
-  info(`  Unallowed errors: ${String(args.findings.length)}`);
-  // The "suppressed errors" count is what the exit contract cares about — the
+  info(`  Unallowed errors: ${args.findings.length}`);
+  // The "suppressed errors" count is what the exit contract cares about: the
   // subset of allowlisted hits that would otherwise have been tallied as
   // findings. The "all allowlisted lines" count answers the operator's mental
   // model ("my --console-allow pattern matched N console lines"), without
   // which a visibly matching regex reports 0 hits.
-  info(`  Allowlisted error hits (suppressed): ${String(args.allowlistedErrorHits)}`);
-  info(`  Allowlisted lines total: ${String(args.allowlistedTotalHits)}`);
-  info(`  Child exit code:  ${String(args.exitCode)}`);
+  info(`  Allowlisted error hits (suppressed): ${args.allowlistedErrorHits}`);
+  info(`  Allowlisted lines total: ${args.allowlistedTotalHits}`);
+  info(`  Child exit code:  ${args.exitCode}`);
 
-  // Per-entry attribution: first-match credit per line, with
-  // zero-hit entries always visible — an allowlist entry whose suppressed
-  // shape changed upstream is only detectable as a 0× row.
+  // Per-entry attribution: first-match credit per line, with zero-hit
+  // entries always visible, since an allowlist entry whose suppressed shape
+  // changed upstream is only detectable as a 0× row.
   if (args.allowlist.length > 0) {
     info('  Allowlist attribution (first matching entry per line):');
     args.allowlist.forEach((entry, index) => {
       const hits = args.allowlistHits[index] ?? 0;
       const zeroSuffix = hits === 0 ? '  (never matched — candidate for removal)' : '';
-      info(`    ${String(hits)}×  ${entry.origin}  ${entry.source}${zeroSuffix}`);
+      info(`    ${hits}×  ${entry.origin}  ${entry.source}${zeroSuffix}`);
     });
   }
 
   if (args.findings.length === 0) return;
 
   warn('');
-  warn(`Unallowed console errors (first ${String(SMOKE_UNALLOWED_PREVIEW_MAX)}):`);
+  warn(`Unallowed console errors (first ${SMOKE_UNALLOWED_PREVIEW_MAX}):`);
   args.findings.slice(0, SMOKE_UNALLOWED_PREVIEW_MAX).forEach((finding, index) => {
-    warn(`  ${String(index + 1)}. [${finding.stream}] ${finding.line}`);
+    warn(`  ${index + 1}. [${finding.stream}] ${finding.line}`);
   });
   if (args.findings.length > SMOKE_UNALLOWED_PREVIEW_MAX) {
     const remaining = args.findings.length - SMOKE_UNALLOWED_PREVIEW_MAX;
-    warn(`  …and ${String(remaining)} more.`);
+    warn(`  …and ${remaining} more.`);
   }
 }
 

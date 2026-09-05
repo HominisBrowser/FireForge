@@ -93,10 +93,10 @@ function findAttachedJsDoc(
  * loses the param name. String literal types may contain braces too, so
  * quoted runs are skipped verbatim.
  *
- * @returns Index just past the matching close brace, or -1 when the type
- *   expression never closes (malformed doc — caller skips the tag).
+ * @returns Index just past the matching close brace, or undefined when the
+ *   type expression never closes (malformed doc, caller skips the tag).
  */
-function skipBalancedTypeBraces(jsDoc: string, start: number): number {
+function skipBalancedTypeBraces(jsDoc: string, start: number): number | undefined {
   let depth = 0;
   let quote: string | null = null;
   for (let i = start; i < jsDoc.length; i++) {
@@ -116,7 +116,7 @@ function skipBalancedTypeBraces(jsDoc: string, start: number): number {
       if (depth === 0) return i + 1;
     }
   }
-  return -1;
+  return undefined;
 }
 
 function extractParamNames(jsDoc: string): string[] {
@@ -127,11 +127,11 @@ function extractParamNames(jsDoc: string): string[] {
     let i = m.index + m[0].length;
     while (i < jsDoc.length && /\s/.test(jsDoc[i] ?? '')) i++;
 
-    // Optional `{type}` expression — depth-aware so nested braces inside
+    // Optional `{type}` expression, depth-aware so nested braces inside
     // inline object types or Record<…> generics don't truncate the scan.
     if (jsDoc[i] === '{') {
       const afterType = skipBalancedTypeBraces(jsDoc, i);
-      if (afterType === -1) continue;
+      if (afterType === undefined) continue;
       i = afterType;
       while (i < jsDoc.length && /\s/.test(jsDoc[i] ?? '')) i++;
     }
@@ -169,6 +169,17 @@ function functionReturnsValue(node: FunctionDeclaration | FunctionExpression): b
   return walkForReturn(node.body);
 }
 
+/**
+ * Narrows an arbitrary child value reached by walking a node's own
+ * properties to an ESTree node. Acorn's AST holds nodes, arrays of nodes,
+ * and plain scalars in the same property positions, so the discriminating
+ * `type` string is the only structural signal available.
+ */
+function isEstreeNode(value: unknown): value is Node {
+  if (typeof value !== 'object' || value === null || !('type' in value)) return false;
+  return typeof value.type === 'string';
+}
+
 function walkForReturn(node: Node): boolean {
   if (node.type === 'ReturnStatement') {
     return node.argument != null;
@@ -180,21 +191,18 @@ function walkForReturn(node: Node): boolean {
   ) {
     return false;
   }
-  // `entries` erases the node's static shape without asserting a new one;
-  // the `any` from `Object.entries`' fallback overload widens to `unknown`.
+  // `entries` erases the node's static shape without asserting a new one.
+  // The `any` from `Object.entries`' fallback overload widens to `unknown`.
   const entries: [string, unknown][] = Object.entries(node);
   for (const [key, val] of entries) {
     if (key === 'type') continue;
-    if (val && typeof val === 'object') {
-      if (Array.isArray(val)) {
-        for (const child of val) {
-          if (child && typeof child === 'object' && 'type' in child) {
-            if (walkForReturn(child as Node)) return true;
-          }
-        }
-      } else if ('type' in val) {
-        if (walkForReturn(val as Node)) return true;
+    if (Array.isArray(val)) {
+      const children: unknown[] = val;
+      for (const child of children) {
+        if (isEstreeNode(child) && walkForReturn(child)) return true;
       }
+    } else if (isEstreeNode(val) && walkForReturn(val)) {
+      return true;
     }
   }
   return false;
@@ -236,11 +244,7 @@ function findLocalDeclaration(
 // ---------------------------------------------------------------------------
 
 function lineAt(source: string, offset: number): number {
-  let line = 1;
-  for (let i = 0; i < offset && i < source.length; i++) {
-    if (source[i] === '\n') line++;
-  }
-  return line;
+  return source.slice(0, offset).split('\n').length;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,8 +258,6 @@ interface ParamsReturnsContext {
   paramCheck: JsDocCheck;
   returnsCheck: JsDocCheck;
   severity?: 'error' | 'warning';
-  /** Skip @param matching (used for getters which take no params anyway). */
-  skipParams?: boolean;
   /** Skip @returns enforcement (used for setters, getters, constructors). */
   skipReturns?: boolean;
 }
@@ -274,22 +276,20 @@ function validateParamsAndReturns(
 ): void {
   const docText = jsDoc.value;
 
-  if (!ctx.skipParams) {
-    const actualParams = fnNode.params
-      .map((p) => (p.type === 'Identifier' ? p.name : null))
-      .filter((n): n is string => n !== null);
+  const actualParams = fnNode.params
+    .map((p) => (p.type === 'Identifier' ? p.name : null))
+    .filter((n): n is string => n !== null);
 
-    if (actualParams.length > 0) {
-      const docParams = extractParamNames(docText);
-      for (const param of actualParams) {
-        if (!docParams.includes(param)) {
-          issues.push({
-            line: ctx.line,
-            check: ctx.paramCheck,
-            message: `Exported ${ctx.label} at line ${ctx.line}: @param "${param}" is missing or misnamed in JSDoc.`,
-            ...(ctx.severity ? { severity: ctx.severity } : {}),
-          });
-        }
+  if (actualParams.length > 0) {
+    const docParams = extractParamNames(docText);
+    for (const param of actualParams) {
+      if (!docParams.includes(param)) {
+        issues.push({
+          line: ctx.line,
+          check: ctx.paramCheck,
+          message: `Exported ${ctx.label} at line ${ctx.line}: @param "${param}" is missing or misnamed in JSDoc.`,
+          ...(ctx.severity ? { severity: ctx.severity } : {}),
+        });
       }
     }
   }
@@ -312,7 +312,7 @@ function validateParamsAndReturns(
  * Validates a top-level function declaration: requires an attached JSDoc
  * comment, then checks @param name matching and @returns presence. Exported
  * so the chrome-subscript validator (`patch-lint-chrome-jsdoc.ts`) can reuse
- * it on `parseScript`-produced declarations — the rule shape is identical
+ * it on `parseScript`-produced declarations. The rule shape is identical
  * between ES-module exports and chrome-subscript top-level declarations.
  *
  * @param fn - FunctionDeclaration AST node
@@ -389,7 +389,7 @@ function validateVariableDecl(
   const issues: JsDocIssue[] = [];
   const start = lookupStart !== undefined ? lookupStart : varDecl.start;
   const jsDoc = findAttachedJsDoc(comments, start, source);
-  if (jsDoc) return issues; // has a JSDoc block — sufficient for constants
+  if (jsDoc) return issues; // has a JSDoc block, sufficient for constants
 
   for (const decl of varDecl.declarations) {
     const name = decl.id.type === 'Identifier' ? decl.id.name : '<destructured>';
@@ -440,7 +440,7 @@ function classMethodLabel(className: string, method: MethodDefinition, name: str
  *   3. methods whose JSDoc carries `@private` or `@internal`
  *
  * A pure-override skip (`super.method(...args)`-only bodies bypassing the
- * return-tag check) is deliberately not implemented; the rule stays simple.
+ * return-tag check) is deliberately not implemented. The rule stays simple.
  */
 export function validateClassMethods(
   cls: AcornESTreeNode<ClassDeclaration>,
@@ -481,7 +481,7 @@ export function validateClassMethods(
     }
 
     if (method.kind === 'get') {
-      // Presence already verified; getter expression is the contract.
+      // Presence already verified. The getter expression is the contract.
       continue;
     }
 
@@ -520,7 +520,7 @@ export function validateExportJsDoc(
   try {
     ast = parseModule(source, comments);
   } catch (error: unknown) {
-    // An unparseable source is NOT a clean file. Returning `[]` here was the
+    // An unparseable source is not a clean file. Returning `[]` here was the
     // same value as "fully documented", so a syntax error silently cleared
     // every rule this module enforces. Report it instead.
     return [
@@ -539,7 +539,7 @@ export function validateExportJsDoc(
     if (node.type !== 'ExportNamedDeclaration') continue;
     const exportNode = node;
 
-    // Case 1: inline export declaration — JSDoc attaches to `export`
+    // Case 1: inline export declaration, JSDoc attaches to `export`
     if (exportNode.declaration) {
       const decl = exportNode.declaration as AcornESTreeNode;
       const exportStart = exportNode.start;
@@ -556,7 +556,7 @@ export function validateExportJsDoc(
       continue;
     }
 
-    // Case 2: `export { foo, Bar }` — resolve back to local declarations
+    // Case 2: `export { foo, Bar }`, resolve back to local declarations
     if (exportNode.specifiers.length > 0 && !exportNode.source) {
       for (const spec of exportNode.specifiers) {
         const local = spec.local;

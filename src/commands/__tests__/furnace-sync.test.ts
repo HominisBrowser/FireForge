@@ -75,7 +75,7 @@ vi.mock('../../core/furnace-apply-output.js', () => ({
 
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
+  // the pending-repair marker (the behaviour these suites assert), so it
   // comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn((_root: string, _kind: string, body: (ctx: unknown) => unknown) =>
@@ -96,7 +96,7 @@ vi.mock('../../core/furnace-version-drift.js', () => ({
 
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
-  // Conflict-marker gate scans workspace files; clean content by default.
+  // Conflict-marker gate scans workspace files. Clean content by default.
   readText: vi.fn(() => Promise.resolve('/* clean component file */')),
 }));
 
@@ -151,7 +151,7 @@ describe('furnaceSyncCommand', () => {
   });
 
   it('refreshes drifted overrides and re-applies', async () => {
-    // Pre-refresh detection sees drift; the post-refresh gate re-check
+    // Pre-refresh detection sees drift. The post-refresh gate re-check
     // sees none (refresh bumped baseVersion on a clean merge).
     vi.mocked(findOverrideBaseVersionDrift)
       .mockReturnValueOnce([
@@ -204,7 +204,7 @@ describe('furnaceSyncCommand', () => {
   });
 
   it('passes --strategy through to refresh', async () => {
-    // Pre-refresh detection sees drift; the post-refresh gate re-check
+    // Pre-refresh detection sees drift. The post-refresh gate re-check
     // sees none (refresh bumped baseVersion on a clean merge).
     vi.mocked(findOverrideBaseVersionDrift)
       .mockReturnValueOnce([
@@ -238,7 +238,7 @@ describe('furnaceSyncCommand', () => {
         severity: 'major' as const,
       },
     ];
-    // Drift present before AND after refresh (conflicted merge did not bump).
+    // Drift present before and after refresh (conflicted merge did not bump).
     vi.mocked(findOverrideBaseVersionDrift).mockReturnValueOnce(drift).mockReturnValueOnce(drift);
 
     await expect(furnaceSyncCommand('/project')).rejects.toThrow(

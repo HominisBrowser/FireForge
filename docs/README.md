@@ -4,8 +4,8 @@
 
 [`../README.md`](../README.md) is the getting-started page. These files are
 the reference material behind it. `fireforge --help` (and
-`fireforge <command> --help`) stays the authority on flags; the docs cover
-what a flag list cannot state.
+`fireforge <command> --help`) is always the authority on flags. These docs
+cover the things a flag list cannot say.
 
 ## Using FireForge
 

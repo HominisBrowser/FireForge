@@ -5,7 +5,16 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getDownloadUrl, getTarballFilename } from '../../core/firefox.js';
+import { resolveArchive } from '../../core/firefox-archive.js';
+import type { FirefoxProduct } from '../../types/config.js';
+
+/** The archive URL the downloader will request for a version/product pair. */
+const downloadUrl = (version: string, product: FirefoxProduct): string =>
+  resolveArchive(version, product).url;
+
+/** The on-disk tarball name for a version/product pair. */
+const tarballFilename = (version: string, product: FirefoxProduct): string =>
+  resolveArchive(version, product).filename;
 import {
   createTempProject,
   makeTarXzArchive,
@@ -19,7 +28,7 @@ import { downloadCommand } from '../download.js';
 // The spinner mock tracks `message(...)` calls so tests can assert that
 // git-init progress flowed through the spinner. The non-TTY spinner fallback
 // already emits `p.log.step(msg)` from `.message()`, so an explicit `step()`
-// alongside it double-prints; recording the per-handle `message` calls lets
+// alongside it double-prints. Recording the per-handle `message` calls lets
 // integration tests verify the contract without coupling to that wiring.
 const spinnerMessageCalls: string[] = [];
 vi.mock('../../utils/logger.js', () => ({
@@ -62,20 +71,24 @@ describe('downloadCommand integration', () => {
 
   /**
    * Installs a URL-dispatching fetch: archive bodies are served per URL and
-   * SHA256SUMS requests get a 404 (exercising the warn-and-continue path of
-   * the default integrity check). Response objects are created per call —
-   * a Response body is single-use, so serving a shared instance would fail
-   * on the second read.
+   * SHA256SUMS requests get a listing derived from those bodies (the default
+   * integrity check fails closed without one, so every test that reaches
+   * extraction needs a matching digest). Pass `sha256sumsBody` to serve a
+   * specific listing instead. Response objects are created per call because
+   * a Response body is single-use, so serving a shared instance would fail on
+   * the second read.
    */
   function installUrlFetch(bodies: Record<string, Buffer>, sha256sumsBody?: string): void {
+    const derivedSums = Object.entries(bodies)
+      .map(([url, body]) => {
+        const digest = createHash('sha256').update(body).digest('hex');
+        return `${digest}  source/${url.slice(url.lastIndexOf('/') + 1)}\n`;
+      })
+      .join('');
     fetchMock.mockImplementation((url: unknown) => {
       const key = String(url);
       if (key.endsWith('/SHA256SUMS')) {
-        return Promise.resolve(
-          sha256sumsBody !== undefined
-            ? new Response(sha256sumsBody, { status: 200 })
-            : new Response('not found', { status: 404 })
-        );
+        return Promise.resolve(new Response(sha256sumsBody ?? derivedSums, { status: 200 }));
       }
       const body = bodies[key];
       if (!body) {
@@ -107,8 +120,8 @@ describe('downloadCommand integration', () => {
     const esrBody = await readFile(esrArchive);
 
     installUrlFetch({
-      [getDownloadUrl('140.0', 'firefox')]: stableBody,
-      [getDownloadUrl('140.9.0esr', 'firefox-esr')]: esrBody,
+      [downloadUrl('140.0', 'firefox')]: stableBody,
+      [downloadUrl('140.9.0esr', 'firefox-esr')]: esrBody,
     });
 
     await writeFireForgeConfig(projectRoot, {
@@ -121,27 +134,23 @@ describe('downloadCommand integration', () => {
     });
     await downloadCommand(projectRoot, { force: true });
 
-    const stableCache = join(
-      projectRoot,
-      '.fireforge/cache',
-      getTarballFilename('140.0', 'firefox')
-    );
+    const stableCache = join(projectRoot, '.fireforge/cache', tarballFilename('140.0', 'firefox'));
     const esrCache = join(
       projectRoot,
       '.fireforge/cache',
-      getTarballFilename('140.9.0esr', 'firefox-esr')
+      tarballFilename('140.9.0esr', 'firefox-esr')
     );
 
     await expect(readFile(stableCache)).resolves.toBeTruthy();
     await expect(readFile(esrCache)).resolves.toBeTruthy();
     expect(archiveFetchCount()).toBe(2);
     expect(fetchMock).toHaveBeenCalledWith(
-      getDownloadUrl('140.0', 'firefox'),
+      downloadUrl('140.0', 'firefox'),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest asymmetric matcher
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      getDownloadUrl('140.9.0esr', 'firefox-esr'),
+      downloadUrl('140.9.0esr', 'firefox-esr'),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest asymmetric matcher
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
@@ -192,7 +201,7 @@ describe('downloadCommand integration', () => {
     });
     const oldBody = await readFile(oldArchivePath);
     installUrlFetch({
-      [getDownloadUrl('140.9.0esr', 'firefox-esr')]: oldBody,
+      [downloadUrl('140.9.0esr', 'firefox-esr')]: oldBody,
     });
 
     await writeFireForgeConfig(projectRoot);
@@ -233,7 +242,7 @@ describe('downloadCommand integration', () => {
     const archiveBody = await readFile(archivePath);
 
     installUrlFetch({
-      [getDownloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody,
+      [downloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody,
     });
 
     await writeFireForgeConfig(projectRoot);
@@ -241,11 +250,10 @@ describe('downloadCommand integration', () => {
     const cacheFile = join(
       projectRoot,
       '.fireforge/cache',
-      `${getTarballFilename('140.9.0esr', 'firefox-esr')}.part`
+      `${tarballFilename('140.9.0esr', 'firefox-esr')}.part`
     );
     await writeFiles(projectRoot, {
-      [join('.fireforge/cache', `${getTarballFilename('140.9.0esr', 'firefox-esr')}.part`)]:
-        'partial',
+      [join('.fireforge/cache', `${tarballFilename('140.9.0esr', 'firefox-esr')}.part`)]: 'partial',
     });
 
     await downloadCommand(projectRoot, {});
@@ -263,7 +271,7 @@ describe('downloadCommand integration', () => {
   it('invalidates corrupted cached archives after extraction failure and recovers on retry', async () => {
     await writeFireForgeConfig(projectRoot);
 
-    const tarballName = getTarballFilename('140.9.0esr', 'firefox-esr');
+    const tarballName = tarballFilename('140.9.0esr', 'firefox-esr');
     await writeFiles(projectRoot, {
       [join('.fireforge/cache', tarballName)]: 'not a real tarball',
       [join('.fireforge/cache', `${tarballName}.json`)]: JSON.stringify(
@@ -271,7 +279,7 @@ describe('downloadCommand integration', () => {
           requestedVersion: '140.9.0esr',
           product: 'firefox-esr',
           archiveVersion: '140.9.0esr',
-          url: getDownloadUrl('140.9.0esr', 'firefox-esr'),
+          url: downloadUrl('140.9.0esr', 'firefox-esr'),
           contentLength: 'not a real tarball'.length,
           downloadedAt: new Date().toISOString(),
         },
@@ -288,7 +296,7 @@ describe('downloadCommand integration', () => {
     });
     const archiveBody = await readFile(archivePath);
     installUrlFetch({
-      [getDownloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody,
+      [downloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody,
     });
 
     await downloadCommand(projectRoot, {});
@@ -306,7 +314,7 @@ describe('downloadCommand integration', () => {
     const digest = createHash('sha256').update(archiveBody).digest('hex');
 
     installUrlFetch(
-      { [getDownloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody },
+      { [downloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody },
       `${digest}  source/firefox-140.9.0esr.source.tar.xz\n`
     );
 
@@ -319,23 +327,23 @@ describe('downloadCommand integration', () => {
   });
 
   it('fails closed when the download does not match the published SHA256SUMS', async () => {
-    // The whole model is "trusted baseline + patches" — a CDN response that
-    // disagrees with Mozilla's published digest must never become the git
-    // baseline, and the artifact must not stay in the cache.
+    // The whole model is "trusted baseline + patches", so a CDN response
+    // that disagrees with Mozilla's published digest must never become the
+    // git baseline, and the artifact must not stay in the cache.
     const archivePath = await makeTarXzArchive(projectRoot, 'esr.tar.xz', 'firefox-140.9.0esr', {
       'browser/config/version.txt': '140.9.0esr\n',
     });
     const archiveBody = await readFile(archivePath);
 
     installUrlFetch(
-      { [getDownloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody },
+      { [downloadUrl('140.9.0esr', 'firefox-esr')]: archiveBody },
       `${'0'.repeat(64)}  source/firefox-140.9.0esr.source.tar.xz\n`
     );
 
     await writeFireForgeConfig(projectRoot);
     await expect(downloadCommand(projectRoot, {})).rejects.toThrow(/SHA-256 mismatch/);
 
-    const tarballName = getTarballFilename('140.9.0esr', 'firefox-esr');
+    const tarballName = tarballFilename('140.9.0esr', 'firefox-esr');
     await expect(readFile(join(projectRoot, '.fireforge/cache', tarballName))).rejects.toThrow();
   });
 });

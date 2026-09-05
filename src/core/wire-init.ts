@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * browser-init.js — init expression in onLoad().
+ * browser-init.js: init expression in onLoad().
  */
 
 import { join } from 'node:path';
@@ -44,8 +44,8 @@ const DEFAULT_MARKER = 'FIREFORGE:';
  * Default insertion point: after the last consecutive fireforge block, or at
  * the top of the method body when there is none.
  *
- * Both callers below — the `--after`-target-not-found fallthrough and the
- * no-`--after` default — must emit identical blocks, since `browser-init.js`
+ * Both callers below (the `--after`-target-not-found fallthrough and the
+ * no-`--after` default) must emit identical blocks, since `browser-init.js`
  * is written through both paths. One implementation enforces that invariant
  * rather than merely tidying.
  */
@@ -74,7 +74,7 @@ function resolveDefaultInsertion(
  *
  * `marker` is prepended (uppercased) to the generated comment line so the
  * emitted block carries the patch-lint `// <MARKER>:` signature that
- * `lintModificationComments` looks for; otherwise the first export after
+ * `lintModificationComments` looks for. Otherwise the first export after
  * `wire` trips `missing-modification-comment` on wire-generated edits.
  */
 export function addInitAST(
@@ -86,7 +86,7 @@ export function addInitAST(
   const name = extractNameFromExpression(expression);
   // `validateWireName` accepts both `Foo.bar` and `Foo.bar()` shapes. The
   // template below interpolates the value verbatim, so a bare property
-  // path compiles to `Foo.bar;` — a silent no-op, not a lifecycle
+  // path compiles to `Foo.bar;`, a silent no-op rather than a lifecycle
   // invocation. `coerceToCall` normalises to the function-call form so
   // the emitted block always invokes the hook the operator asked for.
   const callExpression = coerceToCall(expression);
@@ -158,7 +158,7 @@ export function legacyAddInit(
   marker: string = DEFAULT_MARKER
 ): string {
   const name = extractNameFromExpression(expression);
-  // See `addInitAST` for the rationale — the AST and fallback paths must
+  // See `addInitAST` for the rationale: the AST and fallback paths must
   // agree on whether the emitted block is a function call, otherwise
   // operators would see different behaviour depending on which parser
   // happened to handle their browser-init.js layout.
@@ -261,7 +261,7 @@ export async function addInitToBrowserInit(
 
   const content = await readText(filePath);
 
-  // Idempotency check — look for the coerced (call) form because that is
+  // Idempotency check: look for the coerced (call) form because that is
   // what the emitter writes. Matching against the raw input would miss a
   // bare `X.init` invocation that coercion already persisted as `X.init()`.
   const callExpression = coerceToCall(expression);

@@ -25,6 +25,7 @@ import {
   lintExportedPatch,
   lintPatchQueue,
   lintPatchSize,
+  type PatchQueueContext,
 } from '../core/patch-lint.js';
 import { clearPerPatchLintCache } from '../core/patch-lint-cache.js';
 import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
@@ -39,16 +40,16 @@ import { lintPerPatch } from './lint-per-patch.js';
 /**
  * Resolves the diff the lint command should run against. Returns `null` when
  * there is nothing to lint (no matching files, clean tree, or empty diff
- * content) — callers treat that as the early-exit signal and stop.
+ * content). Callers treat that as the early-exit signal and stop.
  *
  * Extracted from {@link lintCommand} so that function stays under the
- * per-function LOC budget; the two file-mode and aggregate-mode branches
+ * per-function LOC budget. The two file-mode and aggregate-mode branches
  * share no state with the post-lint reporting pipeline.
  *
  * When `binaryName` is provided, the aggregate-mode branch (no explicit file
  * list) excludes paths under `browser/branding/<binaryName>/` from the diff.
- * `status` classifies those paths as `branding` — tool-managed material the
- * operator did not author directly — and without the exclusion
+ * `status` classifies those paths as `branding`, tool-managed material the
+ * operator did not author directly, and without the exclusion
  * `fireforge lint` on a fresh project immediately fails `large-patch-lines`
  * / `large-patch-files` / `missing-license-header` on the generated branding
  * tree. File-list mode (explicit paths) is unaffected: passing a branding
@@ -121,7 +122,7 @@ async function resolveLintDiff(
   }
 
   // Aggregate-mode branding exclusion. A fresh-setup workspace carries a
-  // large tool-managed branding diff the operator did not author; running
+  // large tool-managed branding diff the operator did not author. Running
   // the default lint against it fires size and license-header rules on
   // content that was never intended to survive in the patch queue as-is. The
   // exclusion mirrors the `branding` bucket in `fireforge status` so the two
@@ -143,7 +144,7 @@ async function resolveLintDiff(
     // stories) that the operator did not author and never intended to land
     // on the patch queue. Without the carve-out, a post-`furnace preview`
     // aggregate `lint` fails with one `missing-license-header` error per
-    // generated story file — each is intentionally header-less because it is
+    // generated story file. Each is header-less on purpose because it is
     // re-generated from component metadata on every preview run.
     const filteredPaths = furnacePrefixes
       ? nonBrandingPaths.filter((path) => ![...furnacePrefixes].some((p) => path.startsWith(p)))
@@ -219,9 +220,9 @@ function buildMaxWarningsMessage(count: number, maxWarnings: number, scope?: str
  * attribute via `issue.file`, which is the offending site and is owned by
  * some patch.
  *
- * Multiple owners: an issue is dropped if **any** owning patch waived the
- * rule. Conservative — never adds new findings, only drops already-waived
- * ones.
+ * Multiple owners: an issue is dropped if any owning patch waived the
+ * rule. This is conservative: it never adds new findings, only drops
+ * already-waived ones.
  *
  * @param issues - Issues collected from the aggregate lint run.
  * @param ctx - Patch queue context used to attribute file → patch.
@@ -229,7 +230,7 @@ function buildMaxWarningsMessage(count: number, maxWarnings: number, scope?: str
  */
 export function applyAggregateLintIgnoreSuppression(
   issues: PatchLintIssue[],
-  ctx: import('../core/patch-lint.js').PatchQueueContext
+  ctx: PatchQueueContext
 ): AggregateLintIgnoreResult {
   const suppressionsByFile = new Map<string, Set<string>>();
   for (const entry of ctx.entries) {
@@ -253,7 +254,7 @@ export function applyAggregateLintIgnoreSuppression(
 
 /**
  * Up-front flag validation for `lintCommand`: rejects `--only-introduced`
- * without `--since` and non-integer `--max-warnings` — each a
+ * without `--since` and non-integer `--max-warnings`, each a
  * misconfiguration that should fail loud rather than silently narrow the
  * result. Positional arguments in per-patch mode are patch selectors
  * and are validated downstream by `selectPatchSubset`.
@@ -261,7 +262,7 @@ export function applyAggregateLintIgnoreSuppression(
 function validateLintFlags(options: LintCommandOptions): void {
   // `--only-introduced` scopes the exit code to `--since`-tagged issues, so
   // without a revision to anchor the diff there is no "introduced" subset
-  // to scope to — reject the combination up-front so a misconfigured CI
+  // to scope to. Reject the combination up-front so a misconfigured CI
   // invocation fails loud instead of silently treating every error as
   // cumulative and passing.
   if (options.onlyIntroduced && !options.since) {
@@ -280,14 +281,14 @@ function validateLintFlags(options: LintCommandOptions): void {
     );
   }
 
-  // `--patches` only means something in per-patch mode (it filters the
-  // queue); in aggregate/file-list mode there is no patch loop to narrow.
+  // `--patches` only means something in per-patch mode, where it filters
+  // the queue. In aggregate/file-list mode there is no patch loop to narrow.
   if (options.patches !== undefined && !options.perPatch) {
     throw new InvalidArgumentError('--patches requires --per-patch.', '--patches');
   }
 
   // The JSON report is a per-patch artifact (per-patch size metrics and
-  // suppressed issues); aggregate mode has no per-patch rows to report.
+  // suppressed issues). Aggregate mode has no per-patch rows to report.
   if (options.report !== undefined && !options.perPatch) {
     throw new InvalidArgumentError('--report requires --per-patch.', '--report');
   }
@@ -298,13 +299,13 @@ function validateLintFlags(options: LintCommandOptions): void {
  * applied patch summed (no explicit file scope, multi-patch queue), the
  * `large-patch-lines` / `large-patch-files` counts are an artefact of
  * aggregation rather than a property of any one patch. Surface the
- * `--per-patch` hint and downgrade those two rules to warnings; per-patch
+ * `--per-patch` hint and downgrade those two rules to warnings. Per-patch
  * mode keeps them as errors.
  */
 function downgradeAggregateSizeRules(
   issues: PatchLintIssue[],
   files: string[],
-  ctx: import('../core/patch-lint.js').PatchQueueContext | undefined
+  ctx: PatchQueueContext | undefined
 ): void {
   const aggregateHintApplicable = files.length === 0 && ctx !== undefined && ctx.entries.length > 1;
   if (
@@ -327,8 +328,8 @@ function downgradeAggregateSizeRules(
 
 /**
  * Evaluates the patch-size rules (`large-patch-files` / `large-patch-lines`)
- * for an ad-hoc explicit-file-list lint, scoped to each file's **owning
- * patch** rather than the combined file list.
+ * for an ad-hoc explicit-file-list lint, scoped to each file's owning
+ * patch rather than the combined file list.
  *
  * Feeding every passed file to `lintExportedPatch` as one synthetic patch
  * makes a cross-patch selection of eight files belonging to four patches
@@ -336,7 +337,7 @@ function downgradeAggregateSizeRules(
  * oversized. This helper groups the affected files by their owning patch
  * (via the manifest's `filesAffected`), then runs `lintPatchSize` against
  * each owner's real file count + diff, honouring that owner's `tier` and
- * `lintIgnore` — so `lint <files>`, `lint --per-patch`, and
+ * `lintIgnore`, so `lint <files>`, `lint --per-patch`, and
  * `re-export --dry-run` agree on the same size findings for the same files.
  * Files no patch claims are evaluated together as one prospective new patch,
  * preserving the pre-export oversized-change warning.
@@ -349,7 +350,7 @@ function downgradeAggregateSizeRules(
 async function lintOwningPatchSizes(
   engineDir: string,
   filesAffected: string[],
-  ctx: import('../core/patch-lint.js').PatchQueueContext
+  ctx: PatchQueueContext
 ): Promise<PatchLintIssue[]> {
   const listed = new Set(filesAffected);
   const owners = new Map<string, (typeof ctx.entries)[number]>();
@@ -413,9 +414,9 @@ async function reportLintOutcome(
   options: LintCommandOptions
 ): Promise<void> {
   // Diff-scoping: tag each issue as introduced-in-current-task vs
-  // cumulative-pre-existing-drift. Never filters — full set still prints
-  // and exit code semantics are unchanged — but the per-line prefix and
-  // summary make triage trivial on a large patch series.
+  // cumulative-pre-existing-drift. Nothing is filtered (the full set still
+  // prints and exit code semantics are unchanged), but the per-line prefix
+  // and summary make triage easier on a large patch series.
   const sinceActive = Boolean(options.since);
   if (options.since) {
     const diffFiles = await collectDiffFilePaths(engineDir, options.since);
@@ -453,8 +454,8 @@ async function reportLintOutcome(
 
   // Exit-code scope: `--only-introduced` narrows the failure criterion to
   // issues tagged `introduced`. Cumulative errors still print so the
-  // operator sees the full queue state, but do not fail lint — the
-  // case this serves is a branch whose own diff is clean but whose repo
+  // operator sees the full queue state, but do not fail lint. The case
+  // this serves is a branch whose own diff is clean but whose repo
   // already carries pre-existing queue errors from older patches.
   const failingErrors = options.onlyIntroduced
     ? errors.filter((i) => i.tag === 'introduced')
@@ -478,7 +479,7 @@ async function reportLintOutcome(
     throw new GeneralError(buildMaxWarningsMessage(warnings.length, options.maxWarnings));
   }
 
-  // Notices are advisory and do not count as warnings — emitting "passed
+  // Notices are advisory and do not count as warnings: emitting "passed
   // with warnings" when only notices fired contradicts the preceding
   // `0 warning(s)` summary line and reads as a regression. Errors suppressed
   // by --only-introduced still warrant the "with warnings" outro: they print
@@ -514,10 +515,10 @@ export async function lintCommand(
   await assertEngineGitReady(paths.engine);
 
   if (options.perPatch) {
-    // Positional arguments in per-patch mode select PATCHES through the
-    // same alias resolution as --patches — a non-matching
-    // positional fails loud against the queue listing, so an engine path
-    // can never silently lint. Explicit --patches entries come first.
+    // Positional arguments in per-patch mode select patches through the
+    // same alias resolution as --patches. A non-matching positional fails
+    // loud against the queue listing, so an engine path can never silently
+    // lint. Explicit --patches entries come first.
     const perPatchOptions =
       files.length > 0 ? { ...options, patches: [...(options.patches ?? []), ...files] } : options;
     await lintPerPatch(projectRoot, paths, perPatchOptions);
@@ -528,7 +529,7 @@ export async function lintCommand(
   // into the aggregate-mode branding exclusion in `resolveLintDiff`.
   const config = await loadConfig(projectRoot);
   // Pull the Furnace-managed prefix set up-front so aggregate lint can
-  // mirror the branding exclusion for Furnace material — without it,
+  // mirror the branding exclusion for Furnace material. Without it,
   // preview-generated stories under `browser/components/storybook/
   // stories/furnace/` show up as license-header errors on every
   // post-preview lint run.
@@ -540,14 +541,14 @@ export async function lintCommand(
 
   // Build patch queue context once so it can be shared between the
   // per-patch ownership resolver and the cross-patch rules.
-  let ctx: import('../core/patch-lint.js').PatchQueueContext | undefined;
+  let ctx: PatchQueueContext | undefined;
   if (await pathExists(paths.patches)) {
     ctx = await buildPatchQueueContext(paths.patches, config);
   }
 
   // Ad-hoc explicit-file-list mode evaluates the patch-size rules per
   // owning patch (see `lintOwningPatchSizes`), so suppress the synthetic
-  // combined-list size check in the shared pass — otherwise a cross-patch
+  // combined-list size check in the shared pass. Otherwise a cross-patch
   // selection synthesises a phantom oversized patch from the file count.
   const fileListMode = files.length > 0 && ctx !== undefined;
   let issues: PatchLintIssue[] = [
@@ -562,7 +563,7 @@ export async function lintCommand(
   }
 
   // Cross-patch rules operate over the whole queue, so run them whenever a
-  // patches directory exists — they surface duplicate /dev/null creations
+  // patches directory exists. They surface duplicate /dev/null creations
   // and forward-import chains that the per-patch orchestrator cannot see.
   if (ctx) {
     issues.push(...lintPatchQueue(ctx));
@@ -570,8 +571,8 @@ export async function lintCommand(
 
   // Honor per-patch `lintIgnore` in aggregate mode by attributing each
   // issue's file to its owning patches via the manifest's `filesAffected`.
-  // Per-patch mode threads `lintIgnore` directly into `lintExportedPatch`;
-  // aggregate mode has no patch-level scope to consult, so a check an
+  // Per-patch mode threads `lintIgnore` directly into `lintExportedPatch`.
+  // Aggregate mode has no patch-level scope to consult, so a check an
   // operator explicitly waived in `patches.json` re-surfaces on every
   // `--since` run (the CI default).
   if (ctx) {
@@ -619,7 +620,7 @@ export function registerLint(
     )
     .option(
       '--patches <names...>',
-      'With --per-patch, lint only the named patches. Accepts repeated flags, comma lists, full filenames/stems, manifest names, category-prefixed slugs, or bare slugs. Positional arguments after --per-patch are treated the same way.'
+      'With --per-patch, lint only the named patches. Accepts repeated flags, comma lists, full filenames/stems, bare order numbers, manifest names, category-prefixed slugs, or bare slugs. Positional arguments after --per-patch are treated the same way.'
     )
     .option(
       '--max-warnings <n>',
@@ -683,8 +684,8 @@ export function registerLint(
     .description('Manage the per-patch lint result cache')
     // Commander routes `fireforge lint cache` here even when the operator
     // meant to lint an engine directory literally named `cache`. A bare
-    // `lint cache` (no subcommand) used to silently do nothing — make the
-    // ambiguity explicit instead of doing the wrong operation quietly.
+    // `lint cache` (no subcommand) used to silently do nothing, so make
+    // the ambiguity explicit instead of doing the wrong operation quietly.
     .action(
       withErrorHandling(() => {
         info(

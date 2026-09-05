@@ -3,7 +3,7 @@
  * Rebase abort flow.
  */
 
-import { getProjectPaths, updateState } from '../../core/config.js';
+import { getProjectPaths } from '../../core/config.js';
 import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { resetChanges } from '../../core/git.js';
 import {
@@ -13,6 +13,7 @@ import {
 } from '../../core/rebase-session.js';
 import { NoRebaseSessionError } from '../../errors/rebase.js';
 import { intro, outro, spinner, success, warn } from '../../utils/logger.js';
+import { clearPendingResolution } from '../pending-resolution.js';
 import { confirmDirtyEngineReset } from './confirm.js';
 
 /**
@@ -21,9 +22,9 @@ import { confirmDirtyEngineReset } from './confirm.js';
 export async function handleAbort(projectRoot: string, yes?: boolean): Promise<void> {
   intro('FireForge Rebase — Abort');
 
-  // Abort is the escape hatch, so it deliberately does NOT require a *valid*
-  // session — only that one is present. Nothing below reads the session
-  // object (the restore works off `paths.engine` and `resetChanges`), and an
+  // Abort is the escape hatch, so it does not require a valid session, only
+  // that one is present. Nothing below reads the session object (the restore
+  // works off `paths.engine` and `resetChanges`), and an
   // `if (!session) throw` would refuse to run against a corrupt file, which
   // is the only thing that could have cleared it.
   const read = await readRebaseSession(projectRoot);
@@ -53,8 +54,8 @@ export async function handleAbort(projectRoot: string, yes?: boolean): Promise<v
 
   const s = spinner('Restoring engine to pre-rebase state...');
 
-  // Step 1: git reset. If this fails, the rebase session MUST stay on disk
-  // so the user can retry the abort — resetChanges is the only irreversible
+  // Step 1: git reset. If this fails, the rebase session must stay on disk
+  // so the user can retry the abort: resetChanges is the only irreversible
   // operation in this handler and everything downstream assumes it ran.
   try {
     await resetChanges(paths.engine);
@@ -72,14 +73,9 @@ export async function handleAbort(projectRoot: string, yes?: boolean): Promise<v
   await clearAppliedFurnaceState(projectRoot);
 
   // Step 3: clear pending resolution transactionally.
-  await updateState(projectRoot, (current) => {
-    if (!current.pendingResolution) return current;
-    const next = { ...current };
-    delete next.pendingResolution;
-    return next;
-  });
+  await clearPendingResolution(projectRoot);
 
-  // Step 4: clear the rebase session LAST so a failure in any prior step
+  // Step 4: clear the rebase session last so a failure in any prior step
   // preserves the session on disk and a retry of --abort can succeed.
   await clearRebaseSession(projectRoot);
   success('Rebase aborted and session cleared.');

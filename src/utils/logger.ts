@@ -8,11 +8,11 @@ let verboseMode = false;
 /**
  * Whether machine-output mode is active (`--json` / `--raw`).
  *
- * In machine mode, stdout belongs EXCLUSIVELY to the machine-readable
+ * In machine mode, stdout belongs exclusively to the machine-readable
  * payload: all human-facing diagnostics (intro/outro banners, info, warn,
  * error, steps, notes) are routed to stderr as plain unstyled lines.
- * Otherwise clack's log helpers write styled warnings to stdout *before* the
- * JSON body — a truncated-directory warning during `status --json` breaks
+ * Otherwise clack's log helpers write styled warnings to stdout before the
+ * JSON body, and a truncated-directory warning during `status --json` breaks
  * every `JSON.parse(stdout)` consumer.
  */
 let machineOutputMode = false;
@@ -41,11 +41,11 @@ export function isMachineOutputMode(): boolean {
 /**
  * Whether stdout is sealed behind a machine-readable final line.
  *
- * The `FIREFORGE-VERDICT:` contract promises that line as the run's LAST
- * stdout write — but emit-then-throw failure paths rethrow into
+ * The `FIREFORGE-VERDICT:` contract promises that line as the run's last
+ * stdout write, but emit-then-throw failure paths rethrow into
  * `withErrorHandling`, whose clack error/cancel rendering lands on stdout
  * in non-machine mode, displacing the verdict from the final line. The
- * verdict sink seals stdout the moment it writes; every later logger call
+ * verdict sink seals stdout the moment it writes. Every later logger call
  * routes to stderr through the same diagnostic channel machine mode uses.
  * `withErrorHandling`'s finally clears the seal (alongside machine mode).
  */
@@ -167,9 +167,9 @@ export const NOTICE_PREFIX = '[FireForge] NOTICE:';
 
 /**
  * Logs one of FireForge's own "why this is happening / why this is slow"
- * explanations at WARNING severity.
+ * explanations at warning severity.
  *
- * These lines are not warnings about the operator's code — they explain a
+ * These lines are not warnings about the operator's code. They explain a
  * decision FireForge just made (escalating an incremental build to a full
  * one, sharding a run, skipping a step). Emitted through `info` they are
  * silently dropped by agent-facing output filters that keep only warnings
@@ -231,7 +231,7 @@ export function formatErrorText(message: string): string {
  */
 export function spinner(initialMessage: string): SpinnerHandle {
   if (routeToStderr()) {
-    // Spinner progress is diagnostics; keep stdout clean for the payload.
+    // Spinner progress is diagnostics. Keep stdout clean for the payload.
     return {
       message: (msg: string) => {
         writeDiagnostic('', msg);
@@ -290,10 +290,10 @@ export function cancel(message: string): void {
 /**
  * Checks whether a prompt result represents a user cancellation.
  *
- * Narrows to `symbol` — clack returns its cancel sentinel as a symbol and
+ * Narrows to `symbol`: clack returns its cancel sentinel as a symbol and
  * `p.isCancel` is itself a type predicate. Returning plain `boolean` erases
  * that narrowing and forces `as string` / `as PatchCategory` casts across
- * the command modules on the *non*-cancelled branch, where the value is
+ * the command modules on the non-cancelled branch, where the value is
  * already known not to be the sentinel. Keep the predicate form.
  */
 export function isCancel(value: unknown): value is symbol {

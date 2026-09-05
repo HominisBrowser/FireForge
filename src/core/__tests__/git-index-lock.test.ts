@@ -23,7 +23,7 @@ vi.mock('../../utils/fs.js', () => ({
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
-// readdir is used by stageAllFilesChunked; not exercised in these tests
+// readdir is used by stageAllFilesChunked, but not exercised in these tests
 vi.mock('node:fs/promises', async (importOriginal) => {
   const orig = await importOriginal<typeof import('node:fs/promises')>();
   return { ...orig, readdir: vi.fn(() => Promise.resolve([])), stat: vi.fn() };

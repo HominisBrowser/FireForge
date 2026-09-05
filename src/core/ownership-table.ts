@@ -27,7 +27,7 @@ interface StatusFile {
  *
  * Populated from three sources:
  *
- *   1. Every path in every patch's `filesAffected` — so managed paths show up
+ *   1. Every path in every patch's `filesAffected`, so managed paths show up
  *      even when they are not currently modified on disk.
  *   2. Any worktree status entries not claimed by any patch (flagged as
  *      `unmanaged`).
@@ -42,11 +42,11 @@ interface StatusFile {
  * `conflictReason` so the output can disambiguate.
  *
  * @param manifestPatches - Manifest rows, each with its `filesAffected`
- * @param worktreeFiles - Raw worktree status entries; untracked and modified
+ * @param worktreeFiles - Raw worktree status entries. Untracked and modified
  *   both acceptable
  * @param newFileCreatorsByPath - Map produced by
- *   {@link import('../core/patch-lint.js').collectNewFileCreatorsByPath};
- *   paths with a `.length > 1` owner list become duplicate-create conflicts
+ *   {@link import('../core/patch-lint.js').collectNewFileCreatorsByPath}.
+ *   Paths with a `.length > 1` owner list become duplicate-create conflicts
  */
 export function buildOwnershipTable(
   manifestPatches: PatchMetadata[],
@@ -85,7 +85,7 @@ export function buildOwnershipTable(
     const duplicateOwners = duplicateCreateByPath.get(path);
     const isFilesAffectedConflict = owners.length > 1;
     const isDuplicateCreateConflict = duplicateOwners !== undefined;
-    // Prefer the filesAffected reason when both apply — it's the older
+    // Prefer the filesAffected reason when both apply: it's the older
     // source of drift and the operator will usually want to fix the
     // manifest rows even when the bodies also duplicate-create.
     const conflictReason: OwnershipRow['conflictReason'] = isFilesAffectedConflict
@@ -136,7 +136,7 @@ export function buildOwnershipTable(
  * `files-affected` drift (two manifest rows claiming the same path) from
  * `duplicate-create` drift (two patches both hitting `/dev/null → b/path`
  * in their bodies) so the operator can tell at a glance which fix
- * applies — the former wants `re-export --files`, the latter wants
+ * applies. The former wants `re-export --files`, the latter wants
  * `patch delete`.
  */
 function renderConflictCell(row: OwnershipRow): string {
@@ -164,7 +164,7 @@ function renderStateCell(row: OwnershipRow): string {
 /**
  * Renders the ownership table as a GitHub-flavored Markdown pipe table.
  * Using markdown-table's own serializer would require a seed document to
- * graft onto, which is overkill for ad-hoc status output; the rendering
+ * graft onto, which is overkill for ad-hoc status output. The rendering
  * here is trivial enough to inline.
  */
 export function renderOwnershipTable(rows: OwnershipRow[]): void {

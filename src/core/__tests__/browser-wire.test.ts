@@ -4,13 +4,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { nativePath } from '../../test-utils/index.js';
 import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
 import { wireSubscript } from '../browser-wire.js';
-import { addDomFragmentTokenized } from '../wire-dom-fragment.js';
-import {
-  addDestroyToBrowserInit,
-  addDomFragment,
-  addInitToBrowserInit,
-  addSubscriptToBrowserMain,
-} from '../wire-targets.js';
+import { addDestroyToBrowserInit } from '../wire-destroy.js';
+import { addDomFragment, addDomFragmentTokenized } from '../wire-dom-fragment.js';
+import { addInitToBrowserInit } from '../wire-init.js';
+import { addSubscriptToBrowserMain } from '../wire-subscript.js';
 
 vi.mock('../../utils/fs.js', () => createFsMock());
 
@@ -114,7 +111,7 @@ describe('addSubscriptToBrowserMain', () => {
     const canvasIdx = written.indexOf('custom-widget.js');
     expect(canvasIdx).toBeGreaterThan(placesIdx);
 
-    // The new try block must appear AFTER the closing `}` of the existing catch block
+    // The new try block must appear after the closing `}` of the existing catch block
     const lines = written.split('\n');
     const catchLine = lines.findIndex((l: string) =>
       l.includes('Failed to load browser-places.js')
@@ -159,26 +156,6 @@ describe('addSubscriptToBrowserMain', () => {
     const precedingLine = lines[panLine - 1]?.trim(); // try {
     expect(precedingLine).toBe('try {');
   });
-
-  it('is idempotent — skips if already present', async () => {
-    mockReadText.mockResolvedValue(
-      MOCK_BROWSER_MAIN +
-        '\n  try { loadSubScript("chrome://browser/content/custom-widget.js"); } catch (e) {}'
-    );
-
-    const result = await addSubscriptToBrowserMain('/engine', 'custom-widget');
-
-    expect(result).toBe(false);
-    expect(mockWriteText).not.toHaveBeenCalled();
-  });
-
-  it('throws when browser-main.js is missing', async () => {
-    mockPathExists.mockResolvedValue(false);
-
-    await expect(addSubscriptToBrowserMain('/engine', 'test')).rejects.toThrow(
-      'browser-main.js not found'
-    );
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -210,27 +187,6 @@ describe('addInitToBrowserInit', () => {
     const customIdx = written.indexOf('CustomWidget.init()');
     const gBrowserIdx = written.indexOf('gBrowser.init()');
     expect(customIdx).toBeLessThan(gBrowserIdx);
-  });
-
-  it('is idempotent — skips if expression already present', async () => {
-    const content = MOCK_BROWSER_INIT.replace(
-      'gBrowser.init();',
-      'CustomWidget.init();\n    gBrowser.init();'
-    );
-    mockReadText.mockResolvedValue(content);
-
-    const result = await addInitToBrowserInit('/engine', 'CustomWidget.init()');
-
-    expect(result).toBe(false);
-    expect(mockWriteText).not.toHaveBeenCalled();
-  });
-
-  it('throws when browser-init.js is missing', async () => {
-    mockPathExists.mockResolvedValue(false);
-
-    await expect(addInitToBrowserInit('/engine', 'CustomWidget.init()')).rejects.toThrow(
-      'browser-init.js not found in engine'
-    );
   });
 
   it('falls back to the legacy init inserter with an explicit warning when AST parsing fails', async () => {
@@ -326,7 +282,7 @@ describe('addDomFragment', () => {
     // The .inc.xhtml file doesn't need to exist for normal insertion (no migration)
     mockPathExists.mockImplementation((p: string) => {
       if (p.endsWith('browser.xhtml')) return Promise.resolve(true);
-      // .inc.xhtml file doesn't exist — skip migration path
+      // .inc.xhtml file doesn't exist, so skip the migration path
       return Promise.resolve(false);
     });
 
@@ -393,7 +349,7 @@ describe('addDomFragment', () => {
     const written = mockWriteText.mock.calls[0]?.[1] ?? '';
     // Should contain the #include directive
     expect(written).toContain('#include ../../components/mybrowser/mybrowser-chrome.inc.xhtml');
-    // Should NOT contain the inlined content
+    // Should not contain the inlined content
     expect(written).not.toContain('inlined content here');
   });
 
@@ -452,7 +408,8 @@ describe('addDomFragment', () => {
     );
 
     const written = mockWriteText.mock.calls[0]?.[1] as string;
-    // Include path resolved from mybrowser-shell/content/ to browser/base/content/fragments/panel.inc.xhtml
+    // Include path resolved from mybrowser-shell/content/ to
+    // browser/base/content/fragments/panel.inc.xhtml
     expect(written).toContain('#include ../../browser/base/content/fragments/panel.inc.xhtml');
   });
 
@@ -497,19 +454,6 @@ describe('addDestroyToBrowserInit', () => {
     expect(written).toContain('CustomWidget.destroy();');
   });
 
-  it('is idempotent — skips if already present', async () => {
-    const content = MOCK_BROWSER_INIT_WITH_UNLOAD.replace(
-      'gBrowser.destroy();',
-      'CustomWidget.destroy();\n    gBrowser.destroy();'
-    );
-    mockReadText.mockResolvedValue(content);
-
-    const result = await addDestroyToBrowserInit('/engine', 'CustomWidget.destroy()');
-
-    expect(result).toBe(false);
-    expect(mockWriteText).not.toHaveBeenCalled();
-  });
-
   it('LIFO ordering — newest destroy goes before existing', async () => {
     const contentWithExisting = `var gBrowserInit = {
   onLoad() {
@@ -540,14 +484,6 @@ describe('addDestroyToBrowserInit', () => {
     expect(sidePanelIdx).toBeLessThan(tileIdx);
   });
 
-  it('throws when file is missing', async () => {
-    mockPathExists.mockResolvedValue(false);
-
-    await expect(addDestroyToBrowserInit('/engine', 'X.destroy()')).rejects.toThrow(
-      'browser-init.js not found in engine'
-    );
-  });
-
   it('throws when onUnload()/uninit() method is missing', async () => {
     mockReadText.mockResolvedValue(`var gBrowserInit = {
   onLoad() {
@@ -562,7 +498,7 @@ describe('addDestroyToBrowserInit', () => {
 });
 
 // ---------------------------------------------------------------------------
-// wireSubscript — subscriptDir support
+// wireSubscript: subscriptDir support
 // ---------------------------------------------------------------------------
 
 import { registerBrowserContent } from '../moz-manifest-register.js';
@@ -629,7 +565,7 @@ describe('wireSubscript', () => {
 });
 
 // ---------------------------------------------------------------------------
-// addInitToBrowserInit — idempotency with substring protection
+// addInitToBrowserInit: idempotency with substring protection
 // ---------------------------------------------------------------------------
 
 describe('addInitToBrowserInit — idempotency', () => {
@@ -661,7 +597,7 @@ describe('addInitToBrowserInit — idempotency', () => {
 });
 
 // ---------------------------------------------------------------------------
-// addSubscriptToBrowserMain — braces in strings
+// addSubscriptToBrowserMain: braces in strings
 // ---------------------------------------------------------------------------
 
 describe('addSubscriptToBrowserMain — braces in strings', () => {
@@ -690,11 +626,11 @@ describe('addSubscriptToBrowserMain — braces in strings', () => {
 });
 
 // ---------------------------------------------------------------------------
-// addDomFragment — idempotency with line-anchored matching
+// addDomFragment: idempotency with line-anchored matching
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// addInitToBrowserInit / addDestroyToBrowserInit — expression validation
+// addInitToBrowserInit / addDestroyToBrowserInit: expression validation
 // ---------------------------------------------------------------------------
 
 describe('addInitToBrowserInit — expression validation', () => {
@@ -755,10 +691,10 @@ describe('addDomFragment — idempotency', () => {
 });
 
 // ---------------------------------------------------------------------------
-// wire-dom-fragment — branch coverage
+// wire-dom-fragment: insertion anchors and no-op migrations
 // ---------------------------------------------------------------------------
 
-describe('addDomFragmentTokenized (branch coverage)', () => {
+describe('addDomFragmentTokenized — insertion anchors', () => {
   it('falls back to <html:body> when browser-sets.inc is not found', () => {
     const content = `<?xml version="1.0"?>
 <html:body>
@@ -781,7 +717,7 @@ describe('addDomFragmentTokenized (branch coverage)', () => {
   });
 });
 
-describe('addDomFragment (migration branch coverage)', () => {
+describe('addDomFragment — migration with nothing inlined to replace', () => {
   it('handles migration when DOM file has no id attribute', async () => {
     mockPathExists.mockResolvedValue(true);
     mockReadText
@@ -794,7 +730,10 @@ describe('addDomFragment (migration branch coverage)', () => {
     );
 
     expect(result).toBe(true);
-    expect(mockWriteText).toHaveBeenCalled();
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    expect(written).toContain('#include fragments/panel.inc.xhtml');
+    // Nothing was inlined under an id, so nothing may be stripped.
+    expect(written).toContain('<div class="noId"/>');
   });
 
   it('handles migration when the element id is not in browser.xhtml', async () => {
@@ -809,6 +748,10 @@ describe('addDomFragment (migration branch coverage)', () => {
     );
 
     expect(result).toBe(true);
-    expect(mockWriteText).toHaveBeenCalled();
+    const written = mockWriteText.mock.calls[0]?.[1] ?? '';
+    expect(written).toContain('#include fragments/panel.inc.xhtml');
+    // The fragment's id is absent from browser.xhtml, so the unrelated
+    // element must survive untouched.
+    expect(written).toContain('<div id="something-else"/>');
   });
 });

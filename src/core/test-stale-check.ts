@@ -5,9 +5,9 @@
  * Without this preflight, an operator who edits engine chrome / packaged
  * resources (`jar.mn` entries, `.xhtml`/`.mjs`/`.css` under chrome trees,
  * pref files) and then runs `fireforge test <path>` only discovers the build
- * is stale AFTER xpcshell / mach test starts and errors out with
- * `NS_ERROR_FILE_NOT_FOUND` against a `chrome://browser/content/…` URI —
- * which reads as a test bug, not a rebuild prompt. Scaffolding a new
+ * is stale after xpcshell / mach test starts and errors out with
+ * `NS_ERROR_FILE_NOT_FOUND` against a `chrome://browser/content/…` URI,
+ * which reads as a test bug rather than a rebuild prompt. Scaffolding a new
  * top-level chrome document plus an xpcshell test is the canonical case: the
  * test file exists, the manifests are registered, but `dist/` still holds
  * the pre-edit bundle and chrome URIs resolve to nothing.
@@ -16,7 +16,7 @@
  * baseline (`.fireforge/last-build.json`), filters to paths that imply
  * packaging, and returns a compact summary. `fireforge test` prints a
  * warning up-front so the operator sees "you edited X, Y, Z since the last
- * build — rerun with `--build` to refresh" BEFORE mach test launches.
+ * build, rerun with `--build` to refresh" before mach test launches.
  * Detection stays advisory (warn-only) because a fork that rebuilds
  * out-of-band (a separate `./mach build` invocation, an IDE plugin) can
  * legitimately have a fresh `dist/` with no FireForge-recorded baseline
@@ -25,13 +25,12 @@
 
 import { toError } from '../utils/errors.js';
 import { verbose, warn } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { isPackageablePath, isXpcomManifestPath } from './build-audit.js';
 import { readBuildBaseline } from './build-baseline.js';
 import type { BuildBaseline, TestPackagingCoverage } from './build-baseline-types.js';
 import { hashEngineFile } from './coverage-extend.js';
 import { collectChangedEnginePaths, dropPathsMatchingFingerprints } from './engine-changes.js';
-
-export { isXpcomManifestPath };
 
 /** Result of the stale-build preflight probe. */
 export interface StaleBuildResult {
@@ -40,7 +39,7 @@ export interface StaleBuildResult {
   /**
    * Engine-relative paths that would have been packaged but appear to have
    * changed since the baseline. Sorted and deduplicated. Truncated at
-   * {@link STALE_PATHS_LIMIT} entries for rendering; consult
+   * {@link STALE_PATHS_LIMIT} entries for rendering. Consult
    * {@link StaleBuildResult.truncated} to know when to append a `(+N more)`
    * tail to the warning.
    */
@@ -52,8 +51,8 @@ export interface StaleBuildResult {
   truncated: number;
   /**
    * The baseline that anchored the diff, or undefined when no previous
-   * successful build exists. A missing baseline is treated as "not stale"
-   * — we have nothing to compare against and a warning would mislead.
+   * successful build exists. A missing baseline is treated as "not stale":
+   * we have nothing to compare against and a warning would mislead.
    */
   baseline: BuildBaseline | undefined;
 }
@@ -64,8 +63,8 @@ const STALE_PATHS_LIMIT = 10;
 /**
  * Probes the engine tree for packageable changes since the last successful
  * `fireforge build`. Returns a summary the `fireforge test` handler renders
- * as an up-front warning when `--build` was NOT passed. The probe never
- * throws; git failures and a missing baseline both degrade to `stale: false`
+ * as an up-front warning when `--build` was not passed. The probe never
+ * throws. Git failures and a missing baseline both degrade to `stale: false`
  * so a broken probe cannot block a test run.
  *
  * @param projectRoot Root directory of the project.
@@ -93,8 +92,8 @@ export async function checkStaleBuildForTest(
   // Furnace-applied components always has a persistent workdir diff against
   // HEAD, so `git diff --name-only HEAD` returns that diff on every build
   // and the stale check fires immediately after a successful one. The
-  // fingerprints capture "these files had this content when the build ran";
-  // a path stays stale only when its live hash diverges.
+  // fingerprints capture "these files had this content when the build ran".
+  // A path stays stale only when its live hash diverges.
   packageable = await dropPathsMatchingFingerprints(
     engineDir,
     packageable,
@@ -135,19 +134,20 @@ export const FULL_SUITE_REQUEST = '(entire suite)';
 /**
  * Compares the requested test paths against the packaged runtime's coverage
  * claim recorded in the baseline. Returns the requested paths the recorded
- * packaging does NOT cover — the runs that would dispatch against missing
+ * packaging does not cover: the runs that would dispatch against missing
  * `_tests/` support fixtures and hang rather than fail.
  *
  * Coverage semantics: an absent claim and `'full'` cover everything. A
  * scoped list covers a request path when the request equals a covered entry,
  * sits beneath a covered directory entry, or shares a manifest granule with
- * a covered entry ({@link toManifestGranule} — a scoped `test --build`
+ * a covered entry (see {@link toManifestGranule}: a scoped `test --build`
  * packages the whole manifest directory, so a same-manifest sibling of a
  * covered file is packaged too). Both sides are normalized to forward
  * slashes so Windows-style CLI input cannot defeat the prefix rule (baseline
  * paths are POSIX by convention). A request with no paths is a full-suite
- * run and is never covered by a scoped list — the {@link FULL_SUITE_REQUEST}
- * sentinel is returned so the refusal can name it.
+ * run and is never covered by a scoped list, so the
+ * {@link FULL_SUITE_REQUEST} sentinel is returned and the refusal can name
+ * it.
  */
 export function findUncoveredRequestPaths(
   coverage: TestPackagingCoverage | undefined,
@@ -173,10 +173,10 @@ export function findUncoveredRequestPaths(
  * Maps a normalized request/coverage path to the "manifest granule" the
  * packaged runtime actually staged: an extension-bearing basename (a test
  * FILE) maps to its containing directory, a directory (no dot in the
- * basename) maps to itself. Purely lexical — the directory-as-manifest
+ * basename) maps to itself. Purely lexical: the directory-as-manifest
  * approximation holds because xpcshell/mochitest manifests live next to
  * their test files and a scoped `test --build` stages the whole manifest
- * directory into `obj-*`/`_tests/`, not single files. Caveat: a DIRECTORY
+ * directory into `obj-*`/`_tests/`, not single files. Caveat: a directory
  * whose basename contains a dot is misread as a file and mapped to its
  * parent, which widens (never narrows) the covered granule.
  */
@@ -191,12 +191,12 @@ function toManifestGranule(path: string): string {
 
 /** Normalizes a path for coverage comparison: forward slashes, no trailing slash. */
 function normalizeCoveragePath(path: string): string {
-  return path.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  return normalizePathSlashes(path.trim()).replace(/\/+$/, '');
 }
 
 /**
  * Formats the refusal shown when a non-`--build` run requests paths the
- * packaged runtime's scoped `test --build` coverage does not include —
+ * packaged runtime's scoped `test --build` coverage does not include. It is
  * enforced on every such run, with or without `--allow-stale-build`. Kept
  * separate from the matcher so tests can pin structure and copy
  * independently (same split as {@link formatStaleBuildWarning}).
@@ -204,7 +204,7 @@ function normalizeCoveragePath(path: string): string {
 /**
  * Basenames of the test manifests whose entries decide what a packaged test
  * runtime stages. A manifest that gained an entry is the single most common
- * reason a run needs coverage the last build never claimed — and it is a
+ * reason a run needs coverage the last build never claimed, and it is a
  * fact FireForge already holds but never said, leaving the operator to
  * rediscover it after a correct refusal.
  */
@@ -229,8 +229,8 @@ function isTestManifestPath(path: string): boolean {
 
 /**
  * Test manifests changed since the recorded build that sit in (or above)
- * the directory of an uncovered request path — i.e. the manifests that
- * EXPLAIN why this run needs coverage the build never claimed.
+ * the directory of an uncovered request path, i.e. the manifests that
+ * explain why this run needs coverage the build never claimed.
  *
  * Best-effort: a probe failure returns an empty list, so the refusal
  * degrades to exactly its previous text rather than failing differently.
@@ -270,7 +270,7 @@ export async function findChangedTestManifestsForPaths(
  * @param coverage - The recorded scoped coverage claim
  * @param changedManifests - Test manifests changed since the recorded
  *   build that explain an uncovered path (from
- *   {@link findChangedTestManifestsForPaths}); omitted or empty renders
+ *   {@link findChangedTestManifestsForPaths}). Omitted or empty renders
  *   nothing
  */
 export function formatTestCoverageRefusal(
@@ -285,7 +285,7 @@ export function formatTestCoverageRefusal(
   };
   const rebuildTargets = uncovered.filter((p) => p !== FULL_SUITE_REQUEST);
   // Name --extend-coverage here or it is undiscoverable: a scoped build
-  // REPLACES the claim, so under several concurrent sessions a peer's build
+  // replaces the claim, so under several concurrent sessions a peer's build
   // for an unrelated path erases coverage you legitimately still hold, and
   // the union that fixes it is a flag the operator has no reason to know
   // exists at the moment they need it. The anchor conditions are stated
@@ -298,7 +298,7 @@ export function formatTestCoverageRefusal(
     rebuildTargets.length > 0
       ? `Rerun "fireforge test --build ${rebuildTargets.slice(0, STALE_PATHS_LIMIT).join(' ')}" to package them, or run "fireforge build" for full coverage.${extendHint}`
       : 'Run "fireforge build" (or a path-less "fireforge test --build") for full coverage first.';
-  // Why THIS run needs new coverage, when a changed manifest explains it: a
+  // Why this run needs new coverage, when a changed manifest explains it: a
   // manifest that gained an entry is not covered by a build claim recorded
   // for other paths, and a browser-chrome claim never covers xpcshell.
   const manifestLine =
@@ -319,26 +319,26 @@ export interface StaticComponentsStaleResult {
   /** True when at least one `components.conf` genuinely diverged from the anchor. */
   stale: boolean;
   /**
-   * Engine-relative `components.conf` paths changed since the last FULL
-   * build. Sorted; NOT capped — {@link formatStaticComponentsRefusal}
+   * Engine-relative `components.conf` paths changed since the last full
+   * build. Sorted, and not capped. {@link formatStaticComponentsRefusal}
    * applies the render cap.
    */
   changedManifests: string[];
 }
 
 /**
- * Probes whether any `components.conf` changed since the last FULL
- * `fireforge build` — i.e. since the compiled StaticComponents table was
- * last regenerated. `components.conf` entries bake into compiled code; a
+ * Probes whether any `components.conf` changed since the last full
+ * `fireforge build`, i.e. since the compiled StaticComponents table was
+ * last regenerated. `components.conf` entries bake into compiled code. A
  * scoped `test --build` packages the file but the child process resolves the
- * OLD table and fails with `NS_ERROR_MALFORMED_URI` that reads as a test
+ * old table and fails with `NS_ERROR_MALFORMED_URI` that reads as a test
  * bug.
  *
  * The diff anchors to the baseline's `staticComponentsBaseline` (the last
- * full build's engine HEAD SHA), NOT the baseline's own `engineHeadSha`,
+ * full build's engine HEAD SHA), not the baseline's own `engineHeadSha`,
  * which a scoped `test --build` advances. Dirty candidates are hash-checked
  * against the anchor's fingerprints so only genuine content divergence
- * counts. No baseline or no anchor means fresh. Never throws — the probes it
+ * counts. No baseline or no anchor means fresh. Never throws: the probes it
  * composes degrade to verbose lines and empty results on git failure,
  * matching {@link checkStaleBuildForTest}.
  */
@@ -393,7 +393,7 @@ export function formatStaticComponentsRefusal(changedManifests: string[]): strin
  * `fireforge import` when `components.conf` diverged from the last full
  * build. Same probe as {@link formatStaticComponentsRefusal},
  * different moment: this fires at mutation time so the operator learns a
- * full build is needed BEFORE the next gate run refuses.
+ * full build is needed before the next gate run refuses.
  */
 export function formatPostMutationStaticComponentsWarning(changedManifests: string[]): string {
   const head = changedManifests.slice(0, STALE_PATHS_LIMIT);

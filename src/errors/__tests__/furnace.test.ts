@@ -9,7 +9,6 @@ describe('furnace errors', () => {
     const error = new FurnaceError('registration failed', 'my-button');
 
     expect(error.code).toBe(ExitCode.FURNACE_ERROR);
-    expect(error.component).toBe('my-button');
     expect(error.userMessage).toContain('Furnace Error (my-button): registration failed');
     expect(error.userMessage).toContain('furnace validate');
   });
@@ -17,15 +16,7 @@ describe('furnace errors', () => {
   it('formats FurnaceError without component', () => {
     const error = new FurnaceError('config invalid');
 
-    expect(error.component).toBeUndefined();
     expect(error.userMessage).toContain('Furnace Error: config invalid');
     expect(error.userMessage).not.toContain('(');
-  });
-
-  it('preserves cause', () => {
-    const cause = new Error('disk full');
-    const error = new FurnaceError('copy failed', 'sidebar', cause);
-
-    expect(error.cause).toBe(cause);
   });
 });

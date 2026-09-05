@@ -37,7 +37,7 @@ export function recordCreatedDir(journal: RollbackJournal, dirPath: string): voi
 /**
  * Recursively snapshots every file under a directory tree so a later rollback
  * can restore deleted files. Skips symlinks to avoid following them out of the
- * tree. The directory itself is not recorded as "created" — callers that
+ * tree. The directory itself is not recorded as "created", so callers that
  * intend to delete and restore the directory should record it explicitly.
  *
  * Safe to call on a missing path: it returns without recording anything.
@@ -67,9 +67,9 @@ export async function snapshotFile(journal: RollbackJournal, filePath: string): 
   // Journal keys are the paths rollback will later write back to, and the
   // restore runs from whatever cwd the process happens to be in by then. A
   // relative key would therefore restore somewhere other than where the
-  // snapshot was taken — silently, and only on the failure path where nobody
-  // is watching. Every caller composes an absolute path already; this keeps
-  // it that way.
+  // snapshot was taken, silently, and only on the failure path where nobody
+  // is watching. Every caller composes an absolute path already, and this
+  // keeps it that way.
   assert(isAbsolute(filePath), () => `snapshot path is absolute (got "${filePath}")`);
 
   if (journal.files.has(filePath)) {
@@ -189,7 +189,7 @@ export async function restoreRollbackJournal(journal: RollbackJournal): Promise<
   // Directory removal is only safe once every file is back where it belongs:
   // a created directory may hold a restored file, and removing it recursively
   // would undo the restore we just performed. The throw above is what
-  // normally enforces this; the assertion names it so a future early-return
+  // normally enforces this. The assertion names it so a future early-return
   // or error-swallowing edit cannot quietly reach the rm loop with failures
   // outstanding.
   assert(errors.length === 0, 'all journal files restored before created directories are removed');

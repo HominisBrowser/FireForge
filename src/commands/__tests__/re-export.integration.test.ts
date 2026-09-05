@@ -303,7 +303,7 @@ describe('reExportCommand integration', () => {
   });
 
   it('--scan-file names the FIRST missing path in argument order when several are missing', async () => {
-    // The existence probes now run through a bounded pool; the refusal
+    // The existence probes now run through a bounded pool. The refusal
     // must still deterministically name the first missing file in
     // argument order, exactly as the serial loop did.
     await writeFiles(join(projectRoot, 'engine'), {
@@ -332,7 +332,7 @@ describe('reExportCommand integration', () => {
   it('broad --scan only offers candidates from the patch directory footprint', async () => {
     // The patch claims tracked.txt at the engine root. Git pathspecs
     // recurse, so before the footprint filter the unmanaged files under
-    // features/ would be offered to this patch too — the field-reported
+    // features/ would be offered to this patch too, the field-reported
     // cross-feature mis-assignment hazard.
     await writeFiles(join(projectRoot, 'engine'), {
       'tracked.txt': 'changed\n',
@@ -559,11 +559,11 @@ describe('reExportCommand integration', () => {
 
 /**
  * Adjacent-unmanaged reproduction. The same-directory advisory fires for the
- * canonical shape — a new test created beside a patch's owned tests — which
+ * canonical shape (a new test created beside a patch's owned tests), which
  * the first test pins. The second documents the residual blind spot: a new
  * file in a subdirectory that is not the dirname of any owned file is
- * deliberately not reported, because recursive directory scans are too noisy
- * on Firefox-sized trees.
+ * intentionally not reported, because recursive directory scans are too
+ * noisy on Firefox-sized trees.
  */
 describe('reExportCommand adjacency advisory', () => {
   let projectRoot: string;
@@ -623,7 +623,8 @@ describe('reExportCommand adjacency advisory', () => {
 
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining(
-        "found 1 unmanaged file(s) adjacent to this patch's ownership (comp/tests/browser/browser_b.js)"
+        "found 1 unmanaged file(s) adjacent to this patch's ownership " +
+          '(comp/tests/browser/browser_b.js (beside engine/comp/tests/browser))'
       )
     );
   });
@@ -935,7 +936,7 @@ describe('reExportCommand --expect and fail-closed drift baseline', () => {
       reExportCommand(projectRoot, ['001'], { refuseForeignDrift: true, expect: [OWNED] })
     ).rejects.toThrow('--refuse-foreign-drift');
 
-    // The preview tags the expected file; the unexpected one carries no tag.
+    // The preview tags the expected file. The unexpected one carries no tag.
     expect(info).toHaveBeenCalledWith(
       expect.stringContaining(`${OWNED}: +1/-0 newly captured line(s) (expected via --expect)`)
     );
@@ -999,9 +1000,9 @@ describe('reExportCommand --expect and fail-closed drift baseline', () => {
     await rm(join(projectRoot, 'patches/001-ui-mod.patch'));
     await writeFiles(join(projectRoot, 'engine'), { [OWNED]: OWNED_DRIFTED });
 
-    // The drift guard skips its preview (advisory path); the write layer's
+    // The drift guard skips its preview (advisory path). The write layer's
     // own missing-file refusal then fails the patch, so the run is still
-    // non-zero — but with the generic per-patch failure, not the drift
+    // non-zero, but with the generic per-patch failure, not the drift
     // refusal message.
     await expect(reExportCommand(projectRoot, ['001'], {})).rejects.toThrow(
       'All selected patches failed to re-export'
@@ -1025,7 +1026,7 @@ describe('reExportCommand --expect and fail-closed drift baseline', () => {
  * A fully refused `--refuse-foreign-drift` run must reject with the refusal
  * (naming every patch), and the refusal must outrank the generic all-failed
  * abort. A consumer observing exit 0 is reading the shell pipeline's status
- * (`… | tee`), not the CLI's; the cross-process exit code is pinned in
+ * (`… | tee`), not the CLI's. The cross-process exit code is pinned in
  * src/__tests__/re-export-refusal-exit.test.ts.
  */
 describe('reExportCommand fully-refused run exit contract', () => {
@@ -1128,7 +1129,7 @@ describe('reExportCommand fully-refused run exit contract', () => {
  * Dry-run purity: a real re-export of patch A followed by a `--dry-run` of
  * unrelated patch B must leave A's just-written export intact. These tests
  * pin the exact sequence byte-for-byte (patch artifacts, manifest, engine
- * working tree, AND the git index — the one place a dry-run can legally
+ * working tree, and the git index, the one place a dry-run can legally
  * touch state), plus the untracked-binary staging variant and the runtime
  * purity guard itself.
  */
@@ -1224,7 +1225,7 @@ describe('reExportCommand dry-run purity', () => {
     await writeFiles(projectRoot, {
       'patches/patches.json': makeTwoPatchManifest(['assets/logo.png', 'widgets.txt']),
     });
-    // Patch B owns an untracked binary — the one dry-run shape that touches
+    // Patch B owns an untracked binary, the one dry-run shape that touches
     // the git index (temporary intent-to-add staging).
     await mkdir(join(engineDir, 'assets'), { recursive: true });
     await writeFile(
@@ -1271,7 +1272,7 @@ describe('reExportCommand dry-run purity', () => {
   });
 
   it('withDryRunPurityGuard still post-checks when the operation throws: mutation wins, original error attached', async () => {
-    // A dry-run that mutates and THEN fails is exactly the case where a
+    // A dry-run that mutates and then fails is exactly the case where a
     // rollback defect must not hide behind the operation's own error.
     const failure = await withDryRunPurityGuard(
       join(projectRoot, 'engine'),
@@ -1303,7 +1304,7 @@ describe('reExportCommand dry-run purity', () => {
   });
 
   it('withDryRunPurityGuard fails closed when the patches directory cannot be listed', async () => {
-    // An unreadable directory is not evidence it is empty — vouching for
+    // An unreadable directory is not evidence it is empty. Vouching for
     // purity over state the guard never saw would fail open.
     if (process.platform === 'win32' || process.getuid?.() === 0) return;
     const patchesDir = join(projectRoot, 'patches');
@@ -1339,9 +1340,9 @@ describe('reExportCommand dry-run purity', () => {
   });
 
   it('withDryRunPurityGuard names the FIRST unreadable patch in sorted order when several fail', async () => {
-    // The hashing now runs through a bounded pool; error selection happens
+    // The hashing now runs through a bounded pool. Error selection happens
     // in a deterministic post-pool pass, so the refusal must name the
-    // first failing file in sorted filename order — not whichever worker
+    // first failing file in sorted filename order, not whichever worker
     // happened to fail first.
     if (process.platform === 'win32' || process.getuid?.() === 0) return;
     const patchesDir = join(projectRoot, 'patches');
@@ -1362,8 +1363,8 @@ describe('reExportCommand dry-run purity', () => {
   });
 
   it('withDryRunPurityGuard fails closed when the engine generation cannot be measured', async () => {
-    // Real `re-export` refuses a non-git engine before the guard ever runs;
-    // this pins the guard's own fail-closed defence: an `unavailable:` token
+    // Real `re-export` refuses a non-git engine before the guard ever runs.
+    // This pins the guard's own fail-closed defence: an `unavailable:` token
     // measured nothing, so it must never be hashed as engine state.
     const nonGitEngine = join(projectRoot, 'not-a-git-engine');
     await mkdir(nonGitEngine, { recursive: true });

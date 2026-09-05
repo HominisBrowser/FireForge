@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Process-group kill and post-run sweep helpers for the exec layer. Split
- * out of `process.ts` to keep that file within the per-file line budget;
- * deliberately spawn-based (not `exec`-based) so the two modules do not
- * import each other cyclically.
+ * out of `process.ts` to keep that file within the per-file line budget.
+ * Spawn-based rather than `exec`-based so the two modules do not import
+ * each other cyclically.
  */
 
 import { type ChildProcess, spawn } from 'node:child_process';
 
 import { getNodeErrorCode } from './errors.js';
 import { verbose, warn } from './logger.js';
+import { sleep } from './sleep.js';
 
 /**
- * Sends `signal` to the child's whole tree: the process GROUP on POSIX
- * (negative-PID kill — reaches mach → python → firefox → content-process
- * chains), or a `taskkill /T /F` tree kill plus a direct `child.kill`
- * fallback on Windows. No-ops once the direct child has exited (group
+ * Sends `signal` to the child's whole tree: the process group on POSIX
+ * (negative-PID kill, which reaches mach → python → firefox →
+ * content-process chains), or a `taskkill /T /F` tree kill plus a direct
+ * `child.kill` fallback on Windows. No-ops once the direct child has exited (group
  * survivors after exit are the post-run sweep's job, not this function's).
  *
  * A failed group kill falls through to a direct `child.kill` on POSIX too:
@@ -41,18 +42,18 @@ export function killProcessTree(
       } catch {
         // ESRCH/EPERM: the group is gone, or was never created because the
         // platform ignored `detached`. Signal the direct child rather than
-        // doing nothing — it may well still be alive. Without this
+        // doing nothing, since it may well still be alive. Without this
         // fall-through a failed group kill left the child running.
         child.kill(signal);
       }
     } else {
-      // No process group on Windows — taskkill /T walks the descendant
+      // No process group on Windows, so taskkill /T walks the descendant
       // tree instead. Always forced (/F): there is no SIGTERM analogue,
       // so the grace window only exists on POSIX.
       spawn('taskkill', ['/pid', String(targetPid), '/T', '/F'], {
         stdio: 'ignore',
       }).on('error', () => {
-        // taskkill unavailable — nothing more we can do beyond the
+        // taskkill unavailable, so nothing more we can do beyond the
         // direct-child kill below.
       });
       child.kill(signal);
@@ -63,7 +64,7 @@ export function killProcessTree(
 }
 
 /** One process still alive in a swept group. */
-export interface ProcessGroupSurvivor {
+interface ProcessGroupSurvivor {
   /** PID, or -1 when pgrep was unavailable and only a liveness probe ran. */
   pid: number;
   /** Command line (pgrep -lf output), best-effort. */
@@ -72,19 +73,6 @@ export interface ProcessGroupSurvivor {
 
 const SWEEP_GRACE_MS = 2000;
 const MULTIPROCESSING_WORKER_PATTERN = /multiprocessing\.(?:spawn|forkserver)|resource_tracker/;
-
-function sweepDelay(ms: number): Promise<void> {
-  // Deliberately ref'd (no unref()): this promise is AWAITED between the
-  // group SIGTERM and the post-grace re-list/SIGKILL escalation, from a
-  // child 'close' handler after the signal forwarder is disposed — with an
-  // unref'd timer nothing kept the event loop alive, so Node could exit
-  // mid-grace and skip the escalation entirely. Healthy runs never reach
-  // this function (sweepProcessGroup early-returns on zero survivors), so
-  // the ref never holds a clean exit open.
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
 
 /**
  * Minimal spawn-based pgrep runner. exitCode -1 means pgrep itself was
@@ -127,10 +115,10 @@ async function listGroupSurvivors(pgid: number): Promise<ProcessGroupSurvivor[]>
     process.kill(-pgid, 0);
     return [{ pid: -1, command: 'unknown (pgrep unavailable; group still has live members)' }];
   } catch (error: unknown) {
-    // Same errno semantics as `isProcessAlive` (which cannot be called here —
-    // it probes a single positive pid): only ESRCH proves the group is gone.
-    // EPERM means it exists under another uid, and an unrecognized failure is
-    // not evidence of absence — report survivors in both cases.
+    // Same errno semantics as `isProcessAlive` (which cannot be called here,
+    // since it probes a single positive pid): only ESRCH proves the group is
+    // gone. EPERM means it exists under another uid, and an unrecognized
+    // failure is not evidence of absence, so report survivors in both cases.
     if (getNodeErrorCode(error) === 'ESRCH') return [];
     return [{ pid: -1, command: 'unknown (pgrep unavailable; group liveness probe denied)' }];
   }
@@ -142,7 +130,7 @@ function describeSurvivors(list: ProcessGroupSurvivor[]): string {
       const tag = MULTIPROCESSING_WORKER_PATTERN.test(s.command)
         ? ' [multiprocessing worker — the known busy-spin orphan shape]'
         : '';
-      return `PID ${String(s.pid)}: ${s.command}${tag}`;
+      return `PID ${s.pid}: ${s.command}${tag}`;
     })
     .join('; ');
 }
@@ -152,7 +140,7 @@ function describeSurvivors(list: ProcessGroupSurvivor[]): string {
  * the PID of a child started with `detached: true`): lists survivors,
  * SIGTERMs the group, waits a short grace, escalates to SIGKILL, and warns
  * about anything that still refuses to die. POSIX only (no-op on win32).
- * The only kill target is `-pgid` — never anything outside the group.
+ * The only kill target is `-pgid`, never anything outside the group.
  * A healthy run costs exactly one `pgrep`.
  */
 export async function sweepProcessGroup(
@@ -164,18 +152,24 @@ export async function sweepProcessGroup(
   if (survivors.length === 0) return { survivors };
 
   warn(
-    `Harness process group ${String(pgid)} left ${String(survivors.length)} surviving ` +
+    `Harness process group ${pgid} left ${survivors.length} surviving ` +
       `process(es) after exit — reaping the group. ${describeSurvivors(survivors)}`
   );
 
   try {
     process.kill(-pgid, 'SIGTERM');
   } catch {
-    // The group vanished between the listing and the signal — nothing left to
-    // escalate against, so report the survivors collected so far.
+    // The group vanished between the listing and the signal, so there is
+    // nothing left to escalate against. Report the survivors collected so far.
     return { survivors };
   }
-  await sweepDelay(graceMs);
+  // Ref'd (sleep's default): this wait sits between the group
+  // SIGTERM and the post-grace re-list/SIGKILL escalation, awaited from a
+  // child 'close' handler after the signal forwarder is disposed. With an
+  // unref'd timer nothing keeps the event loop alive, so Node could exit
+  // mid-grace and skip the escalation entirely. Healthy runs never reach
+  // here (sweepProcessGroup early-returns on zero survivors).
+  await sleep(graceMs);
   let remaining = await listGroupSurvivors(pgid);
   if (remaining.length > 0) {
     try {
@@ -185,18 +179,24 @@ export async function sweepProcessGroup(
       // nothing to signal.
       return { survivors };
     }
-    await sweepDelay(Math.min(200, graceMs));
+    // Ref'd (sleep's default): this wait sits between the group
+    // SIGTERM and the post-grace re-list/SIGKILL escalation, awaited from a
+    // child 'close' handler after the signal forwarder is disposed. With an
+    // unref'd timer nothing keeps the event loop alive, so Node could exit
+    // mid-grace and skip the escalation entirely. Healthy runs never reach
+    // here (sweepProcessGroup early-returns on zero survivors).
+    await sleep(Math.min(200, graceMs));
     remaining = await listGroupSurvivors(pgid);
     if (remaining.length > 0) {
       warn(
-        `Process group ${String(pgid)} still has survivors after SIGKILL: ${describeSurvivors(remaining)}. ` +
+        `Process group ${pgid} still has survivors after SIGKILL: ${describeSurvivors(remaining)}. ` +
           'Inspect manually (ps -axo pid,ppid,time,command) and kill by PID.'
       );
     } else {
-      verbose(`Process group ${String(pgid)} reaped after SIGKILL escalation.`);
+      verbose(`Process group ${pgid} reaped after SIGKILL escalation.`);
     }
   } else {
-    verbose(`Process group ${String(pgid)} reaped cleanly with SIGTERM.`);
+    verbose(`Process group ${pgid} reaped cleanly with SIGTERM.`);
   }
   return { survivors };
 }

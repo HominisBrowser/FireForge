@@ -19,7 +19,7 @@ import type { PatchLintIssue } from '../types/commands/index.js';
  * binaryName happens to be a substring of one. `quit-application*` is
  * handled as a prefix family in {@link isKnownFirefoxTopic}.
  *
- * The list is deliberately conservative: it only needs to cover topics
+ * The list is conservative: it only needs to cover topics
  * whose text could plausibly contain a fork's binaryName, plus the
  * high-traffic lifecycle topics seen in downstream test simulations.
  */
@@ -54,7 +54,7 @@ export function isKnownFirefoxTopic(topic: string): boolean {
  * commas inside nested calls, object literals, or strings do not split.
  *
  * @returns The argument texts, or null when the span never closes within
- *   `maxLength` characters (malformed or truncated source — caller skips).
+ *   `maxLength` characters (malformed or truncated source, caller skips).
  */
 function extractCallArguments(
   content: string,
@@ -112,9 +112,9 @@ function extractCallArguments(
 /**
  * Returns the literal string value when `arg` is exactly one plain string
  * literal (no concatenation, no `${}` interpolation), otherwise null.
- * Constant-named topics (identifiers, member expressions) intentionally
- * return null — hoisting a literal into a named constant is a supported
- * way to mark a topic as deliberate.
+ * Constant-named topics (identifiers, member expressions) return null on
+ * purpose: hoisting a literal into a named constant is a supported way to
+ * mark a topic as deliberate.
  */
 function asStringLiteral(arg: string): string | null {
   const trimmed = arg.trim();
@@ -131,8 +131,8 @@ function asStringLiteral(arg: string): string | null {
 /**
  * Lints observer-service call sites in `strippedContent` (comments already
  * removed) for fork topic naming. Only topics that embed `binaryName` and
- * do not follow the `<binary>-<noun>-<verb>` convention are flagged;
- * allowlisted Firefox topics and constant-named topics are skipped.
+ * do not follow the `<binary>-<noun>-<verb>` convention are flagged.
+ * Allowlisted Firefox topics and constant-named topics are skipped.
  *
  * @param strippedContent - Source with comments stripped
  * @param file - File path for issue attribution

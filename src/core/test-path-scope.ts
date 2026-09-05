@@ -2,22 +2,22 @@
 /**
  * Directory-argument scope analysis for `fireforge test`.
  *
- * mozbuild's test resolver matches command-line paths by STRING PREFIX, so
+ * mozbuild's test resolver matches command-line paths by string prefix, so
  * `fireforge test browser/base/content/test/hominis` also runs the sibling
- * directory `browser/base/content/test/hominis-tiles` — silently, and with
+ * directory `browser/base/content/test/hominis-tiles`, silently, and with
  * no indication the scope widened.
  *
- * FireForge therefore treats a directory argument as meaning EXACTLY that
+ * FireForge therefore treats a directory argument as meaning exactly that
  * directory: {@link analyzeTestPathScopes} enumerates the test files of
- * exactly that directory and dispatches THAT explicit file list to mach,
+ * exactly that directory and dispatches that explicit file list to mach,
  * because a file list cannot prefix-match anything. Normalizing the
- * directory with a trailing `/` does NOT work — mach still sweeps in the
+ * directory with a trailing `/` does not work. Mach still sweeps in the
  * prefix-named sibling. The prefix-matching sibling directories are still
  * reported so the command layer can tell the operator what was excluded.
  *
  * FireForge already rejects non-existent paths up front, so raw
- * prefix-widening was never something an operator could invoke
- * deliberately — it only ever happened by accident.
+ * prefix-widening was never something an operator could invoke on purpose.
+ * It only ever happened by accident.
  */
 
 import { readdir, stat } from 'node:fs/promises';
@@ -40,7 +40,7 @@ export interface TestPathScope {
    * list for a directory (mach cannot prefix-widen an explicit file
    * list), or the argument unchanged for files. A directory containing
    * no enumerable test files falls back to the trailing-`/` directory
-   * form — there is nothing to list, and mach owns the "no tests found"
+   * form: there is nothing to list, and mach owns the "no tests found"
    * failure.
    */
   dispatchPaths: string[];
@@ -58,7 +58,7 @@ const TEST_FILE_PATTERN = /^(?:browser|test)_.*\.(?:m?js|x?html)$/;
 /**
  * Recursively enumerates test-implementation files under a directory,
  * returned engine-relative and sorted for deterministic dispatch order.
- * Returns [] when the directory cannot be read — the caller then falls
+ * Returns [] when the directory cannot be read. The caller then falls
  * back to the directory form and mach owns the failure.
  */
 async function collectTestFiles(dir: string, relPrefix: string): Promise<string[]> {
@@ -130,14 +130,14 @@ async function analyzeTestPathScope(
       }
     }
   } catch {
-    // Unreadable parent: skip the sibling probe; exactness via the
+    // Unreadable parent: skip the sibling probe. Exactness via the
     // explicit file list is preserved regardless.
   }
 
   const testFiles = await collectTestFiles(absolute, `${stripped}/`);
   return {
     requestedPath,
-    // The explicit file list is what makes the selection exact; an empty
+    // The explicit file list is what makes the selection exact. An empty
     // enumeration falls back to the directory form.
     dispatchPaths: testFiles.length > 0 ? testFiles : [`${stripped}/`],
     isDirectory: true,
@@ -175,7 +175,7 @@ export function formatScopeNotice(scope: TestPathScope): string | undefined {
     .join(', ');
   if (scope.testFileCount === 0) {
     // Fallback dispatch: with nothing to enumerate, the raw directory form
-    // goes to mach, whose prefix matching CAN sweep the siblings in.
+    // goes to mach, whose prefix matching can sweep the siblings in.
     // Claiming exclusion here would be a lie.
     return (
       `${requestedDir}/ contains no enumerable test files, so the directory is passed to mach ` +

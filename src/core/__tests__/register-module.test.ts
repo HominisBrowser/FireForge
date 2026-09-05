@@ -100,10 +100,10 @@ describe('registerFireForgeModule', () => {
 
   it('inserts case-insensitively to match mozbuild UnsortedError ordering', async () => {
     // Registering HominisAppearanceController next to
-    // HominisAppMenuIntegration landed it AFTER (byte order: uppercase 'M'
+    // HominisAppMenuIntegration landed it after (byte order: uppercase 'M'
     // < lowercase 'e') so `mach configure` aborted with UnsortedError.
     // mozbuild compares case-insensitively, where 'appe' < 'appm', so
-    // Appearance must sort BEFORE AppMenu.
+    // Appearance must sort before AppMenu.
     mockReadText.mockResolvedValue(
       ['EXTRA_JS_MODULES += [', '    "HominisAppMenuIntegration.sys.mjs",', ']', ''].join('\n')
     );
@@ -125,7 +125,7 @@ describe('registerFireForgeModule', () => {
   it('inserts into a single-line empty EXTRA_JS_MODULES list', async () => {
     // A freshly-scaffolded browser/modules/<fork>/moz.build can start with
     // `EXTRA_JS_MODULES += []` on one line, which a tokenizer looking for a
-    // line starting with `]` never closes — so register refuses with "Could
+    // line starting with `]` never closes, so register refuses with "Could
     // not find EXTRA_JS_MODULES in moz.build" even though the list is
     // clearly present. The single-line empty form is expanded into the
     // canonical multi-line shape before insertion.
@@ -141,7 +141,7 @@ describe('registerFireForgeModule', () => {
     expect(result.entry).toBe('    "FirstModule.sys.mjs",');
     const written = mockWriteText.mock.calls[0]?.[1] ?? '';
     // The written output must be a syntactically valid multi-line
-    // list — the new entry sits inside the brackets, not after them.
+    // list: the new entry sits inside the brackets, not after them.
     expect(written).toContain('EXTRA_JS_MODULES += [');
     expect(written).toContain('    "FirstModule.sys.mjs",');
     expect(written).toContain(']');

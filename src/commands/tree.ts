@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge tree` — copy-on-write verification clones.
+ * `fireforge tree`: copy-on-write verification clones.
  *
- * Trees enable concurrent READ-MOSTLY verification (lint, typecheck, status,
+ * Trees enable concurrent read-mostly verification (lint, typecheck, status,
  * verify, doctor, export dry-runs) beside a busy primary tree. Exports and
- * every other mutation stay strictly serial in the primary — a tree's
+ * every other mutation stay strictly serial in the primary, because a tree's
  * patches/components are snapshots with no merge model, and the tree guard
  * (cli.ts preAction + core/tree-guard.ts) refuses mutating commands inside a
  * tree.
@@ -13,8 +13,8 @@
  * directory, rewrites its mozinfo.json to the tree, and runs `mach configure`
  * inside the tree so the remaining configure output (config.status,
  * backend.mk, Makefile, config/autoconf.mk) stops naming the primary. That is
- * fail-closed by design — mach objdirs embed absolute source paths, and an
- * unrelocated clone would silently operate against the primary — and it is
+ * fail-closed by design (mach objdirs embed absolute source paths, and an
+ * unrelocated clone would silently operate against the primary), and it is
  * what admits build-less `fireforge test` inside that tree.
  */
 import { spawn } from 'node:child_process';
@@ -37,6 +37,7 @@ import {
   getTreeMarkerPath,
   getTreesDir,
   readTreeMarker,
+  type TreeMarker,
   withTreeLifecycleLock,
 } from '../core/tree-store.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -89,14 +90,14 @@ async function resolveObjdirForClone(projectRoot: string): Promise<string> {
 /**
  * Runs `mach configure` inside the tree's engine so the configure-generated
  * root files (config.status, backend.mk, Makefile, config/autoconf.mk) are
- * regenerated against the tree's paths — the mozinfo rewrite alone leaves
+ * regenerated against the tree's paths. The mozinfo rewrite alone leaves
  * those naming the primary, and a build-less in-tree `test` must never
  * consult primary state. Exit code 0 is not trusted on its own: configure
  * obeys MOZCONFIG / MOZ_OBJDIR, so the postcondition is verified afterwards
- * via `findObjdirRelocationViolation` — the intended objdir was configured,
+ * via `findObjdirRelocationViolation`: the intended objdir was configured,
  * its mozinfo points into the tree, and none of those root files still
  * names the primary engine (nested Makefiles are products of the verified
- * config.status; `.deps` build products are out of scope — see the
+ * config.status, and `.deps` build products are out of scope, see the
  * checker's doc). A failure throws before `cloneTree` writes the marker,
  * so the tree is removed and `clonedObjdir` is never recorded (fail-closed).
  */
@@ -148,7 +149,7 @@ export async function treeCreateCommand(
   intro('FireForge Tree Create');
   assertValidTreeName(name);
   // A marker we cannot parse still means "something claims this is a tree", so
-  // it must block nesting too — otherwise a corrupt marker is a licence to
+  // it must block nesting too. Otherwise a corrupt marker is a licence to
   // clone a snapshot into itself.
   const markerState = await readTreeMarker(projectRoot);
   if (markerState.kind !== 'absent') {
@@ -183,16 +184,16 @@ export async function treeCreateCommand(
     }
 
     // Courtesy fast-fail: refuse obvious no-build cases before waiting on
-    // locks. The result is DISCARDED — a build can still start before the
+    // locks. The result is discarded: a build can still start before the
     // locks below are held, so only the re-resolution under the build lock
     // is authoritative for what actually gets cloned.
     if (options.withObjdir === true) {
       await resolveObjdirForClone(projectRoot);
     }
 
-    // Snapshot under the PRIMARY engine-session lock so a mid-mutation
-    // state (half-applied export, furnace deploy) is never captured; an
-    // objdir snapshot additionally holds the primary BUILD lock, under
+    // Snapshot under the primary engine-session lock so a mid-mutation
+    // state (half-applied export, furnace deploy) is never captured. An
+    // objdir snapshot additionally holds the primary build lock, under
     // which the objdir is re-validated immediately before cloning so a
     // concurrent `fireforge build` can neither tear the obj-* mid-write
     // nor swap it after preflight. A failed clone (including the
@@ -203,7 +204,7 @@ export async function treeCreateCommand(
       projectRoot,
       'tree create',
       async () => {
-        const clone = (objDir?: string): ReturnType<typeof cloneTree> =>
+        const clone = (objDir?: string): Promise<TreeMarker> =>
           cloneTree({
             primaryRoot: projectRoot,
             treeRoot,
@@ -258,8 +259,8 @@ export async function treeListCommand(
 ): Promise<void> {
   if (options.json === true) {
     // stdout belongs exclusively to the JSON payload: engage machine mode so
-    // any diagnostic — including a listTrees failure rendered later by
-    // withErrorHandling, which also resets the mode — routes to stderr.
+    // any diagnostic, including a listTrees failure rendered later by
+    // withErrorHandling (which also resets the mode), routes to stderr.
     setMachineOutputMode(true);
     try {
       const trees = await listTrees(projectRoot);
@@ -367,19 +368,17 @@ async function treeExecCommand(projectRoot: string, name: string, args: string[]
       resolvePromise(code ?? 1);
     });
   }).finally(() => {
-    // With `stdio: 'inherit'` the child owned stdout — including any
-    // FIREFORGE-VERDICT line it emitted as its LAST stdout write. From here
+    // With `stdio: 'inherit'` the child owned stdout, including any
+    // FIREFORGE-VERDICT line it emitted as its last stdout write. From here
     // on the parent must not write stdout again, or its own refusal text
-    // (the GeneralError below, rendered by withErrorHandling) prints AFTER
+    // (the GeneralError below, rendered by withErrorHandling) prints after
     // the child's verdict and breaks the "verdict is the run's last stdout
     // line" contract at the tree-exec boundary. Sealing routes the parent's
-    // remaining output to stderr; withErrorHandling's finally clears it.
+    // remaining output to stderr. withErrorHandling's finally clears it.
     setStdoutSealed(true);
   });
   if (exitCode !== 0) {
-    throw new GeneralError(
-      `tree exec: fireforge ${args.join(' ')} exited with code ${String(exitCode)}.`
-    );
+    throw new GeneralError(`tree exec: fireforge ${args.join(' ')} exited with code ${exitCode}.`);
   }
 }
 
@@ -390,7 +389,12 @@ export function registerTree(program: Command, context: CommandContext): void {
     .command('tree')
     .description(
       'Manage copy-on-write verification clones of this project for concurrent read-mostly work (lint, typecheck, status, verify, export/re-export --dry-run; build-less test with create --with-objdir). Mutation commands are refused inside a tree.'
-    );
+    )
+    // No-subcommand contract shared with `patch`/`token`/`furnace`: help on
+    // stdout, exit 0 (see `handleParseError` for the groups without an action).
+    .action(() => {
+      tree.outputHelp();
+    });
 
   addWaitLockOption(
     tree

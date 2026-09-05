@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Project configuration — barrel module.
+ * Project configuration barrel module.
  *
  * Re-exports from focused sub-modules:
- *   config-paths.ts    — constants and project path derivation
- *   config-validate.ts — fireforge.json schema validation
- *   config-mutate.ts   — immutable config mutation
- *   config-state.ts    — state file management
+ *   config-paths.ts:    constants and project path derivation
+ *   config-validate.ts: fireforge.json schema validation
+ *   config-mutate.ts:   immutable config mutation
+ *   config-state.ts:    state file management
  */
 
 import { basename } from 'node:path';
@@ -25,28 +25,15 @@ import { createSiblingLockPath, withFileLock } from './file-lock.js';
 
 export { mutateConfig } from './config-mutate.js';
 export {
-  CONFIG_FILENAME,
   FIREFORGE_DIR,
   getProjectPaths,
-  STATE_FILENAME,
   SUPPORTED_CONFIG_PATHS,
   SUPPORTED_CONFIG_ROOT_KEYS,
 } from './config-paths.js';
-export { loadState, saveState, updateState } from './config-state.js';
+export { loadState, updateState } from './config-state.js';
 export { validateConfig } from './config-validate.js';
 
 // ---- config I/O (stays here because it bridges paths + validation) ----
-
-/**
- * Config-file existence probe.
- *
- * Uses {@link pathExistsStrict} deliberately: a permission error probing
- * `fireforge.json` must propagate rather than read as "no config here",
- * which is what plain `pathExists` would report.
- */
-async function configPathExists(path: string): Promise<boolean> {
-  return fsUtils.pathExistsStrict(path);
-}
 
 /**
  * Checks if a fireforge.json exists in the given directory.
@@ -55,7 +42,9 @@ async function configPathExists(path: string): Promise<boolean> {
  */
 export async function configExists(root: string): Promise<boolean> {
   const paths = getProjectPaths(root);
-  return configPathExists(paths.config);
+  // Strict probe: a permission error on `fireforge.json` must propagate
+  // rather than read as "no config here", which plain `pathExists` reports.
+  return fsUtils.pathExistsStrict(paths.config);
 }
 
 /**
@@ -67,7 +56,9 @@ export async function configExists(root: string): Promise<boolean> {
 export async function loadConfig(root: string): Promise<FireForgeConfig> {
   const paths = getProjectPaths(root);
 
-  if (!(await configPathExists(paths.config))) {
+  // Strict probe: a permission error on `fireforge.json` must propagate
+  // rather than read as "no config here", which plain `pathExists` reports.
+  if (!(await fsUtils.pathExistsStrict(paths.config))) {
     throw new ConfigNotFoundError(paths.config);
   }
 
@@ -85,12 +76,12 @@ export async function loadConfig(root: string): Promise<FireForgeConfig> {
 
 /**
  * Reads the raw `fireforge.json` document without running it through
- * {@link validateConfig}. Returns every persisted key — including keys
+ * {@link validateConfig}. Returns every persisted key, including keys
  * written via `fireforge config <key> --force` that `validateConfig`
  * would strip from the typed result.
  *
  * Callers that need the validated, typed shape must still use
- * {@link loadConfig}; this helper exists specifically for the `config`
+ * {@link loadConfig}. This helper exists specifically for the `config`
  * read path so `fireforge config <key>` can surface keys the write path
  * accepted under `--force`.
  *
@@ -102,7 +93,9 @@ export async function loadConfig(root: string): Promise<FireForgeConfig> {
 export async function loadRawConfigDocument(root: string): Promise<JsonObject> {
   const paths = getProjectPaths(root);
 
-  if (!(await configPathExists(paths.config))) {
+  // Strict probe: a permission error on `fireforge.json` must propagate
+  // rather than read as "no config here", which plain `pathExists` reports.
+  if (!(await fsUtils.pathExistsStrict(paths.config))) {
     throw new ConfigNotFoundError(paths.config);
   }
 
@@ -157,9 +150,9 @@ export async function writeConfigDocument(
  * Runs an operation while holding a sidecar lock on `fireforge.json`.
  *
  * Two concurrent `fireforge config <key> <value>` invocations each run
- * load → mutate → writeJson against the same document; without this lock the
- * second rename lands after the first and silently drops the first writer's
- * key, with both commands exiting 0.
+ * load → mutate → writeJson against the same document. Without this lock
+ * the second rename lands after the first and silently drops the first
+ * writer's key, with both commands exiting 0.
  *
  * Reads (`loadConfig`, `loadRawConfigDocument`) stay lock-free: writers
  * always use `writeJson`'s atomic temp-file + rename, so a reader observes

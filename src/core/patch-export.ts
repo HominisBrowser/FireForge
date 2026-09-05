@@ -11,9 +11,7 @@ import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
-import { PATCH_CATEGORIES } from '../utils/validation.js';
 import { discoverPatches, withPatchDirectoryLock } from './patch-apply.js';
-import { normalizePatchArtifact } from './patch-artifact-normalize.js';
 import {
   findAllPatchesForFilesWithDetails,
   type SupersedeCoverageDetail,
@@ -21,24 +19,45 @@ import {
 import type { PatchDirectoryLockOptions } from './patch-lock.js';
 import {
   addPatchToManifest,
-  findPatchesAffectingFile,
   loadPatchesManifestForWrite,
   PATCHES_MANIFEST,
   savePatchesManifest,
 } from './patch-manifest.js';
-import { requirePatchOrder } from './patch-parse.js';
+import { formatPatchOrder, requirePatchOrder } from './patch-parse.js';
 import { allocatePolicyOrder, enforcePatchPolicy } from './patch-policy.js';
 
 export {
   findAllPatchesForFiles,
   findAllPatchesForFilesWithDetails,
-  findSupersededPatches,
-  isPatchFullyCovered,
-  type SupersedeCoverageDetail,
 } from './patch-export-coverage.js';
 import { escapeRegex } from '../utils/regex.js';
 export { mutatePatchMetadata, updatePatchMetadata } from './patch-export-metadata.js';
 export { updatePatchAndMetadata } from './patch-export-update.js';
+
+/**
+ * Projects the planning subset out of a wider export input (commit input,
+ * dry-run preview input): the fields `planExport` /
+ * `computeExportPlanUnderLock` read. Optional fields are copied only when
+ * present so the plan input never carries explicit `undefined` keys, which
+ * would otherwise leak into the written metadata via spread. The commit
+ * path and the dry-run preview both go through this one projection so
+ * they cannot drift field by field.
+ */
+export function buildPlanExportInput(input: PlanExportInput): PlanExportInput {
+  return {
+    patchesDir: input.patchesDir,
+    category: input.category,
+    name: input.name,
+    description: input.description,
+    filesAffected: input.filesAffected,
+    sourceEsrVersion: input.sourceEsrVersion,
+    ...(input.sourceProduct !== undefined ? { sourceProduct: input.sourceProduct } : {}),
+    ...(input.sourceVersion !== undefined ? { sourceVersion: input.sourceVersion } : {}),
+    ...(input.tier !== undefined ? { tier: input.tier } : {}),
+    ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
+    ...(input.config !== undefined ? { config: input.config } : {}),
+  };
+}
 
 /**
  * Gets the next patch number for a new patch.
@@ -79,7 +98,7 @@ export function sanitizeName(name: string): string {
 
 /**
  * Strips a leading `NNN-<category>-` prefix from a sanitized name slug.
- * Operators frequently pass the DESIRED FILENAME stem to `--name`
+ * Operators frequently pass the desired filename stem to `--name`
  * (`--name 203-ui-foo --category ui`), which would otherwise double-prefix
  * into `203-ui-203-ui-foo.patch`. The filename builders prepend the order
  * and category themselves, so a matching prefix in the name is always
@@ -109,7 +128,7 @@ export function stripRedundantCategoryPrefix(sanitizedName: string, category: st
  * Sanitizes a patch name and drops redundant category/full-stem prefixes.
  *
  * A single trailing `.patch` extension is stripped before sanitisation:
- * operators frequently pass a full patch FILENAME where a name is expected
+ * operators frequently pass a full patch filename where a name is expected
  * (`move-files <from> 348-ui-foo.patch --create`, `rename --to foo.patch`),
  * and slugging the extension produces double-suffixed `...-patch.patch`
  * files. A name that deliberately ends in a literal `-patch` slug segment
@@ -186,19 +205,7 @@ export async function commitExportedPatch(
   return withPatchDirectoryLock(
     input.patchesDir,
     async () => {
-      const plan = await computeExportPlanUnderLock({
-        patchesDir: input.patchesDir,
-        category: input.category,
-        name: input.name,
-        description: input.description,
-        filesAffected: input.filesAffected,
-        sourceEsrVersion: input.sourceEsrVersion,
-        ...(input.sourceProduct !== undefined ? { sourceProduct: input.sourceProduct } : {}),
-        ...(input.sourceVersion !== undefined ? { sourceVersion: input.sourceVersion } : {}),
-        ...(input.tier !== undefined ? { tier: input.tier } : {}),
-        ...(input.lintIgnore !== undefined ? { lintIgnore: input.lintIgnore } : {}),
-        ...(input.config !== undefined ? { config: input.config } : {}),
-      });
+      const plan = await computeExportPlanUnderLock(buildPlanExportInput(input));
 
       if (input.config !== undefined) {
         enforcePatchPolicy({
@@ -220,7 +227,20 @@ export async function commitExportedPatch(
       }
 
       try {
-        await writeText(patchPath, normalizePatchArtifact(input.diff));
+        // Patch bodies are written byte-for-byte as git produced them, including the
+        // single-space rendering of a blank context line.
+        //
+        // Do not add a whitespace-trimming pass here or at any other write site.
+        // Stripping marker lines whose payload is pure whitespace (`/^[ +-]\s+$/` →
+        // bare marker) corrupts real content: Firefox sources contain whitespace-only
+        // lines, so a ` `/`-` line whose payload was two spaces no longer matches the
+        // pristine tree and the freshly exported patch fails `git apply --check`,
+        // while a `+` line silently changes what the patch produces. The repository
+        // whitespace check already exempts `patches/*.patch`
+        // (scripts/check-worktree-whitespace.mjs), and the byte-fidelity contract is
+        // pinned end-to-end by `git-diff-latin1-roundtrip.test.ts` and
+        // `re-export.integration.test.ts`.
+        await writeText(patchPath, input.diff);
 
         await addPatchToManifest(
           input.patchesDir,
@@ -276,70 +296,12 @@ export async function commitExportedPatch(
 }
 
 /**
- * Parses a patch filename to extract order, category, and name.
- * Supports both new format (001-category-name.patch) and legacy (001-name.patch).
- */
-export function parseFilename(filename: string): {
-  order: number;
-  category: PatchCategory | null;
-  name: string;
-} {
-  // New format: 001-ui-sidebar.patch
-  const newMatch = /^(\d+)-([a-z]+)-(.+)\.patch$/.exec(filename);
-  if (newMatch?.[1] && newMatch[2] && newMatch[3]) {
-    const orderStr = newMatch[1];
-    const category = newMatch[2];
-    const name = newMatch[3];
-    if ((PATCH_CATEGORIES as readonly string[]).includes(category)) {
-      return {
-        order: parseInt(orderStr, 10),
-        category,
-        name,
-      };
-    }
-  }
-
-  // Legacy format: 001-name.patch
-  const legacyMatch = /^(\d+)-(.+)\.patch$/.exec(filename);
-  if (legacyMatch?.[1] && legacyMatch[2]) {
-    return {
-      order: parseInt(legacyMatch[1], 10),
-      category: null,
-      name: legacyMatch[2],
-    };
-  }
-
-  return { order: Infinity, category: null, name: filename };
-}
-
-/**
- * Finds an existing patch that contains the specified file.
- * Returns the most recent (highest order) patch if multiple exist.
- * @param patchesDir - Path to the patches directory
- * @param filePath - File path to search for
- * @returns The patch info and metadata, or null if not found
- */
-export async function findExistingPatchForFile(
-  patchesDir: string,
-  filePath: string
-): Promise<{ patch: PatchInfo; metadata: PatchMetadata } | null> {
-  const affectingPatches = await findPatchesAffectingFile(patchesDir, filePath);
-
-  if (affectingPatches.length === 0) {
-    return null;
-  }
-
-  // Return the most recent (highest order) patch
-  return affectingPatches[affectingPatches.length - 1] ?? null;
-}
-
-/**
  * Updates the content of a patch file.
  * @param patchPath - Path to the patch file
  * @param newContent - New patch content
  */
 export async function updatePatch(patchPath: string, newContent: string): Promise<void> {
-  await writeText(patchPath, normalizePatchArtifact(newContent));
+  await writeText(patchPath, newContent);
 }
 
 /**
@@ -350,7 +312,7 @@ export async function updatePatch(patchPath: string, newContent: string): Promis
  * Dry-run and the real write both go through {@link computeExportPlanUnderLock}
  * so their filename allocation, supersede detection, and projected
  * post-write manifest cannot drift. `planExport` exposes the rich coverage
- * form for preview rendering; {@link commitExportedPatch} consumes the bare
+ * form for preview rendering. {@link commitExportedPatch} consumes the bare
  * `PatchInfo[]` form of the same underlying data.
  */
 export interface ExportPlan {
@@ -381,13 +343,13 @@ export interface PlanExportInput {
   /**
    * Optional `PatchMetadata.tier` opt-in carried from the CLI flag.
    * Only `"branding"` is currently recognised. When provided the field
-   * is written into the new patch's metadata; when absent the field
+   * is written into the new patch's metadata. When absent the field
    * stays unset and tier resolution falls back to auto-detection.
    */
   tier?: 'branding';
   /**
    * Optional `PatchMetadata.lintIgnore` carried from the CLI flag.
-   * Empty arrays are treated as "field absent" — the validator only
+   * Empty arrays are treated as "field absent": the validator only
    * preserves the field when it has at least one entry.
    */
   lintIgnore?: string[];
@@ -413,16 +375,16 @@ interface ComputedExportPlan {
 }
 
 /**
- * Internal planning helper. Does NOT take the patch directory lock — the
- * caller must already hold it — because the two public entry points
+ * Internal planning helper. It does not take the patch directory lock (the
+ * caller must already hold it), because the two public entry points
  * ({@link planExport} and {@link commitExportedPatch}) each take their own
  * lock for the full operation. Sharing this single pure computation is how
- * dry-run previews and real writes stay in lockstep by construction
- * instead of by parallel implementations that can drift.
+ * dry-run previews and real writes stay in lockstep, instead of relying on
+ * parallel implementations that can drift.
  */
 async function computeExportPlanUnderLock(input: PlanExportInput): Promise<ComputedExportPlan> {
   // ForWrite: a corrupt manifest read as null here would produce a
-  // manifestAfter containing ONLY the new patch — committing that plan
+  // manifestAfter containing only the new patch. Committing that plan
   // wipes the queue metadata, and the rollback path would then delete
   // patches.json entirely because manifestBefore looked absent.
   const manifestBefore = await loadPatchesManifestForWrite(input.patchesDir);
@@ -432,7 +394,7 @@ async function computeExportPlanUnderLock(input: PlanExportInput): Promise<Compu
       : null;
   const patchFilename =
     policyOrder !== null
-      ? `${String(policyOrder).padStart(3, '0')}-${input.category}-${patchNameSlug(input.name, input.category)}.patch`
+      ? `${formatPatchOrder(policyOrder)}-${input.category}-${patchNameSlug(input.name, input.category)}.patch`
       : await getNextPatchFilename(input.patchesDir, input.category, input.name);
   const patchPath = join(input.patchesDir, patchFilename);
 
@@ -486,16 +448,16 @@ async function computeExportPlanUnderLock(input: PlanExportInput): Promise<Compu
 }
 
 /**
- * Read-only planning function — computes everything a real export would
+ * Read-only planning function. Computes everything a real export would
  * do without writing anything to disk. Takes the patch directory lock
  * briefly, runs {@link computeExportPlanUnderLock}, releases the lock,
  * and returns the plan for preview rendering.
  *
  * Shares {@link computeExportPlanUnderLock} with {@link commitExportedPatch}
  * so the dry-run preview cannot drift from the real write. The real write
- * path does NOT reuse a prior plan object (another export may have landed
- * between dry-run and commit, which would stale the filename allocation);
- * it re-runs the same helper under a fresh lock. The guarantee is "same
+ * path does not reuse a prior plan object (another export may have landed
+ * between dry-run and commit, which would stale the filename allocation).
+ * It re-runs the same helper under a fresh lock. The guarantee is "same
  * code, possibly different data," not "same plan object."
  */
 export async function planExport(input: PlanExportInput): Promise<ExportPlan> {

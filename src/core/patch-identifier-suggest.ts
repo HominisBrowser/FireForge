@@ -28,7 +28,7 @@ const SUGGESTION_LIMIT = 3;
 
 /**
  * Computes the Levenshtein edit distance between two strings. Used by
- * `formatPatchNotFoundError` to rank candidate identifiers; the small
+ * `formatPatchNotFoundError` to rank candidate identifiers. The small
  * upper bound on input lengths (filenames, ordinals, names) makes the
  * O(m*n) implementation trivially fast.
  */
@@ -89,13 +89,13 @@ function rankSuggestions(identifier: string, candidates: string[]): string[] {
   return candidates
     .map((candidate) => {
       const lower = candidate.toLowerCase();
-      // Prefix relation in EITHER direction is a stronger signal than edit
+      // Prefix relation in either direction is a stronger signal than edit
       // distance and is not bounded by it: a partial ordinal or an
       // abbreviated slug ("ui-foo" for "002-ui-foo.patch") is many edits away
       // from the full identifier yet is obviously the intended target.
       // `lower.startsWith(needle)`: the operator typed an abbreviation of a
       // real identifier. The reverse relation is only meaningful when the
-      // candidate is substantial — otherwise the single-character ordinal
+      // candidate is substantial. Otherwise the single-character ordinal
       // "9" would "match" every input starting with a 9.
       const prefixMatch =
         needle.length >= MIN_PREFIX_MATCH_LENGTH &&
@@ -122,7 +122,7 @@ function rankSuggestions(identifier: string, candidates: string[]): string[] {
  * Formats the user-facing "patch not found" error message used by
  * `patch delete`, `patch reorder`, `patch tier`, and
  * `patch lint-ignore`. Returns a single string suitable for the
- * `InvalidArgumentError` body — never the full queue enumeration.
+ * `InvalidArgumentError` body, never the full queue enumeration.
  */
 export function formatPatchNotFoundError(
   identifier: string,

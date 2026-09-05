@@ -2,11 +2,11 @@
 /**
  * Pattern-based translator for cryptic mozbuild / mach errors.
  *
- * Each entry maps a stderr regex to an actionable hint. The goal is not to
- * parse every mach failure — it's to convert the handful of errors whose
- * message is non-obvious into a one-line "here's what to change". New
+ * Each entry maps a stderr regex to an actionable hint. The goal is narrow:
+ * convert the handful of errors whose message is non-obvious into a one-line
+ * "here's what to change", rather than parse every mach failure. New
  * entries should only be added when a concrete diagnosis of the cryptic
- * output has been established; low-confidence hints would train operators
+ * output has been established. Low-confidence hints would train operators
  * to ignore the translator.
  */
 
@@ -22,7 +22,7 @@ export interface MachErrorHint {
  * Registered hint patterns. Order-sensitive: the first match wins per
  * pattern, but multiple distinct patterns may fire for the same stderr.
  */
-export const MACH_ERROR_HINTS: MachErrorHint[] = [
+const MACH_ERROR_HINTS: MachErrorHint[] = [
   {
     pattern: /mozbuild\.preprocessor\.Preprocessor\.Error[\s\S]*?no preprocessor directives found/,
     hint:
@@ -30,12 +30,12 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
       'Use JS_PREFERENCE_FILES instead, or add at least one #filter / #expand directive to the file.',
   },
   {
-    // mozbuild raises `UnsortedError` while READING a moz.build whose
+    // mozbuild raises `UnsortedError` while reading a moz.build whose
     // StrictOrderingOnAppendList entries are out of order, so `mach
     // configure` dies before anything compiles. The ordering rule is the
     // part operators get wrong: mozbuild sorts by `.lower()`
     // (`StrictOrderingOnAppendList.ensure_sorted`), so an uppercase letter
-    // does NOT sort ahead of a lowercase one, and an entry that looks
+    // does not sort ahead of a lowercase one, and an entry that looks
     // correctly placed by byte order can be rejected. mozbuild's own
     // message names both entries ("We expected X but got Y") and survives
     // to the operator through `extractMachConfigureError`, so the hint
@@ -52,7 +52,7 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
   },
   {
     // `mach package` inside `packager.py` dereferences a `None` sink when
-    // the packaging input set cannot resolve an entry it expected — most
+    // the packaging input set cannot resolve an entry it expected, most
     // commonly running `fireforge package` before a full `fireforge build`
     // has finished, so `obj-*/dist/` is missing pieces the packager assumes
     // exist. The broader "build failed" path has already surfaced the raw
@@ -90,10 +90,10 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
   },
   {
     // Firefox declares per-release toolchain minimums in-tree
-    // (`build/moz.configure/bindgen.configure` for cbindgen; mozboot's
+    // (`build/moz.configure/bindgen.configure` for cbindgen, and mozboot's
     // MINIMUM_RUST_VERSION for rustc/cargo), and a source hop can move them.
-    // The failure lands ~8s into `mach configure` — e.g. "ERROR: cbindgen
-    // version 0.29.1 is too old. At least version 0.29.4 is required." —
+    // The failure lands ~8s into `mach configure` (e.g. "ERROR: cbindgen
+    // version 0.29.1 is too old. At least version 0.29.4 is required."),
     // and mach's own remediation text names "./mach bootstrap", the wrong
     // entry point for a FireForge-managed repo. Pattern matches configure's
     // cbindgen die() shape.
@@ -106,7 +106,7 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
   },
   {
     // Same family, rust.configure's die() shapes: "Rust compiler {v} is
-    // too old." / "Cargo package manager {v} is too old." — the minimum
+    // too old." / "Cargo package manager {v} is too old." The minimum
     // is only named further down that message, so the pattern keys on
     // the first line.
     pattern: /\b(?:Rust compiler|Cargo package manager) [\d.]+(?:[\w.-]*)? is too old/i,
@@ -120,7 +120,7 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
     // When `mach build` fails mid-compile, mach's own shutdown pipeline
     // still runs its trailing "Config object not found by mach. / Configure
     // complete! / Be sure to run |mach build|..." summary on the way out.
-    // Those three lines are plain upstream mach output, printed AFTER the
+    // Those three lines are plain upstream mach output, printed after the
     // non-zero exit code is established, and they read deceptively like a
     // success banner. Nudge the operator that they are cosmetic
     // post-failure output, not a mixed success/failure signal.
@@ -134,7 +134,7 @@ export const MACH_ERROR_HINTS: MachErrorHint[] = [
 
 /**
  * Scans captured stderr for known mach errors and returns matching hints.
- * Pure function — safe to call on any string; never throws.
+ * Pure function. Safe to call on any string and never throws.
  * @param stderr Captured mach stderr.
  * @returns Ordered, de-duplicated list of hint strings. Empty when nothing matches.
  */

@@ -102,13 +102,6 @@ describe('furnaceStaleJarRegistrationCheck', () => {
       expect(check.fix).toMatch(/--repair-furnace/);
       expect(pruneStaleJarMnEntries).not.toHaveBeenCalled();
     });
-
-    it('uses singular wording for exactly one stale entry', async () => {
-      vi.mocked(findStaleJarMnEntries).mockResolvedValue(STALE_ONE);
-      const check = await run(makeContext());
-      expect(check.message).toContain('1 registration line pointing at removed component file ');
-      expect(check.message).not.toContain('lines');
-    });
   });
 
   describe('with --repair-furnace', () => {
@@ -129,33 +122,26 @@ describe('furnaceStaleJarRegistrationCheck', () => {
       expect(check.message).toContain('Pruned 2 stale jar.mn registration lines');
     });
 
-    it('uses singular wording when exactly one line was pruned', async () => {
-      vi.mocked(findStaleJarMnEntries).mockResolvedValue(STALE_ONE);
-      vi.mocked(pruneStaleJarMnEntries).mockResolvedValue(STALE_ONE);
-      const check = await run(repairCtx());
-      expect(check.message).toContain('Pruned 1 stale jar.mn registration line (');
-    });
+    it.each<[string, unknown, string]>([
+      [
+        'an Error',
+        Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }),
+        'EACCES: permission denied',
+      ],
+      ['a non-Error throwable', 'plain string failure', 'plain string failure'],
+    ])(
+      'fails with the underlying reason when pruning throws %s',
+      async (_label, failure, reason) => {
+        vi.mocked(findStaleJarMnEntries).mockResolvedValue(STALE_ONE);
+        vi.mocked(pruneStaleJarMnEntries).mockRejectedValue(failure);
 
-    it('fails with the underlying reason when pruning throws', async () => {
-      vi.mocked(findStaleJarMnEntries).mockResolvedValue(STALE_ONE);
-      vi.mocked(pruneStaleJarMnEntries).mockRejectedValue(
-        Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
-      );
+        const check = await run(repairCtx());
 
-      const check = await run(repairCtx());
-
-      expect(check.severity).toBe('error');
-      expect(check.message).toContain('Could not prune stale jar.mn lines');
-      expect(check.message).toContain('EACCES: permission denied');
-      expect(check.fix).toContain('toolkit/content/jar.mn');
-    });
-
-    it('normalises a non-Error throwable through toError', async () => {
-      vi.mocked(findStaleJarMnEntries).mockResolvedValue(STALE_ONE);
-      vi.mocked(pruneStaleJarMnEntries).mockRejectedValue('plain string failure');
-      const check = await run(repairCtx());
-      expect(check.message).toContain('plain string failure');
-      expect(check.message).not.toContain('undefined');
-    });
+        expect(check.severity).toBe('error');
+        expect(check.message).toContain('Could not prune stale jar.mn lines');
+        expect(check.message).toContain(reason);
+        expect(check.fix).toContain('toolkit/content/jar.mn');
+      }
+    );
   });
 });

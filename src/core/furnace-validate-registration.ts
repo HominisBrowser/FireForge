@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { createHash } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -12,6 +11,7 @@ import type {
 } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { warn } from '../utils/logger.js';
 import { escapeRegex, stripJsComments } from '../utils/regex.js';
 import { getProjectPaths, loadConfig } from './config.js';
@@ -120,7 +120,7 @@ export async function checkRegistrationConsistency(
   const targetDir = join(engineDir, config.targetPath);
   status.targetExists = await pathExists(targetDir);
 
-  // Compare files (sourceExists is guaranteed true — we early-returned above)
+  // Compare files (sourceExists is guaranteed true, we early-returned above)
   if (status.targetExists) {
     const entries = await readdir(componentDir, { withFileTypes: true });
     for (const entry of entries) {
@@ -137,7 +137,7 @@ export async function checkRegistrationConsistency(
       }
 
       // Deploy writes CSS-with-include-directives in fragment-expanded form,
-      // so the drift oracle must compare the *expanded* source — otherwise a
+      // so the drift oracle must compare the *expanded* source. Otherwise a
       // freshly deployed component would read as permanently drifted, and a
       // fragment edit would never read as drifted at all.
       let srcContent = await readText(srcPath);
@@ -145,8 +145,8 @@ export async function checkRegistrationConsistency(
         try {
           srcContent = (await expandCssFragments(srcContent, furnacePaths.sharedDir)).expanded;
         } catch {
-          // Missing fragment: validate reports it as `missing-fragment`;
-          // for drift purposes fall back to the raw source so the compare
+          // Missing fragment: validate reports it as `missing-fragment`.
+          // For drift purposes fall back to the raw source so the compare
           // still happens deterministically.
         }
       }
@@ -155,8 +155,8 @@ export async function checkRegistrationConsistency(
       // comparisons hashed raw bytes, so on a CRLF checkout `furnace status`
       // and `furnace validate` reported drift for files apply had just
       // decided were identical.
-      const srcHash = createHash('sha256').update(normalizeForChecksum(srcContent)).digest('hex');
-      const destHash = createHash('sha256').update(normalizeForChecksum(destContent)).digest('hex');
+      const srcHash = sha256Hex(normalizeForChecksum(srcContent));
+      const destHash = sha256Hex(normalizeForChecksum(destContent));
 
       if (srcHash !== destHash) {
         status.driftedFiles.push(entry.name);
@@ -181,10 +181,8 @@ export async function checkRegistrationConsistency(
       } else {
         const srcContent = await readText(ftlSrc);
         const destContent = await readText(ftlDest);
-        const srcHash = createHash('sha256').update(normalizeForChecksum(srcContent)).digest('hex');
-        const destHash = createHash('sha256')
-          .update(normalizeForChecksum(destContent))
-          .digest('hex');
+        const srcHash = sha256Hex(normalizeForChecksum(srcContent));
+        const destHash = sha256Hex(normalizeForChecksum(destContent));
         if (srcHash !== destHash) {
           status.driftedFiles.push(ftlName);
           status.filesInSync = false;
@@ -205,7 +203,7 @@ export async function checkRegistrationConsistency(
   const cePath = join(engineDir, CUSTOM_ELEMENTS_JS);
   if (await pathExists(cePath)) {
     const ceContent = await readText(cePath);
-    // Structure-aware check shared with the ADD path — a bare substring
+    // Structure-aware check shared with the add path. A bare substring
     // test counted any mention of the tag (a leftover comment, an
     // unrelated string) as "registered", masking genuinely missing
     // registrations from both validate and the re-apply drift oracle.
@@ -323,7 +321,7 @@ const AUTO_DETECT_HOST_DIR = 'browser/base/content';
  * This catches a fork that mounts a custom element from its own top-level
  * chrome document (e.g. `mybrowser.xhtml`) without setting
  * `tokenHostDocuments`: scanning only the stock `browser.xhtml` would miss
- * the tokens CSS link in the ACTUAL host document and false-fire the
+ * the tokens CSS link in the actual host document and false-fire the
  * warning.
  *
  * @param engineDir Absolute engine root.
@@ -336,7 +334,7 @@ const AUTO_DETECT_HOST_DIR = 'browser/base/content';
  * `validateAllComponents` walks every component, and re-parsing
  * `fireforge.json` plus re-scanning every `.xhtml` under the chrome-document
  * directory per component is one config parse and one full directory read
- * PER COMPONENT, for work that depends only on the project and the engine.
+ * per component, for work that depends only on the project and the engine.
  *
  * Keyed by root/engine dir and cleared by
  * {@link resetRegistrationValidationCaches} at the start of each run, so a
@@ -348,9 +346,9 @@ const chromeDocumentCache = new Map<string, Map<string, string>>();
 /**
  * Whether a batch validation is in flight.
  *
- * The caches are consulted ONLY while this is set. Outside a batch — a direct
+ * The caches are consulted only while this is set. Outside a batch (a direct
  * `validateComponent` call from `furnace status`, from apply's consistency
- * check, or from a test — every read goes to disk, so a caller that mutates
+ * check, or from a test) every read goes to disk, so a caller that mutates
  * the engine between calls can never be served a stale document.
  */
 let batchInFlight = false;
@@ -415,7 +413,7 @@ async function autoDetectTokenHostDocuments(
   tagName: string,
   already: Iterable<string>
 ): Promise<string[]> {
-  // Reads the directory ONCE per run rather than once per component: only the
+  // Reads the directory once per run rather than once per component: only the
   // tag being searched for differs between components.
   const documents = await loadChromeDocuments(engineDir);
   const alreadySet = new Set(already);
@@ -436,10 +434,10 @@ async function autoDetectTokenHostDocuments(
  *
  * Scan set is the union of (a) the configured `tokenHostDocuments` (or
  * the upstream default when unset) and (b) any `browser/base/content/*.xhtml`
- * document that references `tagName` — the auto-detection path catches
+ * document that references `tagName`. The auto-detection path catches
  * forks that mount components from a replacement chrome document without
  * having configured `tokenHostDocuments`. The warning fires only when
- * NONE of the documents in the final scan set link the tokens CSS.
+ * none of the documents in the final scan set link the tokens CSS.
  */
 export async function validateTokenLink(
   componentDir: string,
@@ -552,7 +550,7 @@ export async function runPostApplyConsistencyChecks(
         }
       }
     } catch {
-      // Consistency check is best-effort; failures here should not block apply
+      // Consistency check is best-effort. Failures here should not block apply
     }
   }
 }

@@ -6,12 +6,13 @@ import { ExitCode } from '../errors/codes.js';
 import type { ProjectLicense } from '../types/config.js';
 import { copyDir, pathExists, readText, writeTextIfChanged } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { DEFAULT_LICENSE, getLicenseHeader } from './license-headers.js';
 
 /**
  * Error thrown when branding operations fail.
  */
-export class BrandingError extends FireForgeError {
+class BrandingError extends FireForgeError {
   readonly code = ExitCode.PATCH_ERROR;
 
   override get userMessage(): string {
@@ -22,12 +23,12 @@ export class BrandingError extends FireForgeError {
 /**
  * Error thrown when the generated `mozconfig` references a `--with-branding`
  * directory that does not match the branding tree FireForge set up. The
- * mismatch is a silent-corruption hazard — `mach configure` picks the value
+ * mismatch is a silent-corruption hazard: `mach configure` picks the value
  * from mozconfig but the scaffolded branding lives elsewhere, so the build
  * fails deep inside moz.build resolution with a confusing "path does not
  * exist" message. Surface it as an actionable preflight instead.
  *
- * Setup renders templates under `configs/` with `${binaryName}` baked in; a
+ * Setup renders templates under `configs/` with `${binaryName}` baked in. A
  * later edit to `fireforge.json`'s `binaryName` (or a re-setup without
  * re-templating) leaves those names stale while `setupBranding` keeps using
  * the current value. Both directions produce the same class of build break.
@@ -79,8 +80,8 @@ export interface BrandingConfig {
    * Project license (from fireforge.json). Used to stamp the generated
    * `configure.sh`, `brand.properties`, and `brand.ftl` files with the
    * matching header so `patch-lint` does not flag them for
-   * `missing-license-header` when the project is not MPL-2.0. Optional;
-   * falls back to {@link DEFAULT_LICENSE}.
+   * `missing-license-header` when the project is not MPL-2.0. Optional.
+   * Falls back to {@link DEFAULT_LICENSE}.
    */
   license?: ProjectLicense;
 }
@@ -92,7 +93,7 @@ type VendorPlacement = 'branding-configure' | 'moz-configure';
  * `toolkit/moz.configure` composes `CFBundleIdentifier` as
  * `<--with-distribution-id>.<MOZ_MACBUNDLE_ID>` (the distribution id
  * defaults to `org.mozilla`), so branding `configure.sh` must carry only the
- * LEAF segment while the generated mozconfig carries the remainder as
+ * leaf segment while the generated mozconfig carries the remainder as
  * `--with-distribution-id`. Writing the full appId into `MOZ_MACBUNDLE_ID`
  * double-prefixes the shipped bundle id. Config validation guarantees a
  * reverse-domain id, so the split always has both halves.
@@ -466,7 +467,7 @@ export async function isBrandingSetup(engineDir: string, config: BrandingConfig)
  * @returns true if the path is managed by branding tooling
  */
 export function isBrandingManagedPath(file: string, binaryName: string): boolean {
-  const normalized = file.replace(/\\/g, '/');
+  const normalized = normalizePathSlashes(file);
   const brandingRoot = `browser/branding/${binaryName}`;
 
   return (

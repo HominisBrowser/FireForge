@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Unit coverage for the pure `patch split` planning helpers — staged
- * forward-import merge/rewrite and the human summary — exercised directly so
+ * Unit coverage for the pure `patch split` planning helpers (staged
+ * forward-import merge/rewrite and the human summary), exercised directly so
  * each branch is hit without driving the whole command (the integration test
  * covers the end-to-end transaction).
  */

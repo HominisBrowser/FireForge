@@ -12,6 +12,7 @@ import {
   buildPatchQueueContext,
   lintPatchQueue,
 } from '../core/patch-lint.js';
+import { detectNewFilesInDiff } from '../core/patch-lint-diff.js';
 import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
 import { getClaimedFiles } from '../core/patch-manifest.js';
 import { buildNewFileTextProjection } from '../core/patch-transform.js';
@@ -99,10 +100,10 @@ async function scanPatchFiles(args: {
   }
 
   // Git pathspecs recurse, so a claimed file in a shallow directory would
-  // sweep entire subtrees into the candidate set — with several patches
+  // sweep entire subtrees into the candidate set: with several patches
   // sharing a parent directory, every unmanaged file in the tree gets
   // offered to whichever patch is scanned first. Constrain the broad scan
-  // to the patch's exact directory footprint; deeper paths need an
+  // to the patch's exact directory footprint. Deeper paths need an
   // explicit --scan-file / --scan-files assignment.
   const parentDirSet = new Set(parentDirs);
   const currentSet = new Set(currentFilesAffected);
@@ -129,7 +130,7 @@ async function scanPatchFilesTargeted(args: {
   // Phase-split for bounded concurrency: the sync claimed-by-others check
   // first (first offender in argument order, as before), then pooled
   // existence probes with the refusal chosen by ordered iteration so the
-  // FIRST missing file in argument order is named deterministically.
+  // first missing file in argument order is named deterministically.
   for (const file of scanFiles) {
     if (claimedByOthers.has(file)) {
       throw new InvalidArgumentError(
@@ -159,12 +160,12 @@ async function scanPatchFilesTargeted(args: {
 }
 
 /**
- * Paths that have genuinely left the patch's ownership: absent from disk AND
+ * Paths that have genuinely left the patch's ownership: absent from disk and
  * untracked in engine HEAD.
  *
- * An absent path that IS tracked in HEAD is a DELETION, not a de-ownership.
+ * An absent path that is tracked in HEAD is a deletion, not a de-ownership.
  * The diff carries it as a `deleted file mode` section, so it must stay in
- * `filesAffected` — pruning it desynchronises the manifest from the patch
+ * `filesAffected`. Pruning it desynchronises the manifest from the patch
  * body in the direction that hurts: the body says "delete this file", the
  * file list says the patch has nothing to do with it.
  */
@@ -215,7 +216,7 @@ export async function confirmBroadScanAdditions(args: {
 
   const dirCount = new Set(added.map((f) => dirname(f))).size;
   warn(
-    `${patchFilename}: --scan would add ${String(added.length)} file(s) that span ${String(dirCount)} director${dirCount === 1 ? 'y' : 'ies'}. ` +
+    `${patchFilename}: --scan would add ${added.length} file(s) that span ${dirCount} director${dirCount === 1 ? 'y' : 'ies'}. ` +
       'Broad scans can silently pull adjacent features into a patch — review the diff before continuing.'
   );
 
@@ -227,7 +228,7 @@ export async function confirmBroadScanAdditions(args: {
   }
 
   const confirmed = await confirm({
-    message: `Proceed and broaden ${patchFilename} with ${String(added.length)} newly discovered file(s)?`,
+    message: `Proceed and broaden ${patchFilename} with ${added.length} newly discovered file(s)?`,
     initialValue: false,
   });
 
@@ -246,7 +247,7 @@ function scanAdditionsNeedConfirmation(added: readonly string[]): boolean {
 
 /**
  * Refuses scan adoptions whose candidate files import modules created by
- * LATER patches. Modeled on the `re-export --files` cross-patch
+ * later patches. Modeled on the `re-export --files` cross-patch
  * projection: the candidates' diffs are projected into the adopting
  * patch's queue entry, the queue lint runs baseline vs projection, and
  * only forward-import regressions attributable to the candidates block.
@@ -268,6 +269,7 @@ export async function assertScanAdoptionsHaveNoForwardImports(args: {
   if (!candidateDiff.trim()) return;
 
   const candidateNewFiles = buildNewFileTextProjection(candidateDiff);
+  const candidateCreations = detectNewFilesInDiff(candidateDiff);
   const candidateAdditions = buildModifiedFileAdditionsFromDiff(candidateDiff);
 
   const baseCtx = await buildPatchQueueContext(patchesDir);
@@ -277,6 +279,7 @@ export async function assertScanAdoptionsHaveNoForwardImports(args: {
       ...entry,
       diff: `${entry.diff}\n${candidateDiff}`,
       newFiles: new Map([...entry.newFiles, ...candidateNewFiles]),
+      createdFiles: new Set([...entry.createdFiles, ...candidateCreations]),
       modifiedFileAdditions: new Map([...entry.modifiedFileAdditions, ...candidateAdditions]),
     };
   });

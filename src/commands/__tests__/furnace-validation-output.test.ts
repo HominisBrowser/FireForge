@@ -128,15 +128,15 @@ describe('runDeployValidation', () => {
 
   it('skips validation for failed components', async () => {
     const spinner = makeSpinner();
-    const result = await runDeployValidation(
-      spinner,
-      'moz-card',
-      baseConfig,
+    const result = await runDeployValidation({
+      validateSpinner: spinner,
+      name: 'moz-card',
+      config: baseConfig,
       furnacePaths,
-      new Set(['moz-card']),
-      false,
-      '/project'
-    );
+      failedComponents: new Set(['moz-card']),
+      isDryRun: false,
+      projectRoot: '/project',
+    });
 
     expect(spinner.stop).toHaveBeenCalledWith('Validation skipped');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('apply failed'));
@@ -145,15 +145,15 @@ describe('runDeployValidation', () => {
 
   it('returns done: true for stock components', async () => {
     const spinner = makeSpinner();
-    const result = await runDeployValidation(
-      spinner,
-      'moz-toggle',
-      baseConfig,
+    const result = await runDeployValidation({
+      validateSpinner: spinner,
+      name: 'moz-toggle',
+      config: baseConfig,
       furnacePaths,
-      new Set(),
-      false,
-      '/project'
-    );
+      failedComponents: new Set(),
+      isDryRun: false,
+      projectRoot: '/project',
+    });
 
     expect(result).toEqual({ done: true });
     expect(info).toHaveBeenCalledWith(expect.stringContaining('stock component'));
@@ -163,15 +163,15 @@ describe('runDeployValidation', () => {
     const spinner = makeSpinner();
     vi.mocked(validateComponent).mockResolvedValue([]);
 
-    const result = await runDeployValidation(
-      spinner,
-      'moz-card',
-      baseConfig,
+    const result = await runDeployValidation({
+      validateSpinner: spinner,
+      name: 'moz-card',
+      config: baseConfig,
       furnacePaths,
-      new Set(),
-      false,
-      '/project'
-    );
+      failedComponents: new Set(),
+      isDryRun: false,
+      projectRoot: '/project',
+    });
 
     expect(validateComponent).toHaveBeenCalledWith(
       expect.stringContaining('moz-card'),
@@ -195,15 +195,15 @@ describe('runDeployValidation', () => {
     ]);
     vi.mocked(validateAllComponents).mockResolvedValue(results);
 
-    const result = await runDeployValidation(
-      spinner,
-      undefined,
-      baseConfig,
+    const result = await runDeployValidation({
+      validateSpinner: spinner,
+      name: undefined,
+      config: baseConfig,
       furnacePaths,
-      new Set(),
-      false,
-      '/project'
-    );
+      failedComponents: new Set(),
+      isDryRun: false,
+      projectRoot: '/project',
+    });
 
     expect(validateAllComponents).toHaveBeenCalledWith('/project');
     expect(success).toHaveBeenCalledWith('moz-card — all checks passed');
@@ -221,15 +221,15 @@ describe('runDeployValidation', () => {
     const spinner = makeSpinner();
 
     await expect(
-      runDeployValidation(
-        spinner,
-        'unknown-widget',
-        baseConfig,
+      runDeployValidation({
+        validateSpinner: spinner,
+        name: 'unknown-widget',
+        config: baseConfig,
         furnacePaths,
-        new Set(),
-        false,
-        '/project'
-      )
+        failedComponents: new Set(),
+        isDryRun: false,
+        projectRoot: '/project',
+      })
     ).rejects.toThrow('Component "unknown-widget" not found in furnace.json.');
   });
 });

@@ -20,7 +20,7 @@ import { getUntrackedFiles } from './git-status.js';
 /**
  * Collects engine-relative paths that changed between `rev` and `HEAD`,
  * plus any workdir modifications and untracked files. An empty set means
- * "no diff we can prove" — downstream treats every issue as `cumulative`
+ * "no diff we can prove". Downstream treats every issue as `cumulative`
  * in that case (operator ran `lint --since HEAD` with no pending work).
  * @param engineDir Path to the engine git repository.
  * @param rev Git revision to diff against (e.g. `HEAD`, a branch, a SHA).
@@ -72,10 +72,10 @@ export const AGGREGATE_PATCH_FILE = '(patch)';
 /**
  * Annotates a list of lint issues with `introduced` / `cumulative` tags
  * based on whether the issue's file is part of the supplied diff set.
- * Mutates each issue in place AND returns the list for chaining.
+ * Mutates each issue in place and returns the list for chaining.
  *
- * Issues with no file (`issue.file === ''`) — e.g. cross-patch rules that
- * describe queue-wide state — are always `cumulative` under `--since`
+ * Issues with no file (`issue.file === ''`), for example cross-patch rules
+ * that describe queue-wide state, are always `cumulative` under `--since`
  * because they describe drift accumulated across many commits, not a single
  * current-task edit.
  *
@@ -83,7 +83,7 @@ export const AGGREGATE_PATCH_FILE = '(patch)';
  * synthetic placeholder that can never appear in a real `diffFiles` set.
  * Without special-casing, `large-patch-files` / `large-patch-lines` are
  * always tagged `[cumulative]` under `--only-introduced` even when the diff
- * IS the aggregate the rules measured, which reads as "this pre-existed" to
+ * is the aggregate the rules measured, which reads as "this pre-existed" to
  * an operator asking "what did this diff introduce?". The aggregate tag is
  * therefore promoted to `introduced` whenever the diff set has any content:
  * a non-empty `diffFiles` means the operator asked about a specific diff

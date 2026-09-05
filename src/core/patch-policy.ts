@@ -14,6 +14,7 @@ import type { FireForgeConfig, PatchPolicyConfig, PatchPolicyRange } from '../ty
 import { warn } from '../utils/logger.js';
 import { PATCH_CATEGORIES } from '../utils/validation.js';
 import { rewriteStagedDependencyOwners } from './patch-manifest-io.js';
+import { formatOrderRange, formatPatchOrder } from './patch-parse.js';
 
 /** Default patch filename contract used when a policy omits `filenamePattern`. */
 const DEFAULT_PATCH_POLICY_FILENAME_PATTERN =
@@ -63,15 +64,6 @@ function mutationMode(config: FireForgeConfig): 'error' | 'warn' | 'force' {
   return policy(config)?.mutationMode ?? 'error';
 }
 
-function issueSeverity(config: FireForgeConfig): 'error' | 'warning' {
-  return mutationMode(config) === 'warn' ? 'warning' : 'error';
-}
-
-/** Returns true when the loaded config includes an opt-in patch policy. */
-function hasPatchPolicy(config: FireForgeConfig): boolean {
-  return policy(config) !== undefined;
-}
-
 /** Returns valid categories for prompts and CLI validation under the config. */
 export function getPatchPolicyCategories(config: FireForgeConfig): string[] {
   const cfg = policy(config);
@@ -89,10 +81,6 @@ export function isCategoryAllowedByConfig(config: FireForgeConfig, category: str
   return cfg.ranges.some((range) => range.category === category);
 }
 
-function rangeLabel(range: { from: number; to: number }): string {
-  return `${String(range.from).padStart(3, '0')}-${String(range.to).padStart(3, '0')}`;
-}
-
 /**
  * Human-readable label for a category's configured ranges, e.g. `300-399`.
  * Exported for the forward-import hint, which must render the
@@ -101,7 +89,7 @@ function rangeLabel(range: { from: number; to: number }): string {
 export function categoryRangeLabel(ranges: readonly PatchPolicyRange[], category: string): string {
   const matches = ranges.filter((range) => range.category === category);
   if (matches.length === 0) return '(no configured range)';
-  return matches.map(rangeLabel).join(', ');
+  return matches.map(formatOrderRange).join(', ');
 }
 
 function reservedRangeForOrder(
@@ -131,10 +119,6 @@ export function categoryRangeForOrder(
 
 function anyRangeForOrder(cfg: PatchPolicyConfig, order: number): PatchPolicyRange | null {
   return cfg.ranges.find((range) => order >= range.from && order <= range.to) ?? null;
-}
-
-function compileFilenamePattern(cfg: PatchPolicyConfig): RegExp {
-  return new RegExp(cfg.filenamePattern ?? DEFAULT_PATCH_POLICY_FILENAME_PATTERN);
 }
 
 function parseFilenameWithPolicy(
@@ -186,7 +170,7 @@ function parseFilenameWithPolicy(
     return { order: Number.parseInt(orderRaw, 10), category };
   }
 
-  const pattern = compileFilenamePattern(cfg);
+  const pattern = new RegExp(cfg.filenamePattern ?? DEFAULT_PATCH_POLICY_FILENAME_PATTERN);
   const match = pattern.exec(patch.filename);
   if (!match) {
     return [
@@ -270,7 +254,7 @@ function evaluatePatchMetadata(
         filename: patch.filename,
         severity,
         message:
-          `${patch.filename} is in reserved range ${rangeLabel(reserved)}. ` +
+          `${patch.filename} is in reserved range ${formatOrderRange(reserved)}. ` +
           'Reserved ranges require an exact patchPolicy.reservedRanges[].allowed filename exception.',
       });
       return issues;
@@ -281,7 +265,7 @@ function evaluatePatchMetadata(
         filename: patch.filename,
         severity,
         message:
-          `${patch.filename} is allowlisted for reserved range ${rangeLabel(reserved)}, ` +
+          `${patch.filename} is allowlisted for reserved range ${formatOrderRange(reserved)}, ` +
           'but the allowlist entry must include either "adr" or "documentation".',
       });
     }
@@ -294,7 +278,7 @@ function evaluatePatchMetadata(
           filename: patch.filename,
           severity,
           message:
-            `${patch.filename} is allowlisted for reserved range ${rangeLabel(reserved)}, ` +
+            `${patch.filename} is allowlisted for reserved range ${formatOrderRange(reserved)}, ` +
             `but touches file(s) outside its reserved allowlist: ${extraFiles.join(', ')}.`,
         });
       }
@@ -308,8 +292,8 @@ function evaluatePatchMetadata(
     const expected = categoryRangeLabel(cfg.ranges, patch.category);
     const actual =
       owner !== null
-        ? `${String(patch.order).padStart(3, '0')} is configured for ${owner.category} (${rangeLabel(owner)})`
-        : `${String(patch.order).padStart(3, '0')} is outside all configured ranges`;
+        ? `${formatPatchOrder(patch.order)} is configured for ${owner.category} (${formatOrderRange(owner)})`
+        : `${formatPatchOrder(patch.order)} is outside all configured ranges`;
     issues.push({
       code: 'category-range',
       filename: patch.filename,
@@ -355,11 +339,11 @@ function evaluateGaps(
     if (missing.length > 0) {
       issues.push({
         code: 'numeric-gap',
-        filename: `${range.category}:${rangeLabel(range)}`,
+        filename: `${range.category}:${formatOrderRange(range)}`,
         severity,
         message:
-          `${range.category} range ${rangeLabel(range)} has numeric gap(s): ` +
-          missing.map((order) => String(order).padStart(3, '0')).join(', ') +
+          `${range.category} range ${formatOrderRange(range)} has numeric gap(s): ` +
+          missing.map((order) => formatPatchOrder(order)).join(', ') +
           '. patchPolicy.allowGaps is false.',
       });
     }
@@ -384,10 +368,10 @@ function evaluateOrderCollisions(
     const filenames = matches.map((patch) => patch.filename).sort((a, b) => a.localeCompare(b));
     issues.push({
       code: 'order-collision',
-      filename: String(order).padStart(3, '0'),
+      filename: formatPatchOrder(order),
       severity,
       message:
-        `patchPolicy requires unique numeric orders; order ${String(order).padStart(3, '0')} ` +
+        `patchPolicy requires unique numeric orders; order ${formatPatchOrder(order)} ` +
         `is used by: ${filenames.join(', ')}.`,
     });
   }
@@ -401,7 +385,7 @@ export function evaluatePatchPolicy(
 ): PatchPolicyIssue[] {
   const cfg = policy(config);
   if (!cfg) return [];
-  const severity = issueSeverity(config);
+  const severity = mutationMode(config) === 'warn' ? 'warning' : 'error';
   const issues = manifest.patches.flatMap((patch) => evaluatePatchMetadata(cfg, patch, severity));
   issues.push(...evaluateOrderCollisions(manifest.patches, severity));
   issues.push(...evaluateGaps(cfg, manifest.patches, severity));
@@ -449,7 +433,7 @@ export function applyRenameMapToManifest(
 
 /** Enforces patch policy according to the configured mutation mode. */
 export function enforcePatchPolicy(input: PatchPolicyEnforcementInput): void {
-  if (!hasPatchPolicy(input.config)) return;
+  if (policy(input.config) === undefined) return;
   const issues = evaluatePatchPolicy(input.config, input.manifest);
   if (issues.length === 0) return;
 

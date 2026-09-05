@@ -9,8 +9,8 @@
  * of commands to enumerate.
  *
  * The order of entries in {@link COMMAND_MANIFEST} is the order commands
- * appear in `fireforge --help`; it is intentional, not alphabetical, and
- * groups related commands together.
+ * appear in `fireforge --help`. The order is chosen rather than
+ * alphabetical, and groups related commands together.
  */
 import type { CommandRegistrar } from '../types/cli.js';
 import { registerBootstrap } from './bootstrap.js';
@@ -27,7 +27,7 @@ import { registerLint } from './lint.js';
 import { registerPackage } from './package.js';
 import { registerPatch } from './patch/index.js';
 import { registerReExport } from './re-export-register.js';
-import { registerRebase } from './rebase.js';
+import { registerRebase } from './rebase/index.js';
 import { registerRegister } from './register.js';
 import { registerReset } from './reset.js';
 import { registerResolve } from './resolve.js';
@@ -49,9 +49,9 @@ import { registerWire } from './wire.js';
 export interface CommandManifestEntry {
   /**
    * Human-readable command name, matching the first token of the
-   * command line (e.g. `build`, `furnace`). Informational only — the
+   * command line (e.g. `build`, `furnace`). Informational only, since the
    * authoritative command string lives inside each registrar's
-   * `.command(...)` call — but useful for documentation, manifest
+   * `.command(...)` call, but useful for documentation, manifest
    * introspection, and test assertions.
    */
   name: string;

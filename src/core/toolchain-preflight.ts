@@ -2,27 +2,27 @@
 /**
  * Toolchain-minimum awareness for Firefox source hops.
  *
- * When `fireforge download --force` moves the engine to a new Firefox MAJOR
+ * When `fireforge download --force` moves the engine to a new Firefox major
  * version, the tree's declared toolchain minimums (cbindgen, Rust)
- * frequently move with it — and the first `fireforge build` then dies a few
+ * frequently move with it, and the first `fireforge build` then dies a few
  * seconds into `mach configure` with a message whose remediation text names
  * `./mach bootstrap`, the wrong tool for a FireForge-managed repo (e.g.
  * `ERROR: cbindgen version 0.29.1 is too old. At least version 0.29.4 is
  * required.`).
  *
  * Two layers:
- *  1. {@link formatMajorVersionHopNotice} — a post-download nudge when the
+ *  1. {@link formatMajorVersionHopNotice}, a post-download nudge when the
  *     downloaded major differs from the previously downloaded one.
- *  2. {@link runToolchainPreflight} — a cheap pre-build probe comparing the
+ *  2. {@link runToolchainPreflight}, a cheap pre-build probe comparing the
  *     minimums the tree itself declares against the host binaries
  *     `mach configure` will resolve, probing configure's own candidate
  *     order: env override first, then the `~/.mozbuild` state-directory copy
  *     bootstrap installs, then PATH. Probing env-or-PATH alone blocks builds
  *     whose current tool lives in the state dir behind a stale PATH copy.
- *     Deliberately FAIL-SOFT: it reports a mismatch only when a minimum was
- *     positively parsed AND at least one candidate resolved AND every
- *     resolved candidate is definitively lower. Any uncertainty (file moved
- *     upstream, unparseable output, no candidate found) skips silently — the
+ *     Fail-soft: it reports a mismatch only when a minimum was positively
+ *     parsed, at least one candidate resolved, and every resolved candidate
+ *     is definitively lower. Any uncertainty (file moved upstream,
+ *     unparseable output, no candidate found) skips silently. The
  *     mach-error-hints translator still catches the real configure failure
  *     downstream.
  */
@@ -70,19 +70,19 @@ const MINIMUM_DECLARATIONS: Record<ToolchainTool, { relPath: string; pattern: Re
  *
  * `stateDirRelPaths` are the mach-state-directory locations
  * `fireforge bootstrap` (via mozboot) installs the tool to. mach's configure
- * tries the state directory BEFORE the PATH candidates —
- * bindgen.configure's toolchain search path lists `~/.mozbuild/cbindgen/
- * cbindgen` first — so the probe must too. Probing only env-or-PATH fails a
+ * tries the state directory before the PATH candidates (bindgen.configure's
+ * toolchain search path lists `~/.mozbuild/cbindgen/cbindgen` first), so the
+ * probe must too. Probing only env-or-PATH fails a
  * build configure would have accepted whenever an old `~/.cargo/bin/
  * cbindgen` shadows a current bootstrap-installed copy. Rust has no
- * state-dir install — rustup owns it — so its list is empty.
+ * state-dir install, since rustup owns it, so its list is empty.
  */
 const HOST_PROBES: Record<
   ToolchainTool,
   { envVar: string; versionPattern: RegExp; stateDirRelPaths: readonly string[] }
 > = {
   // `mach configure` honours the CBINDGEN env option (bindgen.configure's
-  // `option(env="CBINDGEN", ...)`), so the probe must too — otherwise the
+  // `option(env="CBINDGEN", ...)`), so the probe must too. Otherwise the
   // preflight could veto a build configure would have accepted.
   cbindgen: {
     envVar: 'CBINDGEN',
@@ -107,7 +107,7 @@ export interface ToolchainMismatch {
   /** Engine-relative file the minimum was parsed from. */
   declaredIn: string;
   /**
-   * Every candidate that resolved — all of them below the minimum
+   * Every candidate that resolved, all of them below the minimum
    * (mach-resolution order: env override, mozbuild state dir, PATH).
    */
   candidates: ToolchainCandidate[];
@@ -115,7 +115,7 @@ export interface ToolchainMismatch {
 
 /**
  * Parses a dotted version string into numeric components. Trailing
- * non-numeric suffixes are ignored; returns undefined when the string
+ * non-numeric suffixes are ignored. Returns undefined when the string
  * does not start with a number. (Same posture as the furnace version
  * drift classifier, kept local so the two modules stay decoupled.)
  */
@@ -125,7 +125,7 @@ function parseVersionComponents(version: string): number[] | undefined {
   return match[1].split('.').map(Number);
 }
 
-/** Component-wise comparison; missing components count as 0. */
+/** Component-wise comparison. Missing components count as 0. */
 function isVersionLower(candidate: number[], minimum: number[]): boolean {
   const length = Math.max(candidate.length, minimum.length);
   for (let i = 0; i < length; i += 1) {
@@ -138,9 +138,9 @@ function isVersionLower(candidate: number[], minimum: number[]): boolean {
 
 /**
  * Returns the one-line notice to print after a download that hopped the
- * Firefox MAJOR version, or undefined when no notice is warranted (first
- * download, same major, or unparseable versions — an unparseable version
- * must not spam every download with a false hint).
+ * Firefox major version, or undefined when no notice is warranted (first
+ * download, same major, or unparseable versions, since an unparseable
+ * version must not spam every download with a false hint).
  *
  * @param previousVersion - `downloadedVersion` recorded in state before this download
  * @param newVersion - Version that was just downloaded
@@ -155,7 +155,7 @@ export function formatMajorVersionHopNotice(
   if (previousMajor === undefined || newMajor === undefined) return undefined;
   if (previousMajor === newMajor) return undefined;
   return (
-    `Firefox major version changed (${String(previousMajor)} → ${String(newMajor)}): ` +
+    `Firefox major version changed (${previousMajor} → ${newMajor}): ` +
     'upstream toolchain minimums (cbindgen, Rust, …) may have moved with it. ' +
     'Consider running "fireforge bootstrap" before the next build.'
   );
@@ -164,7 +164,7 @@ export function formatMajorVersionHopNotice(
 /**
  * Reads the toolchain minimums the engine tree itself declares. Any file
  * that is missing or no longer matches the expected declaration shape
- * yields undefined for that tool — never an error.
+ * yields undefined for that tool, never an error.
  */
 export async function readDeclaredToolchainMinimums(
   engineDir: string
@@ -222,7 +222,7 @@ async function probeBinaryVersion(
 
 /**
  * Probes every candidate binary for a tool in mach's resolution order:
- * the env override (which, when set, is the ONLY candidate — configure
+ * the env override (which, when set, is the only candidate, since configure
  * uses it even when a better binary exists elsewhere), then the mozbuild
  * state-directory copy bootstrap installs, then PATH. Candidates that
  * fail to run or to parse are dropped silently.
@@ -248,8 +248,8 @@ async function probeHostToolCandidates(tool: ToolchainTool): Promise<ToolchainCa
 /**
  * Compares the tree-declared toolchain minimums against the host binaries
  * `mach configure` will resolve, in configure's own candidate order (env
- * override, mozbuild state dir, PATH). A tool fails ONLY when at least
- * one candidate resolved and none of them meets the minimum; any single
+ * override, mozbuild state dir, PATH). A tool fails only when at least
+ * one candidate resolved and none of them meets the minimum. Any single
  * passing candidate passes the tool (configure will find it), and a tool
  * with no resolvable candidate skips silently (see module header for the
  * fail-soft rationale).

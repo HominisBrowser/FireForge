@@ -5,6 +5,7 @@ import { GeneralError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { toRootRelativePath } from '../utils/paths.js';
+import { normalizePathSlashes } from '../utils/paths.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import {
   assertSnapshotted,
@@ -14,13 +15,10 @@ import {
 } from './furnace-rollback.js';
 import type { RegisterResult } from './moz-manifest-register.js';
 import { registerBrowserContent } from './moz-manifest-register.js';
-import { DEFAULT_DOM_TARGET } from './wire-dom-fragment.js';
-import {
-  addDestroyToBrowserInit,
-  addDomFragment,
-  addInitToBrowserInit,
-  addSubscriptToBrowserMain,
-} from './wire-targets.js';
+import { addDestroyToBrowserInit } from './wire-destroy.js';
+import { addDomFragment, DEFAULT_DOM_TARGET } from './wire-dom-fragment.js';
+import { addInitToBrowserInit } from './wire-init.js';
+import { addSubscriptToBrowserMain } from './wire-subscript.js';
 
 export const DEFAULT_BROWSER_SUBSCRIPT_DIR = 'browser/base/content';
 const BROWSER_BASE_DIR = 'browser/base';
@@ -56,7 +54,7 @@ export interface WireOptions {
    * replacement path here.
    */
   domTargetPath?: string | undefined;
-  /** Dry run — don't write any files */
+  /** Dry run: don't write any files */
   dryRun?: boolean | undefined;
   /** Insert init block after the block containing this name */
   after?: string | undefined;
@@ -86,10 +84,9 @@ export async function wireSubscript(
   // Compute jar.mn source path relative to browser/base/
   let jarMnSourcePath: string | undefined;
   if (subscriptDir !== DEFAULT_BROWSER_SUBSCRIPT_DIR) {
-    const relPath = relative(
-      join(engineDir, BROWSER_BASE_DIR),
-      join(engineDir, subscriptDir)
-    ).replace(/\\/g, '/');
+    const relPath = normalizePathSlashes(
+      relative(join(engineDir, BROWSER_BASE_DIR), join(engineDir, subscriptDir))
+    );
     jarMnSourcePath = `${relPath}/${name}.js`;
   }
 
@@ -158,9 +155,9 @@ export async function wireSubscript(
     let initAdded = false;
     if (options.init) {
       // The snapshot above is taken when init or destroy is `!== undefined`
-      // while these writes fire on truthiness — close, but two separate
-      // conditions over the same file, which is exactly the pairing that
-      // drifts when a third writer is added later.
+      // while these writes fire on truthiness. Close, but two separate
+      // conditions over the same file, and that kind of pairing drifts when
+      // a third writer is added later.
       assertSnapshotted(
         journal,
         join(engineDir, 'browser/base/content/browser-init.js'),
@@ -211,7 +208,7 @@ export async function wireSubscript(
     // original wire failure and the rollback failure so the operator knows
     // the engine may be in a partially-wired state that needs manual
     // attention. The original error's message is preserved so the user sees
-    // *why* the wire failed (e.g. "Could not find insertion point in chrome
+    // why the wire failed (e.g. "Could not find insertion point in chrome
     // document") alongside any rollback diagnosis.
     const originalMessage = toError(error).message;
     try {

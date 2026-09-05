@@ -82,7 +82,7 @@ describe('writeFileAtomic concurrency', () => {
       writeFileAtomic(filePath, `writer-${i}\n`)
     );
 
-    // All writes should succeed — no ENOENT or other spurious failures
+    // All writes should succeed: no ENOENT or other spurious failures
     await expect(Promise.all(writers)).resolves.toBeDefined();
 
     // File should exist with content from one of the writers (last-writer-wins)
@@ -98,7 +98,7 @@ describe('writeFileAtomic concurrency', () => {
     expect(content).toBe('hello world');
   });
 
-  // Windows has no POSIX execute bit — chmod(0o755) is a no-op there (stat
+  // Windows has no POSIX execute bit, and chmod(0o755) is a no-op there (stat
   // reports 0o666), so the mode-preservation contract is POSIX-only.
   it.skipIf(process.platform === 'win32')(
     'preserves an existing file mode when replacing content',

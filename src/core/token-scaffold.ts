@@ -17,13 +17,13 @@ import { getLicenseHeader } from './license-headers.js';
 
 /**
  * The set of categories seeded by the default scaffold. `token add
- * --category <name>` accepts any of these without further setup; an
+ * --category <name>` accepts any of these without further setup. An
  * operator who needs another category only has to add a matching
  * `/* = My Category = *\/` header inside the `:root` block by hand.
  *
  * The names intentionally mirror the vocabulary used in Firefox's own
- * token files (Colors — Canvas, Spacing, …) so operators coming from
- * upstream don't have to relearn a fork-specific taxonomy.
+ * token files (the color and spacing categories listed below) so operators
+ * coming from upstream don't have to relearn a fork-specific taxonomy.
  */
 export const DEFAULT_TOKEN_CATEGORIES: readonly string[] = [
   'Colors — General',
@@ -39,7 +39,7 @@ export const DEFAULT_TOKEN_CATEGORIES: readonly string[] = [
  *
  * @param binaryName - `fireforge.json` `binaryName` used in the
  *   rendered file banner so operators can identify the fork on-sight.
- * @param license - Project license; piped through `getLicenseHeader`
+ * @param license - Project license, piped through `getLicenseHeader`
  *   so the scaffold is SPDX-marked and survives `fireforge lint`'s
  *   license-header checks without operator intervention.
  */

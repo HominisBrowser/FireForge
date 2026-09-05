@@ -4,19 +4,19 @@
  * escalate from `mach build faster` to a full `mach build`.
  *
  * The 0.41.0 rule was `any changed jar.mn ⇒ full build`, which costs ~10
- * minutes against ~20 s for a chrome-only slice and is paid TWICE per
+ * minutes against ~20 s for a chrome-only slice and is paid twice per
  * green/no-change pair on a Furnace-touching slice. A downstream experiment
  * (two clean runs, 2026-08-29, against 0.44.4) showed the rule is over-broad
- * for the common case: a jar-only registration of a NEW content file added
- * to an EXISTING `dist/bin` manifest was installed by a plain
- * `fireforge build --ui` both times — `faster/install_dist_bin_browser` named
+ * for the common case: a jar-only registration of a new content file added
+ * to an existing `dist/bin` manifest was installed by a plain
+ * `fireforge build --ui` both times: `faster/install_dist_bin_browser` named
  * the destination, the file landed in `dist/bin/…/content/browser/` and in
  * the `.app` bundle, and a plain `fireforge test` fetched it over
  * `chrome://` at runtime. Neither run escalated, and neither needed to.
  *
- * What the experiment did NOT exercise, and what therefore still escalates:
+ * What the experiment did not exercise, and what therefore still escalates:
  *
- *  - a NEW `jar.mn` file. The install manifest for a manifest the backend
+ *  - a new `jar.mn` file. The install manifest for a manifest the backend
  *    has never seen does not exist yet, and `mach build faster` consumes
  *    install manifests rather than regenerating the backend that writes
  *    them.
@@ -32,6 +32,7 @@
 
 import { join } from 'node:path';
 
+import { toError } from '../utils/errors.js';
 import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { isJarManifestPath } from './build-audit.js';
@@ -41,7 +42,7 @@ import { getUntrackedFilesInDir } from './git-status.js';
 /**
  * A jar declaration line: an optional bracketed base-directory prefix, then
  * the jar name. Matched at column zero because entry lines inside a section
- * are indented — an indented `foo.jar:` is content, not a declaration.
+ * are indented. An indented `foo.jar:` is content, not a declaration.
  */
 const JAR_DECLARATION_PATTERN = /^(\[[^\]]*\]\s*)?[^\s[\]]+\.jar:\s*$/;
 
@@ -66,19 +67,19 @@ export interface JarEscalationDecision {
   escalate: boolean;
   /** One entry per manifest that forces the escalation. */
   causes: JarEscalationCause[];
-  /** Manifests the narrowing cleared; kept for the verbose explanation. */
+  /** Manifests the narrowing cleared. Kept for the verbose explanation. */
   cleared: string[];
 }
 
 /**
- * True when a changed `jar.mn` is NEW to the last successful build.
+ * True when a changed `jar.mn` is new to the last successful build.
  *
- * Untracked in the engine repo is the reliable tell: a fork's engine tree is
- * a checkout of upstream with patches applied to the WORKTREE, so a manifest
- * a patch created is untracked and one that shipped upstream is tracked. The
- * baseline's fingerprints cannot answer this on their own — they record only
- * the paths that were DIRTY at the last build, so a clean pre-existing
- * manifest has no entry either.
+ * Untracked in the engine repo is the reliable signal: a fork's engine tree
+ * is a checkout of upstream with patches applied to the worktree, so a
+ * manifest a patch created is untracked and one that shipped upstream is
+ * tracked. The baseline's fingerprints cannot answer this on their own: they
+ * record only the paths that were dirty at the last build, so a clean
+ * pre-existing manifest has no entry either.
  */
 async function isNewJarManifest(engineDir: string, path: string): Promise<boolean> {
   const untracked = await getUntrackedFilesInDir(engineDir, path);
@@ -110,7 +111,9 @@ export async function evaluateJarManifestEscalation(
       isNew = await isNewJarManifest(engineDir, path);
     } catch (error: unknown) {
       // Fail closed: an unanswerable "is this new?" keeps the old rule.
-      verbose(`jar escalation: could not classify engine/${path} (${String(error)}); escalating.`);
+      verbose(
+        `jar escalation: could not classify engine/${path} (${toError(error).message}); escalating.`
+      );
       causes.push({ path, reason: 'could not determine whether the manifest is new' });
       continue;
     }
@@ -123,7 +126,9 @@ export async function evaluateJarManifestEscalation(
     try {
       body = await readText(join(engineDir, path));
     } catch (error: unknown) {
-      verbose(`jar escalation: could not read engine/${path} (${String(error)}); escalating.`);
+      verbose(
+        `jar escalation: could not read engine/${path} (${toError(error).message}); escalating.`
+      );
       causes.push({ path, reason: 'manifest could not be read' });
       continue;
     }
@@ -147,7 +152,7 @@ export async function evaluateJarManifestEscalation(
 }
 
 /**
- * Renders the operator-facing escalation notice. Names the manifest AND the
+ * Renders the operator-facing escalation notice. Names the manifest and the
  * reason: "a jar.mn changed" is the sentence that made the previous rule
  * impossible to argue with from outside.
  */

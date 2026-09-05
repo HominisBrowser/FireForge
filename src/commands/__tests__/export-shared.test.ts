@@ -23,7 +23,7 @@ vi.mock('../../core/patch-lint.js', () => ({
   }),
   detectNewFilesInDiff: vi.fn(() => new Set<string>()),
   // Mimics the real predicate's project-header branch against the mocked
-  // getLicenseHeader below; the full acceptance policy (upstream MPL
+  // getLicenseHeader below. The full acceptance policy (upstream MPL
   // block form, branding carve-out) is covered by patch-lint.test.ts.
   isAcceptableNewFileHeader: vi.fn((_file: string, content: string) =>
     content.startsWith('// LICENSE HEADER')
@@ -41,7 +41,7 @@ vi.mock('../../core/patch-manifest.js', () => ({
 
 vi.mock('../../core/license-headers.js', async (importOriginal) => ({
   // Keep the real (pure) hasThirdPartyPermissiveBanner so the vendored
-  // partition behaves authentically; stub the header writer/reader.
+  // partition behaves authentically. Stub the header writer/reader.
   ...(await importOriginal<typeof import('../../core/license-headers.js')>()),
   getLicenseHeader: vi.fn(() => '// LICENSE HEADER'),
   addLicenseHeaderToFile: vi.fn(() => Promise.resolve(true)),
@@ -102,7 +102,12 @@ describe('runPatchLint', () => {
 
   it('does nothing when no issues found', async () => {
     vi.mocked(lintExportedPatch).mockResolvedValueOnce([]);
-    await runPatchLint('/engine', ['a.js'], 'diff', mockConfig);
+    await runPatchLint({
+      engineDir: '/engine',
+      filesAffected: ['a.js'],
+      diffContent: 'diff',
+      config: mockConfig,
+    });
 
     expect(warn).not.toHaveBeenCalled();
   });
@@ -116,7 +121,12 @@ describe('runPatchLint', () => {
         severity: 'warning',
       },
     ]);
-    await runPatchLint('/engine', ['a.js'], 'diff', mockConfig);
+    await runPatchLint({
+      engineDir: '/engine',
+      filesAffected: ['a.js'],
+      diffContent: 'diff',
+      config: mockConfig,
+    });
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('too many files'));
   });
@@ -126,9 +136,15 @@ describe('runPatchLint', () => {
       { check: 'relative-import', file: 'a.mjs', message: 'bad import', severity: 'error' },
     ]);
 
-    await expect(runPatchLint('/engine', ['a.mjs'], 'diff', mockConfig, false)).rejects.toThrow(
-      GeneralError
-    );
+    await expect(
+      runPatchLint({
+        engineDir: '/engine',
+        filesAffected: ['a.mjs'],
+        diffContent: 'diff',
+        config: mockConfig,
+        skipLint: false,
+      })
+    ).rejects.toThrow(GeneralError);
   });
 
   it('downgrades errors to warnings when skipLint is true', async () => {
@@ -136,7 +152,13 @@ describe('runPatchLint', () => {
       { check: 'relative-import', file: 'a.mjs', message: 'bad import', severity: 'error' },
     ]);
 
-    await runPatchLint('/engine', ['a.mjs'], 'diff', mockConfig, true);
+    await runPatchLint({
+      engineDir: '/engine',
+      filesAffected: ['a.mjs'],
+      diffContent: 'diff',
+      config: mockConfig,
+      skipLint: true,
+    });
 
     expect(warn).toHaveBeenCalled();
     expect(info).toHaveBeenCalledWith(expect.stringContaining('downgraded'));
@@ -448,8 +470,8 @@ describe('autoFixLicenseHeaders', () => {
   it('never offers a project header on a CC0 public-domain upstream test file', async () => {
     // Firefox test files carry a CC0 dedication, not the MPL header. Before
     // CC0 was recognized this file was neither "acceptable" nor "vendored",
-    // so `export -y` prepended the PROJECT's license header onto code
-    // Mozilla dedicated to the public domain — the mislicensing the
+    // so `export -y` prepended the project's license header onto code
+    // Mozilla dedicated to the public domain, which is the mislicensing the
     // vendored carve-out exists to prevent.
     const cc0Test =
       '/* Any copyright is dedicated to the Public Domain.\n' +
@@ -488,7 +510,7 @@ describe('autoFixLicenseHeaders', () => {
     expect(vi.mocked(info)).toHaveBeenCalledWith(
       expect.stringContaining('third-party permissive license banner')
     );
-    // The genuinely fixable file still gets the dry-run report — vendored
+    // The genuinely fixable file still gets the dry-run report. Vendored
     // files must not appear in that list.
     const dryRunLine = vi
       .mocked(info)
@@ -515,7 +537,7 @@ describe('autoFixLicenseHeaders', () => {
 
 describe('findPartialOwnershipOverlap', () => {
   // Two exports can both claim `browser/themes/shared/jar.inc.mn`.
-  // `findAllPatchesForFiles` only catches FULL supersedes; partial overlap
+  // `findAllPatchesForFiles` only catches full supersedes. Partial overlap
   // needs its own detector.
   it('returns an empty map when nothing overlaps', () => {
     const manifest = {

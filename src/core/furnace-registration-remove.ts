@@ -5,8 +5,8 @@
  * Uses the same AST parser as the add path (`furnace-registration-ast.ts`) to
  * locate and delete registration entries. A line-by-line scan with a bounded
  * bracket match only works against Firefox's stock formatting and fails
- * silently on a hand-reformatted customElements.js; AST-based bracket
- * matching is format-agnostic by construction.
+ * silently on a hand-reformatted customElements.js. AST-based bracket
+ * matching does not depend on the file's formatting.
  *
  * Contract:
  * - Idempotent: if the tag is not registered, the file is left unchanged.
@@ -61,7 +61,7 @@ function expandRemovalRange(content: string, start: number, end: number): Remova
   }
   // Consume a trailing inline comment up to end-of-line so we do not leave
   // the comment marooned on its own line. A leading inline comment is left
-  // alone — it may belong to the next entry.
+  // alone, because it may belong to the next entry.
   while (
     expandedEnd < content.length &&
     (content[expandedEnd] === ' ' || content[expandedEnd] === '\t')
@@ -108,7 +108,7 @@ function expandRemovalRange(content: string, start: number, end: number): Remova
 
 /**
  * Returns true if `node` represents a `[tag, module]` entry inside a
- * registration array — i.e. an `ArrayExpression` whose first element is a
+ * registration array, i.e. an `ArrayExpression` whose first element is a
  * string literal equal to `tagName`. Callers still have to verify the
  * parent is the outer registration array so we do not accidentally delete
  * an arbitrary user-owned `["moz-card", ...]` literal elsewhere in the file.
@@ -211,10 +211,10 @@ function collectRemovalRanges(
 /**
  * Removes a custom element registration from customElements.js.
  *
- * This operation is idempotent — if the tag is not registered or the file
+ * This operation is idempotent: if the tag is not registered or the file
  * does not exist, nothing happens. If the file exists but cannot be parsed,
  * the file is left unchanged rather than fall back to a line-based
- * heuristic; a corrupted customElements.js is a doctor problem, not
+ * heuristic. A corrupted customElements.js is a doctor problem, not
  * something `furnace remove` should "helpfully" edit around.
  *
  * @param engineDir - Path to the Firefox engine source root

@@ -6,7 +6,7 @@ import { setStdoutSealed } from '../utils/logger.js';
 
 /**
  * Reason codes the emission layer can put on a `FIREFORGE-VERDICT: FAIL`
- * line. The first three mirror the harness classifier; `preflight` covers
+ * line. The first three mirror the harness classifier. `preflight` covers
  * every failure before harness classification (missing/stale builds,
  * invalid paths, port conflicts, config errors, spawn failures),
  * `inconclusive` marks a run whose harness result exists but cannot be
@@ -48,20 +48,20 @@ export function verdictEmitted(): boolean {
 }
 
 /**
- * Writes the run's single verdict line — raw stdout (clack's renderer can
- * drop output under non-TTY capture), first write wins. Every later call
+ * Writes the run's single verdict line to raw stdout (clack's renderer can
+ * drop output under non-TTY capture). First write wins. Every later call
  * is a no-op: the writer closest to the harness result runs first, so the
  * fallback layers (the engine-generation guard, the preflight wrapper)
  * can emit unconditionally without risking a second line. Writing also
- * seals stdout: the verdict must stay the run's LAST stdout write, so all
- * subsequent logger output — including the CLI-boundary error/cancel
- * rendering after an emit-then-throw path — routes to stderr.
+ * seals stdout: the verdict must stay the run's last stdout write, so all
+ * subsequent logger output, including the CLI-boundary error/cancel
+ * rendering after an emit-then-throw path, routes to stderr.
  */
 function writeVerdictLine(line: string): void {
   if (emitted) return;
   emitted = true;
   // The run log's path rides the verdict line because the verdict must stay
-  // the run's LAST stdout write — a separate announcement after it would
+  // the run's last stdout write: a separate announcement after it would
   // break that contract, and one before it is the first thing a `tail` cuts.
   // Appended as an additive `key=value`, so consumers that tokenize the line
   // are unaffected and a truncated tail still says where the full output is.
@@ -87,16 +87,31 @@ export function emitPassVerdict(): void {
   writeVerdictLine('FIREFORGE-VERDICT: PASS');
 }
 
-/** Emits a FAIL verdict carrying an emission-layer reason code. */
-export function emitFailVerdict(reason: FireforgeVerdictReason): void {
-  writeVerdictLine(`FIREFORGE-VERDICT: FAIL reason=${reason}`);
+/**
+ * Emits a FAIL verdict carrying an emission-layer reason code, and
+ * optionally the refusal class that produced it.
+ *
+ * `note=` is additive, like the `log=`, `signal=` and `shards=` keys already
+ * on this line: `reason=` is unchanged and still comes from the closed set
+ * in `docs/machine-output.md`, so a consumer that tokenises `key=value`
+ * pairs is unaffected. It exists because `reason=preflight` covers every
+ * gate before the harness (a missing build, a peer's packaging record, a
+ * developer browser holding the objdir), and an unattended reader whose
+ * pipe kept only the verdict line could not tell those apart.
+ *
+ * @param reason - Closed-set verdict reason
+ * @param note - Stable refusal class, when the thrower named one
+ */
+export function emitFailVerdict(reason: FireforgeVerdictReason, note?: string): void {
+  const suffix = note === undefined ? '' : ` note=${note}`;
+  writeVerdictLine(`FIREFORGE-VERDICT: FAIL reason=${reason}${suffix}`);
 }
 
 /**
  * Emits the terminal verdict for a run killed by a signal.
  *
- * Without it a killed run wrote NO terminal line, so a log tail could not
- * distinguish "killed" from "still running" from "never started" — recovery
+ * Without it a killed run wrote no terminal line, so a log tail could not
+ * distinguish "killed" from "still running" from "never started". Recovery
  * meant checking `ps` and the lock file by hand, at the exact moment (a
  * mass kill under a usage limit, mid-drain) when the tree's state most
  * needs to be readable. A no-op unless a run was actually in flight: the

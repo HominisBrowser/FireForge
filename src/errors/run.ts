@@ -4,7 +4,7 @@ import { ExitCode } from './codes.js';
 
 /**
  * Error raised by `fireforge run --smoke-exit` when the captured console
- * stream produced one or more error lines that did NOT match the
+ * stream produced one or more error lines that did not match the
  * configured allowlist.
  *
  * Distinct from `BuildError` so CI pipelines can route smoke failures

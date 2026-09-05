@@ -98,9 +98,9 @@ describe('findUnresolvedSystemModuleImports', () => {
 
   it('covers lazy ChromeUtils.defineESModuleGetters specifiers, not just static imports', async () => {
     // (related): a lazy getter that fails to resolve reports the
-    // binding as `undefined` with NO import error logged anywhere, so the
-    // static-import-only view would miss precisely the shape that is
-    // hardest to diagnose at runtime.
+    // binding as `undefined` with no import error logged anywhere, so the
+    // static-import-only view would miss exactly the shape that is hardest
+    // to diagnose at runtime.
     await writeFiles(engineDir, {
       'browser/modules/Existing.sys.mjs': [
         'const lazy = {};',

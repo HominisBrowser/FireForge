@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * A TRANSIENT `.git/index.lock` contention must not be reported as an
+ * A transient `.git/index.lock` contention must not be reported as an
  * unmeasurable engine.
  *
  * The one-sided "could not probe" branch is what turns a perfectly good
  * suite into `FIREFORGE-VERDICT: FAIL reason=inconclusive`, so a probe
  * failure that another writer would clear in milliseconds has to be
  * retried rather than latched. `git-base` is mocked here because the
- * behaviour under test is the RETRY, and a real repository cannot be made
+ * behaviour under test is the retry, and a real repository cannot be made
  * to fail exactly once on demand.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';

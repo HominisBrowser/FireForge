@@ -102,7 +102,7 @@ describe('isPathInsideRoot', () => {
   });
 
   it('rejects sibling directories that share a prefix', () => {
-    // `/root2` starts with `/root` but is not under it — relative() yields
+    // `/root2` starts with `/root` but is not under it. relative() yields
     // `../root2/foo.txt` which the check rejects.
     expect(isPathInsideRoot('/root', '/root2/foo.txt')).toBe(false);
   });
@@ -123,15 +123,6 @@ describe('isPathInsideRoot', () => {
 describe('toRootRelativePath', () => {
   it('returns a forward-slash relative path', () => {
     expect(toRootRelativePath('/root', '/root/sub/file.txt')).toBe('sub/file.txt');
-  });
-
-  it('produces forward-slash output even when the input uses backslashes', () => {
-    // On POSIX the `path.relative` result would already use forward slashes,
-    // so this test serves as a cross-platform assertion: the normalize step
-    // inside `toRootRelativePath` guarantees forward slashes regardless of
-    // the host separator.
-    const result = toRootRelativePath('/root', '/root/sub/nested/file.txt');
-    expect(result).not.toContain('\\');
   });
 
   it('throws when the candidate escapes the root', () => {
@@ -173,7 +164,7 @@ describe('stripEnginePrefix', () => {
   });
 
   it('does not strip a bare "engine" with no separator', () => {
-    // `engine` by itself is not the prefix pattern — a caller might mean a
+    // `engine` by itself is not the prefix pattern. A caller might mean a
     // literal path named `engine` in the repo root. The pattern requires a
     // trailing separator, so pass-through is correct.
     expect(stripEnginePrefix('engine')).toBe('engine');

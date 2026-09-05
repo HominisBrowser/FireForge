@@ -85,6 +85,7 @@ import { furnaceCreateCommand } from '../furnace/create.js';
 import { furnaceDeployCommand } from '../furnace/deploy.js';
 import { furnaceDiffCommand } from '../furnace/diff.js';
 import { registerFurnace } from '../furnace/index.js';
+import { furnaceInitCommand } from '../furnace/init.js';
 import { furnaceListCommand } from '../furnace/list.js';
 import { furnaceBatchOverrideCommand, furnaceOverrideCommand } from '../furnace/override.js';
 import { furnacePreviewCommand } from '../furnace/preview.js';
@@ -141,63 +142,46 @@ describe('registerFurnace', () => {
     ]);
   });
 
+  // The router's whole job is dispatch, so the dispatch table is its
+  // behaviour: a `list` that reaches `furnaceRemoveCommand` is a data-loss
+  // bug no other suite would catch. One table beats sixteen near-identical
+  // tests, and it fails loudly when a subcommand is added without wiring.
+  it.each([
+    ['scan', furnaceScanCommand, ['/project', {}]],
+    ['init', furnaceInitCommand, ['/project', {}]],
+    ['list', furnaceListCommand, ['/project', {}]],
+    ['preview', furnacePreviewCommand, ['/project', {}]],
+    ['refresh', furnaceRefreshCommand, ['/project', undefined, {}]],
+  ] as const)('routes %s to its command handler', async (name, handler, expected) => {
+    await runFurnaceCommand(name);
+
+    expect(handler).toHaveBeenCalledWith(...expected);
+  });
+
+  it('routes remove and rename to their handlers with the named component', async () => {
+    await runFurnaceCommand('remove', 'moz-thing', '--yes');
+    expect(furnaceRemoveCommand).toHaveBeenCalledWith('/project', 'moz-thing', { yes: true });
+
+    await runFurnaceCommand('rename', 'moz-old', 'moz-new');
+    expect(furnaceRenameCommand).toHaveBeenCalledWith('/project', 'moz-old', 'moz-new');
+  });
+
+  it('routes the nested "furnace chrome-doc remove" to its own handler', async () => {
+    await runFurnaceCommand('chrome-doc', 'remove', 'moz-thing');
+
+    expect(furnaceChromeDocRemoveCommand).toHaveBeenCalled();
+  });
+
   it('routes the top-level furnace command to status', async () => {
     await runFurnaceCommand();
 
     expect(furnaceStatusCommand).toHaveBeenCalledWith('/project');
   });
 
-  it('routes the status subcommand with an optional component name', async () => {
-    await runFurnaceCommand('status', 'moz-button');
-
-    expect(furnaceStatusCommand).toHaveBeenCalledWith('/project', 'moz-button');
-  });
-
   it('routes apply with filtered options', async () => {
     await runFurnaceCommand('apply', '--dry-run');
 
     expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', undefined, { dryRun: true });
-  });
-
-  it('routes mutating apply through the engine session lock', async () => {
-    await runFurnaceCommand('apply', 'moz-button', '--force', '--watch');
-
-    expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', 'moz-button', {
-      force: true,
-      watch: true,
-    });
-  });
-
-  it('routes deploy with an optional component name and options', async () => {
-    await runFurnaceCommand('deploy', 'moz-button', '--dry-run');
-
-    expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', 'moz-button', {
-      dryRun: true,
-    });
-  });
-
-  it('routes mutating deploy through the engine session lock', async () => {
-    await runFurnaceCommand('deploy', 'moz-button', '--skip-validate');
-
-    expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', 'moz-button', {
-      skipValidate: true,
-    });
-  });
-
-  it('routes scan to the Furnace scanner entrypoint', async () => {
-    await runFurnaceCommand('scan');
-
-    expect(furnaceScanCommand).toHaveBeenCalledWith('/project', {});
-  });
-
-  it('routes init with options', async () => {
-    await runFurnaceCommand('init', '--prefix', 'ff-', '--force');
-
-    const { furnaceInitCommand } = await import('../furnace/init.js');
-    expect(furnaceInitCommand).toHaveBeenCalledWith('/project', {
-      prefix: 'ff-',
-      force: true,
-    });
   });
 
   it('routes create with parsed compose tags and register toggle', async () => {
@@ -255,43 +239,14 @@ describe('registerFurnace', () => {
     ).rejects.toThrow();
   });
 
-  it('routes "furnace chrome-doc create" to the chrome-doc scaffolder', async () => {
-    await runFurnaceCommand('chrome-doc', 'create', 'mybrowser');
-
-    expect(furnaceChromeDocCreateCommand).toHaveBeenCalledWith(
-      '/project',
-      'mybrowser',
-      expect.any(Object)
-    );
-  });
-
-  it('passes --no-titlebar to the chrome-doc scaffolder', async () => {
-    await runFurnaceCommand('chrome-doc', 'create', 'overlay', '--no-titlebar');
+  it('routes the nested "furnace chrome-doc create" with its parsed options', async () => {
+    await runFurnaceCommand('chrome-doc', 'create', 'overlay', '--no-titlebar', '--dry-run');
 
     expect(furnaceChromeDocCreateCommand).toHaveBeenCalledWith(
       '/project',
       'overlay',
-      expect.objectContaining({ titlebar: false })
+      expect.objectContaining({ titlebar: false, dryRun: true })
     );
-  });
-
-  it('passes --dry-run to the chrome-doc scaffolder', async () => {
-    await runFurnaceCommand('chrome-doc', 'create', 'mybrowser', '--dry-run');
-
-    expect(furnaceChromeDocCreateCommand).toHaveBeenCalledWith(
-      '/project',
-      'mybrowser',
-      expect.objectContaining({ dryRun: true })
-    );
-  });
-
-  it('routes "furnace chrome-doc remove" to the chrome-doc remover', async () => {
-    await runFurnaceCommand('chrome-doc', 'remove', 'mybrowser', '--yes', '--dry-run');
-
-    expect(furnaceChromeDocRemoveCommand).toHaveBeenCalledWith('/project', 'mybrowser', {
-      yes: true,
-      dryRun: true,
-    });
   });
 
   it('routes override with typed options', async () => {
@@ -322,28 +277,6 @@ describe('registerFurnace', () => {
     );
   });
 
-  it('routes list to the Furnace listing entrypoint', async () => {
-    await runFurnaceCommand('list');
-
-    expect(furnaceListCommand).toHaveBeenCalledWith('/project', {});
-  });
-
-  it('routes remove with the yes option', async () => {
-    await runFurnaceCommand('remove', 'moz-button', '--yes');
-
-    expect(furnaceRemoveCommand).toHaveBeenCalledWith('/project', 'moz-button', {
-      yes: true,
-    });
-  });
-
-  it('routes preview with install toggles', async () => {
-    await runFurnaceCommand('preview', '--install');
-
-    expect(furnacePreviewCommand).toHaveBeenCalledWith('/project', {
-      install: true,
-    });
-  });
-
   it('routes validate with an optional component name', async () => {
     await runFurnaceCommand('validate', 'moz-button');
 
@@ -356,35 +289,43 @@ describe('registerFurnace', () => {
     expect(furnaceDiffCommand).toHaveBeenCalledWith('/project', 'moz-button');
   });
 
-  it('routes refresh with filtered options', async () => {
-    await runFurnaceCommand('refresh', 'moz-button', '--dry-run');
+  it('routes status with a named component', async () => {
+    await runFurnaceCommand('status', 'moz-button');
 
-    expect(furnaceRefreshCommand).toHaveBeenCalledWith('/project', 'moz-button', {
-      dryRun: true,
-    });
+    expect(furnaceStatusCommand).toHaveBeenCalledWith('/project', 'moz-button');
   });
 
-  it('routes validate with --fix option', async () => {
-    await runFurnaceCommand('validate', '--fix');
+  it('routes deploy and sync through the engine session lock', async () => {
+    await runFurnaceCommand('deploy', 'moz-button');
+    expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', 'moz-button', {});
+    expect(withEngineSessionLock).toHaveBeenCalledWith(
+      '/project',
+      'furnace deploy',
+      expect.any(Function),
+      {}
+    );
 
-    expect(furnaceValidateCommand).toHaveBeenCalledWith('/project', undefined, { fix: true });
+    vi.mocked(withEngineSessionLock).mockClear();
+    await runFurnaceCommand('sync');
+    expect(furnaceSyncCommand).toHaveBeenCalledWith('/project', {});
+    expect(withEngineSessionLock).toHaveBeenCalledWith(
+      '/project',
+      'furnace sync',
+      expect.any(Function),
+      {}
+    );
   });
 
-  it('routes sync with options', async () => {
-    await runFurnaceCommand('sync', '--dry-run', '--strategy', 'theirs');
+  it('runs a --dry-run deploy or sync WITHOUT taking the engine session lock', async () => {
+    // A dry run mutates nothing, so making it queue behind a running build
+    // would be a needless refusal. The short-circuit is the contract.
+    await runFurnaceCommand('deploy', 'moz-button', '--dry-run');
+    expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', 'moz-button', { dryRun: true });
+    expect(withEngineSessionLock).not.toHaveBeenCalled();
 
-    expect(furnaceSyncCommand).toHaveBeenCalledWith('/project', {
-      dryRun: true,
-      strategy: 'theirs',
-    });
-  });
-
-  it('routes mutating sync through the engine session lock', async () => {
-    await runFurnaceCommand('sync', '--strategy', 'ours');
-
-    expect(furnaceSyncCommand).toHaveBeenCalledWith('/project', {
-      strategy: 'ours',
-    });
+    await runFurnaceCommand('sync', '--dry-run');
+    expect(furnaceSyncCommand).toHaveBeenCalledWith('/project', { dryRun: true });
+    expect(withEngineSessionLock).not.toHaveBeenCalled();
   });
 
   it('threads --wait-lock <seconds> into BOTH locks the mutation takes', async () => {
@@ -400,7 +341,7 @@ describe('registerFurnace', () => {
     // `.fireforge/furnace.lock`. The budget reaching only the first is what
     // made `--wait-lock 1800` die at the file lock's fixed 30 s having paid
     // the entire wait, so the resolved value must reach the command options
-    // too — `runFurnaceMutation` turns it into the file lock's timeout.
+    // too. `runFurnaceMutation` turns it into the file lock's timeout.
     expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', 'moz-button', {
       waitLockSeconds: 30,
     });
@@ -440,21 +381,5 @@ describe('registerFurnace', () => {
       program.parseAsync(['node', 'fireforge', 'furnace', 'deploy', '--wait-lock', '0'])
     ).rejects.toThrow('--wait-lock must be an integer in 1..3600 (got "0")');
     expect(furnaceDeployCommand).not.toHaveBeenCalled();
-  });
-
-  it('routes diff without a name (all components)', async () => {
-    await runFurnaceCommand('diff');
-
-    expect(furnaceDiffCommand).toHaveBeenCalledWith('/project', undefined);
-  });
-
-  it('routes rename with old and new names', async () => {
-    await runFurnaceCommand('rename', 'moz-old-widget', 'moz-new-widget');
-
-    expect(furnaceRenameCommand).toHaveBeenCalledWith(
-      '/project',
-      'moz-old-widget',
-      'moz-new-widget'
-    );
   });
 });

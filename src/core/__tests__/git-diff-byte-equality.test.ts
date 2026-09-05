@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Byte-equality guard for {@link getAllDiff} against a REAL git repository.
+ * Byte-equality guard for {@link getAllDiff} against a real git repository.
  *
  * `getAllDiff`'s output is not just displayed: `tree-store.ts` SHA-256s the
  * whole string into every tree fingerprint, and `export-all.ts` writes it
@@ -52,7 +52,7 @@ describe('getAllDiff byte contract (real git)', () => {
 
   it('returns the bare newline sentinel for a clean tree', async () => {
     const repo = await initRepo();
-    // Not '' — `lint.ts` and `export-all.ts` gate on `.trim()`, but
+    // Not '': `lint.ts` and `export-all.ts` gate on `.trim()`, but
     // `git-diff.test.ts` pins this exact value.
     await expect(getAllDiff(repo)).resolves.toBe('\n');
   });

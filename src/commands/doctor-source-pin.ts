@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Doctor check comparing the CONFIGURED Firefox source pin against what the
+ * Doctor check comparing the configured Firefox source pin against what the
  * engine checkout actually is.
  *
  * `fireforge source set` lands `firefox.version` inside `fireforge.json`,
  * beside hand-maintained policy sections. That is convenient and it is also
- * the whole problem: a routine `git checkout -- fireforge.json` — undoing an
- * accidental reformat, say — silently reverts an uncommitted pin along with
+ * the whole problem: a routine `git checkout -- fireforge.json` (undoing an
+ * accidental reformat, say) silently reverts an uncommitted pin along with
  * it, and nothing afterwards reports that the pin and the checkout have
- * diverged. The tell in the field was a gate flipping green with no change
- * that should have made it green.
+ * diverged. In the field this showed up as a gate flipping green with no
+ * change that should have made it green.
  *
- * This is deliberately not a lock and not a refusal: a tree may legitimately
- * be mid-migration between two versions. It only makes a mismatched tree
- * VISIBLE, which is all that was missing.
+ * This is not a lock and not a refusal: a tree may legitimately be
+ * mid-migration between two versions. It only makes a mismatched tree
+ * visible, which is all that was missing.
  *
  * Scope is limited by what is actually recorded. `firefox.product`,
- * `firefox.sha256` and `firefox.candidate` have NO counterpart anywhere on
- * disk — `.fireforge/state.json` records only `downloadedVersion` and
- * `baseCommit` — so there is nothing to compare them against and the check
+ * `firefox.sha256` and `firefox.candidate` have no counterpart anywhere on
+ * disk (`.fireforge/state.json` records only `downloadedVersion` and
+ * `baseCommit`), so there is nothing to compare them against and the check
  * says nothing about them rather than implying it verified them.
  */
 
@@ -46,8 +46,8 @@ async function runSourcePinCheck(ctx: DoctorCheckContext): Promise<DoctorCheck> 
   let actual: string | undefined;
   try {
     // A blank or whitespace-only version.txt (a truncated write, a partial
-    // extraction) carries no version to compare — treat it as absent rather
-    // than reporting the engine as being at version "".
+    // extraction) carries no version to compare, so treat it as absent
+    // rather than reporting the engine as being at version "".
     actual = (await getFirefoxVersion(ctx.paths.engine))?.trim() || undefined;
   } catch (error: unknown) {
     // Best-effort: an unreadable version.txt is not a pin mismatch, and a
@@ -89,7 +89,7 @@ async function runSourcePinCheck(ctx: DoctorCheckContext): Promise<DoctorCheck> 
 
 /**
  * Pin-vs-checkout reporting. Needs the loaded config, so it declares the
- * dependency on the config check that populates `ctx.config`; skipped
+ * dependency on the config check that populates `ctx.config`. It is skipped
  * entirely without an engine, where there is nothing to compare.
  */
 export const SOURCE_PIN_DOCTOR_CHECK: DoctorCheckDefinition = {

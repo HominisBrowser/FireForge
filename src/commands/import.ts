@@ -29,7 +29,8 @@ import { getPatchSourceVersion } from '../core/patch-source-metadata.js';
 import { warnIfStaticComponentsStale } from '../core/test-stale-check.js';
 import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
-import type { ImportOptions, PatchesManifest } from '../types/commands/index.js';
+import type { ImportOptions, ImportSummary, PatchesManifest } from '../types/commands/index.js';
+import type { ProjectPaths } from '../types/config.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
@@ -49,9 +50,9 @@ import { pickDefined } from '../utils/options.js';
 /**
  * Errno codes for filesystem-level failures against the working file.
  * These are safe to fall through as "unmanaged" because they describe the
- * *state of the engine directory*, not the integrity of the patch stack.
- * Manifest / patch-parse / PatchError failures do NOT match this set and
- * are re-thrown so the root cause surfaces instead of being silently
+ * state of the engine directory rather than the integrity of the patch
+ * stack. Manifest / patch-parse / PatchError failures do not match this set
+ * and are re-thrown so the root cause surfaces instead of being silently
  * reclassified as a spurious dirty file.
  */
 const SAFE_IO_FALLBACK_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'EISDIR', 'EBUSY']);
@@ -89,7 +90,7 @@ async function getUnmanagedDirtyFiles(
         return actual === expected ? null : file;
       } catch (error: unknown) {
         // PatchError, manifest corruption, and patch-parse failures are
-        // *structural* problems with the patch stack — masking them as
+        // structural problems with the patch stack. Masking them as an
         // "unmanaged dirty file" would let the user `--force` past a real
         // root cause (e.g. "patch 003 missing from manifest") and compound
         // the corruption. Only swallow the pure-IO fallback cases where
@@ -148,7 +149,7 @@ async function checkUncommittedPatchFiles(
         // already carries the patch's effects. The import below still
         // re-applies each patch (a no-op for files whose contents already
         // match), so phrase the line as "no resync needed" rather than
-        // "patches already applied" — the latter contradicts the "Applied N
+        // "patches already applied". The latter contradicts the "Applied N
         // patch(es)" summary `applyPatchesWithContinue` prints next.
         info(
           'Patch-touched files already match the stored patch stack — no engine resync needed before re-applying.'
@@ -168,10 +169,7 @@ async function checkUncommittedPatchFiles(
   }
 }
 
-async function handlePatchFailures(
-  summary: Awaited<ReturnType<typeof applyPatchesWithContinue>>,
-  projectRoot: string
-): Promise<void> {
+async function handlePatchFailures(summary: ImportSummary, projectRoot: string): Promise<void> {
   const firstFailed = summary.failed[0];
 
   if (firstFailed) {
@@ -242,7 +240,7 @@ async function checkEngineDrift(
   const currentHead = await getHead(engineDir);
   if (currentHead === baseCommit) return true;
 
-  // `--yes` and `--force` both answer this prompt; only `--force` also
+  // `--yes` and `--force` both answer this prompt. Only `--force` also
   // waives the patch-integrity gate further down.
   const promptAnswered = forceImport || acceptPrompts;
 
@@ -283,7 +281,7 @@ async function checkEngineDrift(
  * without the `.patch` suffix (matching `applyPatchesWithContinue`'s
  * `untilFilename` resolver).
  *
- * Returns an empty set when no match is found — the caller treats that as
+ * Returns an empty set when no match is found. The caller treats that as
  * "no scope filter applies" so the import behaves identically to an
  * unrecognised `--until` target (which `applyPatchesWithContinue` will
  * later surface as a normal error).
@@ -294,11 +292,11 @@ function buildUntilFilenameSet(
 ): Set<string> {
   const set = new Set<string>();
   if (until === undefined) return set;
-  // Resolve the identifier with the SAME matcher the apply loop uses
-  // (`matchesUntilFilename` accepts filenames, extension-less names, AND
+  // Resolve the identifier with the same matcher the apply loop uses
+  // (`matchesUntilFilename` accepts filenames, extension-less names, and
   // bare ordinals). A filename-only match makes `import --until 5` produce
-  // an EMPTY scope set — the UI previews "0 patches", the integrity gates
-  // filter every in-range issue away — and the apply loop then applies
+  // an empty scope set: the UI previews "0 patches", the integrity gates
+  // filter every in-range issue away, and the apply loop then applies
   // patches 1..5 anyway.
   const target = patches.find((p) => matchesUntilFilename(p.filename, until));
   if (!target) return set;
@@ -326,8 +324,8 @@ async function assertScopedManifestConsistency(
     until !== undefined
       ? manifestConsistencyIssues.filter(
           (issue) =>
-            // Global (manifest-level) issues have no specific filename to scope
-            // against — a missing or unparseable patches.json blocks any
+            // Global (manifest-level) issues have no specific filename to
+            // scope against: a missing or unparseable patches.json blocks any
             // import. Per-patch issues only block when the patch is in scope.
             issue.code === 'manifest-missing' ||
             issue.code === 'manifest-invalid' ||
@@ -351,7 +349,7 @@ async function assertScopedManifestConsistency(
 /**
  * Prints advisory version-compatibility warnings for every in-scope patch
  * whose recorded source version differs meaningfully from the configured
- * Firefox version. Advisory only — never blocks the import.
+ * Firefox version. Advisory only. Never blocks the import.
  */
 async function warnVersionCompatibility(
   projectRoot: string,
@@ -376,13 +374,13 @@ async function warnVersionCompatibility(
 
 /**
  * Patch-integrity gate: surfaces orphaned-modification issues scoped to
- * the `--until` range and decides whether the import may proceed —
+ * the `--until` range and decides whether the import may proceed.
  * `--force` continues with a warning, non-TTY refuses loudly, and an
  * interactive operator is prompted. Returns false when the import should
  * stop (the cancel outro has been printed).
  */
 async function gateImportIntegrity(
-  paths: ReturnType<typeof getProjectPaths>,
+  paths: ProjectPaths,
   untilFilenameSet: Set<string>,
   until: string | undefined,
   forceImport: boolean
@@ -574,8 +572,8 @@ export async function importCommand(
     }
 
     // The re-applied queue may have moved components.conf away from what
-    // the last full build compiled in — surface that now instead of at the
-    // next test refusal.
+    // the last full build compiled in, so surface that now instead of at
+    // the next test refusal.
     await warnIfStaticComponentsStale(projectRoot, paths.engine);
 
     outro('All patches applied successfully!');
@@ -600,19 +598,15 @@ export function registerImport(
       '-f, --force',
       'Proceed despite engine drift and overwrite unmanaged changes in patch-touched files'
     )
-    // NOT an alias of --force. `--force` waives two orthogonal things: the
-    // drift prompt AND the patch-integrity gate. `--yes` waives only the
+    // Not an alias of --force. `--force` waives two orthogonal things: the
+    // drift prompt and the patch-integrity gate. `--yes` waives only the
     // prompt, so a scripted import can run unattended while the integrity
-    // refusal stays armed — which is the guard you actually want in CI.
+    // refusal stays armed, which is the guard you want in CI.
     .option(
       '-y, --yes',
       'Answer the drift prompt non-interactively. Unlike --force, this does NOT waive the patch-integrity gate.'
     )
-    .option(
-      '--until <patch>',
-      'Apply patches only up to and including this patch (alias: --stop-at)'
-    )
-    .option('--stop-at <patch>', 'Alias for --until')
+    .option('--until <patch>', 'Apply patches only up to and including this patch')
     .option('--dry-run', 'Preview which patches would be applied without modifying the engine')
     .action(
       withErrorHandling(
@@ -621,16 +615,9 @@ export function registerImport(
           force?: boolean;
           yes?: boolean;
           until?: string;
-          stopAt?: string;
           dryRun?: boolean;
         }) => {
-          // Accept both spellings; --until wins when both are passed.
-          const merged: typeof options = { ...options };
-          if (merged.until === undefined && merged.stopAt !== undefined) {
-            merged.until = merged.stopAt;
-          }
-          delete merged.stopAt;
-          await importCommand(getProjectRoot(), pickDefined(merged));
+          await importCommand(getProjectRoot(), pickDefined(options));
         }
       )
     );

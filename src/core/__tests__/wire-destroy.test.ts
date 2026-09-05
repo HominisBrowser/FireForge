@@ -13,7 +13,7 @@ const parserFallbackMock = vi.hoisted(() =>
 vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../parser-fallback.js', async (importOriginal) => ({
-  // Pure logic with no side effects; only `withParserFallback` needs
+  // Pure logic with no side effects. Only `withParserFallback` needs
   // controlling here.
   ...(await importOriginal<typeof import('../parser-fallback.js')>()),
   withParserFallback: parserFallbackMock,
@@ -178,7 +178,7 @@ const gBrowserInit = {
   });
 
   it('does not match a substring for idempotency (word-boundary check)', async () => {
-    // "Thing.destroy()" is present, but "OtherThing.destroy()" should NOT match
+    // "Thing.destroy()" is present, but "OtherThing.destroy()" should not match
     await expect(addDestroyToBrowserInit('/engine', 'OtherThing.destroy()')).resolves.toBe(true);
   });
 

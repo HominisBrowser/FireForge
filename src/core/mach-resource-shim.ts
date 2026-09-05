@@ -13,7 +13,7 @@
  *
  * The guard is installed as a `fireforge_mach_guard.pth` + module pair in
  * every discovered mach virtualenv site-packages directory. A PYTHONPATH
- * `sitecustomize.py` is NOT sufficient on its own: mach re-execs itself into
+ * `sitecustomize.py` is not sufficient on its own: mach re-execs itself into
  * its private virtualenv and drops PYTHONPATH, so that route never loads.
  * `.pth` files execute at interpreter startup from the venv's own
  * site-packages, which survives the re-exec. The PYTHONPATH copy is retained
@@ -22,12 +22,12 @@
  *
  * The guard covers the whole crash family:
  *  - wraps `psutil.virtual_memory` / `swap_memory` / `cpu_percent` /
- *    `cpu_times` / `disk_io_counters` module-wide, so every call site —
+ *    `cpu_times` / `disk_io_counters` module-wide, so every call site,
  *    including the direct `psutil.virtual_memory()` in
- *    `mozbuild.base._run_make` — degrades to a `UserWarning` and a zeroed
+ *    `mozbuild.base._run_make`, degrades to a `UserWarning` and a zeroed
  *    reading instead of aborting.
  *
- *    The fallback must be per-function ARITY-CORRECT and reconstructible:
+ *    The fallback must be per-function arity-correct and reconstructible:
  *    mozsystemmonitor captures reading types at `__init__`
  *    (`self._swap_type = type(psutil.swap_memory())`) and rebuilds each
  *    collector sample via `self._swap_type(*swap_mem)`. An svmem-shaped
@@ -37,42 +37,49 @@
  *    sentinel, and mach hangs forever in its atexit `waitpid`. Each wrapped
  *    function therefore degrades to a zeroed instance of psutil's own result
  *    namedtuple where resolvable, else a module-level guard-owned namedtuple
- *    with the exact field order and arity for THAT function (module-level so
+ *    with the exact field order and arity for that function (module-level so
  *    readings pickle by reference across the collector pipe).
  *    `_DegradedReading` remains only as a documented last resort and
  *    tolerates `type(reading)(*values)` reconstruction. Guard-owned fallback
  *    classes never depend on psutil internals resolving, which also makes
  *    them safe when two guard copies load (PYTHONPATH `sitecustomize` in the
- *    bootstrap phase plus the in-venv `.pth`), each with its own classes;
- *  - guards `SystemResourceMonitor` CONSTRUCTION via an import hook:
+ *    bootstrap phase plus the in-venv `.pth`), each with its own classes.
+ *  - guards `SystemResourceMonitor` construction via an import hook:
  *    `poll_interval` is pre-populated before the real `__init__` runs, a
  *    failing `__init__` marks the instance degraded instead of raising, and
- *    every monitor method no-ops on a degraded instance — so a
+ *    every monitor method no-ops on a degraded instance, so a
  *    partially-constructed monitor can never surface the
  *    `AttributeError: poll_interval` variant. Degraded aggregate methods
  *    return zeroed shapes (not `None`) where callers subscript the result
  *    (`aggregate_io` → zeroed io reading, so mozbuild's `log_resource_usage`
- *    does not die on `usage["io"].read_bytes` after a successful compile);
+ *    does not die on `usage["io"].read_bytes` after a successful compile).
  *  - suppresses the mozsystemmonitor collector child on degradation: once
  *    any psutil degradation is observed in the process, monitors are kept
  *    inert (`start` never spawns the collector), and a degraded transition
  *    or raising `stop` best-effort terminates a live collector child and
  *    drains the pipe, so a malformed sample stream cannot wedge mach's
- *    shutdown even if a future shape mismatch slips through;
+ *    shutdown even if a future shape mismatch slips through.
  *  - wraps `mozbuild.controller.building.BuildMonitor.log_resource_usage` to
  *    warn-and-continue on any exception, so end-of-build resource reporting
  *    can never fail a build whose artifacts are complete.
  */
 
-import { readdir } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { lstat, mkdir, readdir } from 'node:fs/promises';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import { delimiter, join } from 'node:path';
 
+import { BuildError } from '../errors/build.js';
 import { toError } from '../utils/errors.js';
-import { ensureDir, pathExists, writeText } from '../utils/fs.js';
+import { pathExists, writeText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 
-/** Directory name (under the OS temp dir) holding the PYTHONPATH fallback. */
+/**
+ * Prefix of the per-user directory (under the OS temp dir) holding the
+ * PYTHONPATH fallback. The uid (or, on Windows, the username) is appended:
+ * a fixed name under a shared `/tmp` lets any other local account pre-create
+ * the directory and own the `sitecustomize.py` that every mach dispatch
+ * then imports.
+ */
 const RESOURCE_SHIM_DIRNAME = 'fireforge-mach-resource-shim';
 
 /** Basename (sans extension) of the in-venv guard module. */
@@ -94,6 +101,7 @@ export const GUARD_PYTHON_SOURCE = `# Generated by FireForge - do not edit.
 # (survives mach's venv re-exec, which drops PYTHONPATH).
 import builtins
 import collections
+import inspect
 import sys
 import warnings
 
@@ -374,7 +382,40 @@ def _patch_monitor_class(cls):
 
         return wrapper
 
+    def _wrap_unbound(name, func):
+        # Upstream declares record_event/record_marker as @staticmethods (and
+        # may declare others as @classmethods). Those take no receiver, so
+        # they cannot use the per-instance degraded flag and must not have one
+        # threaded in — see the descriptor dispatch below.
+        def wrapper(*args, **kwargs):
+            if _fireforge_host_degraded[0]:
+                return _monitor_degraded_result(name, args, kwargs)
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                _fireforge_degraded_notice(exc)
+                return _monitor_degraded_result(name, args, kwargs)
+
+        return wrapper
+
     for _name in _MONITOR_METHOD_NAMES:
+        # getattr_static returns the raw class attribute, so a staticmethod
+        # is still a staticmethod object here. Plain getattr would hand back
+        # the underlying function, and re-setting THAT on the class rebinds
+        # it as an instance method: the receiver is then passed through as an
+        # extra leading positional and every call raises
+        # "takes N positional arguments but N+1 were given". Re-apply the
+        # descriptor the attribute actually had.
+        try:
+            _raw = inspect.getattr_static(cls, _name)
+        except AttributeError:
+            continue
+        if isinstance(_raw, staticmethod):
+            setattr(cls, _name, staticmethod(_wrap_unbound(_name, _raw.__func__)))
+            continue
+        if isinstance(_raw, classmethod):
+            setattr(cls, _name, classmethod(_wrap_unbound(_name, _raw.__func__)))
+            continue
         _orig = getattr(cls, _name, None)
         if _orig is not None:
             setattr(cls, _name, _wrap_method(_name, _orig))
@@ -511,13 +552,77 @@ async function discoverMachSitePackages(engineDir: string): Promise<string[]> {
 }
 
 /**
- * Writes the PYTHONPATH `sitecustomize.py` fallback into a stable
- * FireForge-owned temp directory and returns that directory. Idempotent —
- * overwriting each call keeps it in sync with this source across upgrades.
+ * Per-user discriminator for the shim directory name. The numeric uid on
+ * POSIX, read via `process.getuid` rather than `os.userInfo()`: the latter
+ * resolves the passwd entry and throws (`ERR_SYSTEM_ERROR`) for a uid that
+ * has none (`docker --user 1001:1001`, OpenShift's random uids, many CI
+ * agents), which would take every build and test dispatch down with a raw
+ * system error. On Windows there is no uid. The username is the
+ * discriminator, with `userInfo()` still guarded because the same lookup
+ * can fail there for a service account, falling back to the environment.
+ */
+function shimDirOwner(): string {
+  const uid = process.getuid?.();
+  if (uid !== undefined) return String(uid);
+  let username: string | undefined;
+  try {
+    username = userInfo().username;
+  } catch {
+    username = process.env['USERNAME'] ?? process.env['USER'];
+  }
+  return (username ?? 'unknown-user').replace(/[^A-Za-z0-9_.-]/g, '_');
+}
+
+/** Per-user shim directory: `<tmpdir>/fireforge-mach-resource-shim-<uid>`. */
+function resourceShimDir(): string {
+  return join(tmpdir(), `${RESOURCE_SHIM_DIRNAME}-${shimDirOwner()}`);
+}
+
+/**
+ * Refuses a shim directory that is not a private directory of the current
+ * user. `lstat`, not `stat`: a symlink planted at the path would otherwise
+ * be followed and the check would describe its target. On Windows only the
+ * "is a real directory" half applies. There is no POSIX owner or mode bit
+ * to read, and the per-user name is the isolation.
+ *
+ * @param dir - Shim directory that {@link ensureSitecustomizeFallback} created
+ * @throws BuildError when the directory is a symlink/file, owned by another
+ *   uid, or group/world-writable
+ */
+export async function assertPrivateShimDir(dir: string): Promise<void> {
+  const stats = await lstat(dir);
+  const refuse = (reason: string): never => {
+    throw new BuildError(
+      `Refusing to use mach resource shim directory ${dir}: ${reason}. ` +
+        'Another local account may have planted it; remove or fix it and retry.'
+    );
+  };
+  if (!stats.isDirectory()) {
+    refuse('not a directory (symlink or file)');
+  }
+  if (process.platform === 'win32') return;
+  const uid = process.getuid?.();
+  if (uid !== undefined && stats.uid !== uid) {
+    refuse(`owned by uid ${stats.uid}, not the current user (uid ${uid})`);
+  }
+  if ((stats.mode & 0o022) !== 0) {
+    refuse(`mode ${(stats.mode & 0o777).toString(8)} is group/world-writable`);
+  }
+}
+
+/**
+ * Writes the PYTHONPATH `sitecustomize.py` fallback into a per-user,
+ * mode-0700 FireForge-owned temp directory, verified private before the
+ * write, and returns that directory. Idempotent: overwriting each call
+ * keeps it in sync with this source across upgrades.
  */
 async function ensureSitecustomizeFallback(): Promise<string> {
-  const dir = join(tmpdir(), RESOURCE_SHIM_DIRNAME);
-  await ensureDir(dir);
+  const dir = resourceShimDir();
+  // `mode` only applies when mkdir creates the directory (and is masked by
+  // the umask). A pre-existing one keeps whatever it had, which is exactly
+  // what the assertion below refuses if it is not private.
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await assertPrivateShimDir(dir);
   await writeText(join(dir, 'sitecustomize.py'), GUARD_PYTHON_SOURCE);
   return dir;
 }
@@ -540,7 +645,7 @@ function machResourceShimEnv(
  * `fireforge_mach_guard.pth` + `fireforge_mach_guard.py` into every
  * discovered mach virtualenv site-packages (survives mach's venv re-exec),
  * plus the PYTHONPATH sitecustomize fallback for the pre-venv bootstrap
- * phase. Idempotent and re-run before EVERY protected dispatch (including
+ * phase. Idempotent and re-run before every protected dispatch (including
  * each retry) so a venv created by a crashed first attempt is guarded on
  * the next one instead of re-dying on the same wedged state.
  */
@@ -556,7 +661,7 @@ export async function installMachResourceGuard(
         `import ${GUARD_MODULE_NAME}\n`
       );
     } catch (error: unknown) {
-      // A read-only or vanished venv must not block the dispatch; the
+      // A read-only or vanished venv must not block the dispatch. The
       // PYTHONPATH fallback still applies and other venvs may have taken
       // the guard.
       verbose(

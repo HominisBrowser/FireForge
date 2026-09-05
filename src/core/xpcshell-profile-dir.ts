@@ -3,10 +3,10 @@
  * Per-invocation xpcshell profile directory.
  *
  * Firefox's xpcshell harness defaults `XPCSHELL_TEST_PROFILE_DIR` to a
- * FIXED path (`$TMPDIR/firefox/xpcshellprofile`), so two overlapping
- * harness invocations — concurrent `fireforge test` processes, or future
- * verification-tree shards — corrupt each other's profiles. FireForge
- * never set the variable; this helper mints a fresh `mkdtemp` directory
+ * fixed path (`$TMPDIR/firefox/xpcshellprofile`), so two overlapping
+ * harness invocations (concurrent `fireforge test` processes, or future
+ * verification-tree shards) corrupt each other's profiles. FireForge
+ * never set the variable. This helper mints a fresh `mkdtemp` directory
  * per harness invocation and exports it through the mach env channel.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -21,12 +21,12 @@ export const XPCSHELL_PROFILE_ENV_VAR = 'XPCSHELL_TEST_PROFILE_DIR';
 /**
  * Runs `fn` with a fresh per-invocation xpcshell profile directory
  * injected into the environment, removing the directory afterwards
- * (best-effort — a failure to clean up warns and leaves the mkdtemp dir
- * for the OS tmp reaper; the harness may still hold files briefly).
+ * (best-effort: a failure to clean up warns and leaves the mkdtemp dir
+ * for the OS tmp reaper, and the harness may still hold files briefly).
  *
  * An operator-provided `XPCSHELL_TEST_PROFILE_DIR` (in `baseEnv` or the
  * process environment) is respected verbatim: no directory is minted and
- * NOTHING is deleted — we never remove a directory we did not create.
+ * nothing is deleted, because we never remove a directory we did not create.
  */
 export async function withXpcshellProfileDir<T>(
   baseEnv: Record<string, string> | undefined,

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Operator-facing triage for the `timed out … with no output` / `Ran 0
- * checks` stall — the shape where the harness dies before ANY test output.
+ * checks` stall: the shape where the harness dies before any test output.
  *
- * Split out of `test-harness-crash.ts`, which CLASSIFIES runs; this module
+ * Split out of `test-harness-crash.ts`, which classifies runs. This module
  * only renders advice about one already-classified shape. Keeping the two
  * apart matters because the census below carries claims of unequal
  * evidential strength, and the rules for editing it are not the rules for
@@ -11,7 +11,7 @@
  * the output or not, while a cause in the census is an assertion about the
  * world that an operator will act on.
  *
- * Everything here is pure — the platform and the probed display state are
+ * Everything here is pure. The platform and the probed display state are
  * injected, so unit tests need no mocking.
  */
 
@@ -20,9 +20,9 @@ import type { HarnessCrashSignature } from './test-harness-signature.js';
 
 /**
  * First step for the `timed out … with no output` / `Ran 0 checks`
- * signature, printed ABOVE the cause list. Running a known-good control
+ * signature, printed above the cause list. Running a known-good control
  * separates "this test" from "this build" and is the correct opening move
- * for EVERY cause below — it is not specific to any one of them, so
+ * for every cause below. It is not specific to any one of them, so
  * attaching it to a single entry made reaching that entry informationally
  * empty.
  */
@@ -32,23 +32,23 @@ const NO_OUTPUT_STALL_CONTROL_STEP =
 
 /**
  * Recorded causes of the `timed out … with no output` / `Ran 0 checks`
- * signature, each paired with the probe that DISCRIMINATES it from the
+ * signature, each paired with the probe that discriminates it from the
  * others. Printed verbatim under the hint.
  *
- * Evidence per entry is deliberately unequal, and the text says so:
+ * Evidence per entry is unequal, and the text says so:
  *
- *  - (1) is MEASURED — `probeDisplaySleepState` reads the display's power
+ *  - (1) is measured: `probeDisplaySleepState` reads the display's power
  *    state, so the hint states it as fact rather than as a possibility.
  *  - (2) is discriminated by `--headless`.
- *  - (4) is MECHANICAL and was root-caused downstream: the harness serves
+ *  - (4) is mechanical and was root-caused downstream: the harness serves
  *    its manifest from `server.js` on 8888, and a survivor of an
  *    interrupted run keeps the port. Its probe is exact, and the preflight
  *    in `mochitest-server-port.ts` now refuses it before a run starts.
- *  - (3) is now MECHANICAL and root-caused, replacing the correlation an
+ *  - (3) is now mechanical and root-caused, replacing the correlation an
  *    earlier revision recorded. A `chrome://` (or `resource://`) URL that
  *    resolves to nothing reaches `CheckForBrokenChromeURL`
  *    (netwerk/base/nsNetUtil.cpp), which outside automation only
- *    `printf_stderr`s `Missing chrome or resource URL: <uri>` — but under
+ *    `printf_stderr`s `Missing chrome or resource URL: <uri>`, but under
  *    `xpc::IsInAutomation()` the same condition is
  *    `MOZ_CRASH_UNSAFE_PRINTF("Missing chrome or resource URLs: %s")`. A
  *    downstream reproduction symbolicated the faulting frame as
@@ -58,13 +58,13 @@ const NO_OUTPUT_STALL_CONTROL_STEP =
  *    failed image load in Gecko fires `error` and does not gate the
  *    document load event.
  *
- * Detection by log line is deliberately NOT specified for (3), and the
- * reason is the mechanism itself: in the reproduction the crash landed in a
- * CONTENT process (`plugin-container`, a child of the browser) with the
+ * Detection by log line is not specified for (3), because of the mechanism
+ * itself: in the reproduction the crash landed in a content
+ * process (`plugin-container`, a child of the browser) with the
  * crash reporter compiled out, so the harness log carried neither the crash
- * message nor a crash line — only the no-output timeout, `Ran 0 checks`,
+ * message nor a crash line, only the no-output timeout, `Ran 0 checks`,
  * and mochitest's "Can't trigger Breakpad, just killing process". Under
- * automation the message is in the process that DIED, not in the log, so
+ * automation the message is in the process that died, not in the log, so
  * the census points at the two artefacts that do carry it: the OS crash
  * report (whose faulting frame names `CheckForBrokenChromeURL`) and the
  * out-of-automation smoke probe (which prints the non-crashing spelling
@@ -97,17 +97,17 @@ const NO_OUTPUT_STALL_TRIAGE = [
 ];
 
 /**
- * Optional hint appended to the harness-crash message when a HEADED run on
+ * Optional hint appended to the harness-crash message when a headed run on
  * macOS died at the no-output timeout.
  *
- * When `displayState` names a MEASURED display state, the hint states it as
- * fact rather than as one of three possibilities — that is the point of
- * probing: an operator staring at a bare test failure should not have to
+ * When `displayState` names a measured display state, the hint states it as
+ * fact rather than as one of three possibilities, which is what probing is
+ * for: an operator staring at a bare test failure should not have to
  * rediscover that their machine dimmed. `caffeinate` is described accurately
- * (it prevents sleep; it cannot wake an already-sleeping display), so
+ * (it prevents sleep, and cannot wake an already-sleeping display), so
  * operators are not sent to a command that could not have helped them.
  *
- * Pure — the platform and the probed state are injected so unit tests need
+ * Pure. The platform and the probed state are injected so unit tests need
  * no mocking.
  *
  * @param signature - The recognized crash shape

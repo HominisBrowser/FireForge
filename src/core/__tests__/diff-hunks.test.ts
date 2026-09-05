@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion --
  * Test file: tests build their own input arrays and assert against elements
  * at known positions. Non-null assertions are the cleanest way to unpack
- * those positions; an `expect(x).toBeDefined()` dance before every assertion
+ * those positions. An `expect(x).toBeDefined()` dance before every assertion
  * would bloat the tests without catching anything real.
  */
 import { describe, expect, it } from 'vitest';
@@ -85,8 +85,8 @@ describe('buildHunks', () => {
     expect(hunks.length).toBeGreaterThanOrEqual(2);
     // First hunk starts at line 1 (the 'a'->'A' change has no leading context).
     expect(hunks[0]!.oldStart).toBe(1);
-    // Last hunk covers the trailing 'o'->'O' change — its oldStart should be
-    // well past the first hunk.
+    // Last hunk covers the trailing 'o'->'O' change, so its oldStart should
+    // be well past the first hunk.
     expect(hunks[hunks.length - 1]!.oldStart).toBeGreaterThan(hunks[0]!.oldStart + 3);
   });
 

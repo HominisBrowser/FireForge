@@ -122,7 +122,7 @@ describe('stageAllFiles', () => {
     // paths are ignored by one of your .gitignore files`, turning a
     // recoverable monolithic timeout into a hard setup failure requiring
     // `download --force`. The chunked path pre-filters via
-    // `git check-ignore`; ignored entries log a soft "Skipping gitignored: …"
+    // `git check-ignore`. Ignored entries log a soft "Skipping gitignored: …"
     // line and the rest of the tree stages normally.
     execMock.mockResolvedValueOnce({ exitCode: 143, stdout: '', stderr: 'SIGTERM' });
     pathExistsMock.mockResolvedValue(false);
@@ -139,7 +139,7 @@ describe('stageAllFiles', () => {
         return Promise.resolve({ exitCode: 1, stdout: '', stderr: '' });
       }
       // Should never be invoked with .vscode as a path, since the
-      // pre-filter would have filtered it out; the assertion below
+      // pre-filter would have filtered it out. The assertion below
       // doubles as the regression guard.
       if (args[0] === 'add' && args.includes('.vscode')) {
         return Promise.reject(
@@ -170,7 +170,7 @@ describe('stageAllFiles', () => {
     // An elapsed-time heartbeat that resets only at function entry makes the
     // chunked phase report numbers including the entire monolithic timeout
     // window, with no way to tell where one ended and the other started. The
-    // heartbeat tracks a per-phase start timestamp; the first phase is
+    // heartbeat tracks a per-phase start timestamp. The first phase is
     // `monolithic`, the second is `chunked staging`, and the ticks carry that
     // label so non-TTY scrapers see the transition.
     vi.useFakeTimers();
@@ -190,8 +190,8 @@ describe('stageAllFiles', () => {
       const progress = vi.fn();
       const promise = stageAllFiles('/repo', { onProgress: progress });
       // Run timers until the staging completes. The monolithic add
-      // resolves immediately (mocked), then the chunked path runs;
-      // we don't need to advance timers to validate the transition
+      // resolves immediately (mocked), then the chunked path runs.
+      // We don't need to advance timers to validate the transition
       // because the fallback banner is emitted unconditionally on
       // monolithic timeout.
       await promise;
@@ -217,7 +217,7 @@ describe('stageAllFiles', () => {
 
   // Re-throwing the low-level AbortError when the chunked fallback's own
   // timeout fires shows operators a generic "The operation was aborted" with
-  // no recovery direction; the typed error carries the environment-variable
+  // no recovery direction. The typed error carries the environment-variable
   // override so the next `download --force` is guided by the message itself.
   it('raises GitIndexingTimeoutError when the chunked fallback itself times out', async () => {
     const { GitIndexingTimeoutError } = await import('../../errors/git.js');

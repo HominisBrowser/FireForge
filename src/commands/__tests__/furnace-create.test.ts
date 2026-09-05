@@ -92,7 +92,7 @@ vi.mock('../../core/furnace-rollback.js', () => ({
 
 vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   // `completeJournalRollback` is pure orchestration over the journal and
-  // the pending-repair marker — the behaviour these suites assert — so it
+  // the pending-repair marker (the behaviour these suites assert), so it
   // comes from the real module.
   ...(await importOriginal<typeof import('../../core/furnace-operation.js')>()),
   runFurnaceMutation: vi.fn(
@@ -276,11 +276,11 @@ describe('furnaceCreateCommand --with-tests', () => {
 
     // moz-testbrowser-foo → strip "moz-" → "testbrowser-foo"
     // binaryName is "testbrowser", so strip "testbrowser-" → "foo"
-    // Result: browser_testbrowser_foo.js (NOT browser_testbrowser_testbrowser_foo.js)
+    // Result: browser_testbrowser_foo.js (not browser_testbrowser_testbrowser_foo.js)
     const testFile = writeTextCalls.find((p: string) => p.includes('browser_testbrowser_foo.js'));
     expect(testFile).toBeDefined();
 
-    // Ensure the double-prefixed version does NOT exist
+    // Ensure the double-prefixed version does not exist
     const doublePrefix = writeTextCalls.find((p: string) =>
       p.includes('browser_testbrowser_testbrowser_foo.js')
     );
@@ -311,7 +311,7 @@ describe('furnaceCreateCommand --with-tests', () => {
       process.stdin.isTTY = origTTY;
     }
 
-    // Crucially, nothing under engine/ should have been created.
+    // Nothing under engine/ should have been created.
     const ensureDirCalls = mockEnsureDir.mock.calls.map((c) => c[0]);
     expect(
       ensureDirCalls.find((p: string) => p.includes(nativePath('content/test')))
@@ -612,10 +612,10 @@ describe('furnaceCreateCommand --xpcshell', () => {
     const testContent = testCall?.[1] ?? '';
     // The scaffold probes the packaged tree rather than loading the module.
     // `ChromeUtils.importESModule` pulls in Lit, which references `window`
-    // at module-load — xpcshell has no `window` global, so a module-load
+    // at module-load. xpcshell has no `window` global, so a module-load
     // path reliably fails with `ReferenceError: window is not defined` for
     // every Lit-based component. Assert there is no
-    // `await ChromeUtils.importESModule(` CALL; the explanatory header
+    // `await ChromeUtils.importESModule(` call. The explanatory header
     // comment may still name the now-avoided API.
     expect(testContent).not.toMatch(/await\s+ChromeUtils\.importESModule\(/);
     expect(testContent).toContain('Services.dirsvc.get("XCurProcD"');
@@ -627,7 +627,7 @@ describe('furnaceCreateCommand --xpcshell', () => {
     );
 
     // xpcshell does not go through registerTestManifest (moz.build wiring is
-    // left to the operator — see function docstring).
+    // left to the operator, see the function docstring).
     expect(mockRegisterTestManifest).not.toHaveBeenCalled();
   });
 
@@ -826,7 +826,7 @@ describe('furnaceCreateCommand validation', () => {
       process.stdin.isTTY = origTTY;
     }
 
-    // The mutation phase ran — config was written with the new entry.
+    // The mutation phase ran. Config was written with the new entry.
     const configArg = mockWriteFurnaceConfig.mock.calls[0]?.[1];
     expect(configArg?.custom['custom-widget']).toBeDefined();
   });

@@ -3,7 +3,7 @@
  * Unit tests for the placement helpers in export-flow.ts. These exist
  * specifically to cover the forward-import projection bug: the synthetic
  * entry for the pending patch must include its newly-created files, or
- * the forward-import rule cannot see imports authored *by* the new patch
+ * the forward-import rule cannot see imports authored by the new patch
  * itself and the gate silently lets through bad placements.
  */
 
@@ -153,22 +153,15 @@ describe('computePlacementPlan validation', () => {
   // lives here too.
   const oneMeta = [makeMetadata('001-infra-a.patch', 1, ['foo/A.sys.mjs'])];
 
-  it('throws on NaN', () => {
-    expect(() => computePlacementPlan(oneMeta, 'infra', 'foo', Number.NaN)).toThrow(
+  it.each([
+    ['NaN', Number.NaN],
+    ['zero', 0],
+    ['a negative', -5],
+    ['a non-integer', 1.5],
+  ])('throws on %s', (_label, requestedOrder) => {
+    expect(() => computePlacementPlan(oneMeta, 'infra', 'foo', requestedOrder)).toThrow(
       InvalidArgumentError
     );
-  });
-
-  it('throws on zero', () => {
-    expect(() => computePlacementPlan(oneMeta, 'infra', 'foo', 0)).toThrow(InvalidArgumentError);
-  });
-
-  it('throws on negatives', () => {
-    expect(() => computePlacementPlan(oneMeta, 'infra', 'foo', -5)).toThrow(InvalidArgumentError);
-  });
-
-  it('throws on non-integers', () => {
-    expect(() => computePlacementPlan(oneMeta, 'infra', 'foo', 1.5)).toThrow(InvalidArgumentError);
   });
 
   it('accepts 1 and produces a valid filename', () => {
@@ -276,7 +269,7 @@ describe('sparse export placement with patchPolicy reserved ranges', () => {
       'new-feature'
     );
 
-    // Order 241 is free, so the cascade never starts — nothing renames and
+    // Order 241 is free, so the cascade never starts: nothing renames and
     // the reserved 900 patch stays out of the plan entirely.
     expect(plan.insertionOrder).toBe(241);
     expect(plan.renameMap.size).toBe(0);
@@ -376,7 +369,7 @@ describe('projectPlacementForLint', () => {
 
     // Attempt to place a new patch at order 1 that imports from B.sys.mjs.
     // The fix must populate the synthetic entry's newFiles so the
-    // forward-import rule can inspect this import; otherwise the
+    // forward-import rule can inspect this import. Otherwise the
     // projection returns clean and the placement would go through.
     const newPatchDiff = createDiff(
       'foo/A.sys.mjs',
@@ -397,7 +390,7 @@ describe('projectPlacementForLint', () => {
 
   it('returns null when the pending patch does not forward-import', async () => {
     // Same setup as the first test but with a patch that does not
-    // reference the later file — projection should be clean.
+    // reference the later file, so the projection should be clean.
     await seed(patchesDir, [
       {
         metadata: makeMetadata('005-infra-b.patch', 5, ['foo/B.sys.mjs']),
@@ -495,11 +488,11 @@ describe('projectPlacementForLint', () => {
   });
 
   it('labels errors already present in the queue as pre-existing, not renumbering consequences', async () => {
-    // The base queue is ALREADY broken: 001 imports a module that 005
+    // The base queue is already broken: 001 imports a module that 005
     // creates later (forward-import fires today, before any placement).
     // Placing a new, clean patch re-detects the same error in the
-    // projection; blaming it on the renumber — or on the new patch —
-    // would misattribute, so it must land in the "already present" group.
+    // projection. Blaming it on the renumber (or on the new patch) would
+    // misattribute, so it must land in the "already present" group.
     await seed(patchesDir, [
       {
         metadata: makeMetadata('001-infra-early.patch', 1, ['foo/Early.sys.mjs']),
@@ -544,7 +537,7 @@ describe('projectPlacementForLint', () => {
     // attribution contract directly through the helper: an error that
     // implicates only existing (renamed) patches and is absent from the
     // baseline renders under the renumbering header with the
-    // NOT-from-the-exported-content disclaimer.
+    // not-from-the-exported-content disclaimer.
     const { groupProjectedPlacementErrors } = await import('../export-placement-conflicts.js');
     const renameMap = new Map([
       ['010-infra-shifted.patch', { newFilename: '011-infra-shifted.patch', newOrder: 11 }],
@@ -711,7 +704,7 @@ describe('commitPlacementExport rollback', () => {
   // was found to mutate the queue irreversibly when a mid-commit step
   // (writeText or addPatchToManifest) failed after the forward
   // renumber had already succeeded. Plain export (commitExportedPatch)
-  // had the rollback from day one; placement export did not.
+  // had the rollback from day one. Placement export did not.
   let projectRoot: string;
   let patchesDir: string;
 
@@ -761,7 +754,7 @@ describe('commitPlacementExport rollback', () => {
       1
     );
 
-    // Forward renumber succeeds; writeText for the new patch file
+    // Forward renumber succeeds, and writeText for the new patch file
     // simulates a disk failure.
     vi.mocked(writeText).mockImplementationOnce(() =>
       Promise.reject(new Error('simulated disk failure during new patch write'))
@@ -795,7 +788,7 @@ describe('commitPlacementExport rollback', () => {
   });
 
   it('swallows onCommitted hook failures so a failed audit log append does not fail the export', async () => {
-    // The export --order history-append hook runs INSIDE the patch
+    // The export --order history-append hook runs inside the patch
     // directory lock after the mutation has committed, so a throw in the
     // hook (a history jsonl write failing on a readonly filesystem) must
     // not leak out: by then the new patch file is on disk and the manifest
@@ -859,7 +852,7 @@ describe('commitPlacementExport rollback', () => {
       1
     );
 
-    // Forward renumber + writeText succeed; addPatchToManifest throws.
+    // Forward renumber + writeText succeed, then addPatchToManifest throws.
     vi.mocked(addPatchToManifest).mockImplementationOnce(() =>
       Promise.reject(new Error('simulated manifest write failure'))
     );

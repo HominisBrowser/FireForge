@@ -5,11 +5,11 @@ import { buildStorybookFailureMessage } from '../preview.js';
 
 describe('buildStorybookFailureMessage', () => {
   it('classifies missing chrome-map.json as a backend-build failure', () => {
-    // A `FileNotFoundError: [...] chrome-map.json` AFTER a successful npm
+    // A `FileNotFoundError: [...] chrome-map.json` after a successful npm
     // install is a backend-artifact failure, not a dependency one. A
     // heuristic that matches "No such file" but only looks for the literal
     // "backend" string misdiagnoses it and sends operators back to
-    // `--install`; the pattern list explicitly recognises backend-artifact
+    // `--install`. The pattern list explicitly recognises backend-artifact
     // filenames.
     const output = [
       'FileNotFoundError: [Errno 2] No such file or directory:',
@@ -19,7 +19,7 @@ describe('buildStorybookFailureMessage', () => {
     const message = buildStorybookFailureMessage(output, false);
     expect(message).toMatch(/Firefox build backend artifacts are missing/);
     expect(message).toMatch(/Rerun "fireforge build"/);
-    // Must NOT suggest `--install` — the wrong recovery for a missing
+    // Must not suggest `--install`, the wrong recovery for a missing
     // backend artifact.
     expect(message).not.toMatch(/fireforge furnace preview --install/);
   });

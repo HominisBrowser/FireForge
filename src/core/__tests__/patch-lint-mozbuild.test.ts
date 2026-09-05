@@ -63,7 +63,7 @@ describe('lintMozBuildSortedLists', () => {
 
   it('compares case-insensitively, matching mozbuild semantics', async () => {
     // Byte order would demand "HominisAppMenu" ('M' = 0x4D) before
-    // "HominisAppearance" ('e' = 0x65); mozbuild compares case-insensitively
+    // "HominisAppearance" ('e' = 0x65). Mozbuild compares case-insensitively
     // ("appe" < "appm"), so this list is correctly sorted and must pass.
     await writeFiles(repoDir, {
       'moz.build': [
@@ -281,11 +281,12 @@ describe('lintMozBuildSortedLists', () => {
   });
 
   it('does not let an unterminated list borrow the next list’s bracket', async () => {
-    // Two DIFFERENT variables, and the second list is correctly sorted. The
+    // Two different variables, and the second list is correctly sorted. The
     // forward scan used to read straight through the second opener, merge its
-    // items into the first list, and accept its `]` as the first list's close
-    // — reporting a sorting error against EXTRA_COMPONENTS for items that only
-    // ever belonged to EXTRA_JS_MODULES, and skipping the second list. The
+    // items into the first list, and accept its `]` as the first list's
+    // close. That reported a sorting error against EXTRA_COMPONENTS for items
+    // that only ever belonged to EXTRA_JS_MODULES, and skipped the second
+    // list. The
     // pre-existing test above missed this because both of its lists share one
     // variable name and it only asserts on an item name.
     await writeFiles(repoDir, {

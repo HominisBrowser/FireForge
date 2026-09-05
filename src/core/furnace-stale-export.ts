@@ -2,21 +2,21 @@
 /**
  * Stale-furnace-source gate for `fireforge patch export` / `re-export`.
  *
- * Exports capture the DEPLOYED engine copies of furnace-managed files, not
+ * Exports capture the deployed engine copies of furnace-managed files, not
  * the `components/` sources. Editing a component source and re-exporting its
- * owning patch WITHOUT an intervening `furnace deploy`/`apply` silently
- * exports the stale deployed copy — per-patch lint then flags the old line
+ * owning patch without an intervening `furnace deploy`/`apply` silently
+ * exports the stale deployed copy: per-patch lint then flags the old line
  * count and the patch body lags the source. This gate detects that sequence
  * by comparing component source directories against the checksums recorded
- * at the last apply (`FurnaceState.appliedChecksums`) — the same signal
- * `warnIfFurnaceStale` uses for run/watch — and refuses the export unless
+ * at the last apply (`FurnaceState.appliedChecksums`), the same signal
+ * `warnIfFurnaceStale` uses for run/watch, and refuses the export unless
  * the operator passes `--allow-stale-furnace`.
  *
  * Checksum-based on purpose: git checkouts and `furnace refresh` churn
  * mtimes without content changes, so an mtime comparison would misfire.
  *
  * Probe failures (broken furnace config, missing state) degrade to a verbose
- * log and an empty result — a broken furnace setup must never block
+ * log and an empty result. A broken furnace setup must never block
  * non-furnace patch work.
  */
 
@@ -37,7 +37,7 @@ import { resolveFtlDir } from './furnace-constants.js';
 export interface StaleFurnaceComponent {
   /** Component name (furnace.json key). */
   name: string;
-  /** Component flavor — resolves the source directory root. */
+  /** Component flavor, which resolves the source directory root. */
   type: 'custom' | 'override';
   /** Engine-relative deployed prefix (`/`-terminated) the component owns. */
   prefix: string;
@@ -45,18 +45,18 @@ export interface StaleFurnaceComponent {
 
 /**
  * Returns the furnace components whose deployed engine copies the given
- * files fall under AND whose `components/` sources have changed since the
+ * files fall under and whose `components/` sources have changed since the
  * last apply. Empty when furnace is not configured, never applied, or the
  * probe fails.
  *
  * Files are attributed per component: the custom `targetPath` / override
- * `basePath` prefixes, plus — for a localized non-sharedFtl custom
- * component — its exact deployed `<ftlDir>/<name>.ftl` file (the shared
- * FTL dir as a whole stays unclaimed; sibling files there belong to other
- * components). `sharedFtl` bundles are NOT furnace-deployed (apply only
- * prunes a dangling per-widget jar.mn line), so they have no deployed copy
- * to go stale and get no candidate by design. The storybook stories prefix
- * is likewise skipped.
+ * `basePath` prefixes, plus, for a localized non-sharedFtl custom
+ * component, its exact deployed `<ftlDir>/<name>.ftl` file (the shared
+ * FTL dir as a whole stays unclaimed, because sibling files there belong
+ * to other components). `sharedFtl` bundles are not furnace-deployed (apply
+ * only prunes a dangling per-widget jar.mn line), so they have no deployed
+ * copy to go stale and get no candidate by design. The storybook stories
+ * prefix is likewise skipped.
  *
  * @param projectRoot - Project root directory
  * @param files - Engine-relative paths the export will capture
@@ -126,7 +126,8 @@ export async function findStaleFurnaceComponentsForFiles(
 /**
  * Gate helper for export/re-export: refuses (or, with `allow`, warns) when
  * any exported file belongs to a furnace component whose source changed
- * since the last apply — the export would capture the stale deployed copy.
+ * since the last apply, where the export would capture the stale deployed
+ * copy.
  *
  * @param projectRoot - Project root directory
  * @param files - Engine-relative paths the export will capture

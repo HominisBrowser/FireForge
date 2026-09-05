@@ -6,6 +6,7 @@ import { Command } from 'commander';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
 import { warnIfFurnaceStale } from '../core/furnace-staleness.js';
+import type { MachCommandResult } from '../core/mach.js';
 import {
   generateMozconfig,
   hasBuildArtifacts,
@@ -27,7 +28,7 @@ const WATCHMAN_PROBE_TIMEOUT_MS = 5000;
  * in PATH but cannot respond (corrupt install, server crashed mid-session,
  * permission denied on the state directory) would otherwise surface as a
  * confusing mid-watch failure. Returns the trimmed version string when
- * the probe succeeds; throws a {@link GeneralError} with actionable
+ * the probe succeeds. Throws a {@link GeneralError} with actionable
  * remediation when it does not.
  */
 async function probeWatchman(): Promise<string> {
@@ -83,7 +84,7 @@ function hasWatchPermissionFailure(output: string): boolean {
  *
  * @param exitCode - Exit code returned by `mach watch`
  * @param watchmanPath - Optional absolute path to the resolved watchman
- *   binary; surfaced in the guidance so the operator can see whether
+ *   binary, surfaced in the guidance so the operator can see whether
  *   FireForge actually found one.
  * @returns User-facing failure guidance
  */
@@ -140,10 +141,10 @@ export async function watchCommand(projectRoot: string): Promise<void> {
   await assertEngineExists(paths.engine);
 
   // Resolve the watchman binary to an absolute path up-front so we can (a)
-  // refuse fast when it is missing AND (b) prepend its directory to the mach
+  // refuse fast when it is missing and (b) prepend its directory to the mach
   // subprocess PATH. On macOS, `which watchman` from an interactive shell
   // returns `/opt/homebrew/bin/watchman`, but the Node subprocess PATH
-  // frequently omits `/opt/homebrew/bin` — so the shell probe passes and
+  // frequently omits `/opt/homebrew/bin`, so the shell probe passes and
   // mach's `watch-project` call then times out on its own failed PATH
   // lookup. Threading the directory through the subprocess env fixes it.
   const watchmanPath = await findExecutable('watchman');
@@ -154,7 +155,7 @@ export async function watchCommand(projectRoot: string): Promise<void> {
     );
   }
 
-  // Verify watchman actually responds — a binary that is in PATH but
+  // Verify watchman actually responds: a binary that is in PATH but
   // unable to respond (broken install, crashed server, bad state dir
   // permissions) would otherwise surface as a confusing mid-build failure
   // instead of an actionable preflight error.
@@ -163,7 +164,7 @@ export async function watchCommand(projectRoot: string): Promise<void> {
   // Check for build artifacts before starting watch
   // The mismatch rung rejects copied or relocated obj-* dirs whose mozinfo
   // metadata (topsrcdir, topobjdir, mozconfig) still points at a different
-  // source tree; mach watch against stale metadata produces confusing errors.
+  // source tree. mach watch against stale metadata produces confusing errors.
   const buildCheck = await hasBuildArtifacts(paths.engine);
   assertBuildArtifacts(paths.engine, buildCheck, {
     label: 'Watch mode',
@@ -176,7 +177,7 @@ export async function watchCommand(projectRoot: string): Promise<void> {
   // Report bundle state alongside the "Using build artifacts..." banner
   // so an operator watching a mid-build tree can see why `fireforge run`
   // would refuse right now while watch is still going. Watch remains
-  // permissive (it exists to drive rebuilds) — this is informational.
+  // permissive (it exists to drive rebuilds), so this is informational.
   // The `hasBuildArtifacts` check already passed at this point, so
   // `objDir` is always defined.
   const bundleCheck = buildCheck.objDir
@@ -189,7 +190,7 @@ export async function watchCommand(projectRoot: string): Promise<void> {
 
   // Advisory: warn when Furnace components have drifted since the last
   // apply so the user doesn't launch watch-mode builds with stale
-  // components baked in. Mirrors the check in `fireforge run` — without
+  // components baked in. Mirrors the check in `fireforge run`: without
   // it, users editing a component then running `watch` would see their
   // change never surface in the rebuilt browser.
   await warnIfFurnaceStale(projectRoot);
@@ -217,7 +218,7 @@ export async function watchCommand(projectRoot: string): Promise<void> {
   const watchmanDir = dirname(watchmanPath);
   const existingPath = process.env['PATH'] ?? '';
   const pathSegments = existingPath.split(delimiter).filter((segment) => segment.length > 0);
-  // Both arms filter identically; the cast this replaced laundered
+  // Both arms filter identically. The cast this replaced laundered
   // `string | undefined` on one arm while the other built the annotated shape
   // honestly.
   const baseEnv: Record<string, string> = {};
@@ -232,7 +233,7 @@ export async function watchCommand(projectRoot: string): Promise<void> {
       };
   verbose(`watch: resolved watchman at ${watchmanPath}; forwarding directory in subprocess PATH.`);
 
-  let result: Awaited<ReturnType<typeof watchWithOutput>>;
+  let result: MachCommandResult;
 
   try {
     result = await watchWithOutput(paths.engine, { env: watchmanEnv });
@@ -246,8 +247,8 @@ export async function watchCommand(projectRoot: string): Promise<void> {
 
   // On Ctrl+C the bin signal handler now waits for the mach child to shut
   // down (waitForActiveChildShutdown) before exiting, so this continuation
-  // can run and whitelist the SIGINT exit code — though the bin may still
-  // win the race and terminate first; both outcomes are acceptable.
+  // can run and whitelist the SIGINT exit code, though the bin may still
+  // win the race and terminate first. Both outcomes are acceptable.
   if (result.exitCode !== 0 && result.exitCode !== 130) {
     const combinedOutput = `${result.stdout}\n${result.stderr}`;
     if (hasConfigureTimeWatchmanFailure(combinedOutput)) {

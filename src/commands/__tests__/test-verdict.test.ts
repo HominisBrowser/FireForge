@@ -15,6 +15,7 @@ import {
   emitKilledVerdict,
   emitPassVerdict,
   resetVerdictEmission,
+  setVerdictRunAttribute,
   verdictEmitted,
 } from '../test-verdict.js';
 
@@ -234,6 +235,56 @@ describe('the run-log path rides the verdict line', () => {
   });
 
   it('emits no suffix when no log could be opened', () => {
+    const capture = captureStdout();
+    try {
+      emitPassVerdict();
+    } finally {
+      capture.restore();
+    }
+    expect(capture.writes).toEqual(['FIREFORGE-VERDICT: PASS\n']);
+  });
+});
+
+describe('additive run attributes (shuffle=)', () => {
+  it('appends shuffle=<seed> to every emission form, before log=', () => {
+    setActiveRunLog({
+      path: '/project/.fireforge/logs/run.log',
+      write: vi.fn(),
+      close: vi.fn(() => Promise.resolve()),
+    });
+    setVerdictRunAttribute('shuffle', '4242');
+    const capture = captureStdout();
+    try {
+      emitHarnessVerdict({ kind: 'test-failures', checks: 3, unexpected: 1 });
+    } finally {
+      capture.restore();
+      setActiveRunLog(undefined);
+    }
+    expect(capture.writes).toEqual([
+      'FIREFORGE-VERDICT: FAIL reason=test-failures checks=3 unexpected=1 shuffle=4242 log=/project/.fireforge/logs/run.log\n',
+    ]);
+  });
+
+  it('rides the preflight and killed forms too', () => {
+    setVerdictRunAttribute('shuffle', '9');
+    const capture = captureStdout();
+    try {
+      emitFailVerdict('preflight', 'stale-build');
+      resetVerdictEmission();
+      setVerdictRunAttribute('shuffle', '9');
+      expect(emitKilledVerdict('SIGTERM')).toBe(true);
+    } finally {
+      capture.restore();
+    }
+    expect(capture.writes).toEqual([
+      'FIREFORGE-VERDICT: FAIL reason=preflight note=stale-build shuffle=9\n',
+      'FIREFORGE-VERDICT: FAIL reason=killed signal=SIGTERM shuffle=9\n',
+    ]);
+  });
+
+  it('is cleared by resetVerdictEmission so a later run cannot inherit it', () => {
+    setVerdictRunAttribute('shuffle', '1');
+    resetVerdictEmission();
     const capture = captureStdout();
     try {
       emitPassVerdict();

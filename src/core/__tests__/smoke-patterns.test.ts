@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   compileAllowlistFromFile,
   compileAllowlistFromStrings,
+  findOverCapAllowlistEntries,
   matchAllowlist,
   matchesSmokeError,
 } from '../smoke-patterns.js';
@@ -126,6 +127,64 @@ describe('compileAllowlistFromFile', () => {
   it('throws with file and line context when a pattern is invalid', () => {
     const body = ['valid', '[unterminated'].join('\n');
     expect(() => compileAllowlistFromFile(body, '/tmp/allow.txt')).toThrow(/\/tmp\/allow\.txt:2/);
+  });
+
+  describe('# max-hits directive', () => {
+    it('caps the entry directly below it, with other comments allowed between', () => {
+      const body = [
+        '# max-hits: 3',
+        '# why: fires once per window, three windows at startup',
+        'RSLoader: warm',
+        'uncapped',
+        '# MAX-HITS:  12 ',
+        'plural',
+      ].join('\n');
+      const result = compileAllowlistFromFile(body, '/tmp/allow.txt');
+      expect(result.map((entry) => entry.maxHits)).toEqual([3, undefined, 12]);
+    });
+
+    it('refuses a zero or non-integer ceiling with file and line context', () => {
+      expect(() => compileAllowlistFromFile('# max-hits: 0\nfoo', '/tmp/allow.txt')).toThrow(
+        /max-hits directive at \/tmp\/allow\.txt:1.*positive integer/
+      );
+      expect(() => compileAllowlistFromFile('# max-hits: lots\nfoo', '/tmp/allow.txt')).toThrow(
+        /got "lots"/
+      );
+    });
+
+    it('refuses a directive that no entry follows, rather than dropping the cap', () => {
+      // A blank line ends the directive's reach; so does end of file. Either
+      // way the operator wrote a ceiling that nothing would honor.
+      expect(() => compileAllowlistFromFile('# max-hits: 2\n\nfoo', '/tmp/allow.txt')).toThrow(
+        /no entry follows it/
+      );
+      expect(() => compileAllowlistFromFile('foo\n# max-hits: 2\n', '/tmp/allow.txt')).toThrow(
+        /at \/tmp\/allow\.txt:2.*no entry follows it/
+      );
+    });
+  });
+});
+
+describe('findOverCapAllowlistEntries', () => {
+  const allow = compileAllowlistFromFile(
+    ['# max-hits: 2', 'capped', 'uncapped', '# max-hits: 1', 'tight'].join('\n'),
+    '/tmp/allow.txt'
+  );
+
+  it('passes at exactly the ceiling and ignores uncapped entries however often they fire', () => {
+    expect(findOverCapAllowlistEntries(allow, [2, 1000, 1])).toEqual([]);
+  });
+
+  it('reports every entry that fired past its ceiling with both numbers', () => {
+    const over = findOverCapAllowlistEntries(allow, [3, 0, 5]);
+    expect(over.map((o) => [o.entry.source, o.hits, o.maxHits])).toEqual([
+      ['capped', 3, 2],
+      ['tight', 5, 1],
+    ]);
+  });
+
+  it('treats a missing hit count as zero', () => {
+    expect(findOverCapAllowlistEntries(allow, [])).toEqual([]);
   });
 });
 

@@ -36,7 +36,6 @@ import { toError } from '../utils/errors.js';
 import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { isJarManifestPath } from './build-audit.js';
-import type { BuildBaseline } from './build-baseline-types.js';
 import { getUntrackedFilesInDir } from './git-status.js';
 
 /**
@@ -92,16 +91,12 @@ async function isNewJarManifest(engineDir: string, path: string): Promise<boolea
  * @param engineDir - Absolute engine directory
  * @param changedPaths - Engine-relative paths changed since the last
  *   successful build (non-`jar.mn` entries are ignored)
- * @param baseline - Last successful build's baseline (reserved: the
- *   fingerprint map already gated which paths reach here)
  * @returns The escalation decision with per-manifest causes
  */
 export async function evaluateJarManifestEscalation(
   engineDir: string,
-  changedPaths: readonly string[],
-  baseline: BuildBaseline | undefined
+  changedPaths: readonly string[]
 ): Promise<JarEscalationDecision> {
-  void baseline;
   const causes: JarEscalationCause[] = [];
   const cleared: string[] = [];
 

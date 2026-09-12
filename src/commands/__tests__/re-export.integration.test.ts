@@ -565,6 +565,158 @@ describe('reExportCommand integration', () => {
  * intentionally not reported, because recursive directory scans are too
  * noisy on Firefox-sized trees.
  */
+describe('reExportCommand cross-patch projection gate', () => {
+  let projectRoot: string;
+  let restoreTTY: (() => void) | undefined;
+
+  const adopterImport = 'import { H } from "resource:///modules/Helper.sys.mjs";\n';
+  const helperBody = makeNewFileDiff('modules/Helper.sys.mjs', 'export const H = 1;\n');
+
+  /** The two-patch forward-import fixture with 001 owning `adopter.sys.mjs`. */
+  function makeAdopterManifest(adopterDeclared: boolean): string {
+    const manifest = JSON.parse(makeTwoPatchForwardImportManifest(adopterDeclared)) as {
+      patches: Array<{ filesAffected: string[] }>;
+    };
+    (manifest.patches[0] as { filesAffected: string[] }).filesAffected = ['adopter.sys.mjs'];
+    return `${JSON.stringify(manifest, null, 2)}\n`;
+  }
+
+  /** A body that already adds the forward import to the tracked adopter. */
+  const adopterImportBody = [
+    'diff --git a/adopter.sys.mjs b/adopter.sys.mjs',
+    'index 1111111..2222222 100644',
+    '--- a/adopter.sys.mjs',
+    '+++ b/adopter.sys.mjs',
+    '@@ -1,1 +1,2 @@',
+    `+${adopterImport.trimEnd()}`,
+    ' export const A = 1;',
+    '',
+  ].join('\n');
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    restoreTTY = setInteractiveMode(false);
+    projectRoot = await createTempProject();
+    await writeFireForgeConfig(projectRoot);
+    await initCommittedRepo(join(projectRoot, 'engine'), {
+      'tracked.txt': blankContextBase,
+      'adopter.sys.mjs': 'export const A = 1;\n',
+    });
+    await writeFiles(projectRoot, {
+      'patches/patches.json': makeAdopterManifest(false),
+      'patches/001-ui-test.patch': 'diff --git a/adopter.sys.mjs b/adopter.sys.mjs\n',
+      'patches/002-ui-helper.patch': helperBody,
+    });
+  });
+
+  afterEach(async () => {
+    restoreTTY?.();
+    await removeTempProject(projectRoot);
+  });
+
+  async function dirtyAdopterWithForwardImport(): Promise<void> {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'adopter.sys.mjs': `${adopterImport}export const A = H;\n`,
+    });
+  }
+
+  it('refuses a plain re-export whose refreshed body newly forward-imports a later patch, naming the remedy', async () => {
+    await dirtyAdopterWithForwardImport();
+    const bodyBefore = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    const manifestBefore = await readProjectText(projectRoot, 'patches/patches.json');
+
+    await expect(reExportCommand(projectRoot, ['001'], { yes: true })).rejects.toThrow(
+      /All selected patches failed/
+    );
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('new cross-patch lint error'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('002-ui-helper.patch'));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('fireforge patch staged-dependency --add')
+    );
+    await expect(readProjectText(projectRoot, 'patches/001-ui-test.patch')).resolves.toBe(
+      bodyBefore
+    );
+    await expect(readProjectText(projectRoot, 'patches/patches.json')).resolves.toBe(
+      manifestBefore
+    );
+  });
+
+  it('--dry-run refuses the same forward import without touching disk', async () => {
+    await dirtyAdopterWithForwardImport();
+    const bodyBefore = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+
+    await expect(
+      reExportCommand(projectRoot, ['001'], { dryRun: true, yes: true })
+    ).rejects.toThrow(/All selected patches failed/);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('new cross-patch lint error'));
+    await expect(readProjectText(projectRoot, 'patches/001-ui-test.patch')).resolves.toBe(
+      bodyBefore
+    );
+  });
+
+  it('--force-unsafe downgrades the projection refusal to a warning and writes', async () => {
+    await dirtyAdopterWithForwardImport();
+
+    await reExportCommand(projectRoot, ['001'], { yes: true, forceUnsafe: true });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('new cross-patch lint error'));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Proceeding because --force-unsafe was provided.')
+    );
+    const body = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    expect(body).toContain('resource:///modules/Helper.sys.mjs');
+  });
+
+  it('allows a refreshed forward import covered by a staged-dependency declaration', async () => {
+    await writeFiles(projectRoot, { 'patches/patches.json': makeAdopterManifest(true) });
+    await dirtyAdopterWithForwardImport();
+
+    await reExportCommand(projectRoot, ['001'], { yes: true });
+
+    const warned = vi.mocked(warn).mock.calls.map((call) => call[0]);
+    expect(warned.some((m) => m.includes('new cross-patch lint error'))).toBe(false);
+    const body = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+    expect(body).toContain('resource:///modules/Helper.sys.mjs');
+  });
+
+  it('does not block a plain re-export on a pre-existing cross-patch error in unrelated patches', async () => {
+    // 001 already carries the forward import in its body and on disk; 003
+    // is an unrelated patch over tracked.txt.
+    const manifest = JSON.parse(makeAdopterManifest(false)) as {
+      patches: Array<Record<string, unknown>>;
+    };
+    manifest.patches.push({
+      filename: '003-ui-other.patch',
+      order: 3,
+      category: 'ui',
+      name: 'other',
+      description: '',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      sourceEsrVersion: '140.9.0esr',
+      filesAffected: ['tracked.txt'],
+    });
+    await writeFiles(projectRoot, {
+      'patches/patches.json': `${JSON.stringify(manifest, null, 2)}\n`,
+      'patches/001-ui-test.patch': adopterImportBody,
+      'patches/003-ui-other.patch': 'diff --git a/tracked.txt b/tracked.txt\n',
+    });
+    await writeFiles(join(projectRoot, 'engine'), {
+      'adopter.sys.mjs': `${adopterImport}export const A = 1;\n`,
+      'tracked.txt': blankContextModified,
+    });
+
+    await reExportCommand(projectRoot, ['003'], { yes: true });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pre-existing'));
+    const warned = vi.mocked(warn).mock.calls.map((call) => call[0]);
+    expect(warned.some((m) => m.includes('new cross-patch lint error'))).toBe(false);
+    const body = await readProjectText(projectRoot, 'patches/003-ui-other.patch');
+    expect(body).toContain('+new line');
+  });
+});
+
 describe('reExportCommand adjacency advisory', () => {
   let projectRoot: string;
   let restoreTTY: (() => void) | undefined;

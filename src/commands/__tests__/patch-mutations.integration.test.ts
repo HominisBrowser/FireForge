@@ -387,6 +387,97 @@ describe('patch delete staged-dependency owner warning', () => {
   });
 });
 
+describe('patch delete numeric-gap notice', () => {
+  let projectRoot: string;
+  let patchesDir: string;
+  let restoreTTY: () => void = () => undefined;
+  let writes: string[];
+
+  const uiPatch = (order: number, slug: string): PatchMetadata => ({
+    ...makeMetadata(`${String(order).padStart(3, '0')}-ui-${slug}.patch`, order, [
+      `ui/${slug}.sys.mjs`,
+    ]),
+    category: 'ui',
+  });
+  const seedUiQueue = async (orders: readonly [number, string][]): Promise<void> => {
+    await seed(
+      patchesDir,
+      orders.map(([order, slug]) => ({
+        metadata: uiPatch(order, slug),
+        body: createDiff(`ui/${slug}.sys.mjs`, `export const ${slug} = 1;`),
+      }))
+    );
+  };
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-pd-gap-');
+    patchesDir = join(projectRoot, 'patches');
+    vi.mocked(confirm).mockReset();
+    writes = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    restoreTTY = setInteractiveMode(false);
+  });
+  afterEach(async () => {
+    restoreTTY();
+    vi.restoreAllMocks();
+    await removeTempProject(projectRoot);
+  });
+
+  it('--dry-run names the gap a delete would open under allowGaps: false', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: { ranges: [{ from: 200, to: 499, category: 'ui' }], allowGaps: false },
+    });
+    await seedUiQueue([
+      [201, 'a'],
+      [202, 'b'],
+      [203, 'c'],
+    ]);
+
+    await patchDeleteCommand(projectRoot, '202-ui-b.patch', { dryRun: true });
+
+    expect(await pathExists(join(patchesDir, '202-ui-b.patch'))).toBe(true);
+    const output = writes.join('');
+    expect(output).toContain('deleting 202-ui-b.patch leaves ui range 200-499 with a gap at 202');
+    expect(output).toContain('"fireforge export --order 202" fills it');
+    expect(output).toContain('"fireforge patch compact" renumbers');
+  });
+
+  it('stays quiet when the policy allows gaps', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: { ranges: [{ from: 200, to: 499, category: 'ui' }] },
+    });
+    await seedUiQueue([
+      [201, 'a'],
+      [202, 'b'],
+      [203, 'c'],
+    ]);
+
+    await patchDeleteCommand(projectRoot, '202-ui-b.patch', { yes: true });
+
+    expect(await pathExists(join(patchesDir, '202-ui-b.patch'))).toBe(false);
+    expect(writes.join('')).not.toContain('numeric-gap');
+  });
+
+  it('stays quiet when deleting the last patch of a range opens no interior gap', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: { ranges: [{ from: 200, to: 499, category: 'ui' }], allowGaps: false },
+    });
+    await seedUiQueue([
+      [201, 'a'],
+      [202, 'b'],
+      [203, 'c'],
+    ]);
+
+    await patchDeleteCommand(projectRoot, '203-ui-c.patch', { yes: true });
+
+    expect(await pathExists(join(patchesDir, '203-ui-c.patch'))).toBe(false);
+    expect(writes.join('')).not.toContain('numeric-gap');
+  });
+});
+
 describe('patch reorder', () => {
   let projectRoot: string;
   let patchesDir: string;

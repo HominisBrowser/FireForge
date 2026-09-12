@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.47.0
+
+### Test preflight
+
+- The mochitest httpd preflight no longer calls another checkout's live harness "debris from an interrupted run" and prints its `kill -9`. It recognized the harness by `server.js` plus any objdir path, never asking whose objdir; a peer's suite in a sibling worktree matched and both printed remedies would have killed it. The holder's command line is now classified against this project's engine directory: only a `server.js` under it is offered for termination or reached by `--kill-stale-marionette`. One from another checkout is refused with that checkout's objdir named and no kill hint at all.
+
+### Builds
+
+- The pre-build Furnace sync prints the patch-owned overwrite warnings it computes. `applyAllComponents` already recorded "overwriting deployed X, its engine content differs from the components/ source" on every apply, and `furnace apply` printed it, but `fireforge build` and `test --build` read only the applied and error lists, so an engine-side edit to a Furnace-managed file (a negative control, say) was replaced silently and the control passed against the shipped code. The warnings now print on both paths, followed by one NOTICE saying how many engine files were REPLACED before the build and that the edit did not run.
+
+### Patch queue
+
+- A plain `re-export` (unchanged file set, new content) projects the rewritten body through the cross-patch queue rules before writing and refuses on new errors, the way `--files` and `--scan` already did. An earlier owner that gained a forward import of a later patch's module used to re-export green and surface a slice later as `errors already present in the queue` at the next `export` placement. The refusal prints the same `patch staged-dependency --add` remedy as the scan gate; `--force-unsafe` downgrades it to a warning; `--dry-run` refuses identically. The `--all` loop's in-memory queue projection now also refreshes `createdFiles`, which it left stale.
+- `patch delete` under `patchPolicy.allowGaps: false` names the numeric gap it is about to open, in `--dry-run` and at the prompt, with both remedies: `export --order <n>` to refill or `patch compact` to renumber. It had the manifest and the policy in hand and reported nothing; the operator learned the consequence from the next unrelated command's `numeric-gap` error.
+
+### Smoke runs
+
+- `run --smoke-exit` honours a `# max-hits: N` comment directly above a `--console-allow-file` entry: an allowlisted shape that fires more often than its ceiling is reported next to its attribution row (`hits×/N`) and fails the run with exit 12 like an unallowed error. The allowlist was count-blind, so an allowlisted error firing a thousand times in one boot exited 0. A directive that no entry follows is refused rather than dropped.
+- For the record: `Missing chrome or resource URL:` has been a smoke error since 0.45.0.
+
+### Furnace
+
+- A targeted `furnace deploy <tag>` refreshes every other deployed includer of a shared CSS fragment the target expands, when their expansion is stale against the fragment source, and prints a NOTICE naming them. It used to refresh only the named component, so a fragment edit followed by a targeted deploy left the remaining includers carrying the old expansion with no output saying so, and a re-export at that point would have shipped it. An includer whose refresh fails is listed as still stale with the deploy-all remedy, and fails the deploy: the engine must end consistent. `furnace apply <name>` has the same gap and is not changed here.
+
+### Test harness
+
+- New `fireforge test --shuffle [seed]` runs a mochitest selection in a seeded random file order: it forwards mach's `--shuffle`, exports `FIREFORGE_SHUFFLE_SEED=<seed>` to the harness (a fresh seed when omitted), prints the seed, and stamps `shuffle=<seed>` on the `FIREFORGE-VERDICT` line as an additive key. Mach's own shuffle is an unseeded `Math.random` pass, so a red found by shuffling could not be replayed. Reordering tasks inside a file is harness code that reads the exported seed. Mochitest-only: an xpcshell-only or generic dispatch is refused.
+
 ## 0.46.0
 
 ### Packaging audit

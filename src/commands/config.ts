@@ -73,8 +73,7 @@ function parseValue(value: string, key?: string): JsonValue {
       warn(`Value "${value}" was interpreted as ${typeof parsed}. Use '"${value}"' for a string.`);
     }
     return parsed;
-  } catch (error: unknown) {
-    void error;
+  } catch {
     // Fall back to string
     return value;
   }

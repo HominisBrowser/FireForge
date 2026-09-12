@@ -132,8 +132,7 @@ function bootstrapBrowser() {
   });
 
   it('writes the legacy fallback result when parser fallback selects it', async () => {
-    parserFallbackMock.mockImplementation((primary, fallback) => {
-      void primary;
+    parserFallbackMock.mockImplementation((_primary, fallback) => {
       return { value: fallback(), usedFallback: true };
     });
 

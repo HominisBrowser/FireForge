@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
@@ -46,6 +46,7 @@ import { info, intro, notice, outro, verbose } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { runTestBuildPhase } from './test-build-phase.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
+import { buildPerfSampleEnv, mergeHarnessEnv, resolveShuffleSeed } from './test-harness-env.js';
 import {
   assertPathlessTestMode,
   assertTestModeCombinations,
@@ -346,6 +347,7 @@ async function ensureTestBrowserEnvironment(
   // does not use the httpd, so an xpcshell-only run is never blocked by it.
   if (!xpcshellOnly) {
     await ensureMochitestServerPortAvailable(undefined, {
+      engineDir,
       killStaleServer: options.killStaleMarionette === true,
     });
   }
@@ -564,6 +566,7 @@ async function runTestCommandBody(
 
   await assertTestPathsExist(paths.engine, normalizedPaths);
   const suite = resolveTestSuite(classification, options.genericMachTest === true);
+  const shuffleSeed = resolveShuffleSeed(options.shuffle, suite);
   const forwardedMachArgs =
     options.machArg && options.machArg.length > 0
       ? filterRedundantXpcshellFlavorArgs(options.machArg, classification)
@@ -573,6 +576,9 @@ async function runTestCommandBody(
 
   if (options.headless) {
     extraArgs.push('--headless');
+  }
+  if (shuffleSeed !== undefined) {
+    extraArgs.push('--shuffle');
   }
   if (options.auto === true) {
     extraArgs.push('--auto');
@@ -618,10 +624,9 @@ async function runTestCommandBody(
   // for the full motivation.
   logTestSelection(scopes);
 
-  const perfSampleEnv = buildPerfSampleEnv(
-    projectRoot,
-    projectConfig.binaryName,
-    options.perfSamples
+  const harnessEnv = mergeHarnessEnv(
+    buildPerfSampleEnv(projectRoot, projectConfig.binaryName, options.perfSamples),
+    shuffleSeed === undefined ? undefined : { FIREFORGE_SHUFFLE_SEED: String(shuffleSeed) }
   );
 
   const runCtx: TestRunContext = {
@@ -633,7 +638,7 @@ async function runTestCommandBody(
     harnessRetries,
     headless: options.headless === true,
     ...(options.fullOutput === true ? { fullOutput: true } : {}),
-    ...(perfSampleEnv ? { env: perfSampleEnv } : {}),
+    ...(harnessEnv ? { env: harnessEnv } : {}),
   };
   const postRebuildContext = options.build
     ? createPostRebuildFailureContext('fireforge test --build', normalizedPaths)
@@ -699,21 +704,4 @@ async function runTestCommandBody(
     postRebuildContext,
     options.headless === true
   );
-}
-
-/**
- * Builds the perf-sample env contract for the harness run:
- * `--perf-samples <path>` exports `<BINARYNAME>_PERF_SAMPLE_JSON` naming the
- * artifact file a budget checker consumes after the run.
- */
-function buildPerfSampleEnv(
-  projectRoot: string,
-  binaryName: string,
-  perfSamples: string | undefined
-): Record<string, string> | undefined {
-  if (!perfSamples) return undefined;
-  const envName = `${binaryName.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_PERF_SAMPLE_JSON`;
-  const artifactPath = resolve(projectRoot, perfSamples);
-  info(`Perf sample contract: ${envName}=${artifactPath}`);
-  return { [envName]: artifactPath };
 }

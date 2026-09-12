@@ -62,14 +62,14 @@ function astHasRelativeImport(content: string, sourceType: 'module' | 'script'):
 export function hasRelativeImport(content: string): boolean {
   try {
     return astHasRelativeImport(content, 'module');
-  } catch (moduleError: unknown) {
-    void moduleError;
+  } catch {
+    // Not parseable as an ES module; try classic-script mode next.
   }
 
   try {
     return astHasRelativeImport(content, 'script');
-  } catch (scriptError: unknown) {
-    void scriptError;
+  } catch {
+    // Not parseable at all; fall back to stripped-text matching below.
   }
 
   return RELATIVE_IMPORT_FALLBACK_PATTERN.test(stripJsComments(content));

@@ -37,8 +37,7 @@ const strictUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function decodeStrictUtf8(bytes: Uint8Array): string | undefined {
   try {
     return strictUtf8.decode(bytes);
-  } catch (error: unknown) {
-    void error;
+  } catch {
     return undefined;
   }
 }

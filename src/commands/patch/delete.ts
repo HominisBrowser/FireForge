@@ -12,6 +12,7 @@ import { basename } from 'node:path';
 
 import { Command } from 'commander';
 
+import { loadConfig } from '../../core/config.js';
 import { confirmDestructive, type ConflictReport } from '../../core/destructive.js';
 import { appendHistoryBestEffort } from '../../core/history-log.js';
 import {
@@ -27,6 +28,7 @@ import type { PatchDeleteOptions } from '../../types/commands/index.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
+import { describeProjectedGaps } from './delete-gap-notice.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
 /**
@@ -132,6 +134,15 @@ export async function patchDeleteCommand(
     );
   }
 
+  // Under `patchPolicy.allowGaps: false` the removal can open a numeric gap
+  // that every later lint and re-export refuses on. Naming it here, in
+  // dry-run and at the prompt, puts the refill/compact choice in front of
+  // the operator before the gap exists rather than after the next command.
+  const gapNotices = describeProjectedGaps(await loadConfig(projectRoot), manifest, target);
+  for (const line of gapNotices) {
+    warn(line);
+  }
+
   const conflicts: ConflictReport | null =
     dependents.length > 0
       ? {
@@ -156,6 +167,7 @@ export async function patchDeleteCommand(
   for (const file of target.filesAffected) {
     summary.push(`  ${file}  → will become unmanaged`);
   }
+  summary.push(...gapNotices);
 
   const decision = await confirmDestructive({
     operation: 'patch-delete',

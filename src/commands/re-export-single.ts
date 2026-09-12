@@ -22,6 +22,7 @@ import { findMissingFiles, reportAdjacentUnmanagedFiles } from './re-export-adja
 import type { ForeignDriftContext } from './re-export-drift.js';
 import { reportForeignDrift } from './re-export-drift.js';
 import {
+  assertRefreshedBodyHasNoNewQueueErrors,
   lintReExportedPatch,
   type ReExportLintContext,
   type ReExportLintResult,
@@ -223,15 +224,17 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
   const { updates, ignoreChecks, effectiveTier, existingIgnoreSet, flagIgnoreSet } =
     computeReExportUpdates(patch, options, currentFilesAffected);
 
-  enforcePatchPolicy({
-    config,
-    manifest: buildProjectedManifest(
-      manifest,
-      manifest.patches.map((entry) =>
-        entry.filename === patch.filename ? { ...entry, ...updates } : entry
-      )
-    ),
-    command: 're-export',
+  enforceProjectedManifestPolicy({ config, manifest, patch, updates, options });
+
+  // Cross-patch projection gate (runs in dry-run too): the refreshed body
+  // must not introduce queue-level errors the current queue lacks, e.g. an
+  // earlier owner gaining an import of a later patch's module. Cheap
+  // (in-memory) and more actionable than the per-patch lint, so it fires
+  // first.
+  assertRefreshedBodyHasNoNewQueueErrors({
+    lintCtx,
+    patchFilename: patch.filename,
+    diffContent,
     forceUnsafe: options.forceUnsafe === true,
   });
 
@@ -259,6 +262,9 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
     if (addedIgnores.length > 0) {
       info(`[dry-run] ${patch.filename}: lintIgnore would gain ${addedIgnores.join(', ')}`);
     }
+    // Memory-only: later `--all --dry-run` iterations project against this
+    // patch's would-be body, exactly as the real run does after its write.
+    refreshQueueCtxEntry(lintCtx, patch.filename, diffContent);
   } else {
     await commitRefreshedPatch({
       patch,
@@ -275,6 +281,28 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
     });
   }
   return true;
+}
+
+/** Manifest-level policy gate over the projected row (ranges, gaps, collisions). */
+function enforceProjectedManifestPolicy(args: {
+  config: FireForgeConfig;
+  manifest: PatchesManifest;
+  patch: PatchMetadata;
+  updates: Partial<PatchMetadata>;
+  options: ReExportOptions;
+}): void {
+  const { config, manifest, patch, updates, options } = args;
+  enforcePatchPolicy({
+    config,
+    manifest: buildProjectedManifest(
+      manifest,
+      manifest.patches.map((entry) =>
+        entry.filename === patch.filename ? { ...entry, ...updates } : entry
+      )
+    ),
+    command: 're-export',
+    forceUnsafe: options.forceUnsafe === true,
+  });
 }
 
 /**

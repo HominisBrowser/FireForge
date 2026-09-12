@@ -4,8 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFsMock } from '../../test-utils/module-mocks.js';
 
 const parserFallbackMock = vi.hoisted(() =>
-  vi.fn((primary: () => string, ...rest: unknown[]) => {
-    void rest;
+  vi.fn((primary: () => string) => {
     return { value: primary() };
   })
 );
@@ -282,7 +281,6 @@ const gBrowserInit = {
 
   it('writes the legacy fallback result when parser fallback selects it', async () => {
     parserFallbackMock.mockImplementation((primary: () => string, ...rest: unknown[]) => {
-      void primary;
       const fallback = rest[0] as (() => string) | undefined;
       return { value: fallback ? fallback() : primary() };
     });

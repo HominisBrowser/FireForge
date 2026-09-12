@@ -25,9 +25,7 @@ function getInstalledStdoutErrorHandler(
     throw new Error('Broken-pipe handler was not installed on stdout');
   }
 
-  // `listeners()` is typed as `Function[]` in @types/node 22. The handler
-  // installed by installBrokenPipeHandler has this exact signature.
-  return handler as (error: NodeJS.ErrnoException) => void;
+  return handler;
 }
 
 describe('installBrokenPipeHandler', () => {

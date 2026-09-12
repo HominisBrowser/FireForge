@@ -105,6 +105,16 @@ vi.mock('../../core/furnace-validate.js', () => ({
 
 vi.mock('../../utils/fs.js', () => createFsMock());
 
+// The includer follow-up walks the real workspace; here it is stubbed to
+// "nothing stale" by default so every existing case runs as before. The
+// pure helpers (merge, notice text) stay real.
+vi.mock('../furnace/deploy-fragment-includers.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../furnace/deploy-fragment-includers.js')>()),
+  refreshStaleFragmentIncluders: vi.fn(() =>
+    Promise.resolve({ fragments: [], refreshed: [], failed: [], results: [] })
+  ),
+}));
+
 vi.mock('../../utils/logger.js', () => ({
   // Verbose + stdout-seal state: the CLI error boundary consults both
   // before walking a cause chain or emitting a --json error envelope.
@@ -119,6 +129,7 @@ vi.mock('../../utils/logger.js', () => ({
   error: vi.fn(),
   warn: vi.fn(),
   note: vi.fn(),
+  notice: vi.fn(),
   spinner: vi.fn(() => ({
     stop: vi.fn(),
     error: vi.fn(),
@@ -134,8 +145,13 @@ import {
 import { loadFurnaceConfig, updateFurnaceState } from '../../core/furnace-config.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
 import { pathExists } from '../../utils/fs.js';
-import { success, warn } from '../../utils/logger.js';
+import { notice, success, warn } from '../../utils/logger.js';
 import { furnaceDeployCommand } from '../furnace/deploy.js';
+import {
+  formatFragmentIncluderNotice,
+  mergeApplyResults,
+  refreshStaleFragmentIncluders,
+} from '../furnace/deploy-fragment-includers.js';
 
 describe('furnaceDeployCommand', () => {
   beforeEach(() => {
@@ -814,5 +830,215 @@ describe('furnaceDeployCommand', () => {
       'override',
       'moz-card'
     );
+  });
+});
+
+describe('furnaceDeployCommand fragment includers', () => {
+  const twoCustom = {
+    version: 1 as const,
+    componentPrefix: 'moz-',
+    stock: [],
+    overrides: {},
+    custom: {
+      'moz-sidebar': {
+        description: 'Custom sidebar',
+        targetPath: 'browser/components/sidebar',
+        register: false,
+        localized: false,
+      },
+      'moz-b': {
+        description: 'B',
+        targetPath: 'browser/components/b',
+        register: false,
+        localized: false,
+      },
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(loadFurnaceConfig).mockResolvedValue(twoCustom);
+    vi.mocked(validateComponent).mockResolvedValue([]);
+    vi.mocked(computeComponentChecksums).mockResolvedValue({});
+    vi.mocked(prefixChecksums).mockReturnValue({});
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [{ name: 'moz-sidebar', type: 'custom', filesAffected: ['moz-sidebar.css'] }],
+      skipped: [],
+      errors: [],
+      actions: [],
+    });
+  });
+
+  it('refreshes other stale includers after a clean named custom deploy and notices them', async () => {
+    vi.mocked(refreshStaleFragmentIncluders).mockResolvedValueOnce({
+      fragments: ['shared-anims.css'],
+      refreshed: ['moz-b'],
+      failed: [],
+      results: [
+        {
+          applied: [{ name: 'moz-b', type: 'custom', filesAffected: ['moz-b.css'] }],
+          skipped: [],
+          errors: [],
+        },
+      ],
+    });
+
+    await expect(furnaceDeployCommand('/project', 'moz-sidebar')).resolves.toBeUndefined();
+
+    expect(refreshStaleFragmentIncluders).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'moz-sidebar', isDryRun: false, projectRoot: '/project' })
+    );
+    // The primary state is persisted before the includer pass starts.
+    expect(vi.mocked(updateFurnaceState).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(refreshStaleFragmentIncluders).mock.invocationCallOrder[0] ?? 0
+    );
+    expect(notice).toHaveBeenCalledWith(
+      'Also refreshed 1 other includer of "shared-anims.css": moz-b.'
+    );
+    expect(validateComponent).toHaveBeenCalledWith(
+      expect.stringContaining('moz-sidebar'),
+      'moz-sidebar',
+      'custom',
+      twoCustom,
+      '/project'
+    );
+    expect(validateComponent).toHaveBeenCalledWith(
+      expect.stringContaining('moz-b'),
+      'moz-b',
+      'custom',
+      twoCustom,
+      '/project'
+    );
+  });
+
+  it('prints the remain-stale fallback when an includer refresh fails and fails the deploy', async () => {
+    vi.mocked(refreshStaleFragmentIncluders).mockResolvedValueOnce({
+      fragments: ['shared-anims.css'],
+      refreshed: [],
+      failed: [{ tag: 'moz-b', fragments: ['shared-anims.css'] }],
+      results: [{ applied: [], skipped: [], errors: [{ name: 'moz-b', error: 'boom' }] }],
+    });
+
+    await expect(furnaceDeployCommand('/project', 'moz-sidebar')).rejects.toThrow(/1 apply error/);
+
+    expect(notice).toHaveBeenCalledWith(
+      '1 other includer of "shared-anims.css" remain stale: moz-b. Run `fireforge furnace deploy` (all).'
+    );
+  });
+
+  it('does not run the includer pass when the named apply itself failed', async () => {
+    vi.mocked(applyAllComponents).mockResolvedValueOnce({
+      applied: [],
+      skipped: [],
+      errors: [{ name: 'moz-sidebar', error: 'copy failed' }],
+      rolledBack: true,
+    });
+
+    await expect(furnaceDeployCommand('/project', 'moz-sidebar')).rejects.toThrow(/apply error/);
+
+    expect(refreshStaleFragmentIncluders).not.toHaveBeenCalled();
+    expect(notice).not.toHaveBeenCalled();
+  });
+
+  it('dry-run previews the includer refresh without applying', async () => {
+    vi.mocked(refreshStaleFragmentIncluders).mockResolvedValueOnce({
+      fragments: ['shared-anims.css'],
+      refreshed: ['moz-b'],
+      failed: [],
+      results: [],
+    });
+
+    await expect(
+      furnaceDeployCommand('/project', 'moz-sidebar', { dryRun: true })
+    ).resolves.toBeUndefined();
+
+    expect(refreshStaleFragmentIncluders).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'moz-sidebar', isDryRun: true })
+    );
+    expect(applyAllComponents).toHaveBeenCalledTimes(1);
+    expect(updateFurnaceState).not.toHaveBeenCalled();
+    expect(notice).toHaveBeenCalledWith(
+      'Would also refresh 1 other includer of "shared-anims.css": moz-b.'
+    );
+  });
+
+  it('deploy-all does not run the includer pass', async () => {
+    vi.mocked(validateAllComponents).mockResolvedValue(new Map());
+
+    await expect(furnaceDeployCommand('/project')).resolves.toBeUndefined();
+
+    expect(refreshStaleFragmentIncluders).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when nothing else was stale', async () => {
+    await expect(furnaceDeployCommand('/project', 'moz-sidebar')).resolves.toBeUndefined();
+    expect(notice).not.toHaveBeenCalled();
+  });
+});
+
+describe('mergeApplyResults', () => {
+  const primary = {
+    applied: [{ name: 'moz-a', type: 'custom' as const, filesAffected: ['a.css'] }],
+    skipped: [],
+    errors: [],
+    rolledBack: false,
+  };
+
+  it('returns the primary untouched when there are no extras', () => {
+    expect(mergeApplyResults(primary, [])).toBe(primary);
+  });
+
+  it('concatenates applied, skipped, errors, warnings and actions', () => {
+    const merged = mergeApplyResults({ ...primary, warnings: ['w1'] }, [
+      {
+        applied: [{ name: 'moz-b', type: 'custom', filesAffected: ['b.css'] }],
+        skipped: [{ name: 'moz-c', reason: 'no changes' }],
+        errors: [{ name: 'moz-d', error: 'boom' }],
+        warnings: ['w2'],
+        actions: [{ action: 'copy', component: 'moz-b', description: 'b' }],
+        rolledBack: true,
+      },
+    ]);
+    expect(merged.applied.map((a) => a.name)).toEqual(['moz-a', 'moz-b']);
+    expect(merged.skipped).toEqual([{ name: 'moz-c', reason: 'no changes' }]);
+    expect(merged.errors).toEqual([{ name: 'moz-d', error: 'boom' }]);
+    expect(merged.warnings).toEqual(['w1', 'w2']);
+    expect(merged.actions).toHaveLength(1);
+    expect(merged.rolledBack).toBe(false);
+  });
+
+  it('leaves warnings and actions undefined when no side defines them', () => {
+    const merged = mergeApplyResults(primary, [{ applied: [], skipped: [], errors: [] }]);
+    expect(merged.warnings).toBeUndefined();
+    expect(merged.actions).toBeUndefined();
+  });
+});
+
+describe('formatFragmentIncluderNotice', () => {
+  it('returns nothing for an empty refresh', () => {
+    expect(
+      formatFragmentIncluderNotice({ fragments: [], refreshed: [], failed: [], results: [] }, false)
+    ).toEqual([]);
+  });
+
+  it('pluralises and lists both refreshed and failed includers', () => {
+    expect(
+      formatFragmentIncluderNotice(
+        {
+          fragments: ['a.css', 'b.css'],
+          refreshed: ['moz-x', 'moz-y'],
+          failed: [
+            { tag: 'moz-z', fragments: ['b.css'] },
+            { tag: 'moz-w', fragments: ['a.css'] },
+          ],
+          results: [],
+        },
+        true
+      )
+    ).toEqual([
+      'Would also refresh 2 other includers of "a.css", "b.css": moz-x, moz-y.',
+      '2 other includers of "a.css", "b.css" remain stale: moz-z, moz-w. Run `fireforge furnace deploy` (all).',
+    ]);
   });
 });

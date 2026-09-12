@@ -45,8 +45,7 @@ async function exists(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
-  } catch (error: unknown) {
-    void error;
+  } catch {
     return false;
   }
 }

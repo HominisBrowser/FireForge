@@ -26,6 +26,7 @@ import {
 } from './build-overwrite-guard.js';
 import { collectChangedEnginePaths, dropPathsMatchingFingerprints } from './engine-changes.js';
 import { applyAllComponents, type ApplyAllComponentsResult } from './furnace-apply.js';
+import { logApplyWarnings } from './furnace-apply-output.js';
 import {
   furnaceConfigExists,
   getFurnacePaths,
@@ -181,12 +182,10 @@ function buildConfigureFailureError(captured: MachCommandResult): BuildError {
  *
  * @param engineDir - Absolute engine directory
  * @param changed - Build inputs changed since the last successful build
- * @param baseline - Last successful build's baseline
  */
 async function decideJarEscalation(
   engineDir: string,
-  changed: readonly string[],
-  baseline: BuildBaseline | undefined
+  changed: readonly string[]
 ): Promise<string | undefined> {
   // Packaging manifests whose graph/destination directories may need a full
   // build. Path-shape only: `evaluateJarManifestEscalation` decides whether a
@@ -195,8 +194,7 @@ async function decideJarEscalation(
   // `dist/bin` manifest no longer costs a ~10-minute build.
   const decision = await evaluateJarManifestEscalation(
     engineDir,
-    changed.filter(isJarManifestPath),
-    baseline
+    changed.filter(isJarManifestPath)
   );
   if (decision.cleared.length > 0) {
     verbose(
@@ -247,6 +245,84 @@ async function reportUnexportedDriftBeforeOverwrite(
 }
 
 /**
+ * Applies Furnace components before the build when `furnace.json` exists.
+ * Prints every warning the apply computed, then the loud sync banner.
+ *
+ * @param projectRoot - Project root
+ * @returns Number of components written to engine/
+ */
+async function applyFurnaceBeforeBuild(projectRoot: string): Promise<number> {
+  if (!(await furnaceConfigExists(projectRoot))) return 0;
+  const furnaceConfig = await loadFurnaceConfig(projectRoot);
+  const hasComponents =
+    Object.keys(furnaceConfig.overrides).length > 0 || Object.keys(furnaceConfig.custom).length > 0;
+
+  if (!hasComponents) return 0;
+  const furnaceSpinner = spinner('Applying Furnace components...');
+  let result: ApplyAllComponentsResult;
+  try {
+    result = await runFurnaceMutation(projectRoot, 'apply-rollback', (ctx) =>
+      applyAllComponents(projectRoot, false, { operationContext: ctx })
+    );
+  } catch (error: unknown) {
+    furnaceSpinner.error('Failed to apply Furnace components');
+    throw error;
+  }
+
+  const furnaceApplied = result.applied.length;
+  // Count entries that were "applied" but recorded step-level errors
+  // mid-apply (e.g. a post-step failure after file writes succeeded).
+  // These are distinct from `result.errors`, which captures
+  // components that failed before reaching the applied list at all.
+  // The sum of the two is the total count of failed components.
+  const appliedWithStepErrorsCount = countEntriesWithBlockingStepErrors(result.applied);
+  const totalApplyFailures = result.errors.length + appliedWithStepErrorsCount;
+
+  if (totalApplyFailures > 0) {
+    furnaceSpinner.error('Failed to apply Furnace components');
+    for (const err of result.errors) {
+      warn(`Furnace: ${err.name} — ${err.error}`);
+    }
+    for (const applied of result.applied) {
+      if (applied.stepErrors && applied.stepErrors.length > 0) {
+        for (const stepErr of applied.stepErrors) {
+          warn(`Furnace: ${applied.name} [${stepErr.step}] ${stepErr.error}`);
+        }
+      }
+    }
+    throw new FurnaceError(
+      `${totalApplyFailures} component${totalApplyFailures === 1 ? '' : 's'} failed to apply cleanly`
+    );
+  }
+
+  // The apply computed these (patch-owned engine files whose content
+  // differed from components/ and were replaced). `furnace apply`
+  // prints them; this path used to drop them, so a negative control
+  // that edited a deployed Furnace file ran against the shipped code
+  // with a green result and only a checksum could tell.
+  const overwriteCount = logApplyWarnings(result.warnings);
+  if (overwriteCount > 0) {
+    notice(
+      `Furnace: ${overwriteCount} Furnace-managed engine file${overwriteCount === 1 ? '' : 's'} differed from components/ and ${overwriteCount === 1 ? 'was' : 'were'} REPLACED before this build. An engine-side edit to a Furnace-managed file (for example a negative control) did not run; edit the component source under components/ instead, or restore the edit after the build.`
+    );
+  }
+
+  if (furnaceApplied > 0) {
+    const appliedNames = result.applied.map((entry) => entry.name).join(', ');
+    furnaceSpinner.stop(`Applied ${furnaceApplied} component${furnaceApplied === 1 ? '' : 's'}`);
+    // Loud banner: the build operator needs to see that engine/ was
+    // updated before this build, otherwise a silent re-apply is
+    // indistinguishable from a build that shipped stale components.
+    notice(
+      `Furnace: source → engine sync wrote ${furnaceApplied} component${furnaceApplied === 1 ? '' : 's'} before build (${appliedNames}). engine/ now matches components/.`
+    );
+  } else {
+    furnaceSpinner.stop('Components up to date');
+  }
+  return furnaceApplied;
+}
+
+/**
  * Runs the shared pre-flight steps for build and package commands:
  * 1. Warns (or refuses) about unexported engine drift the writes below
  * would destroy
@@ -293,11 +369,7 @@ export async function prepareBuildEnvironment(
   if (options.previousBaseline) {
     const changed = await collectChangedBuildInputs(paths.engine, options.previousBaseline);
     const invalidating = changed.filter(isBackendInvalidatingFile);
-    const jarEscalation = await decideJarEscalation(
-      paths.engine,
-      changed,
-      options.previousBaseline
-    );
+    const jarEscalation = await decideJarEscalation(paths.engine, changed);
     fullBuildRequired = jarEscalation !== undefined;
     fullBuildReason = jarEscalation;
     if (invalidating.length > 0) {
@@ -364,68 +436,7 @@ export async function prepareBuildEnvironment(
     }
   }
 
-  // Apply Furnace components if furnace.json exists
-  let furnaceApplied = 0;
-  if (await furnaceConfigExists(projectRoot)) {
-    const furnaceConfig = await loadFurnaceConfig(projectRoot);
-    const hasComponents =
-      Object.keys(furnaceConfig.overrides).length > 0 ||
-      Object.keys(furnaceConfig.custom).length > 0;
-
-    if (hasComponents) {
-      const furnaceSpinner = spinner('Applying Furnace components...');
-      let result: ApplyAllComponentsResult;
-      try {
-        result = await runFurnaceMutation(projectRoot, 'apply-rollback', (ctx) =>
-          applyAllComponents(projectRoot, false, { operationContext: ctx })
-        );
-      } catch (error: unknown) {
-        furnaceSpinner.error('Failed to apply Furnace components');
-        throw error;
-      }
-
-      furnaceApplied = result.applied.length;
-      // Count entries that were "applied" but recorded step-level errors
-      // mid-apply (e.g. a post-step failure after file writes succeeded).
-      // These are distinct from `result.errors`, which captures
-      // components that failed before reaching the applied list at all.
-      // The sum of the two is the total count of failed components.
-      const appliedWithStepErrorsCount = countEntriesWithBlockingStepErrors(result.applied);
-      const totalApplyFailures = result.errors.length + appliedWithStepErrorsCount;
-
-      if (totalApplyFailures > 0) {
-        furnaceSpinner.error('Failed to apply Furnace components');
-        for (const err of result.errors) {
-          warn(`Furnace: ${err.name} — ${err.error}`);
-        }
-        for (const applied of result.applied) {
-          if (applied.stepErrors && applied.stepErrors.length > 0) {
-            for (const stepErr of applied.stepErrors) {
-              warn(`Furnace: ${applied.name} [${stepErr.step}] ${stepErr.error}`);
-            }
-          }
-        }
-        throw new FurnaceError(
-          `${totalApplyFailures} component${totalApplyFailures === 1 ? '' : 's'} failed to apply cleanly`
-        );
-      }
-
-      if (furnaceApplied > 0) {
-        const appliedNames = result.applied.map((entry) => entry.name).join(', ');
-        furnaceSpinner.stop(
-          `Applied ${furnaceApplied} component${furnaceApplied === 1 ? '' : 's'}`
-        );
-        // Loud banner: the build operator needs to see that engine/ was
-        // updated before this build, otherwise a silent re-apply is
-        // indistinguishable from a build that shipped stale components.
-        notice(
-          `Furnace: source → engine sync wrote ${furnaceApplied} component${furnaceApplied === 1 ? '' : 's'} before build (${appliedNames}). engine/ now matches components/.`
-        );
-      } else {
-        furnaceSpinner.stop('Components up to date');
-      }
-    }
-  }
+  const furnaceApplied = await applyFurnaceBeforeBuild(projectRoot);
 
   // Generate mozconfig
   const mozconfigSpinner = spinner('Generating mozconfig...');

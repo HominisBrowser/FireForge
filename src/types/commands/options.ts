@@ -680,6 +680,12 @@ export interface TestOptions extends EngineLockWaitable {
    * checkers that consume a sample artifact after the run.
    */
   perfSamples?: string;
+  /**
+   * Seeded file-order shuffle for mochitest runs. `true` draws a fresh seed;
+   * a number replays one. Forwarded as mach `--shuffle` with the seed
+   * exported as `FIREFORGE_SHUFFLE_SEED` and stamped on the verdict line.
+   */
+  shuffle?: number | boolean;
 }
 
 /**

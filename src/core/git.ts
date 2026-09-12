@@ -432,8 +432,7 @@ async function getLockAgeMs(lockPath: string): Promise<number | undefined> {
   try {
     const stats = await stat(lockPath);
     return Math.max(0, Date.now() - stats.mtimeMs);
-  } catch (error: unknown) {
-    void error;
+  } catch {
     return undefined;
   }
 }

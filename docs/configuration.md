@@ -219,6 +219,14 @@ non-CI launches print a warning saying so. Exit codes 12 and 13 separate a
 console regression from a launch failure. See
 [`exit-codes.md`](exit-codes.md).
 
+The allowlist (`--console-allow-file`) is count-blind by default: a line that
+matches an entry never counts, however often it fires. A `# max-hits: N`
+comment directly above an entry (other comments may sit between) caps how
+many lines that entry may match in one run. The attribution block prints
+capped entries as `hits×/N`, and an entry that fires past its ceiling is
+reported and fails the run with exit 12, the same as an unallowed error. A
+directive with no entry after it is refused rather than silently ignored.
+
 ## Lock waits
 
 Every FireForge command that mutates the engine takes the engine-session

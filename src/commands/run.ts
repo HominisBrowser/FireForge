@@ -14,8 +14,10 @@ import {
   compileAllowlistFromFile,
   compileAllowlistFromStrings,
   type CompiledAllowlistEntry,
+  findOverCapAllowlistEntries,
   matchAllowlist,
   matchesSmokeError,
+  type OverCapAllowlistEntry,
 } from '../core/smoke-patterns.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
@@ -239,19 +241,7 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
     findings.push({ stream, line });
   };
 
-  // A headed smoke window on a developer desktop absorbs live input: a human
-  // interacting with the window mid-run can trigger console errors (a
-  // password-manager import scan probing an unreadable profile dir, say)
-  // that fail the smoke run looking like a product regression. CI hosts (CI
-  // env var set) are assumed display-free and unattended, so the notice
-  // stays quiet there.
-  if (!options.headless && !process.env['CI']) {
-    warn(
-      'Headed smoke window: keyboard/mouse input during the window will contaminate the ' +
-        'console capture and can fail the run. Pass --headless (or run on an unattended host) ' +
-        'for reliable smoke checks.'
-    );
-  }
+  warnIfHeadedOnDesktop(options.headless === true);
 
   info(`Launching browser (smoke-exit after ${smokeExit}s)...\n`);
 
@@ -273,6 +263,7 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
   }
 
   const elapsedMs = Date.now() - startedAt;
+  const overCap = findOverCapAllowlistEntries(allowlist, allowlistHits);
   reportSmokeSummary({
     smokeTimeoutMs,
     elapsedMs,
@@ -281,14 +272,16 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
     allowlistedTotalHits,
     allowlist,
     allowlistHits,
+    overCap,
     findings,
     exitCode: result.exitCode,
   });
 
-  // Exit contract (precedence: unallowed errors dominate timed-out).
-  if (findings.length > 0) {
+  // Exit contract (precedence: unallowed errors and over-ceiling floods
+  // dominate timed-out).
+  if (findings.length > 0 || overCap.length > 0) {
     throw new SmokeRunError(
-      `Smoke run observed ${findings.length} unallowed console error(s).`,
+      describeSmokeExitFailure(findings.length, overCap.length),
       ExitCode.SMOKE_EXIT_FAILURE
     );
   }
@@ -338,6 +331,32 @@ async function buildAllowlist(options: RunOptions): Promise<CompiledAllowlistEnt
 }
 
 /**
+ * A headed smoke window on a developer desktop absorbs live input: a human
+ * interacting with the window mid-run can trigger console errors (a
+ * password-manager import scan probing an unreadable profile dir, say)
+ * that fail the smoke run looking like a product regression. CI hosts (CI
+ * env var set) are assumed display-free and unattended, so the notice
+ * stays quiet there.
+ */
+function warnIfHeadedOnDesktop(headless: boolean): void {
+  if (headless || process.env['CI']) return;
+  warn(
+    'Headed smoke window: keyboard/mouse input during the window will contaminate the ' +
+      'console capture and can fail the run. Pass --headless (or run on an unattended host) ' +
+      'for reliable smoke checks.'
+  );
+}
+
+/** The SMOKE_EXIT_FAILURE message, naming whichever of the two causes fired. */
+function describeSmokeExitFailure(unallowed: number, overCap: number): string {
+  const parts: string[] = [];
+  if (unallowed > 0) parts.push(`${unallowed} unallowed console error(s)`);
+  if (overCap > 0)
+    parts.push(`${overCap} allowlist entr${overCap === 1 ? 'y' : 'ies'} over its max-hits ceiling`);
+  return `Smoke run observed ${parts.join(' and ')}.`;
+}
+
+/**
  * Prints the human-readable summary block that follows every smoke run.
  * Called once, right before the exit-code decision. Keeps the reporting
  * path separate from exit-contract logic so a test can render summaries
@@ -351,6 +370,7 @@ function reportSmokeSummary(args: {
   allowlistedTotalHits: number;
   allowlist: readonly CompiledAllowlistEntry[];
   allowlistHits: readonly number[];
+  overCap: readonly OverCapAllowlistEntry[];
   findings: SmokeFinding[];
   exitCode: number;
 }): void {
@@ -377,8 +397,19 @@ function reportSmokeSummary(args: {
     args.allowlist.forEach((entry, index) => {
       const hits = args.allowlistHits[index] ?? 0;
       const zeroSuffix = hits === 0 ? '  (never matched — candidate for removal)' : '';
-      info(`    ${hits}×  ${entry.origin}  ${entry.source}${zeroSuffix}`);
+      const cap = entry.maxHits === undefined ? '' : `/${entry.maxHits}`;
+      info(`    ${hits}×${cap}  ${entry.origin}  ${entry.source}${zeroSuffix}`);
     });
+  }
+
+  // An allowlisted shape firing past its `# max-hits` ceiling is a flood the
+  // allowlist was never meant to absorb. It is reported next to the
+  // attribution it came from and counts toward the exit code below.
+  for (const over of args.overCap) {
+    warn(
+      `  allowlisted shape "${over.entry.source}" (${over.entry.origin}) fired ${over.hits}× ` +
+        `over its ceiling of ${over.maxHits}`
+    );
   }
 
   if (args.findings.length === 0) return;
@@ -422,7 +453,7 @@ export function registerRun(
     )
     .option(
       '--console-allow-file <path>',
-      'Newline-delimited allowlist regex file. Blank lines and # comments are ignored.'
+      'Newline-delimited allowlist regex file. Blank lines and # comments are ignored. A "# max-hits: N" comment directly above an entry caps how many lines it may match in one run; more than that fails the run with exit 12.'
     )
     .option(
       '--capture-console <file>',

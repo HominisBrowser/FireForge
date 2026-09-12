@@ -22,6 +22,21 @@ export type FireforgeVerdictReason =
 let emitted = false;
 
 /**
+ * Additive `key=value` attributes of the run in flight, appended to
+ * whichever verdict line ends it. `shuffle` is the seed a `--shuffle` run
+ * exported to the harness, so a red found by shuffling carries its own
+ * reproduction on the one line an unattended reader keeps. Cleared by
+ * {@link resetVerdictEmission}, so a later run in the same process cannot
+ * inherit it.
+ */
+const runAttributes = new Map<'shuffle', string>();
+
+/** Records an additive attribute for this run's verdict line. */
+export function setVerdictRunAttribute(key: 'shuffle', value: string): void {
+  runAttributes.set(key, value);
+}
+
+/**
  * True once a test run has begun in this process.
  *
  * The signal path needs it: a `FIREFORGE-VERDICT` line claims a test run
@@ -39,6 +54,7 @@ let armed = false;
 export function resetVerdictEmission(): void {
   emitted = false;
   armed = true;
+  runAttributes.clear();
   setStdoutSealed(false);
 }
 
@@ -65,9 +81,10 @@ function writeVerdictLine(line: string): void {
   // break that contract, and one before it is the first thing a `tail` cuts.
   // Appended as an additive `key=value`, so consumers that tokenize the line
   // are unaffected and a truncated tail still says where the full output is.
+  const attributes = [...runAttributes].map(([key, value]) => ` ${key}=${value}`).join('');
   const logPath = getActiveRunLogPath();
   const suffix = logPath === undefined ? '' : ` log=${logPath}`;
-  process.stdout.write(`${line}${suffix}\n`);
+  process.stdout.write(`${line}${attributes}${suffix}\n`);
   setStdoutSealed(true);
 }
 
@@ -91,7 +108,7 @@ export function emitPassVerdict(): void {
  * Emits a FAIL verdict carrying an emission-layer reason code, and
  * optionally the refusal class that produced it.
  *
- * `note=` is additive, like the `log=`, `signal=` and `shards=` keys already
+ * `note=` is additive, like the `log=`, `signal=`, `shards=` and `shuffle=` keys already
  * on this line: `reason=` is unchanged and still comes from the closed set
  * in `docs/machine-output.md`, so a consumer that tokenises `key=value`
  * pairs is unaffected. It exists because `reason=preflight` covers every

@@ -1,6 +1,6 @@
 {
   "name": "@hominis/fireforge",
-  "version": "0.46.2",
+  "version": "0.47.0",
   "description": "FireForge — a build tool for customizing Firefox",
   "type": "module",
   "main": "./dist/src/index.js",
@@ -67,7 +67,7 @@
     "@eslint/js": "^10.0.0",
     "@types/estree": "^1.0.8",
     "@types/node": "^26.4.1",
-    "@vitest/coverage-v8": "^4.1.2",
+    "@vitest/coverage-v8": "^5.0.0",
     "dpdm": "4.3.0",
     "eslint": "^10.0.0",
     "eslint-config-prettier": "^10.1.8",
@@ -82,7 +82,7 @@
     "typescript": "~6.0.0",
     "typescript-eslint": "^8.0.0",
     "vite": "^8.0.7",
-    "vitest": "^4.0.18"
+    "vitest": "^5.0.0"
   },
   "engines": {
     "node": ">=22.22.2"

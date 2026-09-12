@@ -143,6 +143,40 @@ describe('registerTest', () => {
     });
   });
 
+  describe('--shuffle', () => {
+    it('is a bare boolean when no seed is supplied', async () => {
+      await parse('browser/base/content/test/browser_a.js', '--shuffle');
+      expect(vi.mocked(testCommand).mock.calls[0]?.[2]).toMatchObject({ shuffle: true });
+    });
+
+    it.each(['1', '42', '2147483646'])('accepts seed %s', async (value) => {
+      await parse(`--shuffle=${value}`);
+      expect(vi.mocked(testCommand).mock.calls[0]?.[2]).toMatchObject({
+        shuffle: Number(value),
+      });
+    });
+
+    it.each([
+      ['non-numeric', 'abc'],
+      ['zero', '0'],
+      ['negative', '-5'],
+      ['fractional', '1.5'],
+    ])('rejects %s seed', async (_label, value) => {
+      await expect(parse(`--shuffle=${value}`)).rejects.toThrow(
+        /--shuffle must be a positive integer/
+      );
+      expect(testCommand).not.toHaveBeenCalled();
+    });
+
+    it('reads the next bare argument as the seed, which is why the help says --shuffle=<seed>', async () => {
+      // Commander's optional-value option consumes the following token. A
+      // path in that position is a parse error, not a silent misroute.
+      await expect(parse('--shuffle', 'browser/base/content/test/browser_a.js')).rejects.toThrow(
+        /--shuffle must be a positive integer/
+      );
+    });
+  });
+
   it('forwards boolean flags through to testCommand', async () => {
     await parse('--headless', '--build', '--generic-mach-test');
     expect(vi.mocked(testCommand).mock.calls[0]?.[2]).toMatchObject({

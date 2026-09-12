@@ -60,13 +60,28 @@ export function logApplyResult(result: ApplyResultWithActions, isDryRun: boolean
   // outcome, including the rolled-back branch, where the overwrite
   // happened before the rollback restored it and the operator still needs
   // to know the deployed copy was momentarily replaced.
-  if (!isDryRun && result.warnings !== undefined) {
-    for (const line of result.warnings) {
-      warn(line);
-    }
+  if (!isDryRun) {
+    logApplyWarnings(result.warnings);
   }
 
   for (const err of result.errors) {
     error(`${err.name} — ${err.error}`);
   }
+}
+
+/**
+ * Prints the operator-facing apply warnings (patch-owned overwrites) one
+ * per line and returns how many were printed. Shared by `furnace apply`
+ * and the pre-build source → engine sync, so a warning the apply computed
+ * is never dropped on one path and printed on the other.
+ *
+ * @param warnings - `result.warnings` from applyAllComponents
+ * @returns Number of warning lines printed
+ */
+export function logApplyWarnings(warnings: readonly string[] | undefined): number {
+  if (warnings === undefined) return 0;
+  for (const line of warnings) {
+    warn(line);
+  }
+  return warnings.length;
 }

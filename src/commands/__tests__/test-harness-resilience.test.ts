@@ -344,6 +344,68 @@ describe('testCommand harness resilience', () => {
     });
   });
 
+  it('--shuffle <seed> forwards mach --shuffle and exports FIREFORGE_SHUFFLE_SEED', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await expect(
+        testCommand('/project', ['browser/components/foo/test/browser_foo.js'], { shuffle: 42 })
+      ).resolves.toBeUndefined();
+
+      const call = vi.mocked(runMachTestSuite).mock.calls[0]?.[1];
+      expect(call?.args).toContain('--shuffle');
+      expect(call?.env).toEqual({ FIREFORGE_SHUFFLE_SEED: '42' });
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('seed=42'));
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('--shuffle=42'));
+      // The seed rides the verdict line so a shuffled red carries its own repro.
+      expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
+        'FIREFORGE-VERDICT: PASS shuffle=42\n'
+      );
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
+
+  it('a bare --shuffle draws a fresh positive seed and reports it', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
+
+    await expect(
+      testCommand('/project', ['browser/components/foo/test/browser_foo.js'], { shuffle: true })
+    ).resolves.toBeUndefined();
+
+    const seed = vi.mocked(runMachTestSuite).mock.calls[0]?.[1]?.env?.['FIREFORGE_SHUFFLE_SEED'];
+    expect(seed).toMatch(/^[1-9]\d*$/);
+    expect(info).toHaveBeenCalledWith(expect.stringContaining(`seed=${seed}`));
+  });
+
+  it('--shuffle and --perf-samples both reach the harness env', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
+
+    await expect(
+      testCommand('/project', ['browser/components/foo/test/browser_foo.js'], {
+        shuffle: 7,
+        perfSamples: 'artifacts/perf-samples.json',
+      })
+    ).resolves.toBeUndefined();
+
+    expect(vi.mocked(runMachTestSuite).mock.calls[0]?.[1]?.env).toEqual({
+      MYBROWSER_PERF_SAMPLE_JSON: nativeAbsPath('/project/artifacts/perf-samples.json'),
+      FIREFORGE_SHUFFLE_SEED: '7',
+    });
+  });
+
+  it('--shuffle refuses a run that does not dispatch as a single mochitest suite', async () => {
+    // Generic `mach test` dispatch fans out to every suite the paths touch,
+    // and the xpcshell harness has no shuffle at all.
+    await expect(
+      testCommand('/project', ['browser/components/foo/test/browser_foo.js'], {
+        shuffle: 3,
+        genericMachTest: true,
+      })
+    ).rejects.toThrow(/--shuffle forwards the mochitest harness/);
+    expect(runMachTestSuite).not.toHaveBeenCalled();
+  });
+
   it('appends the no-output-stall triage list to a headed sharded timeout', async () => {
     const TIMEOUT_CRASH = {
       exitCode: 1,

@@ -191,8 +191,7 @@ export async function hasBuildArtifacts(engineDir: string): Promise<BuildArtifac
     }
 
     return { exists: true, objDir: selectedObjDir };
-  } catch (error: unknown) {
-    void error;
+  } catch {
     return { exists: false };
   }
 }

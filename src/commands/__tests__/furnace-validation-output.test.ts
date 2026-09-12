@@ -217,6 +217,47 @@ describe('runDeployValidation', () => {
     );
   });
 
+  it('validates alsoValidate tags alongside the named target and counts them', async () => {
+    const spinner = makeSpinner();
+    vi.mocked(validateComponent).mockImplementation((_dir, name) =>
+      Promise.resolve(
+        name === 'moz-panel'
+          ? [{ component: name, check: 'structure', severity: 'warning', message: 'Minor' }]
+          : []
+      )
+    );
+
+    const result = await runDeployValidation({
+      validateSpinner: spinner,
+      name: 'moz-card',
+      config: baseConfig,
+      furnacePaths,
+      failedComponents: new Set(['moz-failed']),
+      isDryRun: false,
+      projectRoot: '/project',
+      alsoValidate: ['moz-panel', 'moz-card', 'moz-failed'],
+    });
+
+    expect(validateComponent).toHaveBeenCalledTimes(2);
+    expect(validateComponent).toHaveBeenCalledWith(
+      expect.stringContaining('moz-panel'),
+      'moz-panel',
+      'custom',
+      baseConfig,
+      '/project'
+    );
+    expect(success).toHaveBeenCalledWith('moz-card — all checks passed');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('moz-panel: [structure] Minor'));
+    expect(result).toEqual(
+      expect.objectContaining({
+        done: false,
+        totalErrors: 0,
+        totalWarnings: 1,
+        componentCount: 2,
+      })
+    );
+  });
+
   it('throws for unknown component name', async () => {
     const spinner = makeSpinner();
 

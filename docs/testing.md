@@ -101,7 +101,7 @@ a slow build for a silently wrong test.
 Every test run ends with one machine-readable line:
 
 ```
-FIREFORGE-VERDICT: PASS|FAIL reason=… [note=<class>] [log=<path>]
+FIREFORGE-VERDICT: PASS|FAIL reason=… [note=<class>] [shuffle=<seed>] [log=<path>]
 ```
 
 Automation should branch on this line rather than on the raw process code,
@@ -116,6 +116,18 @@ can classify itself adds an additive `note=<class>` (`stale-browser`,
 text is written to stdout before the verdict line and into the run log, so a
 redirected run keeps the reason as well as the verdict. See
 [`run-logs.md`](run-logs.md).
+
+## Seeded shuffle
+
+`fireforge test --shuffle` runs a mochitest selection in a seeded random file
+order and prints the seed; `--shuffle=<seed>` replays it. FireForge forwards
+mach's own `--shuffle`, exports `FIREFORGE_SHUFFLE_SEED=<seed>` to the harness
+so in-file task reordering (harness `head.js` code, not FireForge) can key off
+the same number, and stamps `shuffle=<seed>` on the verdict line. It is
+mochitest-only: the xpcshell harness has no shuffle, and generic `mach test`
+dispatch would hand the flag to every suite. Write the flag as
+`--shuffle=<seed>` or after the paths, because a bare `--shuffle <path>` reads
+the path as the seed.
 
 Exit code 14 (`INCONCLUSIVE`) is not red: it means `engine/` moved while the
 harness ran and the result was thrown away. Exit 15 (`LOCK_TIMEOUT`) means

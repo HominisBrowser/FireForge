@@ -298,9 +298,22 @@ export async function assertScanAdoptionsHaveNoForwardImports(args: {
   throw new GeneralError(
     `Refusing to adopt ${offending.length} scanned file${offending.length === 1 ? '' : 's'} into ${patchFilename} ` +
       `because they import modules created by later patches:\n${details}\n` +
-      'Export those files as their own later patch ("fireforge export --order <n>" / ' +
-      '"fireforge patch split --order <n>") or declare the intentional dependency with ' +
-      '"fireforge patch staged-dependency --add" before re-running the scan.'
+      formatForwardImportRemedy('re-running the scan')
+  );
+}
+
+/**
+ * The one remedy sentence for a forward import a patch body cannot carry.
+ * Shared by the `--scan` adoption gate and the plain re-export projection
+ * gate so both refusals point at the same commands.
+ *
+ * @param reRunHint - What to do after the fix ("re-running the scan")
+ */
+export function formatForwardImportRemedy(reRunHint: string): string {
+  return (
+    'Export those files as their own later patch ("fireforge export --order <n>" / ' +
+    '"fireforge patch split --order <n>") or declare the intentional dependency with ' +
+    `"fireforge patch staged-dependency --add" before ${reRunHint}.`
   );
 }
 

@@ -222,8 +222,7 @@ export async function isBinaryFile(repoDir: string, filePath: string): Promise<b
     } finally {
       await fh.close();
     }
-  } catch (error: unknown) {
-    void error;
+  } catch {
     return false;
   }
 }

@@ -7,7 +7,7 @@ vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import type { ApplyResult, DryRunAction } from '../../types/furnace.js';
 import { error, info, success, warn } from '../../utils/logger.js';
-import { logApplyResult } from '../furnace-apply-output.js';
+import { logApplyResult, logApplyWarnings } from '../furnace-apply-output.js';
 
 const mockError = vi.mocked(error);
 const mockInfo = vi.mocked(info);
@@ -198,5 +198,19 @@ describe('logApplyResult — mixed result', () => {
     expect(mockInfo).toHaveBeenCalledWith('moz-card — No changes since last apply');
     expect(mockWarn).toHaveBeenCalledWith('moz-toggle: [register-jar] jar.mn locked');
     expect(mockError).toHaveBeenCalledWith('moz-broken — workspace directory missing');
+  });
+});
+
+describe('logApplyWarnings', () => {
+  it('returns 0 and prints nothing for an undefined or empty list', () => {
+    expect(logApplyWarnings(undefined)).toBe(0);
+    expect(logApplyWarnings([])).toBe(0);
+    expect(mockWarn).not.toHaveBeenCalled();
+  });
+
+  it('prints each line and returns the count', () => {
+    expect(logApplyWarnings(['a: overwriting deployed x', 'b: overwriting deployed y'])).toBe(2);
+    expect(mockWarn).toHaveBeenNthCalledWith(1, 'a: overwriting deployed x');
+    expect(mockWarn).toHaveBeenNthCalledWith(2, 'b: overwriting deployed y');
   });
 });

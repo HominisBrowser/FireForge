@@ -36,6 +36,16 @@ import { SHARED_FRAGMENTS_DIR } from './furnace-config.js';
 const INCLUDE_PATTERN = /^\s*\/\*\s*@fireforge-include\s+([\w./-]+)\s*\*\/\s*$/;
 const END_INCLUDE_PATTERN = /^\s*\/\*\s*@fireforge-end-include\s+([\w./-]+)\s*\*\/\s*$/;
 
+/**
+ * Reads a shared fragment as the exact body an expansion inlines: the
+ * trailing newline is dropped so the fenced block ends on the end marker.
+ * One definition, so every consumer (expansion, validation, the stale
+ * includer probe) compares the same bytes.
+ */
+export async function readFragmentSource(sharedDir: string, name: string): Promise<string> {
+  return (await readText(join(sharedDir, name))).replace(/\n$/, '');
+}
+
 /** Returns the fragment names referenced by `@fireforge-include` directives. */
 export function listFragmentIncludes(css: string): string[] {
   const names: string[] = [];
@@ -104,14 +114,14 @@ export async function expandCssFragments(
           'Create the fragment file or remove the @fireforge-include directive.'
       );
     }
-    const content = await readText(fragmentPath);
+    const content = await readFragmentSource(sharedDir, name);
     if (listFragmentIncludes(content).length > 0) {
       throw new FurnaceError(
         `CSS fragment "${name}" contains an @fireforge-include directive of its own; ` +
           'nested fragment includes are not supported.'
       );
     }
-    fragments.set(name, content.replace(/\n$/, ''));
+    fragments.set(name, content);
   }
 
   const out: string[] = [];
@@ -250,7 +260,7 @@ export async function validateCssFragments(
         continue;
       }
       if (deployedBodies === null) continue;
-      const fragmentContent = (await readText(fragmentPath)).replace(/\n$/, '');
+      const fragmentContent = await readFragmentSource(sharedDir, include);
       const deployed = deployedBodies.get(include);
       if (deployed === undefined || deployed !== fragmentContent) {
         issues.push({

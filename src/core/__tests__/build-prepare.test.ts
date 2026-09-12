@@ -302,6 +302,59 @@ describe('prepareBuildEnvironment', () => {
     expect(bannerCall?.[0]).toContain('moz-storage-widget');
   });
 
+  it('prints the patch-owned overwrite warnings the apply computed and one REPLACED notice', async () => {
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig.mockResolvedValue({
+      overrides: {},
+      custom: { 'moz-hominis-tile-frame': {} },
+      stock: [],
+    } as never);
+    const overwrite =
+      'moz-hominis-tile-frame: overwriting deployed toolkit/x.css — its engine content differs from the components/ source, and the path is owned by patch 210.';
+    mockApplyAllComponents.mockResolvedValue({
+      applied: [{ name: 'moz-hominis-tile-frame', filesAffected: [] }],
+      errors: [],
+      skipped: [],
+      warnings: [overwrite],
+    } as never);
+
+    await prepareBuildEnvironment('/project', paths, config);
+
+    expect(mockWarn).toHaveBeenCalledWith(overwrite);
+    const replacedCall = mockNotice.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('REPLACED before this build')
+    );
+    expect(replacedCall).toBeDefined();
+    expect(replacedCall?.[0]).toContain('1 Furnace-managed engine file differed');
+    expect(replacedCall?.[0]).toContain('negative control');
+    // The sync banner still prints after the overwrite notice.
+    const bannerCall = mockNotice.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('source → engine sync')
+    );
+    expect(bannerCall).toBeDefined();
+  });
+
+  it('emits no REPLACED notice when the apply recorded no warnings', async () => {
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig.mockResolvedValue({
+      overrides: { 'moz-button': {} },
+      custom: {},
+      stock: [],
+    } as never);
+    mockApplyAllComponents.mockResolvedValue({
+      applied: [{ name: 'moz-button', filesAffected: [] }],
+      errors: [],
+      skipped: [],
+    } as never);
+
+    await prepareBuildEnvironment('/project', paths, config);
+
+    const replacedCall = mockNotice.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('REPLACED before this build')
+    );
+    expect(replacedCall).toBeUndefined();
+  });
+
   it('does not emit the banner when no components were applied', async () => {
     mockFurnaceConfigExists.mockResolvedValue(true);
     mockLoadFurnaceConfig.mockResolvedValue({

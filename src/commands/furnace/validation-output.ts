@@ -104,6 +104,44 @@ export interface RunDeployValidationOptions {
   projectRoot: string;
   /** Projected actions of a dry run, used to filter projected issues. */
   dryRunActions?: DryRunAction[] | undefined;
+  /**
+   * Extra components a named deploy also touched (fragment includers it
+   * refreshed). Validated alongside `name`; ignored when `name` is unset.
+   */
+  alsoValidate?: string[] | undefined;
+}
+
+/**
+ * Validates one named target and prints its outcome.
+ * @returns `[errors, warnings]` for the target
+ */
+async function validateNamedTarget(args: {
+  name: string;
+  config: FurnaceConfig;
+  furnacePaths: FurnacePaths;
+  isDryRun: boolean;
+  projectRoot: string;
+  dryRunActions: DryRunAction[] | undefined;
+}): Promise<[number, number]> {
+  const { name, config, furnacePaths, isDryRun, projectRoot, dryRunActions } = args;
+  const target = resolveNamedValidationTarget(name, config, furnacePaths);
+  if (target === 'stock') return [0, 0];
+  if (!(await pathExists(target.componentDir))) {
+    throw new FurnaceError(`Component directory not found for "${name}".`, name);
+  }
+  const rawIssues = await validateComponent(
+    target.componentDir,
+    name,
+    target.type,
+    config,
+    projectRoot
+  );
+  const issues = isDryRun ? filterProjectedDryRunIssues(rawIssues, dryRunActions) : rawIssues;
+  if (issues.length === 0) {
+    success(`${name} — all checks passed`);
+    return [0, 0];
+  }
+  return displayValidationIssues(issues);
 }
 
 /**
@@ -123,6 +161,7 @@ export async function runDeployValidation(
     isDryRun,
     projectRoot,
     dryRunActions,
+    alsoValidate,
   } = options;
   let totalErrors = 0;
   let totalWarnings = 0;
@@ -147,22 +186,22 @@ export async function runDeployValidation(
       throw new FurnaceError(`Component directory not found for "${name}".`, name);
     }
 
-    const rawIssues = await validateComponent(
-      target.componentDir,
-      name,
-      target.type,
-      config,
-      projectRoot
-    );
-    const issues = isDryRun ? filterProjectedDryRunIssues(rawIssues, dryRunActions) : rawIssues;
-    componentCount = 1;
-
     validateSpinner.stop('Validation complete');
 
-    if (issues.length === 0) {
-      success(`${name} — all checks passed`);
-    } else {
-      const [errors, warnings] = displayValidationIssues(issues);
+    // The named target first, then every includer the deploy refreshed on
+    // its behalf: those engine files changed in this deploy too, so this
+    // deploy's validation covers them.
+    const extra = (alsoValidate ?? []).filter((t) => t !== name && !failedComponents.has(t));
+    for (const tag of [name, ...extra]) {
+      const [errors, warnings] = await validateNamedTarget({
+        name: tag,
+        config,
+        furnacePaths,
+        isDryRun,
+        projectRoot,
+        dryRunActions,
+      });
+      componentCount++;
       totalErrors += errors;
       totalWarnings += warnings;
     }

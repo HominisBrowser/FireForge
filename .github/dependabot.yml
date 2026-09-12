@@ -12,6 +12,13 @@ updates:
       prefix: 'deps'
       prefix-development: 'deps(dev)'
     groups:
+      # vitest and @vitest/coverage-v8 pin each other by exact version, so a
+      # major bump of one alone is unresolvable (ERESOLVE). Group them for
+      # every update type. Groups match in order, so this sits first.
+      vitest:
+        patterns:
+          - 'vitest'
+          - '@vitest/*'
       production-minor-patch:
         dependency-type: production
         update-types:

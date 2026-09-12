@@ -72,6 +72,24 @@ export interface CompiledAllowlistEntry {
   source: string;
   /** Human-readable origin: `allow.txt:12` or `--console-allow #2`. */
   origin: string;
+  /**
+   * Ceiling from a `# max-hits: N` directive above the entry: how often the
+   * suppressed cause can physically fire in one boot. More hits than this
+   * is a flood wearing an allowlisted shape, and fails the run.
+   */
+  maxHits?: number;
+}
+
+/** `# max-hits: N` on its own comment line, case-insensitive. */
+const MAX_HITS_DIRECTIVE = /^#\s*max-hits:\s*(\S+)\s*$/i;
+
+function parseMaxHitsDirective(raw: string, at: string): number {
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw new Error(
+      `Invalid allowlist max-hits directive at ${at}: expected a positive integer (got "${raw}")`
+    );
+  }
+  return Number.parseInt(raw, 10);
 }
 
 /**
@@ -90,6 +108,12 @@ export function matchAllowlist(line: string, allow: readonly CompiledAllowlistEn
  * compiled as a RegExp with its `<file>:<line>` origin retained. A bad
  * pattern throws immediately: better to fail fast at CLI parse time than
  * to silently let a typo match nothing.
+ *
+ * A `# max-hits: N` comment sets the ceiling of the entry that follows it
+ * (other comment lines may sit between). A blank line or end of file with
+ * no entry after the directive is an error rather than a silently dropped
+ * cap, since a cap the operator wrote and the run ignored is the exact
+ * shape of failure this directive exists to prevent.
  */
 export function compileAllowlistFromFile(
   body: string,
@@ -97,23 +121,67 @@ export function compileAllowlistFromFile(
 ): CompiledAllowlistEntry[] {
   const lines = body.split(/\r?\n/);
   const compiled: CompiledAllowlistEntry[] = [];
+  let pending: { maxHits: number; at: string } | undefined;
+  const assertNoOrphanDirective = (): void => {
+    if (pending) {
+      throw new Error(
+        `Invalid allowlist max-hits directive at ${pending.at}: no entry follows it (the ceiling applies to the next non-comment line)`
+      );
+    }
+  };
   lines.forEach((raw, index) => {
     const line = raw.trim();
-    if (!line || line.startsWith('#')) return;
+    const at = `${sourcePath}:${index + 1}`;
+    if (!line) {
+      assertNoOrphanDirective();
+      return;
+    }
+    if (line.startsWith('#')) {
+      const directive = MAX_HITS_DIRECTIVE.exec(line);
+      if (directive) pending = { maxHits: parseMaxHitsDirective(directive[1] ?? '', at), at };
+      return;
+    }
     try {
       compiled.push({
         pattern: new RegExp(line),
         source: line,
-        origin: `${sourcePath}:${index + 1}`,
+        origin: at,
+        ...(pending ? { maxHits: pending.maxHits } : {}),
       });
     } catch (error: unknown) {
       const message = toError(error).message;
-      throw new Error(`Invalid allowlist regex at ${sourcePath}:${index + 1}: ${message}`, {
-        cause: error,
-      });
+      throw new Error(`Invalid allowlist regex at ${at}: ${message}`, { cause: error });
+    }
+    pending = undefined;
+  });
+  assertNoOrphanDirective();
+  return compiled;
+}
+
+/** An allowlist entry that matched more lines than its `# max-hits` ceiling. */
+export interface OverCapAllowlistEntry {
+  entry: CompiledAllowlistEntry;
+  hits: number;
+  maxHits: number;
+}
+
+/**
+ * Entries whose per-entry hit count (every matched line, error-class or
+ * not: the `N×` number the attribution block prints and the operator tunes
+ * against) exceeds their ceiling. Entries without a ceiling never appear.
+ */
+export function findOverCapAllowlistEntries(
+  allow: readonly CompiledAllowlistEntry[],
+  hits: readonly number[]
+): OverCapAllowlistEntry[] {
+  const over: OverCapAllowlistEntry[] = [];
+  allow.forEach((entry, index) => {
+    const count = hits[index] ?? 0;
+    if (entry.maxHits !== undefined && count > entry.maxHits) {
+      over.push({ entry, hits: count, maxHits: entry.maxHits });
     }
   });
-  return compiled;
+  return over;
 }
 
 /**

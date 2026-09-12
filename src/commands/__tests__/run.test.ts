@@ -526,6 +526,67 @@ describe('runCommand', () => {
       expect(readFile).toHaveBeenCalledWith('/tmp/allow.txt', 'utf8');
     });
 
+    it('fails with SMOKE_EXIT_FAILURE when an allowlisted shape fires past its # max-hits ceiling', async () => {
+      // The allowlist is count-blind by default: an allowlisted error firing
+      // a thousand times in one boot exits 0. A `# max-hits` ceiling turns
+      // the flood into a finding of its own.
+      vi.mocked(readFile).mockResolvedValue('# max-hits: 2\nknown-flake\n');
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStderrLine?.('JavaScript error: known-flake 1');
+        opts.onStderrLine?.('JavaScript error: known-flake 2');
+        opts.onStderrLine?.('JavaScript error: known-flake 3');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
+      });
+
+      const thrown = await runCommand('/project', {
+        smokeExit: 30,
+        consoleAllowFile: '/tmp/allow.txt',
+      }).catch((error: unknown) => error);
+
+      expect(thrown).toBeInstanceOf(SmokeRunError);
+      expect((thrown as SmokeRunError).code).toBe(ExitCode.SMOKE_EXIT_FAILURE);
+      expect((thrown as SmokeRunError).message).toBe(
+        'Smoke run observed 1 allowlist entry over its max-hits ceiling.'
+      );
+      expect(warn).toHaveBeenCalledWith(
+        '  allowlisted shape "known-flake" (/tmp/allow.txt:2) fired 3× over its ceiling of 2'
+      );
+      const infoLines = vi.mocked(info).mock.calls.map((call) => call[0]);
+      expect(infoLines).toContain('    3×/2  /tmp/allow.txt:2  known-flake');
+    });
+
+    it('passes when an allowlisted shape fires exactly at its ceiling', async () => {
+      vi.mocked(readFile).mockResolvedValue('# max-hits: 2\nknown-flake\n');
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStderrLine?.('JavaScript error: known-flake 1');
+        opts.onStderrLine?.('JavaScript error: known-flake 2');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
+      });
+
+      await expect(
+        runCommand('/project', { smokeExit: 30, consoleAllowFile: '/tmp/allow.txt' })
+      ).resolves.toBeUndefined();
+    });
+
+    it('names both causes when unallowed errors and an over-ceiling flood coincide', async () => {
+      vi.mocked(readFile).mockResolvedValue('# max-hits: 1\nknown-flake\n');
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStderrLine?.('JavaScript error: known-flake 1');
+        opts.onStderrLine?.('JavaScript error: known-flake 2');
+        opts.onStderrLine?.('JavaScript error: real failure');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 143, timedOut: true });
+      });
+
+      const thrown = await runCommand('/project', {
+        smokeExit: 30,
+        consoleAllowFile: '/tmp/allow.txt',
+      }).catch((error: unknown) => error);
+
+      expect((thrown as SmokeRunError).message).toBe(
+        'Smoke run observed 1 unallowed console error(s) and 1 allowlist entry over its max-hits ceiling.'
+      );
+    });
+
     it('summarizes per-entry allowlist attribution with zero-hit entries flagged', async () => {
       vi.mocked(readFile).mockResolvedValue('# comment\nknown-flake\nnever-matches\n');
       vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {

@@ -164,7 +164,7 @@ import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../../core/git-st
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
 /** Options object `updatePatchAndMetadata` is called with, for matcher casts. */
 type UpdateArgs = Parameters<typeof updatePatchAndMetadata>[0];
-import { lintExportedPatch } from '../../core/patch-lint.js';
+import { lintExportedPatch, lintPatchQueue } from '../../core/patch-lint.js';
 import {
   getClaimedFiles,
   loadPatchesManifest,
@@ -351,6 +351,68 @@ describe('reExportCommand - --scan flag', () => {
     expect(warn).toHaveBeenCalledWith('Skipped 002-ui-missing.patch: all affected files missing');
     expect(success).toHaveBeenCalledWith('Re-exported 1 of 2 patch(es)');
     expect(outro).toHaveBeenCalledWith('Re-export complete');
+  });
+
+  it('projects the refreshed body through lintPatchQueue before the per-patch lint', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValue(
+      makeManifest([makePatch('001-ui-keep.patch', ['a.js'])])
+    );
+    vi.mocked(lintPatchQueue)
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([
+        {
+          check: 'forward-import',
+          file: 'a.js',
+          message: 'imports a later patch',
+          severity: 'error',
+        },
+      ]);
+
+    await expect(reExportCommand('/fake/root', ['001'], {})).rejects.toThrow(
+      /All selected patches failed/
+    );
+
+    expect(lintPatchQueue).toHaveBeenCalledTimes(2);
+    expect(lintExportedPatch).not.toHaveBeenCalled();
+    expect(updatePatchAndMetadata).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Refusing to re-export 001-ui-keep.patch')
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('fireforge patch staged-dependency --add')
+    );
+  });
+
+  it('--force-unsafe downgrades a projected cross-patch regression to a warning and writes', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValue(
+      makeManifest([makePatch('001-ui-keep.patch', ['a.js'])])
+    );
+    vi.mocked(lintPatchQueue)
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([
+        {
+          check: 'forward-import',
+          file: 'a.js',
+          message: 'imports a later patch',
+          severity: 'error',
+        },
+      ]);
+
+    await reExportCommand('/fake/root', ['001'], { forceUnsafe: true });
+
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('Proceeding because --force-unsafe was provided.');
+  });
+
+  it('runs the queue projection exactly twice per re-exported patch', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValue(
+      makeManifest([makePatch('001-ui-keep.patch', ['a.js'])])
+    );
+
+    await reExportCommand('/fake/root', ['001'], {});
+
+    expect(lintPatchQueue).toHaveBeenCalledTimes(2);
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
   });
 
   it('a partial dry-run also exits non-zero, after printing the preview summary', async () => {

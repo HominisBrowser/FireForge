@@ -317,8 +317,7 @@ async function removeArchivePartFiles(archive: ResolvedArchive, cacheDir: string
         .filter((name) => name.startsWith(partPrefix))
         .map((name) => removeFile(join(cacheDir, name)))
     );
-  } catch (error: unknown) {
-    void error;
+  } catch {
     // Cache dir may not exist yet. That's fine.
   }
 }

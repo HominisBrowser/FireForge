@@ -25,9 +25,12 @@ import {
   buildPatchQueueContext,
   countNonBinaryDiffLines,
   detectNewFilesInDiff,
+  formatPatchLintIssue,
   lintExportedPatch,
   type LintExportedPatchOptions,
+  lintPatchQueue,
   type PatchQueueContext,
+  type PatchQueueEntry,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
 import {
@@ -40,14 +43,17 @@ import {
   setCachedPerPatchLintIssues,
 } from '../core/patch-lint-cache.js';
 import { invalidateNewFileCreatorsCache } from '../core/patch-lint-cross.js';
-import { extractAddedLinesPerFile } from '../core/patch-lint-diff.js';
 import { resolvePatchOwnedSysMjs } from '../core/patch-lint-ownership.js';
+import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
+import { GeneralError } from '../errors/base.js';
 import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { pathExists } from '../utils/fs.js';
-import { info } from '../utils/logger.js';
+import { info, warn } from '../utils/logger.js';
 import { reportPatchLintOutcome } from './export-shared.js';
 import { buildPerRunCheckJs, type PerRunCheckJs } from './lint-per-run-checkjs.js';
+import { projectEntryBody } from './patch/entry-projection.js';
+import { formatForwardImportRemedy } from './re-export-scan.js';
 
 /** Per-invocation lint context, built once and threaded through the loop. */
 export interface ReExportLintContext {
@@ -66,6 +72,8 @@ export interface ReExportLintContext {
   reusedCacheEntries: number;
   /** Run-level checkJs globals are emitted once per invocation. */
   globalsEmitted: boolean;
+  /** The pre-existing-queue-errors note is printed once per invocation. */
+  queueBaselineWarned: boolean;
 }
 
 /** Builds the once-per-invocation lint context. */
@@ -94,6 +102,7 @@ export async function buildReExportLintContext(
     cacheDirty: false,
     reusedCacheEntries: 0,
     globalsEmitted: false,
+    queueBaselineWarned: false,
   };
 }
 
@@ -257,9 +266,72 @@ export async function storeReExportLintResult(
 }
 
 /**
+ * Projects the rewritten body into the hoisted queue context and refuses
+ * when the projection introduces error-severity cross-patch findings the
+ * current queue does not have (a forward import an earlier owner gained,
+ * say). Mirrors `re-export --files` (its projected-state conflict) and the
+ * `--scan` adoption gate, which only covered files a scan adopted: a plain
+ * re-export of an unchanged file set with new CONTENT used to pass, and the
+ * queue carried the error until the next `export` placement refused it.
+ *
+ * Runs in dry-run. `--force-unsafe` downgrades the refusal to warnings;
+ * `--skip-lint` does not bypass it, same as `--files`. The baseline is the
+ * hoisted context, which {@link refreshQueueCtxEntry} keeps equal to the
+ * on-disk queue across an `--all` loop, so patch N+1 is projected against
+ * the queue as it will exist.
+ */
+export function assertRefreshedBodyHasNoNewQueueErrors(args: {
+  lintCtx: ReExportLintContext;
+  patchFilename: string;
+  diffContent: string;
+  forceUnsafe: boolean;
+}): void {
+  const { lintCtx, patchFilename, diffContent, forceUnsafe } = args;
+  const ctx = lintCtx.patchQueueCtx;
+  if (!ctx) return;
+  const projection = projectEntryBody(diffContent);
+  const projectedEntries: PatchQueueEntry[] = ctx.entries.map((entry) =>
+    entry.filename === patchFilename ? { ...entry, ...projection } : entry
+  );
+  const isError = (issue: PatchLintIssue): boolean => issue.severity === 'error';
+  const baseline = lintPatchQueue(ctx).filter(isError);
+  const projected = lintPatchQueue({
+    entries: projectedEntries,
+    ...(ctx.patchPolicy ? { patchPolicy: ctx.patchPolicy } : {}),
+  }).filter(isError);
+  const regressions = computeProjectedLintRegressions(baseline, projected);
+
+  if (regressions.length === 0) {
+    if (baseline.length > 0 && !lintCtx.queueBaselineWarned) {
+      lintCtx.queueBaselineWarned = true;
+      warn(
+        `Note: projected queue still has ${baseline.length} pre-existing ` +
+          'cross-patch error(s) unrelated to this re-export. Run "fireforge verify" to list them.'
+      );
+    }
+    return;
+  }
+
+  const details = regressions.map((issue) => `  ${formatPatchLintIssue(issue)}`).join('\n');
+  const hasForwardImport = regressions.some((issue) => issue.check === 'forward-import');
+  const message =
+    `Refusing to re-export ${patchFilename} because the refreshed body introduces ` +
+    `${regressions.length} new cross-patch lint error${regressions.length === 1 ? '' : 's'}:\n${details}` +
+    (hasForwardImport ? `\n${formatForwardImportRemedy('re-running the re-export')}` : '');
+  if (forceUnsafe) {
+    warn(message);
+    warn('Proceeding because --force-unsafe was provided.');
+    return;
+  }
+  throw new GeneralError(message);
+}
+
+/**
  * Refreshes the in-memory queue entry for a just-rewritten patch so later
  * iterations (and later cache keys) lint against the new body instead of
- * the stale one. The on-disk write is the authority. This mirrors it.
+ * the stale one. The on-disk write is the authority. This mirrors it, via
+ * the same projection `buildPatchQueueContext` derives an entry from, so
+ * `createdFiles` and `modifiedFileAdditions` stay in step with a rebuild.
  */
 export function refreshQueueCtxEntry(
   lintCtx: ReExportLintContext,
@@ -270,21 +342,7 @@ export function refreshQueueCtxEntry(
   if (!ctx) return;
   const entry = ctx.entries.find((e) => e.filename === patchFilename);
   if (!entry) return;
-  entry.diff = diffContent;
-  const newFilePaths = detectNewFilesInDiff(diffContent);
-  const addedLinesByFile = extractAddedLinesPerFile(diffContent);
-  const newFiles = new Map<string, string>();
-  const modifiedFileAdditions = new Map<string, string>();
-  for (const [file, lines] of addedLinesByFile) {
-    if (newFilePaths.has(file)) {
-      // A created file's content is its added lines.
-      newFiles.set(file, lines.join('\n'));
-    } else {
-      modifiedFileAdditions.set(file, lines.join('\n'));
-    }
-  }
-  entry.newFiles = newFiles;
-  entry.modifiedFileAdditions = modifiedFileAdditions;
+  Object.assign(entry, projectEntryBody(diffContent));
   invalidateNewFileCreatorsCache(ctx);
 }
 

@@ -26,7 +26,13 @@ import {
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceDeployOptions } from '../../types/commands/index.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
-import { info, intro, note, outro, spinner, warn } from '../../utils/logger.js';
+import { info, intro, note, notice, outro, spinner, warn } from '../../utils/logger.js';
+import {
+  formatFragmentIncluderNotice,
+  type FragmentIncluderRefresh,
+  mergeApplyResults,
+  refreshStaleFragmentIncluders,
+} from './deploy-fragment-includers.js';
 import { runDeployValidation } from './validation-output.js';
 
 /**
@@ -84,6 +90,13 @@ function getFailedComponentNames(result: ApplyAllComponentsResult): Set<string> 
  * its atomicity gate ({@link shouldPersistSingleComponentState}) at the call
  * site. Rollback on failure happens inside `applyAllComponents`. The journal
  * returned on success is ignored (the deploy keeps its files).
+ *
+ * The caller then runs the fragment-includer follow-up
+ * ({@link refreshStaleFragmentIncluders}) ONLY after this component's state
+ * is persisted: each includer is applied and persisted as its own unit, so
+ * a signal mid-loop restores at most the includer in flight and leaves every
+ * earlier unit committed. Moving the persist after the includer loop would
+ * silently break that atomicity.
  *
  * @param name - Component name to apply
  * @param config - Loaded Furnace configuration
@@ -231,7 +244,10 @@ export async function furnaceDeployCommand(
     'deploy-rollback',
     async (
       ctx
-    ): Promise<{ kind: 'stock' } | { kind: 'result'; result: ApplyAllComponentsResult }> => {
+    ): Promise<
+      | { kind: 'stock' }
+      | { kind: 'result'; result: ApplyAllComponentsResult; includers?: FragmentIncluderRefresh }
+    > => {
       if (name) {
         const namedApplyResult = await applyNamedComponent(
           name,
@@ -250,7 +266,8 @@ export async function furnaceDeployCommand(
         // already restored the engine to its pre-deploy state, so persisting
         // partial checksums here would mis-report the next status/apply run
         // against a workspace that was never actually deployed.
-        if (shouldPersistSingleComponentState(namedApplyResult, isDryRun)) {
+        const primaryClean = shouldPersistSingleComponentState(namedApplyResult, isDryRun);
+        if (primaryClean) {
           await persistSingleComponentState(
             projectRoot,
             getPersistableAppliedEntry('Deploy', name, namedApplyResult.applied[0]),
@@ -258,7 +275,25 @@ export async function furnaceDeployCommand(
           );
         }
 
-        return { kind: 'result', result: namedApplyResult };
+        // Other deployed includers of a fragment this component includes
+        // would otherwise keep a stale expansion. Only after a clean,
+        // persisted primary apply (dry-run always previews).
+        if (!primaryClean && !isDryRun) {
+          return { kind: 'result', result: namedApplyResult };
+        }
+        const includers = await refreshStaleFragmentIncluders({
+          projectRoot,
+          name,
+          config,
+          furnacePaths,
+          isDryRun,
+          operationContext: ctx,
+        });
+        return {
+          kind: 'result',
+          result: mergeApplyResults(namedApplyResult, includers.results),
+          includers,
+        };
       }
 
       const allResult = await applyAllComponents(projectRoot, isDryRun, {
@@ -281,6 +316,11 @@ export async function furnaceDeployCommand(
   applySpinner.stop(isDryRun ? 'Planned actions calculated' : 'Components applied');
 
   logApplyResult(result, isDryRun);
+  if (applyOutcome.includers) {
+    for (const line of formatFragmentIncluderNotice(applyOutcome.includers, isDryRun)) {
+      notice(line);
+    }
+  }
 
   // Keep the consumer jsconfig's chrome-module `paths` in step with the
   // deployed module set. Only after a clean apply: a rolled-back deploy
@@ -311,6 +351,7 @@ export async function furnaceDeployCommand(
     isDryRun,
     projectRoot,
     dryRunActions: result.actions,
+    alsoValidate: applyOutcome.includers?.refreshed ?? [],
   });
   if (validation.done) return;
   const { totalErrors, totalWarnings, componentCount, skippedValidationCount } = validation;

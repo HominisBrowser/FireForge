@@ -366,7 +366,6 @@ describe('furnaceValidateCommand', () => {
       isSymbolicLink: () => false,
       name,
       parentPath: '',
-      path: '',
     });
 
     const staleJarIssue = (component: string): ValidationIssue => ({

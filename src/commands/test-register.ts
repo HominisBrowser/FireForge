@@ -11,6 +11,7 @@ import {
   resolveWaitLockSeconds,
   stringListOption,
 } from '../utils/options.js';
+import { parsePositiveIntegerFlag } from '../utils/validation.js';
 import { testCommand } from './test.js';
 import { DEFAULT_HARNESS_RETRIES } from './test-run.js';
 import { emitFailVerdict, resetVerdictEmission, verdictEmitted } from './test-verdict.js';
@@ -38,7 +39,9 @@ const TEST_HELP_TEXT = [
   '--doctor) ends with exactly one raw stdout line',
   '  FIREFORGE-VERDICT: PASS|FAIL [reason=crash|test-failures|',
   '  no-tests|preflight|inconclusive|lock-timeout|killed] [checks=<n>]',
-  '  [unexpected=<n>] [shards=<p>/<t>] [(<note>)] [log=<path>]',
+  '  [unexpected=<n>] [shards=<p>/<t>] [(<note>)] [shuffle=<seed>]',
+  '  [log=<path>]',
+  'shuffle=<seed> is the seed a --shuffle run exported to the harness.',
   "log=<path> names this run's complete output, written to",
   '.fireforge/logs/ as the run streams, so a piped or truncated run',
   'still leaves a re-readable artifact.',
@@ -101,7 +104,7 @@ export function registerTest(
     )
     .option(
       '--kill-stale-marionette',
-      'Terminate a recognized stale browser from this objdir or one holding the Marionette port before running tests'
+      "Terminate a recognized stale browser from this objdir, one holding the Marionette port, or this checkout's own leftover mochitest httpd before running tests. Never touches another checkout's live harness."
     )
     .option(
       '--reap-orphans',
@@ -119,6 +122,11 @@ export function registerTest(
       '--mach-arg <arg>',
       'Forward this argument verbatim to `mach test` (repeatable). Escape valve for upstream xpcshell/mochitest flags FireForge does not model.',
       ...stringListOption()
+    )
+    .option(
+      '--shuffle [seed]',
+      'Run the mochitest files in a seeded random order: forwards mach --shuffle and exports FIREFORGE_SHUFFLE_SEED=<seed> to the harness (a fresh seed when omitted). The seed rides the FIREFORGE-VERDICT line as shuffle=<seed>; replay a red with --shuffle=<seed>. Mochitest-only. Write it as --shuffle=<seed> or after the paths, since a bare "--shuffle <path>" reads the path as the seed.',
+      commanderArgParser((raw: string) => parsePositiveIntegerFlag('--shuffle', raw))
     )
     .option(
       '--harness-retries <n>',
@@ -178,6 +186,7 @@ export function registerTest(
           genericMachTest?: boolean;
           shard?: boolean;
           perfSamples?: string;
+          shuffle?: number | boolean;
           waitLock?: number | boolean;
         }
       ) => {

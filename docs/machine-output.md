@@ -86,15 +86,15 @@ moved.
 `FIREFORGE-VERDICT: FAIL reason=<reason>` uses a closed set
 (`FireforgeVerdictReason`, `src/commands/test-verdict.ts`):
 
-| Reason          | Meaning                                                                                                                                                                                                      |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `crash`         | The harness or the browser died, so there is no trustworthy suite result.                                                                                                                                    |
-| `no-tests`      | The run dispatched but nothing ran.                                                                                                                                                                          |
-| `test-failures` | The suite ran and reported unexpected results.                                                                                                                                                               |
-| `preflight`     | The run was refused before the harness was reached.                                                                                                                                                          |
-| `inconclusive`  | A result exists, but `engine/` moved under it, so the result was discarded.                                                                                                                                  |
-| `lock-timeout`  | The run never started: the engine session lock stayed contended.                                                                                                                                             |
-| `killed`        | A signal terminated the run. Written from the signal handler so that a log tail always describes itself. A killed run must never be silent, or "killed", "still running" and "never started" all look alike. |
+| Reason          | Meaning                                                                                                                                                                                                                                                                                                                                                           |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crash`         | The harness or the browser died, so there is no trustworthy suite result.                                                                                                                                                                                                                                                                                         |
+| `no-tests`      | The run dispatched but nothing ran.                                                                                                                                                                                                                                                                                                                               |
+| `test-failures` | The suite ran and reported unexpected results.                                                                                                                                                                                                                                                                                                                    |
+| `preflight`     | The run was refused before the harness was reached.                                                                                                                                                                                                                                                                                                               |
+| `inconclusive`  | A result exists, but `engine/` moved under it, so the result was discarded.                                                                                                                                                                                                                                                                                       |
+| `lock-timeout`  | The run never started: the engine session lock stayed contended.                                                                                                                                                                                                                                                                                                  |
+| `killed`        | A signal terminated the run, or FireForge ended it because its parent process vanished. Written from the signal handler (or the parent-exit watchdog) so that a log tail always describes itself. A killed run must never be silent, or "killed", "still running" and "never started" all look alike. `signal=` names the cause: a signal name, or `parent-exit`. |
 
 ### The additive `note=` key
 
@@ -123,6 +123,19 @@ form, so a red found by shuffling carries its own reproduction
 tasks _inside_ a file is harness code that reads the exported seed; FireForge
 owns the seed, the plumbing and the record. Absent when the run did not
 shuffle.
+
+### The additive `orphans-reaped=` key
+
+How many harness processes FireForge terminated itself during the run: at
+preflight, survivors of an earlier run in this objdir under `--reap-orphans`
+or `test.reapOrphans: "reap"`; at teardown, helpers this run's harness
+launched (httpd, websocket server, ssltunnel, process bridge, the browser,
+`moz-http2`) that were still alive after mach exited. Summed across the census, every
+retry attempt and every shard. Absent when nothing was reaped, so a green on
+a quiet machine prints the line it always did, and a green after a reap is
+distinguishable from it. A run ended by SIGTERM or by the parent-exit
+watchdog writes its verdict before the teardown reap runs, so that line never
+carries the key; the reap is reported on stderr instead.
 
 A preflight refusal's own text is written to stdout before the verdict line,
 and into the run log, so the verdict stays the last stdout write while the

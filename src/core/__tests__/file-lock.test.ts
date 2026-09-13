@@ -386,6 +386,32 @@ describe('file-lock', () => {
     });
   });
 
+  // The cold-Windows-CI shape: one loop iteration (waiter registration, the
+  // stale probe) costs more than the whole budget. The due progress line
+  // must still be written before the refusal; checked the other way round,
+  // the wait timed out having reported nothing.
+  it('still reports progress once when the budget is shorter than one iteration', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    const tempDir = await makeTempDir('fireforge-wait-progress-slow-');
+    const lockPath = join(tempDir, 'state.json.fireforge.lock');
+    await mkdir(lockPath);
+    await writeFile(join(lockPath, 'pid'), `${String(process.pid)}\nsome-token\n`, 'utf-8');
+
+    const progress: { waitedMs: number }[] = [];
+    await expect(
+      withFileLock(lockPath, () => Promise.resolve('unreachable'), {
+        timeoutMs: 1,
+        pollMs: 1,
+        staleMs: 60 * 60 * 1000,
+        waitProgressMs: 1,
+        onWaitProgress: (p) => progress.push(p),
+        onTimeoutMessage: 'lock still held',
+      })
+    ).rejects.toThrow('lock still held');
+
+    expect(progress.length).toBeGreaterThan(0);
+  });
+
   it('reports an undefined holder when the PID file is unreadable', async () => {
     const tempDir = await makeTempDir('fireforge-wait-progress-anon-');
     const lockPath = join(tempDir, 'state.json.fireforge.lock');

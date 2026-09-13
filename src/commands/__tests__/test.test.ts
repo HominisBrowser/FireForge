@@ -80,7 +80,18 @@ vi.mock('../../core/xpcshell-appdir.js', async () =>
 // The orphan census shells out to `ps`. Stub it so the command suite stays
 // hermetic (the census itself is unit-tested in harness-orphans.test.ts).
 vi.mock('../../core/harness-orphans.js', () => ({
-  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve([])),
+  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve({ orphans: [], reaped: 0 })),
+}));
+// The pgid file is removed at the end of every run; the real helper is
+// covered in test-harness-teardown.test.ts, so here only the call is pinned.
+// The pre-dispatch helper snapshot shells out to `ps`; keep the suite hermetic.
+vi.mock('../../core/harness-helper-pids.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/harness-helper-pids.js')>()),
+  snapshotObjdirHelpers: vi.fn(() => Promise.resolve(undefined)),
+}));
+vi.mock('../test-harness-teardown.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../test-harness-teardown.js')>()),
+  removePgidFile: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../../core/tree-store.js', async () =>
@@ -91,6 +102,7 @@ import { writeBuildBaseline } from '../../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import { loadConfig } from '../../core/config.js';
 import {} from '../../core/coverage-extend.js';
+import { reportOrphanedHarnessProcesses } from '../../core/harness-orphans.js';
 import {
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
@@ -112,6 +124,16 @@ import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js'
 import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
 import { info, notice, outro, success } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
+import { removePgidFile } from '../test-harness-teardown.js';
+
+// Every dispatch carries its kill-path hooks (helper-pid tracking, process
+// group announcement, post-close reap); their behaviour is covered in
+// test-harness-teardown.test.ts, so here only their presence is asserted.
+const TEARDOWN_HOOKS = {
+  onOutputChunk: expect.any(Function) as () => void,
+  onProcessGroup: expect.any(Function) as () => void,
+  postCloseSweep: expect.any(Function) as () => Promise<void>,
+};
 
 // Suite 1 of 6 for `fireforge test`: discovery, failure-message rewriting,
 // build gating, the canary verdict, and harness dispatch/sharding. The
@@ -431,6 +453,7 @@ describe('testCommand', () => {
     await expect(testCommand('/project', [], { auto: true })).resolves.toBeUndefined();
 
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: [],
       args: expect.arrayContaining(['--auto']) as string[],
@@ -477,6 +500,7 @@ describe('testCommand', () => {
       await expect(testCommand('/project', [], { canary: true })).resolves.toBeUndefined();
 
       expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+        teardown: TEARDOWN_HOOKS,
         engineDir: '/project/engine',
         testPaths: ['browser/base/content/test/foo/browser_canary.js'],
         args: expect.arrayContaining(['--timeout=12']) as string[],
@@ -771,6 +795,7 @@ describe('testCommand', () => {
     // instance semantics of a directory run are preserved.
     expect(runMachTestSuite).toHaveBeenCalledTimes(1);
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: hominisFiles,
       args: [],
@@ -817,11 +842,13 @@ describe('testCommand', () => {
 
     expect(runMachTestSuite).toHaveBeenCalledTimes(2);
     expect(runMachTestSuite).toHaveBeenNthCalledWith(1, expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: dirFiles,
       args: [],
     });
     expect(runMachTestSuite).toHaveBeenNthCalledWith(2, expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/components/tests/browser_other.js'],
       args: [],
@@ -842,10 +869,89 @@ describe('testCommand', () => {
     ).resolves.toBeUndefined();
 
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/components/tests/unit/test_distribution.js'],
       args: ['--headless'],
     });
+  });
+
+  // The census is report-only unless the invocation (--reap-orphans) or the
+  // repo (test.reapOrphans: "reap") opts in, and a reap must show on the
+  // verdict line so a green after one is not read as a green on a quiet
+  // machine.
+  it('keeps the orphan census report-only by default', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nTEST-OK | t',
+      stderr: '',
+    });
+    await testCommand('/project', ['browser/components/tests/unit/test_distribution.js']);
+    expect(reportOrphanedHarnessProcesses).toHaveBeenCalledWith('obj-debug', { reap: false });
+  });
+
+  it('reaps at preflight under test.reapOrphans: "reap" and stamps the count on the verdict', async () => {
+    vi.mocked(loadConfig).mockResolvedValueOnce({
+      name: 'MyBrowser',
+      vendor: 'My Company',
+      appId: 'org.example.mybrowser',
+      binaryName: 'mybrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      test: { reapOrphans: 'reap' },
+    });
+    vi.mocked(reportOrphanedHarnessProcesses).mockResolvedValueOnce({
+      orphans: [
+        { pid: 19141, ppid: 1, elapsed: '01:00:00', elapsedSeconds: 3600, command: 'xpcshell' },
+      ],
+      reaped: 1,
+    });
+    vi.mocked(runMachTestSuite).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nTEST-OK | t',
+      stderr: '',
+    });
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await testCommand('/project', ['browser/components/tests/unit/test_distribution.js']);
+      const verdict = writeSpy.mock.calls
+        .map((args) => args[0])
+        .find(
+          (chunk): chunk is string =>
+            typeof chunk === 'string' && chunk.startsWith('FIREFORGE-VERDICT')
+        );
+      expect(verdict).toMatch(/^FIREFORGE-VERDICT: PASS .*orphans-reaped=1/);
+    } finally {
+      writeSpy.mockRestore();
+    }
+    expect(reportOrphanedHarnessProcesses).toHaveBeenCalledWith('obj-debug', { reap: true });
+  });
+
+  it('lets --reap-orphans override a report posture', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nTEST-OK | t',
+      stderr: '',
+    });
+    await testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+      reapOrphans: true,
+    });
+    expect(reportOrphanedHarnessProcesses).toHaveBeenCalledWith('obj-debug', { reap: true });
+  });
+
+  // The file must only outlive FireForge when FireForge was killed without
+  // notice; a run that ends on its own removes it, pass or fail.
+  it('removes the --pgid-file when the run ends under its own control', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue({
+      exitCode: 1,
+      stdout: 'TEST-START | t\nTEST-UNEXPECTED-FAIL | t | boom',
+      stderr: '',
+    });
+    await expect(
+      testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
+        pgidFile: '/tmp/ff.pgid',
+      })
+    ).rejects.toThrow();
+    expect(removePgidFile).toHaveBeenCalledWith('/tmp/ff.pgid');
   });
 
   it('strips a case-insensitive engine prefix on case-insensitive filesystems', async () => {
@@ -860,6 +966,7 @@ describe('testCommand', () => {
     ).resolves.toBeUndefined();
 
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/components/tests/unit/test_distribution.js'],
       args: [],
@@ -880,6 +987,7 @@ describe('testCommand', () => {
     // backslashes survive into mach (Windows mach handles them), but the
     // engine prefix is stripped.
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser\\components\\tests\\unit\\test_distribution.js'],
       args: [],
@@ -898,6 +1006,7 @@ describe('testCommand', () => {
     ).resolves.toBeUndefined();
 
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/components/tests/unit/test_distribution.js'],
       args: [],

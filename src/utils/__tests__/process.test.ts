@@ -785,5 +785,77 @@ describe('process-group reaping', () => {
       await promise;
       killSpy.mockRestore();
     });
+
+    it('announces the group id right after the spawn', async () => {
+      const child = makeGroupChild(777);
+      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
+      const onProcessGroup = vi.fn();
+
+      const promise = execStream('fake-mach', ['test'], { processGroup: true, onProcessGroup });
+      expect(onProcessGroup).toHaveBeenCalledWith(777);
+      child.emit('close', 0, null);
+      await promise;
+    });
+
+    it('does not announce a group when none was created', async () => {
+      const child = makeGroupChild();
+      mockSpawn.mockReturnValueOnce(child);
+      const onProcessGroup = vi.fn();
+
+      const promise = execStream('fake-mach', ['test'], { onProcessGroup });
+      child.emit('close', 0, null);
+      await promise;
+      expect(onProcessGroup).not.toHaveBeenCalled();
+    });
+
+    // The caller's sweep sits between the group sweep and the wrapper's
+    // resolution so the bin signal handler's child-shutdown wait covers it.
+    // Resolving first would let `process.exit` race the reap on SIGTERM.
+    it('awaits the caller sweep after the group sweep and before resolving', async () => {
+      const child = makeGroupChild();
+      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
+      const order: string[] = [];
+      let release: () => void = () => undefined;
+      const postCloseSweep = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            order.push('caller-sweep-start');
+            release = () => {
+              order.push('caller-sweep-end');
+              resolve();
+            };
+          })
+      );
+
+      const promise = execStream('fake-mach', ['test'], {
+        processGroup: true,
+        postCloseSweep,
+      }).then((code) => {
+        order.push('resolved');
+        return code;
+      });
+      child.emit('close', 0, null);
+      await vi.waitFor(() => {
+        expect(postCloseSweep).toHaveBeenCalled();
+      });
+      // pgrep (the group sweep) ran before the caller sweep started.
+      expect(mockSpawn).toHaveBeenCalledTimes(2);
+      expect(order).toEqual(['caller-sweep-start']);
+      release();
+      await expect(promise).resolves.toBe(0);
+      expect(order).toEqual(['caller-sweep-start', 'caller-sweep-end', 'resolved']);
+    });
+
+    it('still resolves when the caller sweep rejects', async () => {
+      const child = makeGroupChild();
+      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
+
+      const promise = execStream('fake-mach', ['test'], {
+        processGroup: true,
+        postCloseSweep: () => Promise.reject(new Error('ps exploded')),
+      });
+      child.emit('close', 3, null);
+      await expect(promise).resolves.toBe(3);
+    });
   });
 });

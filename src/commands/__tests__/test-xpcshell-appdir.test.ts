@@ -87,6 +87,15 @@ import { nativeAbsPath, nativePath } from '../../test-utils/index.js';
 import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
 import { testCommand } from '../test.js';
 
+// Every dispatch carries its kill-path hooks (helper-pid tracking, process
+// group announcement, post-close reap); their behaviour is covered in
+// test-harness-teardown.test.ts, so here only their presence is asserted.
+const TEARDOWN_HOOKS = {
+  onOutputChunk: expect.any(Function) as () => void,
+  onProcessGroup: expect.any(Function) as () => void,
+  postCloseSweep: expect.any(Function) as () => Promise<void>,
+};
+
 // xpcshell / mochitest failure-hint rewriting and stale harness symlink
 // recovery. Split out of `test.test.ts`. The shared `vi.mock` header comes
 // from `test-command-mocks.ts`.
@@ -348,6 +357,7 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
 
     // Order matters: FireForge-managed flags first, passthrough last.
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/components/tests/unit/test_distribution.js'],
       args: ['--headless', '--verbose', '--keep-going'],
@@ -371,6 +381,7 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
     ).resolves.toBeUndefined();
 
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/base/content/test/foo/test_x.js'],
       args: ['--verbose'],

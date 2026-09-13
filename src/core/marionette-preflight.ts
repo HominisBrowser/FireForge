@@ -224,9 +224,13 @@ export async function runMarionettePreflight(
     // (missing dylib, wrong CPU arch, corrupt profile) before the socket
     // poll swallows the full overall budget waiting for bytes that will
     // never come.
+    // Ref'd (sleep's default), like every wait in this probe: the browser is a
+    // detached child, so once it has exited nothing else holds the event
+    // loop, and an unref'd wait here let Node exit 0 mid-preflight with no
+    // `Marionette preflight:` line and no verdict at all.
     const settleDeadline = Math.min(spawnSettleMs, Math.max(0, timeoutMs - elapsed()));
     if (settleDeadline > 0) {
-      await sleep(settleDeadline, { unref: true });
+      await sleep(settleDeadline);
     }
     if (hasChildExited(spawnedChild)) {
       return fail(
@@ -298,7 +302,9 @@ async function teardownPreflightChild(
     killProcessTree(child, 'SIGTERM', process.platform !== 'win32');
     // Small escalation: if the child doesn't honour SIGTERM quickly, SIGKILL
     // so we don't leave a ghost mach process around after a failed probe.
-    await sleep(500, { unref: true });
+    // Ref'd: an unref'd wait between a SIGTERM and its escalation lets Node
+    // exit mid-grace and skip the escalation.
+    await sleep(500);
     if (!hasChildExited(child)) {
       killProcessTree(child, 'SIGKILL', process.platform !== 'win32');
     }
@@ -351,7 +357,7 @@ async function waitForMarionetteSocket(
     if (result.ok) {
       return { ok: true };
     }
-    await sleep(400, { unref: true });
+    await sleep(400);
   }
   return { ok: false };
 }

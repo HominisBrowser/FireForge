@@ -612,21 +612,13 @@ export async function withFileLock<T>(
           }
         }
 
-        if (Date.now() >= deadline) {
-          // The queue is read here, not carried over from the last progress
-          // probe: the position the wait reached is the one number that says
-          // whether a larger budget would have helped, and it must not depend
-          // on a probe having happened to land inside the budget. We are still
-          // registered at this point. `deregisterWaiter` runs in the `finally`
-          // below, which is only entered once this refusal has been built.
-          throw await buildLockTimeoutError(
-            lockPath,
-            options.onTimeoutMessage,
-            error,
-            await readLockQueue(lockPath, startedAt)
-          );
-        }
-
+        // The probe runs before the deadline check, so a due progress line is
+        // written before the refusal that follows it, never lost to it. On a
+        // slow host (a cold Windows CI runner) the first iteration alone, with
+        // its waiter registration and stale probe, can outlast a short budget;
+        // checked the other way round, the wait timed out having reported
+        // nothing, and an advance that probe would have seen could not extend
+        // the deadline it was about to miss.
         if (probeWanted && Date.now() - lastProbeAt >= probeIntervalMs) {
           lastProbeAt = Date.now();
           // Report the budget that is currently in force, not the one
@@ -656,6 +648,21 @@ export async function withFileLock<T>(
               });
             }
           }
+        }
+
+        if (Date.now() >= deadline) {
+          // The queue is read here, not carried over from the last progress
+          // probe: the position the wait reached is the one number that says
+          // whether a larger budget would have helped, and it must not depend
+          // on a probe having happened to land inside the budget. We are still
+          // registered at this point. `deregisterWaiter` runs in the `finally`
+          // below, which is only entered once this refusal has been built.
+          throw await buildLockTimeoutError(
+            lockPath,
+            options.onTimeoutMessage,
+            error,
+            await readLockQueue(lockPath, startedAt)
+          );
         }
 
         await sleep(currentPollMs);

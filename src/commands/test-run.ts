@@ -11,8 +11,11 @@
  * stays available via `--no-shard`.
  */
 
+import { join } from 'node:path';
+
 import { type DisplaySleepState, probeDisplaySleepState } from '../core/display-state.js';
 import { type MachCommandResult, type MachTestSuiteKind, runMachTestSuite } from '../core/mach.js';
+import { parentExited } from '../core/parent-exit-watchdog.js';
 import { getActiveRunLogPath } from '../core/run-log.js';
 import { changedPrefNoiseVerdictNote } from '../core/test-changed-prefs.js';
 import {
@@ -29,6 +32,7 @@ import { TestFailureError } from '../errors/build.js';
 import { info, note, warn } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
 import { maybeInjectAppdirArg } from './test-appdir.js';
+import { createHarnessTeardown } from './test-harness-teardown.js';
 import { emitHarnessVerdict } from './test-verdict.js';
 
 /** Default bounded retry budget for recognized harness crashes. */
@@ -70,6 +74,8 @@ export interface TestRunContext {
    * the coding-agent markers that quiet it. Off by default.
    */
   fullOutput?: boolean;
+  /** `--pgid-file`: where each dispatch publishes its harness process group id. */
+  pgidFile?: string | undefined;
 }
 
 /** Outcome of one (possibly retried) harness invocation. */
@@ -130,13 +136,19 @@ async function runTestsWithRetriesInner(
 
   for (;;) {
     attempts += 1;
-    result = await runMachTestSuite(kind, {
-      engineDir: ctx.engineDir,
-      testPaths: paths,
-      args: extraArgs,
-      env,
-      fullOutput: ctx.fullOutput,
-    });
+    result = await runTrackedMachTestSuite(ctx, kind, paths, extraArgs, env);
+    // The parent that was reading this run is gone and the watchdog has
+    // already killed the harness. Classifying the corpse would call it a
+    // harness crash and retry it under nobody's supervision.
+    if (parentExited()) {
+      throw new TestFailureError(
+        'The parent process exited while the harness was running; the harness tree was ' +
+          'terminated and the run ended without a result.',
+        `mach ${kind}`,
+        undefined,
+        getActiveRunLogPath()
+      );
+    }
     result = await retryAfterXpcshellSymlinkRepair({
       engineDir: ctx.engineDir,
       objDir: ctx.objDir,
@@ -177,6 +189,37 @@ async function runTestsWithRetriesInner(
   }
 
   return { result, verdict, attempts, appdirInjectionAttempted, displayState };
+}
+
+/**
+ * One mach dispatch with its kill path attached: helper-pid tracking and
+ * post-close reaping, the process-group announcement, and the parent-exit
+ * watchdog for exactly as long as mach runs.
+ */
+async function runTrackedMachTestSuite(
+  ctx: TestRunContext,
+  kind: MachTestSuiteKind,
+  paths: string[],
+  extraArgs: string[],
+  env: Record<string, string> | undefined
+): Promise<MachCommandResult> {
+  const teardown = createHarnessTeardown({
+    objDir: ctx.objDir === undefined ? undefined : join(ctx.engineDir, ctx.objDir),
+    pgidFile: ctx.pgidFile,
+  });
+  try {
+    await teardown.prepare();
+    return await runMachTestSuite(kind, {
+      engineDir: ctx.engineDir,
+      testPaths: paths,
+      args: extraArgs,
+      env,
+      fullOutput: ctx.fullOutput,
+      teardown: teardown.hooks,
+    });
+  } finally {
+    teardown.dispose();
+  }
 }
 
 /**

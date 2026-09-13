@@ -65,6 +65,7 @@ export const SUPPORTED_CONFIG_PATHS = [
   'test',
   'test.canaryPath',
   'test.canaryTimeoutSeconds',
+  'test.reapOrphans',
   'externalToolchains',
   'wire',
   'wire.subscriptDir',

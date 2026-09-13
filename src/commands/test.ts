@@ -40,6 +40,7 @@ import { assertObjdirMatchesTreeMarker } from '../core/tree-store.js';
 import { FireForgeError, GeneralError, PreflightRefusalError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
+import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, notice, outro, verbose } from '../utils/logger.js';
@@ -47,6 +48,7 @@ import { stripEnginePrefix } from '../utils/paths.js';
 import { runTestBuildPhase } from './test-build-phase.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
 import { buildPerfSampleEnv, mergeHarnessEnv, resolveShuffleSeed } from './test-harness-env.js';
+import { removePgidFile, setActivePgidFile } from './test-harness-teardown.js';
 import {
   assertPathlessTestMode,
   assertTestModeCombinations,
@@ -68,6 +70,7 @@ import {
   type TestSuite,
 } from './test-run.js';
 import {
+  addVerdictRunCount,
   emitFailVerdict,
   emitPassVerdict,
   resetVerdictEmission,
@@ -329,7 +332,7 @@ async function ensureTestBrowserEnvironment(
   engineDir: string,
   launchablePath: string | undefined,
   xpcshellOnly: boolean,
-  binaryName: string,
+  projectConfig: FireForgeConfig,
   options: TestOptions,
   objDir: string | undefined
 ): Promise<{ forwardedPort: number | undefined; effectivePort: number | undefined }> {
@@ -354,14 +357,18 @@ async function ensureTestBrowserEnvironment(
   // Helpers that outlived an earlier run (httpd, pywebsocket, ssltunnel,
   // moz-http2) slow every later run without appearing in its output. Both
   // harnesses are affected, so this census is not gated on xpcshellOnly.
-  await reportOrphanedHarnessProcesses(objDir, {
-    reap: options.reapOrphans === true,
+  // Reaping is opt-in per invocation (--reap-orphans) or per repo
+  // (test.reapOrphans: "reap"); a reap is stamped on the verdict line so a
+  // green after one is not mistaken for a green on a quiet machine.
+  const census = await reportOrphanedHarnessProcesses(objDir, {
+    reap: options.reapOrphans === true || projectConfig.test?.reapOrphans === 'reap',
   });
+  addVerdictRunCount('orphans-reaped', census.reaped);
   const forwardedPort = options.machArg
     ? extractForwardedMarionettePort(options.machArg)
     : undefined;
   const effectivePort = options.marionettePort ?? forwardedPort;
-  await ensureTestMarionettePortAvailable(effectivePort, binaryName, options, {
+  await ensureTestMarionettePortAvailable(effectivePort, projectConfig.binaryName, options, {
     xpcshellOnly,
     doctor: options.doctor === true,
   });
@@ -402,6 +409,7 @@ export async function testCommand(
   // exactly the runs whose only output a `tail` throws away. Closed in
   // `finally`, after the verdict line has already read the path.
   setActiveRunLog(await openRunLog(projectRoot, 'test'));
+  setActivePgidFile(options.pgidFile);
   try {
     await runTestCommandBody(projectRoot, testPaths, options);
   } catch (error: unknown) {
@@ -411,6 +419,9 @@ export async function testCommand(
     }
     throw error;
   } finally {
+    // A run that ends under FireForge's control owns no harness group any
+    // more; the file only outlives FireForge when FireForge was killed.
+    await removePgidFile(options.pgidFile);
     await closeActiveRunLog();
   }
 }
@@ -547,7 +558,7 @@ async function runTestCommandBody(
     paths.engine,
     launchablePath,
     xpcshellOnly,
-    projectConfig.binaryName,
+    projectConfig,
     options,
     buildCheck.objDir
   );
@@ -583,18 +594,14 @@ async function runTestCommandBody(
   if (options.auto === true) {
     extraArgs.push('--auto');
   }
-  if (canaryPath !== undefined) {
-    extraArgs.push(`--timeout=${canaryTimeoutSeconds(projectConfig)}`);
-  }
+  if (canaryPath !== undefined) extraArgs.push(`--timeout=${canaryTimeoutSeconds(projectConfig)}`);
 
   // --mach-arg is a verbatim passthrough for upstream mach/xpcshell/mochitest
   // flags FireForge does not model directly (see the xpcshell appdir hint
   // above for why). Appended after --headless so mach sees
   // the FireForge-managed flags first and the escape-valve ones last, which
   // keeps the override precedence predictable.
-  if (forwardedMachArgs.length > 0) {
-    extraArgs.push(...forwardedMachArgs);
-  }
+  if (forwardedMachArgs.length > 0) extraArgs.push(...forwardedMachArgs);
 
   appendMarionetteForwardingArgs(extraArgs, options, forwardedPort, xpcshellOnly);
 
@@ -639,6 +646,7 @@ async function runTestCommandBody(
     headless: options.headless === true,
     ...(options.fullOutput === true ? { fullOutput: true } : {}),
     ...(harnessEnv ? { env: harnessEnv } : {}),
+    pgidFile: options.pgidFile,
   };
   const postRebuildContext = options.build
     ? createPostRebuildFailureContext('fireforge test --build', normalizedPaths)

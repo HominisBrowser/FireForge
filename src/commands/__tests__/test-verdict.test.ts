@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setActiveRunLog } from '../../core/run-log.js';
 import { error as logError } from '../../utils/logger.js';
 import {
+  addVerdictRunCount,
   emitFailVerdict,
   emitHarnessVerdict,
   emitKilledVerdict,
@@ -292,5 +293,48 @@ describe('additive run attributes (shuffle=)', () => {
       capture.restore();
     }
     expect(capture.writes).toEqual(['FIREFORGE-VERDICT: PASS\n']);
+  });
+});
+
+describe('additive run attributes (orphans-reaped=)', () => {
+  // A green after FireForge had to kill harness processes is a different
+  // finding from a green on a quiet machine, so the count rides the line.
+  // It sums across the preflight census, every attempt and every shard.
+  it('sums the reaps of a run onto the verdict line', () => {
+    addVerdictRunCount('orphans-reaped', 1); // preflight census
+    addVerdictRunCount('orphans-reaped', 0); // a clean shard
+    addVerdictRunCount('orphans-reaped', 2); // a teardown reap
+    const capture = captureStdout();
+    try {
+      emitHarnessVerdict({ kind: 'tests-ran-ok', checks: 3, unexpected: 0 });
+    } finally {
+      capture.restore();
+    }
+    expect(capture.writes).toEqual([
+      'FIREFORGE-VERDICT: PASS checks=3 unexpected=0 orphans-reaped=3\n',
+    ]);
+  });
+
+  // The quiet-machine line must stay byte-identical to what it was.
+  it('is absent when nothing was reaped, including for a NaN count', () => {
+    addVerdictRunCount('orphans-reaped', 0);
+    addVerdictRunCount('orphans-reaped', Number.NaN);
+    const capture = captureStdout();
+    try {
+      emitPassVerdict();
+    } finally {
+      capture.restore();
+    }
+    expect(capture.writes).toEqual(['FIREFORGE-VERDICT: PASS\n']);
+  });
+
+  it('names parent-exit as the cause of a run ended by the parent watchdog', () => {
+    const capture = captureStdout();
+    try {
+      expect(emitKilledVerdict('parent-exit')).toBe(true);
+    } finally {
+      capture.restore();
+    }
+    expect(capture.writes).toEqual(['FIREFORGE-VERDICT: FAIL reason=killed signal=parent-exit\n']);
   });
 });

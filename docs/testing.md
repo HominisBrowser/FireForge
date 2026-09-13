@@ -87,21 +87,85 @@ a slow build for a silently wrong test.
   earlier run in this project's objdir. It runs at preflight, before this run
   spawns anything, so every hit is necessarily a survivor. A match has to be
   objdir-anchored, since `xpcshell` and `server.js` are far too generic to
-  report on their own. Survivors slow every later run without appearing in
+  report on their own, and structural: the process's executable is a helper
+  binary, or an interpreter whose script argument is a helper script. A
+  process that merely mentions such a path (an editor, a `grep`, the shell
+  FireForge runs under) is not a helper, and FireForge's own ancestors are
+  never candidates. Survivors slow every later run without appearing in
   its output. The usual symptom is a three-second suite taking minutes of
-  wall clock. The census is report-only by default, and `--reap-orphans`
-  terminates what it finds. It never refuses a run. A different shape,
+  wall clock. The census is report-only by default; `--reap-orphans`, or
+  `test.reapOrphans: "reap"` in `fireforge.json`, terminates what it finds
+  (SIGTERM, a 500 ms grace, SIGKILL). It never refuses a run. Every reap is
+  stamped on the verdict line as `orphans-reaped=<n>`. A different shape,
   reparented Python `multiprocessing` workers, is covered by the
   `Orphaned harness workers` doctor check.
+- Every dispatch owns its own kill path. The harness announces what it
+  launches (`runtests.py | Server pid: <n>`, the websocket server, the SSL
+  tunnel, the websocket/process bridge, and the browser as `Application
+pid`); FireForge tracks those pids and, after mach has exited for any
+  reason (a clean finish, a harness crash before a retry, a no-output
+  timeout, a forwarded SIGTERM, the parent-exit watchdog below), terminates
+  any of them still alive. A tracked pid is re-read from `ps` first and must
+  still be anchored to this objdir and still look like the thing that was
+  launched, so a recycled pid is never signalled. One helper is never
+  announced: mozserve starts `moz-http2` in a session of its own and logs no
+  pid, so it is in neither the group nor the announcements. For it, FireForge
+  snapshots the same-objdir helpers before the dispatch spawns and, after
+  mach exits, reaps any helper-shaped process under this checkout's absolute
+  objdir that is new since that snapshot and reparented to launchd. An
+  earlier run's survivor is in the snapshot and stays the census's call. This
+  reap runs inside the exec layer's close path, so the signal handler's
+  bounded child-shutdown wait covers it. The count joins `orphans-reaped=`.
+- FireForge watches its own parent while a dispatch runs. A supervisor that
+  SIGKILLs the process above `fireforge test` (an `npm run` step killed at
+  its bound) signals nothing below it; FireForge notices the reparenting
+  within about two seconds, writes `FIREFORGE-VERDICT: FAIL reason=killed
+signal=parent-exit`, reaps the harness process group and the tracked
+  helpers, and ends the run without classifying or retrying.
 - `--perf-samples <path>` publishes a perf-sample artifact path to the
   harness (exported as `<BINARYNAME>_PERF_SAMPLE_JSON`).
+
+## Process groups and supervisors
+
+`fireforge test` spawns mach as the leader of its **own** process group
+(`detached: true`), so that FireForge can signal the whole harness tree with
+one negative-pid kill and sweep the group after mach exits. Two consequences
+for anything that supervises `fireforge test`:
+
+- A supervisor that kills _its own_ process group (`kill -- -<npm pid>`) does
+  not reach mach: mach is not in that group. Killing the `npm`/`node` chain
+  above FireForge leaves the harness tree running.
+- SIGTERM to FireForge is the right signal. FireForge forwards it to the
+  mach group, escalates to SIGKILL after a grace period, sweeps the group,
+  reaps the tracked helpers, and writes `FAIL reason=killed signal=SIGTERM`.
+  (That line, like the watchdog's `signal=parent-exit` line, is written
+  before the teardown reap runs, so it cannot carry `orphans-reaped=`; the
+  reap reports to stderr.)
+- A supervisor that has to SIGKILL FireForge should pass
+  `--pgid-file <path>`. FireForge rewrites the file with the harness group id
+  on every mach spawn (each retry attempt and shard) and removes it when the
+  run ends under its own control. After a SIGKILL the file is still there:
+  `kill -TERM -- -$(cat <path>)`, then `-KILL`, takes mach and every helper
+  that shares its group. Two processes are outside it: the browser
+  (mozprocess puts it in a group of its own) and `moz-http2` (mozserve
+  starts it in its own session). A SIGTERM to the group gives `runtests.py`
+  the chance to run its own cleanup, which normally takes the browser with
+  it; nothing takes `moz-http2`, so after a SIGKILL of FireForge it stays
+  until the next run's census, which is why that run should carry the reap
+  posture. A browser that does survive is the Marionette preflight's and
+  `--kill-stale-marionette`'s to remove.
+
+The mochitest helpers (httpd, websocket server, ssltunnel, process bridge)
+are plain children of `runtests.py` and share mach's group. The browser and
+`moz-http2` do not, which is why the teardown reap above exists alongside the
+group sweep.
 
 ## The verdict line
 
 Every test run ends with one machine-readable line:
 
 ```
-FIREFORGE-VERDICT: PASS|FAIL reason=… [note=<class>] [shuffle=<seed>] [log=<path>]
+FIREFORGE-VERDICT: PASS|FAIL reason=… [note=<class>] [shuffle=<seed>] [orphans-reaped=<n>] [log=<path>]
 ```
 
 Automation should branch on this line rather than on the raw process code,

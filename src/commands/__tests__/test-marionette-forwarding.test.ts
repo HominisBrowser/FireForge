@@ -96,6 +96,15 @@ import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
 import { info, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 
+// Every dispatch carries its kill-path hooks (helper-pid tracking, process
+// group announcement, post-close reap); their behaviour is covered in
+// test-harness-teardown.test.ts, so here only their presence is asserted.
+const TEARDOWN_HOOKS = {
+  onOutputChunk: expect.any(Function) as () => void,
+  onProcessGroup: expect.any(Function) as () => void,
+  postCloseSweep: expect.any(Function) as () => Promise<void>,
+};
+
 // Marionette port forwarding and xpcshell --app-path injection. Split out
 // of `test.test.ts`. The shared `vi.mock` header comes from
 // `test-command-mocks.ts`.
@@ -233,6 +242,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     ).resolves.toBeUndefined();
 
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/components/tests/unit/test_distribution.js'],
       args: [],
@@ -270,6 +280,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
       'obj-debug'
     );
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/base/content/test/foo/test_x.js'],
       args: ['--app-path=/project/engine/obj-debug/dist/bin/browser'],
@@ -295,6 +306,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
 
     expect(resolveXpcshellAppdirArg).not.toHaveBeenCalled();
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/base/content/test/foo/test_x.js'],
       args: ['--app-path=/custom/path'],
@@ -327,6 +339,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     );
     // No --app-path injected.
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/base/content/test/A/test_a.js', 'browser/base/content/test/B/test_b.js'],
       args: [],
@@ -433,6 +446,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     ).resolves.toBeUndefined();
 
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/base/content/test/general/browser_focus.js'],
       args: ['--setpref=marionette.port=2912', '--marionette=127.0.0.1:2912'],
@@ -453,6 +467,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     ).resolves.toBeUndefined();
 
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['toolkit/content/tests/widgets/test_moz-example.html'],
       args: ['--setpref=marionette.port=2838', '--marionette=127.0.0.1:2838'],
@@ -473,6 +488,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     ).resolves.toBeUndefined();
 
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['toolkit/components/tests/xpcshell/test_observer.js'],
       args: ['--setpref=marionette.port=2838', '--marionette=127.0.0.1:2838'],
@@ -501,6 +517,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
       expect.objectContaining({ binaryName: 'mybrowser' })
     );
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/base/content/test/general/browser_focus.js'],
       args: ['--marionette-port=2838', '--marionette=127.0.0.1:2838'],
@@ -522,6 +539,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
     ).resolves.toBeUndefined();
 
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['browser/base/content/test/general/browser_focus.js'],
       args: ['--marionette=127.0.0.1:2912', '--setpref=marionette.port=2912'],
@@ -570,6 +588,7 @@ describe('testCommand Marionette and appdir forwarding', () => {
       expect.objectContaining({ binaryName: 'mybrowser' })
     );
     expect(runMachTestSuite).toHaveBeenCalledWith(expect.any(String), {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/project/engine',
       testPaths: ['toolkit/components/tests/xpcshell/test_observer.js'],
       args: ['--flavor=xpcshell'],

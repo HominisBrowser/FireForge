@@ -83,6 +83,16 @@ export interface MachOptions {
    * layer's {@link ExecOptions.envUnset}.
    */
   envUnset?: readonly string[];
+  /**
+   * Observes every raw output chunk of a capture dispatch, on either stream,
+   * before the echo filter. The test dispatchers feed the harness helper-pid
+   * tracker from it. Capture-only, like `annotateKnownTeardownNoise`.
+   */
+  onOutputChunk?: (stream: 'stdout' | 'stderr', chunk: string) => void;
+  /** Exec-layer hook, see {@link ProcessGroupOptions.onProcessGroup}. Capture-only. */
+  onProcessGroup?: (pgid: number) => void;
+  /** Exec-layer hook, see {@link ProcessGroupOptions.postCloseSweep}. Capture-only. */
+  postCloseSweep?: () => Promise<void>;
 }
 
 /**
@@ -177,7 +187,10 @@ export async function runMachCapture(
     // storybook) runs as a process-group leader and is group-reaped on
     // exit/abort. See ExecOptions.processGroup.
     processGroup: true,
+    ...(options.onProcessGroup ? { onProcessGroup: options.onProcessGroup } : {}),
+    ...(options.postCloseSweep ? { postCloseSweep: options.postCloseSweep } : {}),
     onStdout: (data) => {
+      options.onOutputChunk?.('stdout', data);
       stdout += data;
       if (stdout.length > CAPTURE_TAIL_LIMIT) {
         stdout = stdout.slice(-CAPTURE_TAIL_LIMIT);
@@ -191,6 +204,7 @@ export async function runMachCapture(
       process.stdout.write(stdoutFilter ? stdoutFilter.transform(data) : data);
     },
     onStderr: (data) => {
+      options.onOutputChunk?.('stderr', data);
       stderr += data;
       if (stderr.length > CAPTURE_TAIL_LIMIT) {
         stderr = stderr.slice(-CAPTURE_TAIL_LIMIT);
@@ -582,6 +596,12 @@ export interface MachTestSuiteOptions {
    * markers that quiet it. See {@link CODING_AGENT_ENV_MARKERS}.
    */
   fullOutput?: boolean | undefined;
+  /**
+   * Harness teardown hooks (`fireforge test`): the helper-pid tracker feed,
+   * the process-group announcement, and the post-close reap of the helpers
+   * the harness launched. See {@link MachOptions}.
+   */
+  teardown?: Pick<MachOptions, 'onOutputChunk' | 'onProcessGroup' | 'postCloseSweep'> | undefined;
 }
 
 /**
@@ -598,12 +618,13 @@ export async function runMachTestSuite(
   kind: MachTestSuiteKind,
   options: MachTestSuiteOptions
 ): Promise<MachCommandResult> {
-  const { engineDir, testPaths = [], args = [], env, fullOutput } = options;
+  const { engineDir, testPaths = [], args = [], env, fullOutput, teardown } = options;
   const guard = await installMachResourceGuard(engineDir);
   const envUnset = testVerbosityEnvUnset(fullOutput);
   return runMachCapture([kind, ...testPaths, ...args], engineDir, {
     env: { ...guard.env, ...env },
     ...(envUnset ? { envUnset } : {}),
+    ...teardown,
     annotateKnownTeardownNoise: true,
   });
 }

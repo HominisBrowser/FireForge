@@ -108,7 +108,11 @@ export function registerTest(
     )
     .option(
       '--reap-orphans',
-      'Terminate harness helper processes (httpd, pywebsocket, ssltunnel, moz-http2) from this objdir that survived an earlier run. The census itself runs on every test dispatch and is report-only; this flag opts into the kill.'
+      'Terminate harness helper processes (httpd, pywebsocket, ssltunnel, moz-http2) from this objdir that survived an earlier run. The census itself runs on every test dispatch and is report-only; this flag (or test.reapOrphans: "reap" in fireforge.json) opts into the kill. Reaps are stamped on the verdict line as orphans-reaped=<n>.'
+    )
+    .option(
+      '--pgid-file <path>',
+      'Write the harness process-group id (mach is the group leader) to this file on every spawn, so a supervisor that had to SIGKILL fireforge can still take the whole harness tree with "kill -- -$(cat <path>)". Removed when the run ends normally.'
     )
     .option(
       '--canary [path]',
@@ -178,6 +182,8 @@ export function registerTest(
           allowStaleBuild?: boolean;
           allowStaleComponents?: boolean;
           killStaleMarionette?: boolean;
+          reapOrphans?: boolean;
+          pgidFile?: string;
           canary?: string | boolean;
           doctor?: boolean;
           machArg?: string[];

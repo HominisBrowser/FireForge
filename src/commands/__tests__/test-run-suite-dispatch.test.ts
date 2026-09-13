@@ -10,8 +10,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runMachTestSuite } from '../../core/mach.js';
+import { parentExited, startParentExitWatchdog } from '../../core/parent-exit-watchdog.js';
+import { TestFailureError } from '../../errors/build.js';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import { runTestsWithRetries, type TestRunContext, type TestSuite } from '../test-run.js';
+
+// Every dispatch carries its kill-path hooks (helper-pid tracking, process
+// group announcement, post-close reap); their behaviour is covered in
+// test-harness-teardown.test.ts, so here only their presence is asserted.
+const TEARDOWN_HOOKS = {
+  onOutputChunk: expect.any(Function) as () => void,
+  onProcessGroup: expect.any(Function) as () => void,
+  postCloseSweep: expect.any(Function) as () => Promise<void>,
+};
 
 vi.mock('../../core/mach.js', () => ({
   runMachTestSuite: vi.fn(),
@@ -22,6 +33,16 @@ vi.mock('../test-appdir.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
+
+// The pre-dispatch helper snapshot shells out to `ps`; keep the suite hermetic.
+vi.mock('../../core/harness-helper-pids.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/harness-helper-pids.js')>()),
+  snapshotObjdirHelpers: vi.fn(() => Promise.resolve(undefined)),
+}));
+vi.mock('../../core/parent-exit-watchdog.js', () => ({
+  parentExited: vi.fn(() => false),
+  startParentExitWatchdog: vi.fn(() => ({ stop: vi.fn() })),
+}));
 
 const GREEN = { exitCode: 0, stdout: 'TEST-START | t\nTEST-PASS | t\n', stderr: '' };
 // The exact macOS mozlog resource-monitor startup traceback that aborts
@@ -59,6 +80,7 @@ describe('runTestsWithRetries suite dispatch (item E1)', () => {
 
     expect(runMachTestSuite).toHaveBeenCalledTimes(1);
     expect(runMachTestSuite).toHaveBeenCalledWith('xpcshell-test', {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/engine',
       testPaths: ['a_test.js'],
       args: [],
@@ -76,6 +98,7 @@ describe('runTestsWithRetries suite dispatch (item E1)', () => {
 
     expect(runMachTestSuite).toHaveBeenCalledTimes(1);
     expect(runMachTestSuite).toHaveBeenCalledWith('mochitest', {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/engine',
       testPaths: ['browser_x.js'],
       args: [],
@@ -90,6 +113,7 @@ describe('runTestsWithRetries suite dispatch (item E1)', () => {
 
     expect(runMachTestSuite).toHaveBeenCalledTimes(1);
     expect(runMachTestSuite).toHaveBeenCalledWith('test', {
+      teardown: TEARDOWN_HOOKS,
       engineDir: '/engine',
       testPaths: ['a_test.js'],
       args: [],
@@ -180,5 +204,40 @@ describe('per-invocation xpcshell profile dir', () => {
     const env = capturedEnv();
     expect(env['MOZ_SAMPLE']).toBe('1');
     expect(env['XPCSHELL_TEST_PROFILE_DIR']).toContain('fireforge-xpcshell-profile-');
+  });
+});
+
+describe('runTestsWithRetries under a parent exit', () => {
+  // The watchdog has already written the killed verdict and reaped the
+  // group; what comes back from mach is a corpse. Classifying it would call
+  // it a harness crash and spend the retry budget under a parent that is
+  // gone, which is how a killed gate step used to leave a second harness
+  // tree running unsupervised.
+  it('ends the run without classifying or retrying once the parent is gone', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue(RESOURCE_MONITOR_CRASH);
+    vi.mocked(parentExited).mockReturnValue(true);
+    try {
+      await expect(runTestsWithRetries(makeCtx('mochitest', 2), ['browser_x.js'])).rejects.toThrow(
+        TestFailureError
+      );
+      expect(runMachTestSuite).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.mocked(parentExited).mockReturnValue(false);
+    }
+  });
+
+  it('runs the watchdog only for the duration of each dispatch', async () => {
+    const stop = vi.fn();
+    vi.mocked(startParentExitWatchdog).mockReturnValue({ stop });
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
+
+    await runTestsWithRetries(makeCtx('mochitest'), ['browser_x.js']);
+
+    expect(startParentExitWatchdog).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledTimes(1);
+    // Started before the dispatch resolved, stopped after.
+    expect(vi.mocked(startParentExitWatchdog).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(runMachTestSuite).mock.invocationCallOrder[0] ?? 0
+    );
   });
 });

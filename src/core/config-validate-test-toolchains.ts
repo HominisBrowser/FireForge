@@ -55,6 +55,14 @@ export function parseTestBlock(rec: ConfigRecord, config: FireForgeConfig): void
     out.canaryTimeoutSeconds = canaryTimeout;
   }
 
+  const reapOrphans = testRec.raw('reapOrphans');
+  if (reapOrphans !== undefined) {
+    if (reapOrphans !== 'report' && reapOrphans !== 'reap') {
+      throw new ConfigError('Config field "test.reapOrphans" must be "report" or "reap"');
+    }
+    out.reapOrphans = reapOrphans;
+  }
+
   config.test = out;
 }
 

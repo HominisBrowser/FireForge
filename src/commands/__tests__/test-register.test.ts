@@ -186,6 +186,14 @@ describe('registerTest', () => {
     });
   });
 
+  it('forwards the kill-path options: --reap-orphans and --pgid-file <path>', async () => {
+    await parse('--reap-orphans', '--pgid-file', '/tmp/ff.pgid');
+    expect(vi.mocked(testCommand).mock.calls[0]?.[2]).toMatchObject({
+      reapOrphans: true,
+      pgidFile: '/tmp/ff.pgid',
+    });
+  });
+
   describe('verdict emission when the engine lock fails', () => {
     // The lock is acquired outside testCommand's exactly-one-verdict
     // guarantee, so the registration layer must emit for lock failures or

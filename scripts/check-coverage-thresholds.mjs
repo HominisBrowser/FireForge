@@ -25,6 +25,12 @@ const MODULE_THRESHOLDS = {
   'src/core/furnace-jsconfig.ts': { lines: 89, branches: 78 },
   'src/core/patch-lint-observer.ts': { lines: 94, branches: 85 },
   'src/commands/test-run.ts': { lines: 94, branches: 75 },
+  // The kill path of a test dispatch. Every branch here is a process that
+  // does or does not get signalled, so the pins sit just under landing.
+  'src/core/harness-orphans.ts': { lines: 95, branches: 85, functions: 100 },
+  'src/core/harness-helper-pids.ts': { lines: 96, branches: 85, functions: 100 },
+  'src/core/parent-exit-watchdog.ts': { lines: 98, branches: 95, functions: 100 },
+  'src/commands/test-harness-teardown.ts': { lines: 88, branches: 90 },
   'src/commands/test-diagnose.ts': { lines: 92, branches: 85 },
   // The verdict sink is tiny and fully unit-tested, so hold it there.
   'src/commands/test-verdict.ts': { lines: 98, branches: 95 },

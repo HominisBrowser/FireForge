@@ -142,18 +142,23 @@ function describeSurvivors(list: ProcessGroupSurvivor[]): string {
  * about anything that still refuses to die. POSIX only (no-op on win32).
  * The only kill target is `-pgid`, never anything outside the group.
  * A healthy run costs exactly one `pgrep`.
+ *
+ * `context` names why the group is being reaped in the warning; the default
+ * is the post-close sweep. The parent-exit watchdog passes its own, because
+ * there the group is still running when the sweep begins.
  */
 export async function sweepProcessGroup(
   pgid: number,
-  graceMs: number = SWEEP_GRACE_MS
+  graceMs: number = SWEEP_GRACE_MS,
+  context: string = 'after exit'
 ): Promise<{ survivors: ProcessGroupSurvivor[] }> {
   if (process.platform === 'win32') return { survivors: [] };
   const survivors = await listGroupSurvivors(pgid);
   if (survivors.length === 0) return { survivors };
 
   warn(
-    `Harness process group ${pgid} left ${survivors.length} surviving ` +
-      `process(es) after exit — reaping the group. ${describeSurvivors(survivors)}`
+    `Harness process group ${pgid} has ${survivors.length} live ` +
+      `process(es) ${context} — reaping the group. ${describeSurvivors(survivors)}`
   );
 
   try {

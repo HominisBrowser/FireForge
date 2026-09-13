@@ -637,9 +637,19 @@ export interface TestOptions extends EngineLockWaitable {
    * project's objdir. The census itself runs on every test dispatch and is
    * report-only. This flag opts into the kill. Survivors slow later runs
    * without appearing in their output, so the visibility is the default and
-   * the termination is the choice.
+   * the termination is the choice. `test.reapOrphans: "reap"` in
+   * `fireforge.json` makes it the repo's default.
    */
   reapOrphans?: boolean;
+  /**
+   * Path to write the harness process-group id to, rewritten on every mach
+   * spawn (each retry attempt and shard) and removed when the run ends under
+   * FireForge's control. mach runs as its own process-group leader, so a
+   * supervisor's kill of its own group never reaches it; a supervisor that
+   * had to SIGKILL FireForge takes the whole harness tree afterwards with
+   * `kill -- -<pgid>`. The file survives exactly that case, by design.
+   */
+  pgidFile?: string;
   /** Permit tests against packageable engine edits newer than the last successful build. */
   allowStaleBuild?: boolean;
   /**

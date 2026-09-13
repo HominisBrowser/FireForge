@@ -113,7 +113,13 @@ gaps does not move a patch out of the band its category owns.
 ## `test`
 
 `test.canaryPath` and `test.canaryTimeoutSeconds` supply the defaults for
-`fireforge test --canary`. See [`testing.md`](testing.md).
+`fireforge test --canary`.
+
+`test.reapOrphans` is `"report"` (default) or `"reap"`: what the preflight
+census does with a harness helper that survived an earlier run in this
+objdir. `"reap"` terminates it and stamps `orphans-reaped=<n>` on the verdict
+line; `--reap-orphans` does the same for one invocation. The objdir anchor
+rule is the same under both. See [`testing.md`](testing.md).
 
 ## `buildAudit`
 

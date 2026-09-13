@@ -137,6 +137,24 @@ export interface ProcessGroupOptions {
    * whenever this option is set.
    */
   processGroup?: boolean;
+  /**
+   * Receives the process-group id (the detached child's pid) right after a
+   * group-leader spawn. Lets a caller expose the group to a supervisor that
+   * cannot signal FireForge itself gracefully (`fireforge test --pgid-file`),
+   * or hold it for a teardown of its own. Not called when no group was
+   * created (`processGroup` unset, or win32).
+   */
+  onProcessGroup?: (pgid: number) => void;
+  /**
+   * Extra teardown the caller owns, awaited after the child's `close` and
+   * the post-run group sweep, before the child's closure settles. Placed
+   * here rather than after the wrapper resolves so the bin signal handler's
+   * `waitForActiveChildShutdown` covers it too: a reap that ran after the
+   * wrapper resolved would race `process.exit` on a forwarded SIGTERM. Must
+   * never throw; a rejection is swallowed so it cannot mask the child's
+   * result.
+   */
+  postCloseSweep?: () => Promise<void>;
 }
 
 function buildSignalFromTimeout(timeout: number | undefined): AbortSignal | undefined {
@@ -318,6 +336,7 @@ async function spawnTracked<C extends ChildProcess, T>(spec: TrackedSpawnSpec<C,
       detached: usesProcessGroup,
     });
     const groupPid = usesProcessGroup ? child.pid : undefined;
+    if (groupPid !== undefined) options.onProcessGroup?.(groupPid);
 
     spec.attach?.(child);
 
@@ -353,10 +372,20 @@ async function spawnTracked<C extends ChildProcess, T>(spec: TrackedSpawnSpec<C,
         closure.settle();
         resolve(spec.result(code, signal));
       };
+      // Group sweep first (it takes the helpers that stayed in the group),
+      // then the caller's own sweep (the ones that did not), then settle.
+      const callerSweep = (): void => {
+        const sweep = options.postCloseSweep;
+        if (sweep === undefined) {
+          finish();
+          return;
+        }
+        sweep().then(finish, finish);
+      };
       if (groupPid !== undefined) {
-        sweepProcessGroup(groupPid).then(finish, finish);
+        sweepProcessGroup(groupPid).then(callerSweep, callerSweep);
       } else {
-        finish();
+        callerSweep();
       }
     });
   });

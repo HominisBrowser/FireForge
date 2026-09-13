@@ -9,6 +9,7 @@
  */
 
 import { installBrokenPipeHandler, main } from '../src/cli.js';
+import { removeActivePgidFile } from '../src/commands/test-harness-teardown.js';
 import { emitKilledVerdict } from '../src/commands/test-verdict.js';
 import { forceReleaseHeldLocksForSignal } from '../src/core/file-lock.js';
 import {
@@ -125,6 +126,11 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
       // racing this handler and usually loses. Best-effort like the log
       // itself: a diagnostic must never keep the process from exiting.
       .then(() => closeActiveRunLog().catch(() => undefined))
+      // `--pgid-file` names a group this handler has just signalled; after a
+      // normal exit `testCommand`'s finally removes it, but that finally
+      // loses the race to the exit below. Only a kill FireForge never saw
+      // may leave the file behind.
+      .then(() => removeActivePgidFile().catch(() => undefined))
       .finally(() => {
         exitAfterStdioFlush(exitCode);
       });

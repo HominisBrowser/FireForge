@@ -284,7 +284,10 @@ Wait ergonomics are opt-in: `pollMaxMs` (the poll interval doubles from
 `pollMs` up to the cap) and `waitProgressMs` with `onWaitProgress` (a periodic
 progress callback carrying the holder's PID, liveness, and owner-metadata
 lines from the pid file). All three are inert when unset, so existing callers
-keep byte-identical behavior.
+keep byte-identical behavior. Within one poll iteration a due progress probe
+runs before the deadline check, so a wait that times out has always reported
+the holder at least once when its budget exceeds `waitProgressMs`, however
+slow the host (`file-lock.test.ts`, "budget shorter than one iteration").
 
 ### `src/core/file-lock-owner.ts`
 
@@ -430,9 +433,22 @@ On SIGINT or SIGTERM, `bin/fireforge.ts`:
    - `waitForActiveCriticalSections(5 s)`, which holds the exit for in-flight
      "apply plus persist" pairs (invariant 4). It is bounded so that a stuck
      write cannot postpone the exit the user asked for.
+   - `waitForActiveChildShutdown(12 s)`, which holds the exit until every
+     tracked child has closed. For a process-group dispatch (`mach` under
+     `test`, `build`, `run`) "closed" includes the exec layer's post-close
+     work: the group sweep and the caller's `postCloseSweep` (the harness
+     helper reap in `fireforge test`). Both run before the child's closure
+     settles, so a forwarded SIGTERM cannot race `process.exit` past them.
 3. Force-releases the furnace lock directories of active operations, since
    `withFileLock`'s `finally` will never run past `process.exit`.
 4. Calls `process.exit(130 | 143)`.
+
+A parent that dies without signalling FireForge (SIGKILL on the `npm` above
+it) enters no handler here. `fireforge test` covers that case itself with
+the parent-exit watchdog (`src/core/parent-exit-watchdog.ts`): it writes the
+killed verdict, reaps the mach group and the tracked helpers, and lets the
+dispatch loop end the run; the process then exits through the ordinary
+error path, not through this pipeline.
 
 ## Choosing a primitive for a new mutation
 

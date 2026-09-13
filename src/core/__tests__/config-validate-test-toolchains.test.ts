@@ -108,6 +108,27 @@ describe('parseTestBlock', () => {
     });
   });
 
+  describe('reapOrphans', () => {
+    it('accepts the two postures and leaves the field unset when absent', () => {
+      for (const posture of ['report', 'reap'] as const) {
+        const config = makeConfig();
+        parseTestBlock(rec({ test: { reapOrphans: posture } }), config);
+        expect(config.test?.reapOrphans).toBe(posture);
+      }
+      const config = makeConfig();
+      parseTestBlock(rec({ test: {} }), config);
+      expect(config.test?.reapOrphans).toBeUndefined();
+    });
+
+    it('rejects anything else, including a boolean', () => {
+      for (const bad of [true, 'kill', 'Reap', 1, null]) {
+        expect(() => {
+          parseTestBlock(rec({ test: { reapOrphans: bad } }), makeConfig());
+        }).toThrow(/"test\.reapOrphans" must be "report" or "reap"/);
+      }
+    });
+  });
+
   it('carries both fields together', () => {
     const config = makeConfig();
     parseTestBlock(rec({ test: { canaryPath: 'a/b.js', canaryTimeoutSeconds: 90 } }), config);

@@ -52,6 +52,13 @@ export interface TestConfig {
   canaryPath?: string;
   /** Short no-output ceiling for `fireforge test --canary`, in seconds. */
   canaryTimeoutSeconds?: number;
+  /**
+   * What the preflight orphan census does with a harness helper that
+   * survived an earlier run in this objdir: `report` (default) names it and
+   * proceeds; `reap` terminates it and stamps `orphans-reaped=<n>` on the
+   * verdict line. `--reap-orphans` is the per-invocation equivalent.
+   */
+  reapOrphans?: 'report' | 'reap';
 }
 
 /** A single external executable required by a project-specific toolchain. */

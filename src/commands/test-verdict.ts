@@ -25,15 +25,35 @@ let emitted = false;
  * Additive `key=value` attributes of the run in flight, appended to
  * whichever verdict line ends it. `shuffle` is the seed a `--shuffle` run
  * exported to the harness, so a red found by shuffling carries its own
- * reproduction on the one line an unattended reader keeps. Cleared by
+ * reproduction on the one line an unattended reader keeps. `orphans-reaped`
+ * is how many harness processes FireForge had to terminate itself, at
+ * preflight (survivors of an earlier run) or at teardown (helpers this run
+ * launched that outlived mach): a green after a reap is not the same
+ * finding as a green on a quiet machine. Cleared by
  * {@link resetVerdictEmission}, so a later run in the same process cannot
- * inherit it.
+ * inherit them.
  */
-const runAttributes = new Map<'shuffle', string>();
+const runAttributes = new Map<VerdictRunAttributeKey, string>();
+
+/** Additive keys a run can stamp on its verdict line. */
+export type VerdictRunAttributeKey = 'shuffle' | 'orphans-reaped';
 
 /** Records an additive attribute for this run's verdict line. */
-export function setVerdictRunAttribute(key: 'shuffle', value: string): void {
+export function setVerdictRunAttribute(key: VerdictRunAttributeKey, value: string): void {
   runAttributes.set(key, value);
+}
+
+/**
+ * Adds to a counting attribute. The key appears only once the total is
+ * positive, so a run that reaped nothing prints the line it always did.
+ * Sums across the preflight census, every retry attempt and every shard.
+ */
+export function addVerdictRunCount(key: 'orphans-reaped', count: number): void {
+  // Written as a negated `> 0` so a NaN (a stubbed census, a bad parse) is
+  // dropped rather than stamped on the line as `orphans-reaped=NaN`.
+  if (!(count > 0)) return;
+  const current = Number(runAttributes.get(key) ?? '0');
+  runAttributes.set(key, String(current + count));
 }
 
 /**
@@ -125,7 +145,15 @@ export function emitFailVerdict(reason: FireforgeVerdictReason, note?: string): 
 }
 
 /**
- * Emits the terminal verdict for a run killed by a signal.
+ * What ended a killed run: a signal FireForge received, or `parent-exit`,
+ * the parent-death watchdog's finding that the process above FireForge
+ * vanished (typically SIGKILLed by a supervisor) while a harness ran.
+ */
+export type KilledVerdictCause = NodeJS.Signals | 'parent-exit';
+
+/**
+ * Emits the terminal verdict for a run killed by a signal, or ended by
+ * FireForge itself because its parent died.
  *
  * Without it a killed run wrote no terminal line, so a log tail could not
  * distinguish "killed" from "still running" from "never started". Recovery
@@ -135,10 +163,10 @@ export function emitFailVerdict(reason: FireforgeVerdictReason, note?: string): 
  * line asserts a test run happened, and an interrupted `status` did not
  * have one.
  *
- * @param signal - The signal that terminated the run
+ * @param signal - The signal that terminated the run, or `parent-exit`
  * @returns True when a line was written
  */
-export function emitKilledVerdict(signal: NodeJS.Signals): boolean {
+export function emitKilledVerdict(signal: KilledVerdictCause): boolean {
   if (!armed || emitted) return false;
   writeVerdictLine(`FIREFORGE-VERDICT: FAIL reason=killed signal=${signal}`);
   return true;

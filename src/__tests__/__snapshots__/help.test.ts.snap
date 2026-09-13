@@ -54,7 +54,7 @@ fireforge setup: --app-id | --binary-name | --firefox-version | --license | --na
 fireforge source: --wait-lock
 fireforge source set: --candidate | --clear-candidate | --clear-sha256 | --product | --sha256 | --version | --wait-lock
 fireforge status: --check | --fail-on | --include-ownership | --json | --lock | --ownership | --raw | --summary | --test-coverage | --unmanaged | --wait-lock
-fireforge test: --allow-stale-build | --allow-stale-components | --auto | --build | --build-only | --canary | --doctor | --extend-coverage | --full-output | --generic-mach-test | --harness-retries | --headless | --kill-stale-marionette | --mach-arg | --marionette-port | --no-shard | --perf-samples | --reap-orphans | --refuse-unexported-drift | --shuffle | --wait-lock
+fireforge test: --allow-stale-build | --allow-stale-components | --auto | --build | --build-only | --canary | --doctor | --extend-coverage | --full-output | --generic-mach-test | --harness-retries | --headless | --kill-stale-marionette | --mach-arg | --marionette-port | --no-shard | --perf-samples | --pgid-file | --reap-orphans | --refuse-unexported-drift | --shuffle | --wait-lock
 fireforge token: --wait-lock
 fireforge token add: --category | --create-category | --dark-value | --description | --dry-run | --mode | --variant | --wait-lock
 fireforge token coverage: --wait-lock

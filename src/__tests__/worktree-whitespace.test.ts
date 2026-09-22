@@ -13,6 +13,17 @@ const execFileAsync = promisify(execFile);
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const scriptPath = join(repoRoot, 'scripts', 'check-worktree-whitespace.mjs');
 
+/**
+ * The script's environment, minus the PR base sha CI sets for the real
+ * repository: that commit does not exist in the temp repo, so inheriting it
+ * makes the script diff against a missing base and fail on every PR run.
+ */
+function scriptEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env['WHITESPACE_CHECK_BASE'];
+  return env;
+}
+
 async function writeRepoFile(root: string, path: string, content: string): Promise<void> {
   const fullPath = join(root, path);
   await mkdir(dirname(fullPath), { recursive: true });
@@ -50,6 +61,7 @@ describe('check-worktree-whitespace script', () => {
 
     const result = await execFileAsync(process.execPath, [scriptPath], {
       cwd: root,
+      env: scriptEnv(),
     });
     expect(result.stdout).toContain('Whitespace check passed (worktree and index).');
   });
@@ -61,7 +73,7 @@ describe('check-worktree-whitespace script', () => {
 
     let error: unknown;
     try {
-      await execFileAsync(process.execPath, [scriptPath], { cwd: root });
+      await execFileAsync(process.execPath, [scriptPath], { cwd: root, env: scriptEnv() });
     } catch (caught: unknown) {
       error = caught;
     }

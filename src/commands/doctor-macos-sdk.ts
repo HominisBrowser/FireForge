@@ -13,12 +13,14 @@
  * selects, and on failure names the mismatch and lists the SDKs installed.
  *
  * darwin only, and only when a bootstrapped clang exists. A warning, never
- * a failure: the SDK may be one the operator is about to replace.
+ * a failure: the SDK may be one the operator is about to replace. Host SDK
+ * and mozconfig paths are built with `posix.join`: they are macOS paths
+ * whatever platform the module is loaded on.
  */
 import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 
 import { mozbuildStateDir } from '../core/toolchain-preflight.js';
 import type { DoctorCheck } from '../types/commands/index.js';
@@ -55,7 +57,7 @@ type SelectedSdk = { sdk: string; source: 'mozconfig' | 'xcrun' } | { error: str
  * auto-detects when the mozconfig names none.
  */
 async function resolveSelectedSdk(engineDir: string): Promise<SelectedSdk> {
-  const mozconfig = join(engineDir, 'mozconfig');
+  const mozconfig = posix.join(engineDir, 'mozconfig');
   if (existsSync(mozconfig)) {
     const sourced = await exec('/bin/sh', ['-c', SDK_FROM_MOZCONFIG_SCRIPT, 'sh', mozconfig], {
       cwd: engineDir,
@@ -94,13 +96,13 @@ async function listInstalledSdks(): Promise<string[]> {
   const roots = [mozbuildStateDir(), '/Library/Developer/CommandLineTools/SDKs'];
   const developer = await exec('xcode-select', ['-p'], { timeout: 10_000 });
   if (developer.exitCode === 0 && developer.stdout.trim().length > 0) {
-    roots.push(join(developer.stdout.trim(), 'Platforms/MacOSX.platform/Developer/SDKs'));
+    roots.push(posix.join(developer.stdout.trim(), 'Platforms/MacOSX.platform/Developer/SDKs'));
   }
   const found: string[] = [];
   for (const root of roots) {
     try {
       for (const entry of await readdir(root)) {
-        if (/^MacOSX.*\.sdk$/.test(entry)) found.push(join(root, entry));
+        if (/^MacOSX.*\.sdk$/.test(entry)) found.push(posix.join(root, entry));
       }
     } catch {
       // A root that does not exist lists nothing.

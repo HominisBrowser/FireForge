@@ -19,7 +19,6 @@ import type {
   PatchStagedForwardImport,
 } from '../types/commands/index.js';
 import type { FireForgeConfig, PatchPolicyConfig } from '../types/config.js';
-import { toError } from '../utils/errors.js';
 import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { stripJsComments } from '../utils/regex.js';
@@ -28,6 +27,7 @@ import { lintPatchQueueBinaryBodies } from './patch-lint-binary.js';
 import { collectNewFileCreatorsByPath } from './patch-lint-creators.js';
 import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
 import { lintPatchQueueForwardRegistrations } from './patch-lint-forward-registration.js';
+import type { ForwardRegistrationScope } from './patch-lint-forward-registration-extended.js';
 import { lintPatchQueueModuleRegistrations } from './patch-lint-module-registration.js';
 import type { NewFileOwner } from './patch-lint-staged-registration.js';
 import {
@@ -38,7 +38,7 @@ import {
 } from './patch-lint-staged-registration.js';
 import { loadPatchesManifest } from './patch-manifest-io.js';
 import { categoryRangeForOrder, categoryRangeLabel } from './patch-policy.js';
-import { extractNewFileContent } from './patch-transform.js';
+import { extractNewFileContentsFromDiff } from './patch-transform.js';
 
 /**
  * One patch's contribution to {@link PatchQueueContext}.
@@ -68,7 +68,7 @@ export interface PatchQueueEntry {
    * reconstructable `GIT binary patch`, or a payload-less
    * `Binary files … differ` stub. `newFiles` is text-only by design (a
    * binary authors no imports, so the import rules gain nothing from it and
-   * `extractNewFileContent` correctly refuses to decode one), but "does a
+   * `extractNewFileContentFromDiff` correctly refuses to decode one), but "does a
    * later patch create this path" is a question about existence after apply,
    * not about content, and answering it from `newFiles` made every binary
    * creation invisible to the staged-registration rules.
@@ -106,6 +106,11 @@ export interface PatchQueueContext {
    * Absent = current behavior (hint always printed).
    */
   patchPolicy?: PatchPolicyConfig;
+  /**
+   * Which carriers the forward-registration rule checks, from
+   * `patchLint.forwardRegistration`. Absent = `support-files` only.
+   */
+  forwardRegistration?: ForwardRegistrationScope;
 }
 
 /**
@@ -137,16 +142,13 @@ export async function buildPatchQueueContext(
   for (const patch of patches) {
     const diff = await readText(patch.path);
     const newFilePaths = detectNewFilesInDiff(diff);
-    const newFiles = new Map<string, string>();
-    for (const newFile of newFilePaths) {
-      try {
-        const content = await extractNewFileContent(patch.path, newFile);
-        newFiles.set(newFile, content);
-      } catch (error: unknown) {
-        verbose(
-          `Skipping forward-import scan for ${newFile} in ${patch.filename}: ${toError(error).message}`
-        );
-      }
+    // One parse of the body already in hand. Extracting per file re-read
+    // the whole patch from disk for every file it creates.
+    const { contents: newFiles, refused } = extractNewFileContentsFromDiff(diff, newFilePaths);
+    for (const newFile of refused) {
+      verbose(
+        `Skipping forward-import scan for ${newFile} in ${patch.filename}: binary section cannot be extracted as text`
+      );
     }
 
     // Added-line content for every file the patch modifies but does not
@@ -178,7 +180,13 @@ export async function buildPatchQueueContext(
   // Sort by order so rules can rely on entries being in apply order.
   entries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
 
-  return { entries, ...(config?.patchPolicy ? { patchPolicy: config.patchPolicy } : {}) };
+  return {
+    entries,
+    ...(config?.patchPolicy ? { patchPolicy: config.patchPolicy } : {}),
+    ...(config?.patchLint?.forwardRegistration !== undefined
+      ? { forwardRegistration: config.patchLint.forwardRegistration }
+      : {}),
+  };
 }
 
 // The creators map (split out of `lintPatchQueueDuplicateCreations` so

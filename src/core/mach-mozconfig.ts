@@ -144,12 +144,13 @@ export async function assertBrandingMozconfigAgreement(
  * @param configsDir - Path to the configs directory
  * @param engineDir - Path to the engine directory
  * @param config - FireForge configuration
+ * @returns Whether engine/mozconfig was rewritten (its content changed)
  */
 export async function generateMozconfig(
   configsDir: string,
   engineDir: string,
   config: FireForgeConfig
-): Promise<void> {
+): Promise<boolean> {
   const platform = getPlatform();
   const commonPath = join(configsDir, 'common.mozconfig');
   const platformPath = join(configsDir, `${platform}.mozconfig`);
@@ -203,4 +204,5 @@ export async function generateMozconfig(
   // write, before anything consumes mozconfig) keeps `generateMozconfig`
   // the single source of truth for both the render and the sanity-check.
   await assertBrandingMozconfigAgreement(engineDir, outputPath, config);
+  return wrote;
 }

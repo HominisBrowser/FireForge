@@ -329,6 +329,18 @@ describe('validateConfig', () => {
     });
   });
 
+  it('accepts patchLint.forwardRegistration and rejects an unknown scope', () => {
+    const config = validateConfig(
+      makeValidConfig({ patchLint: { forwardRegistration: 'extended' } })
+    );
+    expect(config.patchLint?.forwardRegistration).toBe('extended');
+    expect(() =>
+      validateConfig(makeValidConfig({ patchLint: { forwardRegistration: 'all' as never } }))
+    ).toThrow(
+      'Config field "patchLint.forwardRegistration" must be one of: support-files, extended'
+    );
+  });
+
   it('rejects malformed patchLint.fileSizeThresholds', () => {
     expect(() =>
       validateConfig(makeValidConfig({ patchLint: { fileSizeThresholds: 5 as never } }))

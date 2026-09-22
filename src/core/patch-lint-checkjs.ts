@@ -38,6 +38,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
+import { type CheckJsSourceFileCache, withSharedSourceFiles } from './patch-lint-checkjs-cache.js';
 import {
   collectUnmanagedCompanions,
   retargetUnmanagedCompanionHints,
@@ -231,6 +232,11 @@ export interface RunCheckJsGroupedInput {
    * targets.
    */
   rootScope?: ReadonlySet<string>;
+  /**
+   * Parsed source files shared across several programs built with the same
+   * compiler options and shim in one run. See {@link runCheckJsTestFilesGrouped}.
+   */
+  sourceFileCache?: CheckJsSourceFileCache;
 }
 
 /**
@@ -427,7 +433,11 @@ export async function runCheckJsGrouped(
     },
   };
 
-  const program = ts.createProgram(rootFiles, options, host);
+  const program = ts.createProgram(
+    rootFiles,
+    options,
+    withSharedSourceFiles(host, input.sourceFileCache, shimPath, shimSource)
+  );
   const byFile = groupOwnedDiagnostics(
     ts,
     [...program.getSemanticDiagnostics(), ...program.getSyntacticDiagnostics()],
@@ -587,6 +597,11 @@ export async function runCheckJsTestFilesGrouped(
   const mode = modeFromPatchLintConfig(patchLint);
   const seenGlobal = new Set<string>();
   const files = [...testFiles].sort((a, b) => a.localeCompare(b));
+  // Every test program below shares options and shim, and mostly the same
+  // files: TypeScript's lib declarations, the shim, and the directory's
+  // head.js helpers. Parsing them once instead of once per test file took
+  // a 467-test queue's pass from 66 s to a fraction of that.
+  const sourceFileCache: CheckJsSourceFileCache = new Map();
   const companions = await collectUnmanagedCompanions(repoDir, files, testFiles);
   for (const file of files) {
     // Under a rootScope only the scoped files get their own program, but
@@ -611,6 +626,7 @@ export async function runCheckJsTestFilesGrouped(
       projectRoot,
       mode,
       builtinShimSuffix: TEST_HARNESS_SHIM,
+      sourceFileCache,
     });
     const own = result.byFile.get(file);
     if (own && own.length > 0) {

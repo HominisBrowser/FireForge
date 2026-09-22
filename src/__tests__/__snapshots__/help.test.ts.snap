@@ -7,7 +7,7 @@ fireforge build: --brand | --refuse-unexported-drift | --rewrite-mozinfo | --ui 
 fireforge config: --wait-lock | -f, --force
 fireforge discard: --dry-run | --to-upstream | --wait-lock | -y, --yes
 fireforge doctor: --allow-metadata-loss | --clear-resolution | --dry-run | --post-rebase-audit | --repair-files-affected | --repair-furnace | --repair-patches-manifest | --wait-lock
-fireforge download: --wait-lock | -f, --force
+fireforge download: --wait-lock | -f, --force | -y, --yes
 fireforge export: --after | --allow-overlap | --allow-stale-furnace | --before | --dry-run | --exclude-furnace | --force-unsafe | --lint-ignore | --order | --skip-lint | --supersede | --tier | --wait-lock | -c, --category | -d, --description | -n, --name | -y, --yes
 fireforge export-all: --allow-overlap | --dry-run | --exclude-furnace | --force-unsafe | --name | --skip-lint | --supersede | --wait-lock | -c, --category | -d, --description
 fireforge furnace: --wait-lock
@@ -30,7 +30,7 @@ fireforge furnace status: --wait-lock
 fireforge furnace sync: --dry-run | --wait-lock | -s, --strategy
 fireforge furnace validate: --fix | --wait-lock
 fireforge import: --continue | --dry-run | --until | --wait-lock | -f, --force | -y, --yes
-fireforge lint: --max-warnings | --no-cache | --only-introduced | --patches | --per-patch | --report | --since | --wait-lock
+fireforge lint: --max-warnings | --no-cache | --notices | --only-introduced | --patches | --per-patch | --report | --since | --wait-lock
 fireforge lint cache: --wait-lock
 fireforge lint cache clear: --wait-lock
 fireforge package: --brand | --wait-lock
@@ -49,7 +49,7 @@ fireforge rebase: --abort | --continue | --dry-run | --max-fuzz | --wait-lock | 
 fireforge register: --after | --create-manifest | --dry-run | --wait-lock
 fireforge reset: --dry-run | --wait-lock | -y, --yes
 fireforge resolve: --wait-lock | -y, --yes
-fireforge run: --capture-console | --console-allow | --console-allow-file | --headless | --smoke-exit | --wait-lock
+fireforge run: --capture-console | --console-allow | --console-allow-file | --headless | --profile | --smoke-exit | --temp-profile | --wait-lock
 fireforge setup: --app-id | --binary-name | --firefox-version | --license | --name | --product | --vendor | --wait-lock | -f, --force | -y, --yes
 fireforge source: --wait-lock
 fireforge source set: --candidate | --clear-candidate | --clear-sha256 | --product | --sha256 | --version | --wait-lock
@@ -65,7 +65,7 @@ fireforge tree create: --force-copy | --wait-lock | --with-objdir
 fireforge tree exec: --wait-lock
 fireforge tree list: --json | --wait-lock
 fireforge tree remove: --all | --force | --wait-lock
-fireforge typecheck: --project | --wait-lock
+fireforge typecheck: --no-cache | --project | --wait-lock
 fireforge verify: --wait-lock
 fireforge watch: --wait-lock
 fireforge wire: --after | --destroy | --dom | --dry-run | --init | --subscript-dir | --target | --wait-lock"

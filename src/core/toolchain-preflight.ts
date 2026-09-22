@@ -43,7 +43,7 @@ export type ToolchainTool = 'cbindgen' | 'rustc';
  * `$MOZBUILD_STATE_PATH`, else `~/.mozbuild` (same resolution as
  * `mach-resource-shim.ts`).
  */
-function mozbuildStateDir(): string {
+export function mozbuildStateDir(): string {
   return process.env['MOZBUILD_STATE_PATH'] ?? join(homedir(), '.mozbuild');
 }
 

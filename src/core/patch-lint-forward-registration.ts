@@ -11,23 +11,32 @@
  * removing the declaration produced identical silence, so the gap was
  * invisible rather than merely absent.
  *
- * Scope is narrow on purpose: test-manifest `support-files` only. A
- * jar.mn packaging line or an actor/customElements registration names its
- * target through indirection the linter cannot resolve without the build
- * system, and a rule that guesses there would refuse correct queues on a
- * Firefox-sized tree. The staged-registration declaration remains the
- * documented escape hatch for a deliberate stage.
+ * Scope is narrow by default: test-manifest `support-files` only. The
+ * carriers whose target resolves without the build system (jar.mn pair
+ * lines, moz.build path tokens, test-manifest sections, customElements.js
+ * chrome URLs) are opt-in through `patchLint.forwardRegistration:
+ * "extended"` (see `patch-lint-forward-registration-extended.ts`), since a
+ * queue that predates them can carry such edges on a ratchet and a new
+ * error on install would red its gate. The staged-registration declaration
+ * remains the documented escape hatch for a deliberate stage.
  */
 import { basename, dirname, posix } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import { escapeRegex } from '../utils/regex.js';
+import {
+  findExtendedForwardRegistrations,
+  formatRegistrationDeclaration,
+  type ForwardRegistration,
+  type ForwardRegistrationKind,
+  type ForwardRegistrationScope,
+} from './patch-lint-forward-registration-extended.js';
 import type {
   PatchQueueForwardRegistrationEntry,
   PatchQueueView,
 } from './patch-lint-queue-types.js';
-import { isLaterOwner, quoteRegistrationLine } from './patch-lint-staged-registration.js';
+import { isLaterOwner } from './patch-lint-staged-registration.js';
 
 /**
  * Manifest basenames whose `support-files` key registers auxiliary files
@@ -186,17 +195,17 @@ function isDeclared(
 }
 
 /**
- * Flags every `support-files` registration a patch introduces that names a
+ * Finds every `support-files` registration a patch introduces that names a
  * file only a later-ordered patch creates, unless the staged dependency is
  * declared.
  *
  * @param ctx - Projected queue in application order
- * @returns One issue per undeclared forward registration
+ * @returns One record per (patch, manifest, entry, created file)
  */
-export function lintPatchQueueForwardRegistrations(
+function findSupportFileForwardRegistrations(
   ctx: PatchQueueView<PatchQueueForwardRegistrationEntry>
-): PatchLintIssue[] {
-  const issues: PatchLintIssue[] = [];
+): ForwardRegistration[] {
+  const found: ForwardRegistration[] = [];
 
   for (const entry of ctx.entries) {
     // Both arms: a manifest this patch creates and one it modifies can each
@@ -212,18 +221,6 @@ export function lintPatchQueueForwardRegistrations(
       )) {
         const matches = buildSupportFileMatcher(manifestPath, raw);
         if (matches === undefined) continue;
-        // `--line` is the line as the patch adds it, which is what the
-        // declared arm compares and what `--remove` matches on. Synthesising
-        // `support-files = ["<entry>"]` instead only ever matched a
-        // single-line single-entry array, so the pasted command left the
-        // declaring patch red with staged-dependency-unused.
-        const declaredLine = quoteRegistrationLine(addedLine);
-        const ambiguity =
-          occurrences > 1
-            ? ` (the entry is spelled out on ${occurrences} added lines here; ` +
-              'the first is quoted, and one declaration covers the file either way ' +
-              'because the declared check keys on --file and --creates.)'
-            : '';
         for (const later of ctx.entries) {
           // Same predicate the declared-registration arm validates against,
           // tiebreak included: two spellings of "later" would let one rule
@@ -232,22 +229,28 @@ export function lintPatchQueueForwardRegistrations(
           for (const created of later.createdFiles) {
             if (!matches(created)) continue;
             if (isDeclared(entry, manifestPath, created)) continue;
-            issues.push({
+            found.push({
+              patch: entry.filename,
+              kind: 'support-files',
               file: manifestPath,
-              check: 'forward-registration',
-              patches: [entry.filename],
-              fingerprint: `forward-registration|${entry.filename}|${manifestPath}|${raw}|${created}|${later.filename}`,
-              message:
-                `${manifestPath} in ${entry.filename} registers "${raw}" as a support file, ` +
-                `but ${created} is created by the later patch ${later.filename}. ` +
-                'Applying the queue up to this patch leaves the registration dangling. ' +
-                'Reorder the patches so the file is created first, move the registration into ' +
-                'the later patch, or declare the intentional staged dependency with: ' +
-                `fireforge patch staged-dependency ${entry.filename} --add --kind registration ` +
-                `--file ${manifestPath} --line "${declaredLine}" ` +
-                `--creates ${created} --owner ${later.filename}` +
-                ambiguity,
-              severity: 'error',
+              // `--line` is the line as the patch adds it, which is what the
+              // declared arm compares and what `--remove` matches on.
+              // Synthesising `support-files = ["<entry>"]` instead only ever
+              // matched a single-line single-entry array, so the pasted
+              // command left the declaring patch red with
+              // staged-dependency-unused.
+              line: addedLine,
+              token: raw,
+              creates: created,
+              owner: later.filename,
+              occurrences,
+              command: formatRegistrationDeclaration(
+                entry.filename,
+                manifestPath,
+                addedLine,
+                created,
+                later.filename
+              ),
             });
           }
         }
@@ -255,5 +258,69 @@ export function lintPatchQueueForwardRegistrations(
     }
   }
 
-  return issues;
+  return found;
+}
+
+/**
+ * Every undeclared forward registration in the queue, over the carriers
+ * `scope` selects: `support-files` (the default) or `extended` (adds
+ * jar.mn, moz.build, test-manifest sections and customElements.js; see
+ * `patch-lint-forward-registration-extended.ts`).
+ *
+ * @param ctx - Queue in application order
+ * @param scope - Which carriers to check
+ */
+export function collectForwardRegistrations(
+  ctx: PatchQueueView<PatchQueueForwardRegistrationEntry>,
+  scope: ForwardRegistrationScope = 'support-files'
+): ForwardRegistration[] {
+  const found = findSupportFileForwardRegistrations(ctx);
+  if (scope === 'extended') found.push(...findExtendedForwardRegistrations(ctx));
+  return found;
+}
+
+const KIND_PHRASES: Record<ForwardRegistrationKind, string> = {
+  'support-files': 'as a support file',
+  'jar-mn': 'for packaging',
+  'moz-build': 'in the build',
+  'test-manifest': 'as a test',
+  'custom-elements': 'as a custom element',
+};
+
+/**
+ * Flags every forward registration the queue's scope selects, unless the
+ * staged dependency is declared.
+ *
+ * @param ctx - Projected queue in application order, with its
+ *   `forwardRegistration` scope (default `support-files`)
+ * @returns One issue per undeclared forward registration
+ */
+export function lintPatchQueueForwardRegistrations(
+  ctx: PatchQueueView<PatchQueueForwardRegistrationEntry> & {
+    forwardRegistration?: ForwardRegistrationScope;
+  }
+): PatchLintIssue[] {
+  return collectForwardRegistrations(ctx, ctx.forwardRegistration).map((found) => {
+    const ambiguity =
+      found.occurrences > 1
+        ? ` (the entry is spelled out on ${found.occurrences} added lines here; ` +
+          'the first is quoted, and one declaration covers the file either way ' +
+          'because the declared check keys on --file and --creates.)'
+        : '';
+    return {
+      file: found.file,
+      check: 'forward-registration',
+      patches: [found.patch],
+      fingerprint: `forward-registration|${found.patch}|${found.file}|${found.token}|${found.creates}|${found.owner}`,
+      message:
+        `${found.file} in ${found.patch} registers "${found.token}" ${KIND_PHRASES[found.kind]}, ` +
+        `but ${found.creates} is created by the later patch ${found.owner}. ` +
+        'Applying the queue up to this patch leaves the registration dangling. ' +
+        'Reorder the patches so the file is created first, move the registration into ' +
+        'the later patch, or declare the intentional staged dependency with: ' +
+        found.command +
+        ambiguity,
+      severity: 'error',
+    };
+  });
 }

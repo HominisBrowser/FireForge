@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { GitError } from '../errors/git.js';
 import { removeFile } from '../utils/fs.js';
 import { exec } from '../utils/process.js';
+import { execWithInput } from '../utils/process-input.js';
 import type { GitStatusEntry } from './git-base.js';
 import { chunkPathspecs, ensureGit, git } from './git-base.js';
 
@@ -199,6 +200,85 @@ export async function getFileContentAtRef(
     throw new GitError(stderr || 'Git command failed', `show ${ref}:${filePath}`);
   }
   return result.stdout;
+}
+
+/**
+ * Batched equivalent of {@link getFileContentAtRef}: reads every path at
+ * `ref` through one `git cat-file --batch` process instead of one
+ * `git show` per file. A Firefox-sized ownership scan paid 1,493 of those,
+ * about 18 ms each and almost all of it spawn overhead.
+ *
+ * The first request line is `ref` itself, so an unresolvable ref throws a
+ * {@link GitError} exactly as the per-file helper does, rather than being
+ * read as "every path missing". A path reported `missing` maps to `null`,
+ * as the per-file helper returns for a path absent at that ref. Anything
+ * the batch cannot answer as a plain blob (a path containing a newline,
+ * which the line protocol cannot carry, or an object that is not a blob)
+ * is fetched through {@link getFileContentAtRef}, so the result for every
+ * path is what that helper returns.
+ *
+ * @param repoDir - Repository directory
+ * @param filePaths - Paths relative to the repository root
+ * @param ref - Git ref to read from. Defaults to HEAD.
+ * @returns Content (or `null` when absent at `ref`) for every input path
+ */
+export async function getFilesContentAtRef(
+  repoDir: string,
+  filePaths: readonly string[],
+  ref = 'HEAD'
+): Promise<Map<string, string | null>> {
+  const contents = new Map<string, string | null>();
+  const unique = [...new Set(filePaths)];
+  const batchable = unique.filter((path) => !path.includes('\n'));
+  const fallback = unique.filter((path) => path.includes('\n'));
+
+  if (batchable.length > 0) {
+    await ensureGit();
+    const requests = [ref, ...batchable.map((path) => `${ref}:${path}`)];
+    const result = await execWithInput('git', ['cat-file', '--batch'], requests.join('\n') + '\n', {
+      cwd: repoDir,
+    });
+    if (result.exitCode !== 0) {
+      throw new GitError(result.stderr.trim() || 'git cat-file --batch failed', 'cat-file --batch');
+    }
+
+    const out = result.stdout;
+    let offset = 0;
+    for (const [index, request] of requests.entries()) {
+      const newline = out.indexOf(0x0a, offset);
+      if (newline === -1) {
+        throw new GitError(`Truncated cat-file --batch output at ${request}`, 'cat-file --batch');
+      }
+      const header = out.toString('utf8', offset, newline);
+      offset = newline + 1;
+      const path = index === 0 ? undefined : batchable[index - 1];
+
+      if (header.endsWith(' missing') || header.endsWith(' ambiguous')) {
+        if (path === undefined) {
+          throw new GitError(`Cannot resolve ${ref}: ${header}`, `cat-file --batch ${ref}`);
+        }
+        if (header.endsWith(' missing')) contents.set(path, null);
+        else fallback.push(path);
+        continue;
+      }
+
+      const match = /^[0-9a-f]+ (\S+) (\d+)$/.exec(header);
+      if (!match) {
+        throw new GitError(`Unexpected cat-file --batch header: ${header}`, 'cat-file --batch');
+      }
+      const size = Number(match[2]);
+      const body = out.subarray(offset, offset + size);
+      offset += size + 1;
+      if (path === undefined) continue;
+      if (match[1] === 'blob') contents.set(path, body.toString('utf8'));
+      else fallback.push(path);
+    }
+  }
+
+  for (const path of fallback) {
+    contents.set(path, await getFileContentAtRef(repoDir, path, ref));
+  }
+  return contents;
 }
 
 /**

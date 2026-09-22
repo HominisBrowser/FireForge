@@ -134,7 +134,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockIsBrandingSetup.mockResolvedValue(true);
   mockFurnaceConfigExists.mockResolvedValue(false);
-  mockGenerateMozconfig.mockResolvedValue(undefined);
+  mockGenerateMozconfig.mockResolvedValue(false);
   mockCleanStories.mockResolvedValue(0);
   mockPathExists.mockResolvedValue(false);
   mockLoadFurnaceState.mockResolvedValue({});
@@ -883,5 +883,106 @@ describe('isBackendInvalidatingFile', () => {
     expect(isBackendInvalidatingFile('browser/moz.build.py')).toBe(false);
     expect(isBackendInvalidatingFile('docs/moz.build.md')).toBe(false);
     expect(isBackendInvalidatingFile('makefile.in')).toBe(false);
+  });
+});
+
+describe('prepareBuildEnvironment mozconfig before configure', () => {
+  const baseline = {
+    engineHeadSha: 'abc',
+    builtAt: new Date().toISOString(),
+    binaryName: 'testbrowser',
+  };
+
+  beforeEach(() => {
+    vi.mocked(hashEngineFile).mockReset().mockResolvedValue(undefined);
+  });
+
+  it('configures after regenerating the mozconfig, not before', async () => {
+    // The 0.47.1 order ran configure against the previous engine/mozconfig,
+    // so a configs/ fix for a failing configure never reached it.
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMachCapture } = await import('../mach.js');
+    vi.mocked(git).mockImplementation((args: string[]) =>
+      Promise.resolve(args.includes('abc..HEAD') ? 'browser/moz.build\n' : '')
+    );
+    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+
+    await prepareBuildEnvironment('/project', paths, config, { previousBaseline: baseline });
+
+    const generatedAt = mockGenerateMozconfig.mock.invocationCallOrder[0] ?? Infinity;
+    const configuredAt = vi.mocked(runMachCapture).mock.invocationCallOrder[0] ?? -Infinity;
+    expect(generatedAt).toBeLessThan(configuredAt);
+  });
+
+  it('keeps the regenerated mozconfig when configure fails', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMachCapture } = await import('../mach.js');
+    vi.mocked(git).mockImplementation((args: string[]) =>
+      Promise.resolve(args.includes('abc..HEAD') ? 'browser/moz.build\n' : '')
+    );
+    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: 'boom', exitCode: 5 });
+
+    await expect(
+      prepareBuildEnvironment('/project', paths, config, { previousBaseline: baseline })
+    ).rejects.toThrow();
+    expect(mockGenerateMozconfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs configure when only the mozconfig changed since the last build', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMachCapture } = await import('../mach.js');
+    vi.mocked(git).mockResolvedValue('');
+    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+    vi.mocked(hashEngineFile).mockImplementation((_engine, rel) =>
+      Promise.resolve(rel === 'mozconfig' ? 'new'.padEnd(64, '0') : undefined)
+    );
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: { ...baseline, mozconfigHash: 'old'.padEnd(64, '0') },
+    });
+
+    expect(result.reconfigured).toBe(true);
+    expect(runMachCapture).toHaveBeenCalledWith(['configure'], '/project/engine');
+    expect(mockNotice).toHaveBeenCalledWith(
+      expect.stringContaining('(engine/mozconfig changed since the last build)')
+    );
+  });
+
+  it('does not configure for an unchanged mozconfig', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMachCapture } = await import('../mach.js');
+    vi.mocked(git).mockResolvedValue('');
+    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(hashEngineFile).mockResolvedValue('same'.padEnd(64, '0'));
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: { ...baseline, mozconfigHash: 'same'.padEnd(64, '0') },
+    });
+
+    expect(result.reconfigured).toBe(false);
+    expect(runMachCapture).not.toHaveBeenCalled();
+  });
+
+  it('falls back to "this run rewrote it" on a baseline without mozconfigHash', async () => {
+    const { git } = await import('../git-base.js');
+    const { hasChanges } = await import('../git.js');
+    const { runMachCapture } = await import('../mach.js');
+    vi.mocked(git).mockResolvedValue('');
+    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+    mockGenerateMozconfig.mockResolvedValueOnce(true);
+
+    const result = await prepareBuildEnvironment('/project', paths, config, {
+      previousBaseline: baseline,
+    });
+
+    expect(result.reconfigured).toBe(true);
   });
 });

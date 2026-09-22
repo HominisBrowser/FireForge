@@ -199,7 +199,8 @@ function collectedOutput(
   };
 }
 
-function exitCodeFromClose(code: number | null, signal: NodeJS.Signals | null): number {
+/** A child's exit code, with a signal death mapped to 128 + its number. */
+export function exitCodeFromClose(code: number | null, signal: NodeJS.Signals | null): number {
   if (code !== null) {
     return code;
   }

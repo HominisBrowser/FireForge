@@ -65,10 +65,21 @@ vi.mock('../../core/git.js', () => ({
   ),
 }));
 
-vi.mock('../../core/git-status.js', () => ({
-  resolveMaxUntrackedFilesPerDir: vi.fn(() => 5000),
-  getUntrackedFilesInDir: vi.fn(),
-}));
+vi.mock('../../core/git-status.js', () => {
+  const getUntrackedFilesInDir = vi.fn<(repoDir: string, dir: string) => Promise<string[]>>();
+  return {
+    resolveMaxUntrackedFilesPerDir: vi.fn(() => 5000),
+    getUntrackedFilesInDir,
+    // Production batches every collapsed directory into one ls-files. The
+    // mock answers per directory through getUntrackedFilesInDir so tests
+    // keep driving the listing the way they did before the batching.
+    listUntrackedFilesInDirs: vi.fn(async (repoDir: string, dirs: readonly string[]) => {
+      const byDir = new Map<string, string[]>();
+      for (const dir of dirs) byDir.set(dir, await getUntrackedFilesInDir(repoDir, dir));
+      return byDir;
+    }),
+  };
+});
 
 vi.mock('../../core/moz-manifest-rules.js', () => ({
   matchesRegistrablePattern: vi.fn(),
@@ -92,6 +103,9 @@ vi.mock('../../core/patch-apply.js', () => ({
       computePatched: (file: string) => computePatchedContentMock(file),
       getAffectingPatches: () => [],
       readPatchBody: vi.fn(),
+      prefetchBase: vi.fn(() => Promise.resolve()),
+      prefetchLiveBlobHashes: vi.fn(() => Promise.resolve()),
+      liveBlobHash: vi.fn(() => Promise.resolve(undefined)),
     };
   }),
 }));

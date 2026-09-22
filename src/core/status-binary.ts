@@ -41,7 +41,8 @@ import { parseDiffSections } from './patch-parse.js';
 export type AffectingPatchLookup = Pick<
   PatchedContentContext,
   'getAffectingPatches' | 'readPatchBody'
->;
+> &
+  Partial<Pick<PatchedContentContext, 'liveBlobHash'>>;
 
 /**
  * Classification result for a binary comparison. Structurally assignable
@@ -155,7 +156,10 @@ export async function classifyBinaryOwnedFile(args: {
 
     if (section.hasBinaryDelta && section.indexNewHash !== undefined) {
       const fullPath = join(engineDir, entry.file);
-      const live = (await hashObjectBatch(engineDir, [fullPath])).get(fullPath);
+      const live =
+        args.lookup?.liveBlobHash !== undefined
+          ? await args.lookup.liveBlobHash(fullPath)
+          : (await hashObjectBatch(engineDir, [fullPath])).get(fullPath);
       if (live !== undefined) {
         // Prefix-compare: recorded hashes may be abbreviated (≥7 chars).
         const matches =

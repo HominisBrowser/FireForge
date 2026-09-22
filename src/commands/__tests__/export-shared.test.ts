@@ -80,6 +80,11 @@ import {
   runSupersedeAndOverlapGates,
 } from '../export-shared.js';
 
+/** clack's own cancellation sentinel (public since @clack/prompts 1.8.1). */
+const CANCEL_SYMBOL: (typeof import('@clack/prompts'))['CANCEL_SYMBOL'] = (
+  await vi.importActual<typeof import('@clack/prompts')>('@clack/prompts')
+).CANCEL_SYMBOL;
+
 const mockSpinner: SpinnerHandle = {
   message: vi.fn(),
   stop: vi.fn(),
@@ -237,7 +242,7 @@ describe('promptExportPatchMetadata', () => {
 
   it('returns null when name prompt is cancelled', async () => {
     vi.mocked(isCancel).mockReturnValueOnce(true);
-    vi.mocked(clack.text).mockResolvedValueOnce(Symbol('cancel'));
+    vi.mocked(clack.text).mockResolvedValueOnce(CANCEL_SYMBOL);
 
     const result = await promptExportPatchMetadata({}, true, 'export');
 
@@ -250,7 +255,7 @@ describe('promptExportPatchMetadata', () => {
     vi.mocked(isCancel)
       .mockReturnValueOnce(false) // name not cancelled
       .mockReturnValueOnce(true); // category cancelled
-    vi.mocked(clack.select).mockResolvedValueOnce(Symbol('cancel'));
+    vi.mocked(clack.select).mockResolvedValueOnce(CANCEL_SYMBOL);
 
     const result = await promptExportPatchMetadata({}, true, 'export');
 
@@ -273,9 +278,7 @@ describe('promptExportPatchMetadata', () => {
   });
 
   it('uses empty description when description prompt is cancelled', async () => {
-    vi.mocked(clack.text)
-      .mockResolvedValueOnce('my-change')
-      .mockResolvedValueOnce(Symbol('cancel'));
+    vi.mocked(clack.text).mockResolvedValueOnce('my-change').mockResolvedValueOnce(CANCEL_SYMBOL);
     vi.mocked(clack.select).mockResolvedValueOnce('ui');
     vi.mocked(isCancel)
       .mockReturnValueOnce(false) // name
@@ -327,7 +330,7 @@ describe('confirmSupersedePatches', () => {
       { path: '/patches/old.patch', filename: 'old.patch', order: 1 },
     ]);
     vi.mocked(isCancel).mockReturnValueOnce(true);
-    vi.mocked(clack.confirm).mockResolvedValueOnce(Symbol('cancel'));
+    vi.mocked(clack.confirm).mockResolvedValueOnce(CANCEL_SYMBOL);
 
     const result = await confirmSupersedePatches(
       '/patches',
@@ -721,7 +724,7 @@ describe('runSupersedeAndOverlapGates', () => {
       { path: '/patches/old.patch', filename: 'old.patch', order: 1 },
     ]);
     vi.mocked(isCancel).mockReturnValueOnce(true);
-    vi.mocked(clack.confirm).mockResolvedValueOnce(Symbol('cancel'));
+    vi.mocked(clack.confirm).mockResolvedValueOnce(CANCEL_SYMBOL);
 
     const result = await runSupersedeAndOverlapGates({
       patchesDir: '/patches',

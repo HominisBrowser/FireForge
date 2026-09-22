@@ -24,6 +24,7 @@ import {
   findUnexportedDriftAtRisk,
   formatUnexportedDriftWarning,
 } from './build-overwrite-guard.js';
+import { hashEngineFile } from './coverage-extend.js';
 import { collectChangedEnginePaths, dropPathsMatchingFingerprints } from './engine-changes.js';
 import { applyAllComponents, type ApplyAllComponentsResult } from './furnace-apply.js';
 import { logApplyWarnings } from './furnace-apply-output.js';
@@ -323,6 +324,46 @@ async function applyFurnaceBeforeBuild(projectRoot: string): Promise<number> {
 }
 
 /**
+ * Runs the auto-configure step (`mach configure`) against the freshly
+ * generated mozconfig, surfacing the underlying mozbuild error on failure.
+ * @param engineDir - Path to the engine directory
+ * @param triggers - Why the backend is being regenerated, for the notice
+ */
+async function runAutoConfigure(engineDir: string, triggers: string): Promise<void> {
+  // Warning severity: this is the "why is this run slow" explanation,
+  // and an info-level line does not survive an agent output filter that
+  // keeps only warnings and errors.
+  notice(
+    `Backend config changed; running backend regeneration first (${triggers}). Backend command: mach configure.`
+  );
+  const configureSpinner = spinner('Running mach configure...');
+  try {
+    const captured = await runMachCapture(['configure'], engineDir);
+    const exitCode = captured.exitCode;
+    if (exitCode !== 0) {
+      configureSpinner.error(`mach configure failed with exit code ${exitCode}`);
+      // Surface the underlying mozbuild error (e.g. UnsortedError)
+      // instead of a bare exit code, since the generic message hid the
+      // actual cause, plus any matched mach-error hints (see the helper).
+      throw buildConfigureFailureError(captured);
+    }
+    configureSpinner.stop('Backend regenerated successfully (mach configure exit code 0)');
+    info('Backend regeneration succeeded; continuing with build.');
+  } catch (error: unknown) {
+    if (error instanceof BuildError) {
+      throw error;
+    }
+    configureSpinner.error('mach configure failed');
+    verbose(`Auto-configure error: ${toError(error).message}`);
+    throw new BuildError(
+      `Backend regeneration failed while running mach configure: ${toError(error).message}. Build stopped because continuing would hide the real configure failure.`,
+      'mach configure',
+      error instanceof Error ? error : undefined
+    );
+  }
+}
+
+/**
  * Runs the shared pre-flight steps for build and package commands:
  * 1. Warns (or refuses) about unexported engine drift the writes below
  * would destroy
@@ -330,6 +371,8 @@ async function applyFurnaceBeforeBuild(projectRoot: string): Promise<number> {
  * 3. Sets up branding directory if not already done
  * 4. Applies Furnace components if furnace.json exists
  * 5. Generates mozconfig
+ * 6. Runs `mach configure` when a backend-invalidating input, including
+ * the mozconfig just generated, changed since the previous baseline
  *
  * @param projectRoot - Root directory of the project
  * @param paths - Resolved project paths
@@ -359,11 +402,16 @@ export async function prepareBuildEnvironment(
 
   await reportUnexportedDriftBeforeOverwrite(projectRoot, config, options);
 
-  // Auto-configure: if any backend-invalidating file (moz.build, moz.configure,
-  // Makefile.in) changed since the last successful build, run `mach configure`
-  // before the build step. Prevents incremental builds from silently skipping
-  // work against a stale recursive-make backend.
-  let reconfigured = false;
+  // Auto-configure census: if any backend-invalidating file (moz.build,
+  // moz.configure, Makefile.in) changed since the last successful build,
+  // `mach configure` runs before the build step. Prevents incremental builds
+  // from silently skipping work against a stale recursive-make backend. The
+  // configure itself waits until the mozconfig below has been regenerated:
+  // run earlier, it configured against the previous engine/mozconfig, and a
+  // configs/ fix for a failing configure (a pinned --with-macos-sdk) could
+  // never take effect because the failure stopped the build before the
+  // regeneration.
+  const configureTriggers: string[] = [];
   let fullBuildRequired = false;
   let fullBuildReason: string | undefined;
   if (options.previousBaseline) {
@@ -373,39 +421,9 @@ export async function prepareBuildEnvironment(
     fullBuildRequired = jarEscalation !== undefined;
     fullBuildReason = jarEscalation;
     if (invalidating.length > 0) {
-      // Warning severity: this is the "why is this run slow" explanation,
-      // and an info-level line does not survive an agent output filter that
-      // keeps only warnings and errors.
-      notice(
-        `Backend config changed; running backend regeneration first (${invalidating.length} file${invalidating.length === 1 ? '' : 's'} touched). Backend command: mach configure.`
+      configureTriggers.push(
+        `${invalidating.length} file${invalidating.length === 1 ? '' : 's'} touched`
       );
-      const configureSpinner = spinner('Running mach configure...');
-      try {
-        const captured = await runMachCapture(['configure'], paths.engine);
-        const exitCode = captured.exitCode;
-        if (exitCode !== 0) {
-          configureSpinner.error(`mach configure failed with exit code ${exitCode}`);
-          // Surface the underlying mozbuild error (e.g. UnsortedError)
-          // instead of a bare exit code, since the generic message hid the
-          // actual cause, plus any matched mach-error hints (see the helper).
-          throw buildConfigureFailureError(captured);
-        } else {
-          configureSpinner.stop('Backend regenerated successfully (mach configure exit code 0)');
-          info('Backend regeneration succeeded; continuing with build.');
-          reconfigured = true;
-        }
-      } catch (error: unknown) {
-        if (error instanceof BuildError) {
-          throw error;
-        }
-        configureSpinner.error('mach configure failed');
-        verbose(`Auto-configure error: ${toError(error).message}`);
-        throw new BuildError(
-          `Backend regeneration failed while running mach configure: ${toError(error).message}. Build stopped because continuing would hide the real configure failure.`,
-          'mach configure',
-          error instanceof Error ? error : undefined
-        );
-      }
     }
   }
 
@@ -440,12 +458,33 @@ export async function prepareBuildEnvironment(
 
   // Generate mozconfig
   const mozconfigSpinner = spinner('Generating mozconfig...');
+  let mozconfigWritten: boolean;
   try {
-    await generateMozconfig(paths.configs, paths.engine, config);
+    mozconfigWritten = await generateMozconfig(paths.configs, paths.engine, config);
     mozconfigSpinner.stop('mozconfig generated');
   } catch (error: unknown) {
     mozconfigSpinner.error('Failed to generate mozconfig');
     throw error;
+  }
+
+  // A changed mozconfig is itself backend-invalidating. Compare against the
+  // hash the last successful build recorded; a baseline from before that
+  // field existed falls back to whether this run rewrote the file.
+  if (options.previousBaseline) {
+    const recorded = options.previousBaseline.mozconfigHash;
+    const mozconfigChanged =
+      recorded !== undefined
+        ? (await hashEngineFile(paths.engine, 'mozconfig')) !== recorded
+        : mozconfigWritten;
+    if (mozconfigChanged) {
+      configureTriggers.push('engine/mozconfig changed since the last build');
+    }
+  }
+
+  let reconfigured = false;
+  if (configureTriggers.length > 0) {
+    await runAutoConfigure(paths.engine, configureTriggers.join('; '));
+    reconfigured = true;
   }
 
   return {

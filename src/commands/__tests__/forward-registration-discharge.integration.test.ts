@@ -19,6 +19,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { loadConfig } from '../../core/config.js';
 import { buildPatchQueueContext, lintPatchQueue } from '../../core/patch-lint.js';
 import {
   createTempProject,
@@ -357,5 +358,115 @@ describe('forward-registration discharge', () => {
     expect(remedy.line).toBe(added.line);
     await apply(remedy);
     expect(await loadRegistrations('111-ui-beta.patch')).toEqual([]);
+  });
+});
+
+describe('forward-registration discharge, extended carriers', () => {
+  const JAR = 'toolkit/content/jar.mn';
+  const MOZBUILD = 'browser/modules/hominis/moz.build';
+  const TESTS = 'browser/components/hominis/test/browser/browser.toml';
+  const ELEMENTS = 'toolkit/content/customElements.js';
+  const WIDGET = 'toolkit/content/widgets/moz-hominis-aside/moz-hominis-aside.mjs';
+  const MODULE = 'browser/modules/hominis/HominisStore.sys.mjs';
+  const TEST = 'browser/components/hominis/test/browser/browser_store.js';
+
+  const EXTENDED_BODIES: Record<string, string> = {
+    '100-ui-registrations.patch': [
+      createFileDiff(JAR, [
+        'toolkit.jar:',
+        '  content/global/elements/moz-hominis-aside.mjs  (widgets/moz-hominis-aside/moz-hominis-aside.mjs)',
+      ]),
+      createFileDiff(MOZBUILD, [
+        'EXTRA_JS_MODULES.hominis += [',
+        '    "HominisStore.sys.mjs",',
+        ']',
+      ]),
+      createFileDiff(TESTS, ['[DEFAULT]', '', '["browser_store.js"]']),
+      createFileDiff(ELEMENTS, [
+        '["moz-hominis-aside", "chrome://global/content/elements/moz-hominis-aside.mjs"],',
+      ]),
+    ].join(''),
+    '300-ui-sources.patch': [WIDGET, MODULE, TEST]
+      .map((path) => createFileDiff(path, ['export {};']))
+      .join(''),
+  };
+  const EXTENDED_PATCHES: PatchMetadata[] = [
+    makeMetadata('100-ui-registrations.patch', 100, [JAR, MOZBUILD, TESTS, ELEMENTS]),
+    makeMetadata('300-ui-sources.patch', 300, [WIDGET, MODULE, TEST]),
+  ];
+
+  let projectRoot: string;
+  let patchesDir: string;
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-fwreg-extended-');
+    await writeFireForgeConfig(projectRoot, { patchLint: { forwardRegistration: 'extended' } });
+    patchesDir = join(projectRoot, 'patches');
+    await ensureDir(patchesDir);
+    for (const patch of EXTENDED_PATCHES) {
+      await writeFile(join(patchesDir, patch.filename), EXTENDED_BODIES[patch.filename] ?? '');
+    }
+    await writeFile(
+      join(patchesDir, 'patches.json'),
+      JSON.stringify({ version: 1, patches: EXTENDED_PATCHES } satisfies PatchesManifest, null, 2)
+    );
+  });
+
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  const lint = async (): Promise<PatchLintIssue[]> =>
+    lintPatchQueue(await buildPatchQueueContext(patchesDir, await loadConfig(projectRoot)));
+
+  it('flags one edge per carrier, and the printed commands silence both arms', async () => {
+    const issues = (await lint()).filter((issue) => issue.check === 'forward-registration');
+    expect(issues.map((issue) => issue.file).sort()).toEqual(
+      [JAR, ELEMENTS, MOZBUILD, TESTS].sort()
+    );
+
+    for (const issue of issues) {
+      const command = parseDischargeCommand(issue.message);
+      await patchStagedDependencyCommand(projectRoot, command.patch, {
+        add: true,
+        kind: 'registration',
+        file: command.file,
+        line: command.line,
+        creates: command.creates,
+        ...(command.owner === undefined ? {} : { owner: command.owner }),
+      });
+    }
+
+    const after = await lint();
+    expect(after.filter((issue) => issue.check === 'forward-registration')).toEqual([]);
+    expect(after.filter((issue) => issue.check === 'staged-dependency-unused')).toEqual([]);
+  });
+
+  it('exposes the same census on the public API, whatever the lint scope', async () => {
+    await writeFireForgeConfig(projectRoot);
+    const { findForwardRegistrations } = await import('../../index.js');
+
+    const census = await findForwardRegistrations(patchesDir);
+
+    expect(census.map((found) => found.kind).sort()).toEqual([
+      'custom-elements',
+      'jar-mn',
+      'moz-build',
+      'test-manifest',
+    ]);
+    const jar = census.find((found) => found.kind === 'jar-mn');
+    expect(jar).toMatchObject({
+      patch: '100-ui-registrations.patch',
+      file: JAR,
+      creates: WIDGET,
+      owner: '300-ui-sources.patch',
+    });
+    expect(jar?.command).toContain(`--kind registration --file ${JAR}`);
+    expect(await findForwardRegistrations(patchesDir, { scope: 'support-files' })).toEqual([]);
+  });
+
+  it('reports none of them under the default scope', async () => {
+    await writeFireForgeConfig(projectRoot);
+    expect((await lint()).filter((issue) => issue.check === 'forward-registration')).toEqual([]);
   });
 });

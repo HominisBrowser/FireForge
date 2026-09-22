@@ -11,6 +11,11 @@ import { warnIfFurnaceStale } from '../core/furnace-staleness.js';
 import { hasBuildArtifacts, hasRunnableBundle, run, runMachSmoke } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import {
+  resolveRunProfile,
+  type RunProfile,
+  sweepAbandonedRunProfiles,
+} from '../core/run-profile.js';
+import {
   compileAllowlistFromFile,
   compileAllowlistFromStrings,
   type CompiledAllowlistEntry,
@@ -124,14 +129,43 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
   // Clean stale profile state to prevent silent startup failures
   await cleanDevProfile(paths.engine);
 
-  if (options.smokeExit !== undefined) {
-    await runSmokeExit(paths.engine, options);
-    return;
+  // Reclaim temporary profiles a SIGKILLed FireForge could not remove.
+  const swept = await sweepAbandonedRunProfiles();
+  if (swept > 0) verbose(`Removed ${swept} abandoned temporary run profile(s).`);
+
+  const profile = await resolveRunProfile({
+    profile: options.profile,
+    tempProfile: options.tempProfile,
+    smoke: options.smokeExit !== undefined,
+  });
+  try {
+    if (options.smokeExit !== undefined) {
+      await runSmokeExit(paths.engine, options, profile);
+      return;
+    }
+
+    info('Launching browser...\n');
+    await runInteractive(paths.engine, options, profile);
+  } finally {
+    await profile.dispose();
   }
+}
 
-  info('Launching browser...\n');
-
-  const exitCode = await run(paths.engine, options.headless ? ['--headless'] : []);
+/**
+ * Launches the browser under `mach run` for an interactive session.
+ * @param engineDir - Path to the engine directory
+ * @param options - Run options
+ * @param profile - The profile this run launches with
+ */
+async function runInteractive(
+  engineDir: string,
+  options: RunOptions,
+  profile: RunProfile
+): Promise<void> {
+  const exitCode = await run(engineDir, [
+    ...(options.headless ? ['--headless'] : []),
+    ...profile.args,
+  ]);
 
   // Exit-code whitelist:
   //   0:   clean shutdown
@@ -158,7 +192,11 @@ interface SmokeFinding {
  * exit contract. The deadline-fires-SIGTERM path is treated as a clean
  * window iff no unallowed errors were observed.
  */
-async function runSmokeExit(engineDir: string, options: RunOptions): Promise<void> {
+async function runSmokeExit(
+  engineDir: string,
+  options: RunOptions,
+  profile: RunProfile
+): Promise<void> {
   // Windows lacks the POSIX process-group primitives --smoke-exit leans on to
   // SIGTERM the whole mach → python → firefox tree. Running through anyway
   // would only kill the top-level wrapper and orphan Firefox content
@@ -244,11 +282,19 @@ async function runSmokeExit(engineDir: string, options: RunOptions): Promise<voi
   warnIfHeadedOnDesktop(options.headless === true);
 
   info(`Launching browser (smoke-exit after ${smokeExit}s)...\n`);
+  if (profile.temporary) {
+    info(
+      `Profile: fresh temporary profile (removed after the run; --profile <path> to use a named one)`
+    );
+  } else if (profile.dir !== undefined) {
+    info(`Profile: ${profile.dir}`);
+  }
 
   const startedAt = Date.now();
   let result;
   try {
-    result = await runMachSmoke(options.headless ? ['run', '--headless'] : ['run'], engineDir, {
+    const machArgs = ['run', ...(options.headless ? ['--headless'] : []), ...profile.args];
+    result = await runMachSmoke(machArgs, engineDir, {
       smokeTimeoutMs,
       onStdoutLine: (line) => {
         handleLine('stdout', line);
@@ -462,6 +508,14 @@ export function registerRun(
     .option(
       '--headless',
       'Launch the browser with --headless. Recommended for --smoke-exit on a shared desktop: input into a headed smoke window contaminates the console capture.'
+    )
+    .option(
+      '--profile <path>',
+      'Launch with this profile directory (passed to Firefox as -profile). Left in place after the run. With --smoke-exit it replaces the default fresh profile.'
+    )
+    .option(
+      '--temp-profile',
+      'Launch with a fresh temporary profile that is removed when the run ends. The default for --smoke-exit.'
     )
     .action(
       withErrorHandling(

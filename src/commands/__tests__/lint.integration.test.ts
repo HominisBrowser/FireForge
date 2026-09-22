@@ -19,6 +19,7 @@ import {
   setInteractiveMode,
   writeFiles,
 } from '../../test-utils/index.js';
+import type { PatchMetadata } from '../../types/commands/index.js';
 import { lintCommand } from '../lint.js';
 import { setupCommand } from '../setup.js';
 
@@ -404,5 +405,98 @@ describe('lint integration', () => {
     expect(row?.thresholds.lines.error).toBe(3000);
     expect(row?.suppressedIssues.some((issue) => issue.check === 'large-patch-lines')).toBe(true);
     expect(report.totals.suppressed).toBeGreaterThanOrEqual(1);
+  });
+
+  it('--notices summary folds NOTICE lines into one per check; full stays as it was', async () => {
+    const { readFile, writeFile } = await import('node:fs/promises');
+    const { info, warn } = await import('../../utils/logger.js');
+    const engineDir = join(projectRoot, 'engine');
+    const waived = 'browser/modules/mybrowser/Big.sys.mjs';
+    const notice = 'browser/modules/mybrowser/Mid.sys.mjs';
+    // Modified, not created: the size rules measure the patch diff, and
+    // new-module rules (JSDoc, file size) stay out of the way.
+    await initCommittedRepo(engineDir, {
+      [waived]: '// placeholder\n',
+      [notice]: '// placeholder\n',
+    });
+    await writeFiles(engineDir, {
+      [waived]: generateLargeModule(1600),
+      [notice]: generateLargeModule(900),
+    });
+    const row = (
+      filename: string,
+      order: number,
+      file: string,
+      lintIgnore?: string[]
+    ): PatchMetadata => ({
+      filename,
+      order,
+      category: 'core',
+      name: filename.slice(4, -6),
+      description: '',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      sourceEsrVersion: '140.9.0esr',
+      filesAffected: [file],
+      ...(lintIgnore ? { lintIgnore } : {}),
+    });
+    await writeFiles(projectRoot, {
+      'patches/patches.json':
+        JSON.stringify(
+          {
+            version: 1,
+            patches: [
+              row('001-core-big.patch', 1, waived, ['large-patch-lines', 'file-too-large']),
+              row('002-core-mid.patch', 2, notice),
+            ],
+          },
+          null,
+          2
+        ) + '\n',
+    });
+    await writeFile(join(projectRoot, 'patches', '001-core-big.patch'), '# stub\n');
+    await writeFile(join(projectRoot, 'patches', '002-core-mid.patch'), '# stub\n');
+
+    const run = async (
+      notices: 'summary' | 'full' | undefined
+    ): Promise<{ lines: string[]; report: string }> => {
+      vi.mocked(info).mockClear();
+      vi.mocked(warn).mockClear();
+      const reportPath = join(projectRoot, `report-${notices ?? 'default'}.json`);
+      await lintCommand(projectRoot, [], {
+        perPatch: true,
+        noCache: true,
+        report: reportPath,
+        ...(notices !== undefined ? { notices } : {}),
+      });
+      const report = JSON.parse(await readFile(reportPath, 'utf8')) as { generatedAt?: string };
+      delete report.generatedAt;
+      return {
+        lines: [...vi.mocked(info).mock.calls, ...vi.mocked(warn).mock.calls].map((c) =>
+          c[0].replace(/report-\w+\.json/, 'report.json')
+        ),
+        report: JSON.stringify(report),
+      };
+    };
+
+    const byDefault = await run(undefined);
+    const full = await run('full');
+    const summary = await run('summary');
+
+    // full is what an unflagged run prints, line for line.
+    expect(full.lines).toEqual(byDefault.lines);
+    expect(full.lines.filter((line) => line.startsWith('NOTICE ['))).toHaveLength(2);
+
+    const noticeLines = summary.lines.filter((line) => line.startsWith('NOTICE'));
+    expect(noticeLines).toEqual([
+      'NOTICE [large-patch-lines]: 2 across 2 patch(es), 1 of them suppressed by lintIgnore (see --report)',
+    ]);
+    // The report does not change with the display mode.
+    expect(summary.report).toEqual(full.report);
+  });
+
+  it('--notices requires --per-patch', async () => {
+    await expect(lintCommand(projectRoot, [], { notices: 'summary' })).rejects.toThrow(
+      '--notices requires --per-patch.'
+    );
   });
 });

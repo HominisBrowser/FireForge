@@ -140,6 +140,11 @@ import { registerTestManifest } from '../../core/moz-manifest-register.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { success, warn } from '../../utils/logger.js';
 
+/** clack's own cancellation sentinel (public since @clack/prompts 1.8.1). */
+const CANCEL_SYMBOL: (typeof import('@clack/prompts'))['CANCEL_SYMBOL'] = (
+  await vi.importActual<typeof import('@clack/prompts')>('@clack/prompts')
+).CANCEL_SYMBOL;
+
 const mockPathExists = vi.mocked(pathExists);
 const mockReadText = vi.mocked(readText);
 const mockWriteText = vi.mocked(writeText);
@@ -976,9 +981,8 @@ describe('interactive mode', () => {
   it('returns early when user cancels at the name prompt', async () => {
     const { text } = await import('@clack/prompts');
     const { isCancel, cancel } = await import('../../utils/logger.js');
-    const cancelSymbol = Symbol('cancel');
-    vi.mocked(text).mockResolvedValueOnce(cancelSymbol);
-    vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
+    vi.mocked(text).mockResolvedValueOnce(CANCEL_SYMBOL);
+    vi.mocked(isCancel).mockImplementation((value) => value === CANCEL_SYMBOL);
 
     await furnaceCreateCommand('/project');
 
@@ -990,9 +994,8 @@ describe('interactive mode', () => {
     const { text, multiselect } = await import('@clack/prompts');
     const { isCancel, cancel } = await import('../../utils/logger.js');
     vi.mocked(text).mockResolvedValueOnce('moz-test-widget').mockResolvedValueOnce('desc');
-    const cancelSymbol = Symbol('cancel');
-    vi.mocked(multiselect).mockResolvedValueOnce(cancelSymbol);
-    vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
+    vi.mocked(multiselect).mockResolvedValueOnce(CANCEL_SYMBOL);
+    vi.mocked(isCancel).mockImplementation((value) => value === CANCEL_SYMBOL);
     mockIsComponentInEngine.mockResolvedValue(false);
     mockPathExists.mockImplementation((path: string) => {
       if (path === nativePath('/project/engine')) return Promise.resolve(true);

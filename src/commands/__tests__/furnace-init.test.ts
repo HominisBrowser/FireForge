@@ -134,6 +134,11 @@ import { pathExists } from '../../utils/fs.js';
 import { cancel, info, isCancel, note, success, warn } from '../../utils/logger.js';
 import { furnaceInitCommand } from '../furnace/init.js';
 
+/** clack's own cancellation sentinel (public since @clack/prompts 1.8.1). */
+const CANCEL_SYMBOL: (typeof import('@clack/prompts'))['CANCEL_SYMBOL'] = (
+  await vi.importActual<typeof import('@clack/prompts')>('@clack/prompts')
+).CANCEL_SYMBOL;
+
 describe('furnaceInitCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -268,7 +273,7 @@ describe('furnaceInitCommand', () => {
 
   it('cancels when prefix prompt is cancelled', async () => {
     vi.mocked(isCancel).mockReturnValue(true);
-    vi.mocked(text).mockResolvedValue(Symbol('cancel'));
+    vi.mocked(text).mockResolvedValue(CANCEL_SYMBOL);
 
     Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
     Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });

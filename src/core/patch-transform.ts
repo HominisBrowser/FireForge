@@ -5,16 +5,13 @@
  */
 
 import { PatchError } from '../errors/patch.js';
-import { readText } from '../utils/fs.js';
 import type { DiffSection } from './patch-parse.js';
 import { isNewFileInPatch, parseDiffSections, parseHunksForFile } from './patch-parse.js';
 
 /**
  * Extracts the complete file content from a "new file" patch given a raw
- * diff string already in memory. Callers with a patch file path should
- * prefer {@link extractNewFileContent}. This helper exists for code paths
- * that already hold the diff (e.g. the in-flight export planner) and do
- * not want to round-trip through the filesystem.
+ * diff string already in memory. A caller with only a patch file path
+ * reads it first; every caller holds the diff already.
  *
  * @param diff - Raw unified-diff content
  * @param targetFile - Optional target file to scope extraction to
@@ -38,6 +35,37 @@ export function extractNewFileContentFromDiff(diff: string, targetFile?: string)
   }
 
   return contentFromSections(sections);
+}
+
+/**
+ * {@link extractNewFileContentFromDiff} for many targets over one parse of
+ * the diff. Each target gets exactly what the single-target call returns;
+ * a target whose sections include a binary one (which that call refuses)
+ * is left out of the map and named in `refused`.
+ * @param diff - Raw unified-diff content
+ * @param targetFiles - Files whose created content to extract
+ */
+export function extractNewFileContentsFromDiff(
+  diff: string,
+  targetFiles: Iterable<string>
+): { contents: Map<string, string>; refused: string[] } {
+  const sectionsByTarget = new Map<string, DiffSection[]>();
+  for (const section of parseDiffSections(diff)) {
+    const list = sectionsByTarget.get(section.targetPath) ?? [];
+    list.push(section);
+    sectionsByTarget.set(section.targetPath, list);
+  }
+  const contents = new Map<string, string>();
+  const refused: string[] = [];
+  for (const target of targetFiles) {
+    const sections = sectionsByTarget.get(target) ?? [];
+    if (sections.some((section) => section.isBinary)) {
+      refused.push(target);
+      continue;
+    }
+    contents.set(target, contentFromSections(sections));
+  }
+  return { contents, refused };
 }
 
 /**
@@ -102,22 +130,6 @@ export function buildNewFileTextProjection(diff: string): Map<string, string> {
     newFiles.set(section.targetPath, contentFromSections([section]));
   }
   return newFiles;
-}
-
-/**
- * Extracts the complete file content from a "new file" patch.
- * When targetFile is provided, only extracts content for that file
- * (required for multi-file patches).
- * @param patchPath - Path to the patch file
- * @param targetFile - Optional target file to scope extraction to
- * @returns The file content that the patch would create
- */
-export async function extractNewFileContent(
-  patchPath: string,
-  targetFile?: string
-): Promise<string> {
-  const content = await readText(patchPath);
-  return extractNewFileContentFromDiff(content, targetFile);
 }
 
 /**

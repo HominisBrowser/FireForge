@@ -3,18 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 import type { PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
-import {
-  pathExists,
-  readJson,
-  readText,
-  removeFile,
-  writeJson,
-  writeText,
-} from '../../utils/fs.js';
+import { pathExists, readJson, removeFile, writeJson, writeText } from '../../utils/fs.js';
 import { findAllPatchesForFiles } from '../patch-export.js';
 import { isPatchFullyCovered } from '../patch-export-coverage.js';
 import { getClaimedFiles } from '../patch-manifest.js';
-import { extractNewFileContent } from '../patch-transform.js';
+import { extractNewFileContentFromDiff } from '../patch-transform.js';
 
 vi.mock('../patch-apply.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../patch-apply.js')>();
@@ -56,7 +49,6 @@ import { readdir, unlink } from 'node:fs/promises';
 
 const mockedPathExists = vi.mocked(pathExists);
 const mockedReadJson = vi.mocked(readJson);
-const mockedReadText = vi.mocked(readText);
 const mockedRemoveFile = vi.mocked(removeFile);
 const mockedReaddir = vi.mocked(readdir);
 const mockedUnlink = vi.mocked(unlink);
@@ -139,7 +131,7 @@ describe('getClaimedFiles', () => {
   });
 });
 
-describe('extractNewFileContent', () => {
+describe('extractNewFileContentFromDiff', () => {
   const SINGLE_FILE_PATCH = [
     'diff --git a/modules/Foo.sys.mjs b/modules/Foo.sys.mjs',
     'new file mode 100644',
@@ -177,50 +169,38 @@ describe('extractNewFileContent', () => {
     '',
   ].join('\n');
 
-  it('extracts content from a single-file patch without targetFile', async () => {
-    mockedReadText.mockResolvedValue(SINGLE_FILE_PATCH);
-
-    const result = await extractNewFileContent('/fake/patch.patch');
+  it('extracts content from a single-file patch without targetFile', () => {
+    const result = extractNewFileContentFromDiff(SINGLE_FILE_PATCH);
 
     expect(result).toBe('// Foo module\nexport const Foo = 1;\nexport default Foo;\n');
   });
 
-  it('extracts content from a single-file patch with targetFile', async () => {
-    mockedReadText.mockResolvedValue(SINGLE_FILE_PATCH);
-
-    const result = await extractNewFileContent('/fake/patch.patch', 'modules/Foo.sys.mjs');
+  it('extracts content from a single-file patch with targetFile', () => {
+    const result = extractNewFileContentFromDiff(SINGLE_FILE_PATCH, 'modules/Foo.sys.mjs');
 
     expect(result).toBe('// Foo module\nexport const Foo = 1;\nexport default Foo;\n');
   });
 
-  it('extracts only the first file from a multi-file patch when targetFile specified', async () => {
-    mockedReadText.mockResolvedValue(MULTI_FILE_PATCH);
-
-    const result = await extractNewFileContent('/fake/patch.patch', 'modules/Alpha.sys.mjs');
+  it('extracts only the first file from a multi-file patch when targetFile specified', () => {
+    const result = extractNewFileContentFromDiff(MULTI_FILE_PATCH, 'modules/Alpha.sys.mjs');
 
     expect(result).toBe('// Alpha\nexport const Alpha = "a";\n');
   });
 
-  it('extracts only the second file from a multi-file patch when targetFile specified', async () => {
-    mockedReadText.mockResolvedValue(MULTI_FILE_PATCH);
-
-    const result = await extractNewFileContent('/fake/patch.patch', 'modules/Beta.sys.mjs');
+  it('extracts only the second file from a multi-file patch when targetFile specified', () => {
+    const result = extractNewFileContentFromDiff(MULTI_FILE_PATCH, 'modules/Beta.sys.mjs');
 
     expect(result).toBe('// Beta\nexport const Beta = "b";\n');
   });
 
-  it('extracts only the last file from a multi-file patch when targetFile specified', async () => {
-    mockedReadText.mockResolvedValue(MULTI_FILE_PATCH);
-
-    const result = await extractNewFileContent('/fake/patch.patch', 'modules/Gamma.sys.mjs');
+  it('extracts only the last file from a multi-file patch when targetFile specified', () => {
+    const result = extractNewFileContentFromDiff(MULTI_FILE_PATCH, 'modules/Gamma.sys.mjs');
 
     expect(result).toBe('// Gamma\nexport const Gamma = "g";\n');
   });
 
-  it('returns truly empty content for a non-existent target file in a multi-file patch', async () => {
-    mockedReadText.mockResolvedValue(MULTI_FILE_PATCH);
-
-    const result = await extractNewFileContent('/fake/patch.patch', 'modules/NotHere.sys.mjs');
+  it('returns truly empty content for a non-existent target file in a multi-file patch', () => {
+    const result = extractNewFileContentFromDiff(MULTI_FILE_PATCH, 'modules/NotHere.sys.mjs');
 
     // Historical behavior returned '\n' here (and for genuinely empty new
     // files), materialising a one-byte file where git would create a
@@ -228,10 +208,8 @@ describe('extractNewFileContent', () => {
     expect(result).toBe('');
   });
 
-  it('without targetFile, extracts all files concatenated (legacy behavior)', async () => {
-    mockedReadText.mockResolvedValue(MULTI_FILE_PATCH);
-
-    const result = await extractNewFileContent('/fake/patch.patch');
+  it('without targetFile, extracts all files concatenated (legacy behavior)', () => {
+    const result = extractNewFileContentFromDiff(MULTI_FILE_PATCH);
 
     // Without targetFile, all + lines from all hunks are concatenated
     expect(result).toContain('Alpha');

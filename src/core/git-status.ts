@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { warn } from '../utils/logger.js';
 import type { GitStatusEntry } from './git-base.js';
-import { git } from './git-base.js';
+import { chunkPathspecs, git } from './git-base.js';
 
 /**
  * True when a porcelain status column carries a rename or copy, i.e. the
@@ -111,6 +111,10 @@ export async function expandUntrackedDirectoryEntries(
 ): Promise<GitStatusEntry[]> {
   const expanded: GitStatusEntry[] = [];
   const maxPerDir = resolveMaxUntrackedFilesPerDir();
+  const collapsed = entries
+    .filter((entry) => entry.isUntracked && entry.file.endsWith('/'))
+    .map((entry) => entry.file);
+  const untrackedByDir = await listUntrackedFilesInDirs(repoDir, collapsed);
 
   for (const entry of entries) {
     if (!entry.isUntracked || !entry.file.endsWith('/')) {
@@ -118,7 +122,7 @@ export async function expandUntrackedDirectoryEntries(
       continue;
     }
 
-    const individualFiles = await getUntrackedFilesInDir(repoDir, entry.file);
+    const individualFiles = untrackedByDir.get(entry.file) ?? [];
     if (individualFiles.length > maxPerDir) {
       warn(
         `Untracked directory ${entry.file} contains ${individualFiles.length} files — only the first ${maxPerDir} are listed. Add a .gitignore entry or clean the directory.`
@@ -138,6 +142,46 @@ export async function expandUntrackedDirectoryEntries(
   }
 
   return expanded;
+}
+
+/**
+ * Lists the untracked files under each collapsed `dir/` status entry with
+ * one `git ls-files` per ARG_MAX chunk, instead of one spawn per directory
+ * (a Firefox-sized worktree scan paid 73 of them). The result maps every
+ * requested directory to its files in git's order, which is exactly what
+ * {@link getUntrackedFilesInDir} returns for that directory alone. `-z`
+ * keeps non-ASCII names literal: the newline form C-quotes them under
+ * git's default `core.quotePath`, and a quoted path names no file.
+ *
+ * @param repoDir - Repository directory
+ * @param dirs - Collapsed untracked directories, each ending in `/`
+ * @returns Files per directory (every input key present, possibly empty)
+ */
+export async function listUntrackedFilesInDirs(
+  repoDir: string,
+  dirs: readonly string[]
+): Promise<Map<string, string[]>> {
+  const byDir = new Map<string, string[]>(dirs.map((dir) => [dir, []]));
+  if (byDir.size === 0) return byDir;
+  for (const chunk of chunkPathspecs([...byDir.keys()])) {
+    const output = await git(
+      ['ls-files', '--others', '--exclude-standard', '-z', '--', ...chunk],
+      repoDir
+    );
+    for (const file of output.split('\0')) {
+      if (file.length === 0) continue;
+      // Collapsed status directories never nest, so the first matching
+      // ancestor is the only one.
+      for (let slash = file.indexOf('/'); slash !== -1; slash = file.indexOf('/', slash + 1)) {
+        const bucket = byDir.get(file.slice(0, slash + 1));
+        if (bucket !== undefined) {
+          bucket.push(file);
+          break;
+        }
+      }
+    }
+  }
+  return byDir;
 }
 
 /**

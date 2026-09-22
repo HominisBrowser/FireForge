@@ -145,6 +145,11 @@ import { pathExists } from '../../utils/fs.js';
 import { info, intro, note, outro, spinner, success } from '../../utils/logger.js';
 import { furnaceScanCommand } from '../furnace/scan.js';
 
+/** clack's own cancellation sentinel (public since @clack/prompts 1.8.1). */
+const CANCEL_SYMBOL: (typeof import('@clack/prompts'))['CANCEL_SYMBOL'] = (
+  await vi.importActual<typeof import('@clack/prompts')>('@clack/prompts')
+).CANCEL_SYMBOL;
+
 const stdinTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
 const stdoutTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
 
@@ -421,11 +426,9 @@ describe('furnaceScanCommand', () => {
         isRegistered: true,
       },
     ]);
-
-    const cancelSymbol = Symbol('cancel');
-    vi.mocked(prompts.confirm).mockResolvedValue(cancelSymbol);
+    vi.mocked(prompts.confirm).mockResolvedValue(CANCEL_SYMBOL);
     const { isCancel, cancel } = await import('../../utils/logger.js');
-    vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
+    vi.mocked(isCancel).mockImplementation((value) => value === CANCEL_SYMBOL);
 
     await furnaceScanCommand('/project');
 
@@ -446,11 +449,9 @@ describe('furnaceScanCommand', () => {
       },
     ]);
     vi.mocked(prompts.confirm).mockResolvedValue(true);
-
-    const cancelSymbol = Symbol('cancel');
-    vi.mocked(prompts.multiselect).mockResolvedValue(cancelSymbol);
+    vi.mocked(prompts.multiselect).mockResolvedValue(CANCEL_SYMBOL);
     const { isCancel, cancel } = await import('../../utils/logger.js');
-    vi.mocked(isCancel).mockImplementation((value) => value === cancelSymbol);
+    vi.mocked(isCancel).mockImplementation((value) => value === CANCEL_SYMBOL);
 
     await furnaceScanCommand('/project');
 

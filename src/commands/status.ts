@@ -10,7 +10,7 @@ import {
 } from '../core/engine-session-lock.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository, isMissingHeadError } from '../core/git.js';
-import { getUntrackedFilesInDir, resolveMaxUntrackedFilesPerDir } from '../core/git-status.js';
+import { listUntrackedFilesInDirs, resolveMaxUntrackedFilesPerDir } from '../core/git-status.js';
 import { renderOwnershipTable } from '../core/ownership-table.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { readProcessCpuSeconds } from '../core/process-cpu-time.js';
@@ -102,9 +102,15 @@ async function expandDirectoryEntries(
 ): Promise<{ entries: StatusFile[]; truncations: TruncationRecord[] }> {
   const expanded: StatusFile[] = [];
   const truncations: TruncationRecord[] = [];
+  const isCollapsedUntracked = (entry: StatusFile): boolean =>
+    entry.file.endsWith('/') && entry.status.includes('?');
+  const untrackedByDir = await listUntrackedFilesInDirs(
+    engineDir,
+    files.filter(isCollapsedUntracked).map((entry) => entry.file)
+  );
   for (const entry of files) {
-    if (entry.file.endsWith('/') && entry.status.includes('?')) {
-      const individualFiles = await getUntrackedFilesInDir(engineDir, entry.file);
+    if (isCollapsedUntracked(entry)) {
+      const individualFiles = untrackedByDir.get(entry.file) ?? [];
       const cap = getMaxUntrackedFilesPerDir();
       if (individualFiles.length > cap) {
         // Recorded once here, reported once by renderTruncationBanner. The

@@ -62,7 +62,7 @@ function isSafeIoFallback(error: unknown): boolean {
   return code !== undefined && SAFE_IO_FALLBACK_CODES.has(code);
 }
 
-/** Concurrency bound for per-file classification (each call spawns git). */
+/** Concurrency bound for per-file classification (reads and patch replays). */
 const UNMANAGED_CLASSIFY_CONCURRENCY = 8;
 
 async function getUnmanagedDirtyFiles(
@@ -73,10 +73,13 @@ async function getUnmanagedDirtyFiles(
   // One manifest+patch-discovery load for the whole batch (the per-call
   // computePatchedContent re-read everything for every file), and bounded
   // concurrency instead of an unbounded Promise.all over git spawns.
-  const { computePatched: computeExpected } = await createPatchedContentContext(
+  const { computePatched: computeExpected, prefetchBase } = await createPatchedContentContext(
     patchesDir,
     engineDir
   );
+  // One `git cat-file --batch` for every HEAD blob instead of a `git show`
+  // per dirty file.
+  await prefetchBase(dirtyFiles);
   const classifications = await mapWithConcurrency(
     dirtyFiles,
     UNMANAGED_CLASSIFY_CONCURRENCY,

@@ -17,6 +17,13 @@
  * @packageDocumentation
  */
 export { loadConfig, validateConfig } from './core/config.js';
+export type {
+  FindForwardRegistrationsOptions,
+  ForwardRegistration,
+  ForwardRegistrationKind,
+  ForwardRegistrationScope,
+} from './core/forward-registrations.js';
+export { findForwardRegistrations } from './core/forward-registrations.js';
 export type { ApplyAllComponentsResult } from './core/furnace-apply.js';
 export { applyAllComponents } from './core/furnace-apply.js';
 export {
@@ -30,6 +37,7 @@ export { validateAllComponents, validateComponent } from './core/furnace-validat
 export type { PatchSizeTierDecision } from './core/patch-lint.js';
 export {
   countNonBinaryDiffLines,
+  filesMeasuredByFileTooLarge,
   getPatchSizeThresholds,
   resolvePatchSizeTier,
 } from './core/patch-lint.js';

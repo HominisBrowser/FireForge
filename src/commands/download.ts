@@ -21,7 +21,7 @@ import {
   resumeRepository,
 } from '../core/git.js';
 import { restoreTrackedPath } from '../core/git-file-ops.js';
-import { getDirtyFiles } from '../core/git-status.js';
+import { getDirtyFiles, getWorkingTreeStatus } from '../core/git-status.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { formatMajorVersionHopNotice } from '../core/toolchain-preflight.js';
 import { EngineExistsError, PartialEngineExistsError } from '../errors/download.js';
@@ -33,6 +33,7 @@ import { checkDiskSpace, ensureDir, pathExists, pathExistsStrict, removeDir } fr
 import type { SpinnerHandle } from '../utils/logger.js';
 import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
+import { confirmDirtyEngineReset } from './rebase/confirm.js';
 
 /**
  * Collects the set of patch-touched files from the manifest.
@@ -51,6 +52,56 @@ async function getPatchTouchedFiles(patchesDir: string): Promise<Set<string>> {
     }
   }
   return files;
+}
+
+/**
+ * Describes what a forced replacement would discard from an existing
+ * engine: changed paths against HEAD (tracked edits, applied patches, new
+ * untracked files; ignored paths such as the objdir are not work), and a
+ * HEAD that moved off the recorded base commit. Returns `undefined` when
+ * nothing would be lost, including an engine that is not a git repository
+ * or has no commit yet: that is the broken tree `--force` exists to replace.
+ */
+async function describeForcedReplacementLoss(
+  engineDir: string,
+  patchesDir: string,
+  baseCommit: string | undefined
+): Promise<string | undefined> {
+  if (!(await isGitRepository(engineDir))) return undefined;
+  let head: string;
+  try {
+    head = await getHead(engineDir);
+  } catch (error: unknown) {
+    if (isMissingHeadError(error)) return undefined;
+    throw error;
+  }
+
+  const entries = await getWorkingTreeStatus(engineDir);
+  const headMoved = baseCommit !== undefined && head !== baseCommit;
+  if (entries.length === 0 && !headMoved) return undefined;
+
+  const parts: string[] = [];
+  if (entries.length > 0) {
+    const patchFiles = [...(await getPatchTouchedFiles(patchesDir))];
+    const claimed = entries.filter((entry) =>
+      entry.file.endsWith('/')
+        ? patchFiles.some((file) => file.startsWith(entry.file))
+        : patchFiles.includes(entry.file)
+    ).length;
+    const unclaimed = entries.length - claimed;
+    parts.push(
+      `engine/ has ${entries.length} changed path(s) against HEAD: ` +
+        `${claimed} match the patch queue, ${unclaimed} do not` +
+        (unclaimed > 0 ? ' (unexported work that exists nowhere else).' : '.')
+    );
+  }
+  if (headMoved) {
+    parts.push(
+      `engine/ HEAD ${head.slice(0, 12)} is not the recorded base commit ${baseCommit.slice(0, 12)}, so commits made in engine/ are discarded too.`
+    );
+  }
+  parts.push('--force replaces the whole directory.');
+  return parts.join(' ');
 }
 
 /**
@@ -382,7 +433,8 @@ export async function downloadCommand(
   const paths = getProjectPaths(projectRoot);
   // Captured before any state update so the post-download major-hop
   // notice compares against what was actually on disk until now.
-  const previousVersion = (await loadState(projectRoot)).downloadedVersion;
+  const previousState = await loadState(projectRoot);
+  const previousVersion = previousState.downloadedVersion;
 
   info(`Firefox version: ${version}`);
 
@@ -503,6 +555,30 @@ export async function downloadCommand(
           throw new EngineExistsError(paths.engine);
         }
 
+        // The replacement deletes the old tree once the new one is active,
+        // so anything not in patches/ is gone for good. Ask before fetching.
+        const loss = await describeForcedReplacementLoss(
+          paths.engine,
+          paths.patches,
+          previousState.baseCommit
+        );
+        if (
+          loss !== undefined &&
+          !(await confirmDirtyEngineReset({
+            engineDir: paths.engine,
+            yes: options.yes ?? false,
+            dirty: true,
+            refusalDetail: loss,
+            nonInteractiveCommand: 'fireforge download --force --yes',
+            argumentName: '--yes',
+            warningMessage: loss,
+            promptMessage: 'Discard the existing engine/ and download a fresh one?',
+            cancelMessage: 'Download cancelled; engine/ left untouched',
+          }))
+        ) {
+          return;
+        }
+
         replacementEngineDir = `${paths.engine}.replacement-${randomUUID()}`;
         backupEngineDir = `${paths.engine}.backup-${randomUUID()}`;
         installEngineDir = replacementEngineDir;
@@ -569,9 +645,13 @@ export function registerDownload(
   program
     .command('download')
     .description('Download Firefox source')
-    .option('-f, --force', 'Force re-download, removing existing source')
+    .option(
+      '-f, --force',
+      'Force re-download; discards engine/ including applied patches and unexported edits'
+    )
+    .option('-y, --yes', 'With --force: replace a dirty engine/ without the confirmation prompt')
     .action(
-      withErrorHandling(async (options: { force?: boolean }) => {
+      withErrorHandling(async (options: { force?: boolean; yes?: boolean }) => {
         await downloadCommand(getProjectRoot(), pickDefined(options));
       })
     );

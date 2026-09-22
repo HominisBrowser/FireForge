@@ -21,6 +21,7 @@ import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-c
 import { failure, ok, warning } from './doctor-check-core.js';
 import { EXTERNAL_TOOLCHAIN_DOCTOR_CHECK } from './doctor-external-toolchains.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
+import { MACOS_SDK_LINK_DOCTOR_CHECK } from './doctor-macos-sdk.js';
 import { ORPHANED_HARNESS_DOCTOR_CHECK } from './doctor-orphaned-harness.js';
 import { PATCH_MANIFEST_CONSISTENCY_CHECK } from './doctor-patch-manifest.js';
 import { POST_REBASE_AUDIT_CHECK } from './doctor-post-rebase-audit.js';
@@ -324,6 +325,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
     },
   },
   ORPHANED_HARNESS_DOCTOR_CHECK,
+  MACOS_SDK_LINK_DOCTOR_CHECK,
   {
     name: 'Patches directory exists',
     run: async (ctx) => {

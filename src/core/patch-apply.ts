@@ -19,7 +19,7 @@ import { pathExists, readText, writeFileAtomic, writeText } from '../utils/fs.js
 import { verbose } from '../utils/logger.js';
 import { isContainedRelativePath } from '../utils/paths.js';
 import { applyPatchIdempotent, reversePatch } from './git.js';
-import { getFileContentAtRef } from './git-file-ops.js';
+import { getFileContentAtRef, getFilesContentAtRef, hashObjectBatch } from './git-file-ops.js';
 import { discoverPatches } from './patch-files.js';
 import { loadPatchesManifest } from './patch-manifest.js';
 import {
@@ -438,6 +438,19 @@ export interface PatchedContentContext {
   getAffectingPatches: (filePath: string) => readonly PatchInfo[];
   /** Patch body text, memoized per patch path across the whole batch. */
   readPatchBody: (patch: PatchInfo) => Promise<string>;
+  /**
+   * Reads the HEAD content of every path in one `git cat-file --batch`
+   * and holds it for the next {@link computePatched} of each path, which
+   * otherwise spawns one `git show` per file. Call it before a loop.
+   */
+  prefetchBase: (filePaths: readonly string[]) => Promise<void>;
+  /**
+   * Hashes every live file in one `git hash-object` per ARG_MAX chunk and
+   * holds the hashes for {@link liveBlobHash}.
+   */
+  prefetchLiveBlobHashes: (fullPaths: readonly string[]) => Promise<void>;
+  /** The live blob hash of a file, from the prefetch or a single hash-object. */
+  liveBlobHash: (fullPath: string) => Promise<string | undefined>;
 }
 
 /**
@@ -486,12 +499,40 @@ export async function createPatchedContentContext(
   const getAffectingPatches = (filePath: string): readonly PatchInfo[] =>
     affectingByFile.get(filePath) ?? [];
 
+  // Prefetched HEAD content, consumed on first use so a large scan does not
+  // hold every base file for the life of the context.
+  const baseContent = new Map<string, string | null>();
+  const takeBase = async (filePath: string): Promise<string | null> => {
+    if (baseContent.has(filePath)) {
+      const content = baseContent.get(filePath) ?? null;
+      baseContent.delete(filePath);
+      return content;
+    }
+    return getFileContentAtRef(engineDir, filePath);
+  };
+
+  const liveHashes = new Map<string, string>();
+
   return {
     manifestPatches: manifest?.patches ?? [],
     getAffectingPatches,
     readPatchBody,
+    prefetchBase: async (filePaths: readonly string[]): Promise<void> => {
+      const wanted = filePaths.filter((file) => !baseContent.has(file));
+      for (const [file, content] of await getFilesContentAtRef(engineDir, wanted)) {
+        baseContent.set(file, content);
+      }
+    },
+    prefetchLiveBlobHashes: async (fullPaths: readonly string[]): Promise<void> => {
+      const wanted = fullPaths.filter((path) => !liveHashes.has(path));
+      for (const [path, hash] of await hashObjectBatch(engineDir, wanted)) {
+        liveHashes.set(path, hash);
+      }
+    },
+    liveBlobHash: async (fullPath: string): Promise<string | undefined> =>
+      liveHashes.get(fullPath) ?? (await hashObjectBatch(engineDir, [fullPath])).get(fullPath),
     computePatched: async (filePath: string): Promise<string | null> => {
-      let content = await getFileContentAtRef(engineDir, filePath);
+      let content = await takeBase(filePath);
       for (const patch of getAffectingPatches(filePath)) {
         content = applyPatchTextToContent(content, await readPatchBody(patch), filePath);
       }

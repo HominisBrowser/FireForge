@@ -12,7 +12,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { PatchError } from '../../errors/patch.js';
-import { buildNewFileTextProjection, extractNewFileContentFromDiff } from '../patch-transform.js';
+import {
+  buildNewFileTextProjection,
+  extractNewFileContentFromDiff,
+  extractNewFileContentsFromDiff,
+} from '../patch-transform.js';
 
 const TEXT_SECTION = [
   'diff --git a/browser/themes/shared/hominis/fonts.css b/browser/themes/shared/hominis/fonts.css',
@@ -116,5 +120,19 @@ describe('extractNewFileContentFromDiff', () => {
     expect(
       extractNewFileContentFromDiff(MIXED_DIFF, 'browser/themes/shared/hominis/fonts.css')
     ).toBe('@font-face { font-family: "Nebula Sans"; }\n/* end */\n');
+  });
+});
+
+describe('extractNewFileContentsFromDiff', () => {
+  it('returns per target exactly what the single-target extractor returns, over one parse', () => {
+    const diff = `${TEXT_SECTION}\n${BINARY_SECTION}\n`;
+    const text = 'browser/themes/shared/hominis/fonts.css';
+    const binary = 'browser/themes/shared/hominis/fonts/nebula-sans-regular.woff2';
+
+    const { contents, refused } = extractNewFileContentsFromDiff(diff, [text, binary]);
+
+    expect(contents.get(text)).toBe(extractNewFileContentFromDiff(diff, text));
+    expect(refused).toEqual([binary]);
+    expect(() => extractNewFileContentFromDiff(diff, binary)).toThrow(PatchError);
   });
 });

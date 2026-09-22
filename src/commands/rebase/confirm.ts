@@ -31,6 +31,17 @@ export interface DirtyEngineConfirmationOptions {
   warningMessage: string;
   promptMessage: string;
   cancelMessage: string;
+  /**
+   * Precomputed dirtiness. A caller that already measured what would be
+   * lost (and may count more than the working tree, such as commits made
+   * on top of the base) passes it here instead of the `hasChanges` probe.
+   */
+  dirty?: boolean;
+  /**
+   * Replaces the generic "Engine has uncommitted changes" opening of the
+   * non-interactive refusal, so the refusal names what would be lost.
+   */
+  refusalDetail?: string;
 }
 
 /**
@@ -46,17 +57,20 @@ export async function confirmDirtyEngineReset({
   warningMessage,
   promptMessage,
   cancelMessage,
+  dirty,
+  refusalDetail,
 }: DirtyEngineConfirmationOptions): Promise<boolean> {
-  if (!(await hasChanges(engineDir)) || yes) {
+  if (yes || !(dirty ?? (await hasChanges(engineDir)))) {
     return true;
   }
 
   const isInteractive = stdioIsInteractive();
   if (!isInteractive) {
-    throw new InvalidArgumentError(
-      `Engine has uncommitted changes and interactive confirmation is not available. Run: ${nonInteractiveCommand}`,
-      argumentName
-    );
+    const opening =
+      refusalDetail !== undefined
+        ? `${refusalDetail} Interactive confirmation is not available.`
+        : 'Engine has uncommitted changes and interactive confirmation is not available.';
+    throw new InvalidArgumentError(`${opening} Run: ${nonInteractiveCommand}`, argumentName);
   }
 
   warn(warningMessage);

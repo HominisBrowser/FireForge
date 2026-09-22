@@ -208,7 +208,30 @@ describe('typecheckCommand', () => {
       },
     ]);
     await expect(typecheckCommand('/project', {})).rejects.toThrow(GeneralError);
-    expect(mockRunTypecheck).toHaveBeenCalledWith('/project', { projects: ['a/jsconfig.json'] });
+    expect(mockRunTypecheck).toHaveBeenCalledWith(
+      '/project',
+      { projects: ['a/jsconfig.json'] },
+      {}
+    );
+  });
+
+  it('forwards --no-cache to the run', async () => {
+    mockLoadConfig.mockResolvedValue({
+      name: 'p',
+      vendor: 'v',
+      appId: 'org.v.p',
+      binaryName: 'p',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+    });
+    mockRunTypecheck.mockResolvedValue([
+      { project: 'oneoff/jsconfig.json', filesChecked: 0, issues: [] },
+    ]);
+    await typecheckCommand('/project', { project: 'oneoff/jsconfig.json', noCache: true });
+    expect(mockRunTypecheck).toHaveBeenCalledWith(
+      '/project',
+      { projects: ['oneoff/jsconfig.json'] },
+      { noCache: true }
+    );
   });
 
   it('regenerates a stale Furnace-managed jsconfig before typechecking', async () => {
@@ -286,9 +309,11 @@ describe('typecheckCommand', () => {
       { project: 'oneoff/jsconfig.json', filesChecked: 0, issues: [] },
     ]);
     await typecheckCommand('/project', { project: 'oneoff/jsconfig.json' });
-    expect(mockRunTypecheck).toHaveBeenCalledWith('/project', {
-      projects: ['oneoff/jsconfig.json'],
-    });
+    expect(mockRunTypecheck).toHaveBeenCalledWith(
+      '/project',
+      { projects: ['oneoff/jsconfig.json'] },
+      {}
+    );
   });
 });
 

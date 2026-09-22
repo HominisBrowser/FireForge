@@ -81,11 +81,23 @@ slugs, and bare slugs.
 `lint --per-patch --max-warnings 0` is the warning-clean form for a release
 gate.
 
+`lint --per-patch --notices summary` prints one line per check in place of
+every NOTICE row, for example `NOTICE [large-patch-lines]: 180 across 172
+patch(es), 150 of them suppressed by lintIgnore (see --report)`. On a green
+queue those rows are reviewed waivers and under-threshold measurements, and
+there can be hundreds of them. The default, `--notices full`, prints them
+as before. Errors and warnings always print in full, and the `--report`
+JSON is the same in both modes.
+
 `lint --per-patch --report <path>` writes a machine-readable JSON report with
 each patch's line count, tier, active size thresholds, issues, and issues
 suppressed by `lintIgnore`. The size metrics (`countNonBinaryDiffLines`,
 `resolvePatchSizeTier`, `getPatchSizeThresholds`) are also exported on the
-programmatic API.
+programmatic API. So is `filesMeasuredByFileTooLarge(patchText)`, which
+returns the files `file-too-large` measures in a patch: the JS files it
+creates, and never a modified file or a new file of another kind. The rule
+selects its files through that same function, so an audit that uses it
+cannot drift from the rule.
 
 Per-patch lint type-checks plain Firefox JS against a built-in
 Firefox-globals shim that tracks upstream WebIDL additions per release. See
@@ -115,6 +127,28 @@ npx fireforge source set --version 145.0.0esr --product firefox-esr --sha256 <ar
 npx fireforge download --force
 npx fireforge rebase
 ```
+
+`download --force` is the destructive step of the three, not `rebase`. It
+replaces `engine/` wholesale, so applied patches, unexported edits and
+commits made in `engine/` are gone once the new tree is active. When the
+engine it is about to replace has changed paths against HEAD, or HEAD has
+moved off the recorded base commit, it names the loss (how many changed
+paths match the patch queue and how many do not) and asks first. A
+non-interactive run refuses unless `--yes` is given. A clean engine is
+replaced without a prompt.
+
+`npx fireforge rebase --dry-run` replays the queue onto the engine's HEAD
+without touching `engine/`. It seeds a private index from HEAD and applies
+each patch there with `git apply --cached`, in queue order, walking the same
+context-reduction ladder as the real run (exact, then `-C2`, `-C1`, `-C0`,
+bounded by `--max-fuzz`). Each patch is reported as `clean`, `reduced
+context` (with the step it needed) or `reject` (with the files git named).
+It exits 6 when anything rejects. A reject after an earlier one is marked
+as possibly cascading from it, since the replay continues without the
+rejected patch. Run it after the download, when HEAD is the new source. The
+header names the oldest patch stamp as "from", compared as versions rather
+than strings, prints the spread when the queue carries several stamps, and
+warns when `engine/` is not yet on the pinned version.
 
 If a patch fails, fix the reject inside `engine/`, then run
 `npx fireforge rebase --continue`. A rebase leaves the engine mutated on

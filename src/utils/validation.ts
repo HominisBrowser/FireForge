@@ -116,6 +116,47 @@ export function isValidFirefoxVersion(version: string): boolean {
 }
 
 /**
+ * Orders two Firefox version strings semantically: major, minor and patch
+ * numerically, with a beta (`153.0b7`) before the release it precedes
+ * (`153.0`). An `esr` suffix does not change the order: `153.3.0esr` and
+ * `153.3.0` compare equal, since the product says which line it is. A
+ * lexical sort, which this replaces in `rebase`, put `153.10.0esr` before
+ * `153.2.0esr` and `99.0` after `140.0esr`. A string that is not a Firefox
+ * version sorts after every one that is, then lexically.
+ * @returns Negative when `a` is older, positive when newer, 0 when equal
+ */
+export function compareFirefoxVersions(a: string, b: string): number {
+  const left = parseFirefoxVersionOrder(a);
+  const right = parseFirefoxVersionOrder(b);
+  if (left === undefined || right === undefined) {
+    if (left !== undefined) return -1;
+    if (right !== undefined) return 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+  for (let i = 0; i < left.length; i++) {
+    const delta = (left[i] ?? 0) - (right[i] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+/**
+ * `[major, minor, patch, betaRank]`, where a release ranks above every beta
+ * of the same version.
+ */
+function parseFirefoxVersionOrder(version: string): number[] | undefined {
+  const match = /^(\d+)\.(\d+)(?:\.(\d+))?(?:b(\d+))?(?:esr)?$/i.exec(version.trim());
+  if (!match) return undefined;
+  const beta = match[4];
+  return [
+    Number(match[1]),
+    Number(match[2]),
+    Number(match[3] ?? 0),
+    beta === undefined ? Number.MAX_SAFE_INTEGER : Number(beta),
+  ];
+}
+
+/**
  * Validates a release-candidate build directory name.
  * Accepts formats like "build1", "build2", "build12" (no leading zero).
  */

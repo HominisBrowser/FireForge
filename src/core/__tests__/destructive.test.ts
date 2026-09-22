@@ -24,28 +24,23 @@ import {
 import * as logger from '../../utils/logger.js';
 import { appendHistory, confirmDestructive, HISTORY_LOG_FILENAME } from '../destructive.js';
 
-/**
- * Stand-in for clack's cancellation sentinel. The real one is
- * `Symbol('clack:cancel')`, module-private inside `@clack/core` and therefore
- * unreachable from a test. `isCancel` is overridden below to recognise this
- * marker too, which is enough to drive the interrupt branch. `utils/logger.ts`
- * imports `* as p from '@clack/prompts'`, so the override reaches
- * `logger.isCancel`, which is what `confirmDestructive` actually calls.
- */
-const CANCEL_MARKER = Symbol('test:clack-cancel');
-
 // Mock @clack/prompts so we can control the confirm() return value in
 // interactive-path tests without a real stdin.
 vi.mock('@clack/prompts', async () => {
   const actual = await vi.importActual<typeof import('@clack/prompts')>('@clack/prompts');
-  return {
-    ...actual,
-    confirm: vi.fn(),
-    isCancel: (value: unknown): boolean => value === CANCEL_MARKER || actual.isCancel(value),
-  };
+  return { ...actual, confirm: vi.fn() };
 });
 
 import { confirm } from '@clack/prompts';
+
+/**
+ * clack's own cancellation sentinel, public since @clack/prompts 1.8.1. It
+ * drives the interrupt branch through the real `isCancel`, which is what
+ * `logger.isCancel` (and so `confirmDestructive`) calls.
+ */
+const CANCEL_SYMBOL: (typeof import('@clack/prompts'))['CANCEL_SYMBOL'] = (
+  await vi.importActual<typeof import('@clack/prompts')>('@clack/prompts')
+).CANCEL_SYMBOL;
 
 describe('confirmDestructive', () => {
   let projectRoot: string;
@@ -169,7 +164,7 @@ describe('confirmDestructive', () => {
     // Collapsing both into one outcome leaves a script unable to tell them
     // apart.
     restoreTTY = setInteractiveMode(true);
-    vi.mocked(confirm).mockResolvedValue(CANCEL_MARKER);
+    vi.mocked(confirm).mockResolvedValue(CANCEL_SYMBOL);
     await expect(
       confirmDestructive({
         operation: 'test-op',

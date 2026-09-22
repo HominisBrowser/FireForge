@@ -18,6 +18,7 @@ import {
   rollbackActiveOperationsForSignal,
 } from '../src/core/furnace-operation.js';
 import { closeActiveRunLog } from '../src/core/run-log.js';
+import { removeActiveRunProfiles } from '../src/core/run-profile.js';
 import { waitForActiveCriticalSections } from '../src/core/signal-critical.js';
 import { CommandError } from '../src/errors/base.js';
 import { waitForActiveChildShutdown } from '../src/utils/process.js';
@@ -131,6 +132,10 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
       // loses the race to the exit below. Only a kill FireForge never saw
       // may leave the file behind.
       .then(() => removeActivePgidFile().catch(() => undefined))
+      // A `run --temp-profile` (the `--smoke-exit` default) owes the removal
+      // of its profile directory; the command's finally loses this race too.
+      // Runs after child shutdown, so the browser no longer holds the files.
+      .then(() => removeActiveRunProfiles())
       .finally(() => {
         exitAfterStdioFlush(exitCode);
       });

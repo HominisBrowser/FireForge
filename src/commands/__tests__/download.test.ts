@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeProjectPaths, nativePath } from '../../test-utils/index.js';
 
@@ -45,6 +45,14 @@ vi.mock('../../core/git.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../../core/git-status.js', () => ({
+  getDirtyFiles: vi.fn().mockResolvedValue([]),
+  getWorkingTreeStatus: vi.fn().mockResolvedValue([]),
+}));
+
+const confirmMock = vi.hoisted(() => vi.fn<() => Promise<boolean | symbol>>());
+vi.mock('@clack/prompts', () => ({ confirm: confirmMock }));
+
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn((path: string) => Promise.resolve(path === nativePath('/project/engine'))),
   pathExistsStrict: vi.fn((path: string) =>
@@ -86,6 +94,8 @@ vi.mock('../../utils/logger.js', () => ({
   warn: vi.fn(),
   step: vi.fn(),
   verbose: vi.fn(),
+  cancel: vi.fn(),
+  isCancel: vi.fn((value: unknown) => typeof value === 'symbol'),
 }));
 
 import { getProjectPaths } from '../../core/config.js';
@@ -93,10 +103,13 @@ import { withFileLock } from '../../core/file-lock.js';
 import { downloadFirefoxSource } from '../../core/firefox.js';
 import { clearAppliedFurnaceState } from '../../core/furnace-config.js';
 import { getHead, initRepository, resumeRepository } from '../../core/git.js';
+import type { GitStatusEntry } from '../../core/git-base.js';
+import { getWorkingTreeStatus } from '../../core/git-status.js';
+import { InvalidArgumentError } from '../../errors/base.js';
 import { ChecksumMismatchError, EngineExistsError } from '../../errors/download.js';
 import { pathExists, pathExistsStrict, removeDir } from '../../utils/fs.js';
 import type { SpinnerHandle } from '../../utils/logger.js';
-import { info, spinner, step, warn } from '../../utils/logger.js';
+import { cancel, info, spinner, step, warn } from '../../utils/logger.js';
 import { escapeRegex } from '../../utils/regex.js';
 import { downloadCommand } from '../download.js';
 
@@ -597,5 +610,119 @@ describe('downloadCommand', () => {
 
       expect(info).toHaveBeenCalledWith(hopNotice);
     });
+  });
+});
+
+function modified(file: string): GitStatusEntry {
+  return {
+    status: ' M',
+    indexStatus: ' ',
+    worktreeStatus: 'M',
+    file,
+    isUntracked: false,
+    isRenameOrCopy: false,
+    isDeleted: false,
+  };
+}
+
+function untracked(file: string): GitStatusEntry {
+  return {
+    ...modified(file),
+    status: '??',
+    indexStatus: '?',
+    worktreeStatus: '?',
+    isUntracked: true,
+  };
+}
+
+describe('downloadCommand --force over an engine with work to lose', () => {
+  const originalStdinTTY = process.stdin.isTTY;
+  const originalStdoutTTY = process.stdout.isTTY;
+
+  function setInteractive(interactive: boolean): void {
+    process.stdin.isTTY = interactive;
+    process.stdout.isTTY = interactive;
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockRename.mockReset().mockResolvedValue(undefined);
+    vi.mocked(downloadFirefoxSource).mockResolvedValue(undefined);
+    vi.mocked(initRepository).mockResolvedValue(undefined);
+    vi.mocked(getHead).mockResolvedValue('base-commit');
+    vi.mocked(getProjectPaths).mockReturnValue(makeProjectPaths());
+    vi.mocked(withFileLock).mockImplementation((_lockPath, operation) => operation());
+    vi.mocked(pathExistsStrict).mockResolvedValue(true);
+    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([]);
+    const configMod = await import('../../core/config.js');
+    vi.mocked(configMod.loadState).mockResolvedValue({ baseCommit: 'base-commit' });
+  });
+
+  afterEach(() => {
+    process.stdin.isTTY = originalStdinTTY;
+    process.stdout.isTTY = originalStdoutTTY;
+  });
+
+  it('refuses non-interactively without --yes, naming the loss, before fetching anything', async () => {
+    setInteractive(false);
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([
+      modified('browser/base/content/browser.js'),
+      untracked('browser/components/hominis/'),
+      modified('toolkit/local-edit.js'),
+    ]);
+
+    const rejection = downloadCommand('/project', { force: true });
+    await expect(rejection).rejects.toBeInstanceOf(InvalidArgumentError);
+    await expect(rejection).rejects.toThrow(
+      /engine\/ has 3 changed path\(s\) against HEAD: 0 match the patch queue, 3 do not.*Run: fireforge download --force --yes/
+    );
+
+    expect(downloadFirefoxSource).not.toHaveBeenCalled();
+    expect(mockRename).not.toHaveBeenCalled();
+    expect(removeDir).not.toHaveBeenCalled();
+  });
+
+  it('counts a HEAD that moved off the recorded base commit as loss even with a clean tree', async () => {
+    setInteractive(false);
+    vi.mocked(getHead).mockResolvedValue('0123456789abcdef-local-commit');
+
+    await expect(downloadCommand('/project', { force: true })).rejects.toThrow(
+      /HEAD 0123456789ab is not the recorded base commit base-commit/
+    );
+    expect(downloadFirefoxSource).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with --yes', async () => {
+    setInteractive(false);
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([modified('toolkit/local-edit.js')]);
+
+    await downloadCommand('/project', { force: true, yes: true });
+
+    expect(downloadFirefoxSource).toHaveBeenCalledTimes(1);
+    expect(confirmMock).not.toHaveBeenCalled();
+  });
+
+  it('replaces a clean engine silently, as before', async () => {
+    setInteractive(false);
+
+    await downloadCommand('/project', { force: true });
+
+    expect(downloadFirefoxSource).toHaveBeenCalledTimes(1);
+    expect(confirmMock).not.toHaveBeenCalled();
+  });
+
+  it('leaves engine/ untouched when the operator declines at the prompt', async () => {
+    setInteractive(true);
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([modified('toolkit/local-edit.js')]);
+    confirmMock.mockResolvedValueOnce(false);
+
+    await downloadCommand('/project', { force: true });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('1 changed path(s) against HEAD'));
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledWith('Download cancelled; engine/ left untouched');
+    expect(downloadFirefoxSource).not.toHaveBeenCalled();
+    expect(mockRename).not.toHaveBeenCalled();
   });
 });

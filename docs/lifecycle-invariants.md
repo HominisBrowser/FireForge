@@ -190,9 +190,10 @@ command, read the decision table at the bottom first.
    stages and unstages for real. Each of those commands therefore runs its
    whole body inside `withPrivateGitIndex`, which seeds a temp
    `GIT_INDEX_FILE` from the repository's own index so that every refresh
-   lands there and is discarded. `typecheck` additionally forces
-   `incremental: false` and drops `tsBuildInfoFile`, so no sidecar is written
-   under `engine/`. The scope fails open, meaning an unresolvable git dir
+   lands there and is discarded. `typecheck` additionally ignores a
+   jsconfig's own `incremental` and `tsBuildInfoFile`, so no sidecar is
+   written under `engine/`. Its incremental build info (0.48.0) lives in the
+   project's `.fireforge/typecheck/`, outside the engine. The scope fails open, meaning an unresolvable git dir
    simply does not install it, and it is not reentrant. This exists so that
    invariant 8 stays evidential: a concurrent `fireforge test` must not be
    invalidated by FireForge's own read-only lane. Enforced by

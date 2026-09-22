@@ -73,7 +73,7 @@ vi.mock('../../core/furnace-apply-helpers.js', () => ({
 }));
 
 import { createWriteStream } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 
 import { Command } from 'commander';
 
@@ -94,6 +94,8 @@ import {
   run,
   runMachSmoke,
 } from '../../core/mach.js';
+import { RUN_PROFILE_PREFIX } from '../../core/run-profile.js';
+import { InvalidArgumentError } from '../../errors/base.js';
 import { ExitCode } from '../../errors/codes.js';
 import { SmokeRunError } from '../../errors/run.js';
 import { pathExists, removeDir, removeFile } from '../../utils/fs.js';
@@ -404,7 +406,7 @@ describe('runCommand', () => {
 
       expect(run).not.toHaveBeenCalled();
       expect(runMachSmoke).toHaveBeenCalledWith(
-        ['run'],
+        ['run', '-profile', expect.stringContaining(RUN_PROFILE_PREFIX) as string],
         '/project/engine',
         expect.objectContaining({ smokeTimeoutMs: 30_000 })
       );
@@ -766,7 +768,7 @@ describe('runCommand', () => {
         vi.stubEnv('CI', undefined);
         await runCommand('/project', { smokeExit: 30, headless: true });
         expect(runMachSmoke).toHaveBeenCalledWith(
-          ['run', '--headless'],
+          ['run', '--headless', '-profile', expect.stringContaining(RUN_PROFILE_PREFIX) as string],
           '/project/engine',
           expect.objectContaining({ smokeTimeoutMs: 30_000 })
         );
@@ -778,6 +780,110 @@ describe('runCommand', () => {
       } finally {
         vi.unstubAllEnvs();
       }
+    });
+  });
+
+  describe('profile selection', () => {
+    const smokeResult = { stdout: '', stderr: '', exitCode: 143, timedOut: true };
+
+    async function exists(path: string): Promise<boolean> {
+      try {
+        await stat(path);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function profileArgOf(args: readonly string[]): string {
+      const index = args.indexOf('-profile');
+      expect(index).toBeGreaterThanOrEqual(0);
+      return args[index + 1] ?? '';
+    }
+
+    itPosix(
+      'smoke runs on a fresh temporary profile that exists during the run and not after',
+      async () => {
+        let during = false;
+        vi.mocked(runMachSmoke).mockImplementation(async (args) => {
+          during = await exists(profileArgOf(args));
+          return smokeResult;
+        });
+
+        await runCommand('/project', { smokeExit: 30, headless: true });
+
+        const args = vi.mocked(runMachSmoke).mock.calls[0]?.[0] ?? [];
+        const dir = profileArgOf(args);
+        expect(dir).toContain(RUN_PROFILE_PREFIX);
+        expect(during).toBe(true);
+        expect(await exists(dir)).toBe(false);
+      }
+    );
+
+    itPosix('seeds the temporary profile with the prefs mach would have written', async () => {
+      let userJs = '';
+      const { readFile: realReadFile } =
+        await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      vi.mocked(runMachSmoke).mockImplementation(async (args) => {
+        userJs = await realReadFile(`${profileArgOf(args)}/user.js`, 'utf8');
+        return smokeResult;
+      });
+
+      await runCommand('/project', { smokeExit: 30, headless: true });
+
+      expect(userJs).toContain('user_pref("browser.shell.checkDefaultBrowser", false);');
+    });
+
+    itPosix('removes the temporary profile when the smoke run throws', async () => {
+      vi.mocked(runMachSmoke).mockRejectedValue(new Error('spawn failed'));
+
+      await expect(runCommand('/project', { smokeExit: 30, headless: true })).rejects.toThrow(
+        'spawn failed'
+      );
+
+      const dir = profileArgOf(vi.mocked(runMachSmoke).mock.calls[0]?.[0] ?? []);
+      expect(await exists(dir)).toBe(false);
+    });
+
+    itPosix('uses --profile verbatim with --smoke-exit and leaves it in place', async () => {
+      vi.mocked(runMachSmoke).mockResolvedValue(smokeResult);
+
+      await runCommand('/project', { smokeExit: 30, headless: true, profile: '/profiles/named' });
+
+      expect(runMachSmoke).toHaveBeenCalledWith(
+        ['run', '--headless', '-profile', '/profiles/named'],
+        '/project/engine',
+        expect.anything()
+      );
+    });
+
+    it("keeps mach's own profile for a plain run", async () => {
+      vi.mocked(run).mockResolvedValue(0);
+
+      await runCommand('/project');
+
+      expect(run).toHaveBeenCalledWith('/project/engine', []);
+    });
+
+    it('launches a plain run on a temporary profile with --temp-profile and removes it', async () => {
+      let during = false;
+      vi.mocked(run).mockImplementation(async (_engine, args) => {
+        during = await exists(profileArgOf(args ?? []));
+        return 0;
+      });
+
+      await runCommand('/project', { tempProfile: true });
+
+      const dir = profileArgOf(vi.mocked(run).mock.calls[0]?.[1] ?? []);
+      expect(during).toBe(true);
+      expect(await exists(dir)).toBe(false);
+    });
+
+    it('refuses --profile together with --temp-profile before launching', async () => {
+      await expect(
+        runCommand('/project', { profile: '/profiles/named', tempProfile: true })
+      ).rejects.toBeInstanceOf(InvalidArgumentError);
+      expect(run).not.toHaveBeenCalled();
     });
   });
 
@@ -801,7 +907,7 @@ describe('runCommand', () => {
       await program.parseAsync(['node', 'fireforge', 'run', '--smoke-exit', '30']);
 
       expect(runMachSmoke).toHaveBeenCalledWith(
-        ['run'],
+        ['run', '-profile', expect.stringContaining(RUN_PROFILE_PREFIX) as string],
         '/project/engine',
         expect.objectContaining({ smokeTimeoutMs: 30_000 })
       );
@@ -860,7 +966,7 @@ describe('runCommand', () => {
 
       await program.parseAsync(['node', 'fireforge', 'run', '--smoke-exit', '30', '--headless']);
       expect(runMachSmoke).toHaveBeenCalledWith(
-        ['run', '--headless'],
+        ['run', '--headless', '-profile', expect.stringContaining(RUN_PROFILE_PREFIX) as string],
         '/project/engine',
         expect.objectContaining({ smokeTimeoutMs: 30_000 })
       );

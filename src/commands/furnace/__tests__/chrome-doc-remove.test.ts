@@ -39,6 +39,11 @@ import { confirm } from '@clack/prompts';
 
 import { isCancel } from '../../../utils/logger.js';
 
+/** clack's own cancellation sentinel (public since @clack/prompts 1.8.1). */
+const CANCEL_SYMBOL: (typeof import('@clack/prompts'))['CANCEL_SYMBOL'] = (
+  await vi.importActual<typeof import('@clack/prompts')>('@clack/prompts')
+).CANCEL_SYMBOL;
+
 const JAR_FILES = [
   'browser/base/jar.mn',
   'browser/themes/shared/jar.inc.mn',
@@ -195,7 +200,7 @@ describe('furnaceChromeDocRemoveCommand — absent, refused, and failing paths',
       restoreTTY = setInteractiveMode(true);
       // A cancelled prompt is a distinct arm from a plain `false` answer:
       // clack returns its symbol sentinel rather than a boolean.
-      vi.mocked(confirm).mockResolvedValue(Symbol('clack:cancel'));
+      vi.mocked(confirm).mockResolvedValue(CANCEL_SYMBOL);
       vi.mocked(isCancel).mockReturnValueOnce(true);
 
       await furnaceChromeDocRemoveCommand(projectRoot, 'mybrowser');

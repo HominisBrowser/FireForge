@@ -98,7 +98,7 @@ describe('watchCommand', () => {
       runnable: true,
       expectedPath: 'obj-debug/dist/bin/mybrowser',
     });
-    vi.mocked(generateMozconfig).mockResolvedValue(undefined);
+    vi.mocked(generateMozconfig).mockResolvedValue(false);
     vi.mocked(watchWithOutput).mockResolvedValue({ stdout: '', stderr: '', exitCode: 130 });
   });
 

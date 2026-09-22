@@ -96,7 +96,7 @@ export async function planDiscardBaselines(
     return planUpstreamDiscards(entries);
   }
 
-  const { computePatched } = await createPatchedContentContext(patchesDir, engineDir);
+  const { computePatched, prefetchBase } = await createPatchedContentContext(patchesDir, engineDir);
   const claimedFiles = [
     ...new Set(
       claimedEntries.flatMap((entry) =>
@@ -105,6 +105,7 @@ export async function planDiscardBaselines(
     ),
   ];
   const trackedInHead = await listTrackedInHead(engineDir, claimedFiles);
+  await prefetchBase(claimedFiles);
 
   const computeExpected = async (path: string): Promise<string | null> => {
     try {

@@ -7,7 +7,7 @@ vi.mock('../../utils/fs.js', () => createFsMock());
 
 import { PatchError } from '../../errors/patch.js';
 import { readText } from '../../utils/fs.js';
-import { applyPatchTextToContent, extractNewFileContent } from '../patch-transform.js';
+import { applyPatchTextToContent, extractNewFileContentFromDiff } from '../patch-transform.js';
 
 const NEW_FILE_MULTI_PATCH = [
   'diff --git a/browser/new-file.js b/browser/new-file.js',
@@ -39,31 +39,27 @@ describe('patch transform — new-file extraction and hunk application', () => {
     targetFile: string
   ): Promise<string> => applyPatchTextToContent(content, await readText(patchPath), targetFile);
 
-  it('extracts only the requested file content from a multi-file new-file patch', async () => {
-    vi.mocked(readText).mockResolvedValue(NEW_FILE_MULTI_PATCH);
-
-    await expect(
-      extractNewFileContent('/patches/001-new-file.patch', 'browser/new-file.js')
-    ).resolves.toBe('export const created = true;\nconsole.log(created);\n');
+  it('extracts only the requested file content from a multi-file new-file patch', () => {
+    expect(extractNewFileContentFromDiff(NEW_FILE_MULTI_PATCH, 'browser/new-file.js')).toBe(
+      'export const created = true;\nconsole.log(created);\n'
+    );
   });
 
-  it('extracts new file content without a trailing newline when the patch declares none', async () => {
-    vi.mocked(readText).mockResolvedValue(
-      [
-        'diff --git a/browser/no-newline.js b/browser/no-newline.js',
-        'new file mode 100644',
-        '--- /dev/null',
-        '+++ b/browser/no-newline.js',
-        '@@ -0,0 +1 @@',
-        '+export const bare = true;',
-        '\\ No newline at end of file',
-        '',
-      ].join('\n')
-    );
+  it('extracts new file content without a trailing newline when the patch declares none', () => {
+    const diff = [
+      'diff --git a/browser/no-newline.js b/browser/no-newline.js',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/browser/no-newline.js',
+      '@@ -0,0 +1 @@',
+      '+export const bare = true;',
+      '\\ No newline at end of file',
+      '',
+    ].join('\n');
 
-    await expect(
-      extractNewFileContent('/patches/001-no-newline.patch', 'browser/no-newline.js')
-    ).resolves.toBe('export const bare = true;');
+    expect(extractNewFileContentFromDiff(diff, 'browser/no-newline.js')).toBe(
+      'export const bare = true;'
+    );
   });
 
   it('extracts new file content when applying a new-file patch to null content', async () => {

@@ -76,20 +76,47 @@ export interface ReExportLintContext {
   queueBaselineWarned: boolean;
 }
 
-/** Builds the once-per-invocation lint context. */
+/**
+ * Builds the once-per-invocation lint context.
+ *
+ * The checkJs program is rooted at the patches being re-exported, exactly as
+ * `lint --per-patch --patches` roots it at its subset: the rest of the
+ * queue stays resolvable, so cross-patch imports type-check identically,
+ * but nothing else is parsed or checked. Unscoped, a one-patch re-export
+ * that missed the lint cache type-checked the whole queue (76 s on a
+ * 401-patch queue) to report on one patch.
+ *
+ * @param projectRoot - FireForge project root
+ * @param paths - Resolved project paths
+ * @param config - Loaded configuration
+ * @param noCache - Skip the per-patch lint result cache (`--no-cache`)
+ * @param scopePatches - Filenames of the patches this run re-exports
+ */
 export async function buildReExportLintContext(
   projectRoot: string,
   paths: ProjectPaths,
   config: FireForgeConfig,
-  noCache: boolean
+  noCache: boolean,
+  scopePatches: ReadonlySet<string>
 ): Promise<ReExportLintContext> {
   const patchQueueCtx = (await pathExists(paths.patches))
     ? await buildPatchQueueContext(paths.patches, config)
     : undefined;
   const checkJs = patchQueueCtx
-    ? buildPerRunCheckJs(projectRoot, paths, config, patchQueueCtx)
+    ? buildPerRunCheckJs(projectRoot, paths, config, patchQueueCtx, scopePatches)
     : undefined;
   const cache = noCache ? undefined : await loadPerPatchLintCache(projectRoot);
+  if (patchQueueCtx) {
+    // The queue rules and the projection below read every patch, so the
+    // wait is named rather than left behind one spinner line.
+    info(
+      `Lint scope: queue rules over all ${patchQueueCtx.entries.length} patch(es); ` +
+        `checkJs rooted at the ${scopePatches.size} re-exported patch(es); ` +
+        (cache === undefined
+          ? 'lint cache off (--no-cache).'
+          : `lint cache ${Object.keys(cache.entries).length === 0 ? 'empty' : 'loaded'}.`)
+    );
+  }
   const engineHeadSha = cache ? await getPerPatchLintCacheHeadSha(paths.engine) : undefined;
   return {
     projectRoot,
@@ -198,7 +225,16 @@ export async function lintReExportedPatch(args: {
 
   if (checkJs) {
     const created = checkJsFilesInDiff(diffContent, checkJs);
-    const allKnown = [...created].every((f) => checkJs.resolutionSet.has(f));
+    if (created.size > 0) {
+      info(
+        `checkJs: type-checking ${created.size} file(s) of ${patch.filename} (lint cache ${cache ? 'miss' : 'off'}).`
+      );
+    }
+    // A file the scoped program does not root at would be resolvable but
+    // never checked, so it takes the per-patch build too.
+    const allKnown = [...created].every(
+      (f) => checkJs.resolutionSet.has(f) && (checkJs.rootScope?.has(f) ?? true)
+    );
     if (allKnown) {
       // Slice this patch's findings out of the one queue-wide program.
       lintOptions.precomputedCheckJs = await checkJs.sliceFor(created);

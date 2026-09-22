@@ -292,6 +292,10 @@ function validateLintFlags(options: LintCommandOptions): void {
   if (options.report !== undefined && !options.perPatch) {
     throw new InvalidArgumentError('--report requires --per-patch.', '--report');
   }
+
+  if (options.notices !== undefined && !options.perPatch) {
+    throw new InvalidArgumentError('--notices requires --per-patch.', '--notices');
+  }
 }
 
 /**
@@ -631,6 +635,10 @@ export function registerLint(
       '--report <path>',
       'With --per-patch, write a machine-readable JSON report (per-patch size metrics, tier, thresholds, issues, and lintIgnore-suppressed issues) to <path>.'
     )
+    .option(
+      '--notices <mode>',
+      'With --per-patch: "full" (default) prints every NOTICE line; "summary" prints one line per check with its count and patch count. The full list stays in --report. Errors and warnings always print in full.'
+    )
     .action(
       withErrorHandling(
         async (
@@ -643,6 +651,7 @@ export function registerLint(
             maxWarnings?: string;
             cache?: boolean;
             report?: string;
+            notices?: string;
           }
         ) => {
           const lintOptions: LintCommandOptions = {};
@@ -673,6 +682,15 @@ export function registerLint(
           }
           if (options.report !== undefined) {
             lintOptions.report = options.report;
+          }
+          if (options.notices !== undefined) {
+            if (options.notices !== 'summary' && options.notices !== 'full') {
+              throw new InvalidArgumentError(
+                `--notices must be "summary" or "full" (got "${options.notices}").`,
+                '--notices'
+              );
+            }
+            lintOptions.notices = options.notices;
           }
           await lintCommand(getProjectRoot(), paths, lintOptions);
         }

@@ -19,13 +19,16 @@
  * at `npm install typescript`.
  */
 
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { mkdir, readdir, rm } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import type { PatchLintSeverityGate, TypecheckConfig } from '../types/config.js';
 import type { TypecheckIssue, TypecheckProjectResult } from '../types/typecheck.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
+import { sha256Hex } from '../utils/hash.js';
 import { verbose } from '../utils/logger.js';
+import { getPackageVersion } from '../utils/package-root.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import {
   composeShimSource,
@@ -43,6 +46,17 @@ import {
  */
 export const CHECK_JS_DISABLED_NOTICE =
   'Project sets "checkJs: false" — skipping (override the jsconfig to enable typecheck).';
+
+/** Run-level options for {@link runTypecheck}. */
+export interface RunTypecheckOptions {
+  /**
+   * Directory for the per-project incremental build info. Defaults to
+   * `<projectRoot>/.fireforge/typecheck`.
+   */
+  cacheDir?: string;
+  /** Build every project from scratch and write no build info. */
+  noCache?: boolean;
+}
 
 /**
  * Runs `fireforge typecheck` against every project listed in `cfg.projects`.
@@ -75,7 +89,8 @@ export const CHECK_JS_DISABLED_NOTICE =
  */
 export async function runTypecheck(
   projectRoot: string,
-  cfg: TypecheckConfig
+  cfg: TypecheckConfig,
+  runOptions: RunTypecheckOptions = {}
 ): Promise<TypecheckProjectResult[]> {
   // Dynamic import, so typescript stays a dev dependency. Same pattern
   // as `patch-lint-checkjs.ts`. The empty-projects-array case is
@@ -155,7 +170,10 @@ export async function runTypecheck(
         projectRoot,
         projectPath,
         shimSource,
-        cfg.undefinedIdentifiers ?? 'warning'
+        cfg.undefinedIdentifiers ?? 'warning',
+        runOptions.noCache === true
+          ? undefined
+          : (runOptions.cacheDir ?? join(projectRoot, '.fireforge', 'typecheck'))
       )
     );
   }
@@ -182,7 +200,8 @@ async function runTypecheckForProject(
   projectRoot: string,
   projectPath: string,
   shimSource: string,
-  undefinedIdentifiers: PatchLintSeverityGate = 'warning'
+  undefinedIdentifiers: PatchLintSeverityGate = 'warning',
+  cacheDir?: string
 ): Promise<TypecheckProjectResult> {
   const absConfig = resolve(projectRoot, projectPath);
   if (!(await pathExists(absConfig))) {
@@ -263,12 +282,12 @@ async function runTypecheckForProject(
     noEmit: true,
     allowJs: parsed.options.allowJs ?? true,
     checkJs: parsed.options.checkJs ?? true,
-    // No incremental sidecar, ever. A user jsconfig under `engine/` that sets
-    // `incremental` (or names a `tsBuildInfoFile`) would have this command
-    // drop a `.tsbuildinfo` inside the primary engine checkout: a second
-    // writer that invalidates a concurrent `fireforge test`'s engine
-    // fingerprint. This command emits nothing, so the sidecar buys nothing
-    // either.
+    // Never the jsconfig's own incremental sidecar: a user jsconfig under
+    // `engine/` that sets `incremental` (or names a `tsBuildInfoFile`) would
+    // have this command drop a `.tsbuildinfo` inside the primary engine
+    // checkout, a second writer that invalidates a concurrent
+    // `fireforge test`'s engine fingerprint. FireForge's own build info
+    // lives under `.fireforge/typecheck/` instead (see below).
     incremental: false,
     // skipLibCheck is not forced. The user owns it via their jsconfig.
   };
@@ -308,7 +327,39 @@ async function runTypecheckForProject(
     },
   };
 
-  const program = ts.createProgram(rootFiles, options, host);
+  // Incremental build info, keyed by everything outside the program's own
+  // files that can change a verdict: the composed shim, the TypeScript
+  // version, the compiler options, the undefined-identifier gate and the
+  // FireForge version. A change to any of them selects a different file,
+  // so a stale verdict is never replayed. Files inside the program are
+  // tracked by TypeScript's own per-file hashes in the build info.
+  const buildInfoFile =
+    cacheDir === undefined
+      ? undefined
+      : await prepareBuildInfoFile(cacheDir, projectPath, {
+          shim: sha256Hex(shimSource),
+          typescript: ts.version,
+          fireforge: getPackageVersion(),
+          undefinedIdentifiers,
+          options,
+        });
+
+  let program: DiagnosticSource;
+  let writeBuildInfo = (): void => undefined;
+  if (buildInfoFile === undefined) {
+    program = ts.createProgram(rootFiles, options, host);
+  } else {
+    const builder = ts.createIncrementalProgram({
+      rootNames: rootFiles,
+      options: { ...options, incremental: true, tsBuildInfoFile: buildInfoFile },
+      host: withSourceFileVersions(host),
+    });
+    program = builder;
+    // Under noEmit, emit() writes the build info and nothing else.
+    writeBuildInfo = () => {
+      builder.emit();
+    };
+  }
 
   // Collect the full diagnostic set. patchLint reads only semantic +
   // syntactic, which is fine for hygiene but wrong for CI: a misconfigured
@@ -339,6 +390,8 @@ async function runTypecheckForProject(
     issues.push(diagnosticToIssue(ts, diag, absConfig, projectPath));
   }
 
+  writeBuildInfo();
+
   verbose(
     `typecheck: ${projectPath} — analyzed ${parsed.fileNames.length} file(s), found ${issues.length} issue(s)`
   );
@@ -348,6 +401,59 @@ async function runTypecheckForProject(
     issues,
     filesChecked: parsed.fileNames.length,
   };
+}
+
+/**
+ * Stamps every source file with a content-hash version, which the
+ * incremental builder requires and a plain compiler host never sets.
+ * `ts.createIncrementalCompilerHost` does the same internally, but the
+ * shim here is served by a custom host rather than read from disk.
+ */
+function withSourceFileVersions(
+  host: import('typescript').CompilerHost
+): import('typescript').CompilerHost {
+  const getSourceFile = host.getSourceFile.bind(host);
+  return {
+    ...host,
+    getSourceFile(...args) {
+      const file = getSourceFile(...args);
+      if (file !== undefined) {
+        (file as { version?: string }).version = sha256Hex(file.text);
+      }
+      return file;
+    },
+  };
+}
+
+/** The diagnostic getters a plain program and an incremental builder share. */
+interface DiagnosticSource {
+  getOptionsDiagnostics(): readonly import('typescript').Diagnostic[];
+  getGlobalDiagnostics(): readonly import('typescript').Diagnostic[];
+  getSyntacticDiagnostics(): readonly import('typescript').Diagnostic[];
+  getSemanticDiagnostics(): readonly import('typescript').Diagnostic[];
+}
+
+/**
+ * Resolves the build-info path for one project and key, creating the cache
+ * directory and removing the project's build info for any other key: a
+ * shim or TypeScript change leaves the old file unreachable anyway.
+ * @returns Absolute build-info path
+ */
+async function prepareBuildInfoFile(
+  cacheDir: string,
+  projectPath: string,
+  keyInputs: Record<string, unknown>
+): Promise<string> {
+  const slug = projectPath.replace(/[^A-Za-z0-9._-]+/g, '_');
+  const key = sha256Hex(JSON.stringify(keyInputs)).slice(0, 16);
+  const fileName = `${slug}-${key}.tsbuildinfo`;
+  await mkdir(cacheDir, { recursive: true });
+  for (const entry of await readdir(cacheDir)) {
+    if (entry !== fileName && entry.startsWith(`${slug}-`) && entry.endsWith('.tsbuildinfo')) {
+      await rm(join(cacheDir, entry), { force: true });
+    }
+  }
+  return join(cacheDir, fileName);
 }
 
 /**

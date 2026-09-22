@@ -39,6 +39,34 @@ export interface FuzzyApplyResult {
 /** Git's default diff context width, the ceiling for reduction steps. */
 const GIT_DEFAULT_CONTEXT = 3;
 
+/**
+ * The context-reduction ladder shared by the real apply and the dry-run
+ * replay: step 0 is an exact apply, step k passes `-C(3-k)`.
+ * @param maxFuzz - Maximum context-reduction steps (validated by callers)
+ * @returns One `git apply` argument list per step, in order
+ */
+export function contextReductionSteps(maxFuzz: number): string[][] {
+  const maxSteps = Math.min(maxFuzz, GIT_DEFAULT_CONTEXT);
+  const steps: string[][] = [];
+  for (let step = 0; step <= maxSteps; step++) {
+    steps.push(step > 0 ? [`-C${GIT_DEFAULT_CONTEXT - step}`] : []);
+  }
+  return steps;
+}
+
+/**
+ * Validates a `maxFuzz` value.
+ * @throws InvalidArgumentError when `maxFuzz` is not a non-negative integer
+ */
+export function assertValidMaxFuzz(maxFuzz: number): void {
+  if (!Number.isInteger(maxFuzz) || maxFuzz < 0) {
+    throw new InvalidArgumentError(
+      `maxFuzz must be a non-negative integer, got ${maxFuzz}.`,
+      'maxFuzz'
+    );
+  }
+}
+
 // ── Implementation ──
 
 /**
@@ -62,20 +90,14 @@ export async function applyPatchWithFuzz(
   engineDir: string,
   maxFuzz: number = 3
 ): Promise<FuzzyApplyResult> {
-  if (!Number.isInteger(maxFuzz) || maxFuzz < 0) {
-    throw new InvalidArgumentError(
-      `maxFuzz must be a non-negative integer, got ${maxFuzz}.`,
-      'maxFuzz'
-    );
-  }
+  assertValidMaxFuzz(maxFuzz);
 
   await ensureGit();
 
   // Try exact match first, then escalate context reduction.
-  const maxSteps = Math.min(maxFuzz, GIT_DEFAULT_CONTEXT);
-  for (let step = 0; step <= maxSteps; step++) {
-    const contextArgs = step > 0 ? [`-C${GIT_DEFAULT_CONTEXT - step}`] : [];
-
+  const ladder = contextReductionSteps(maxFuzz);
+  const maxSteps = ladder.length - 1;
+  for (const [step, contextArgs] of ladder.entries()) {
     const check = await exec('git', ['apply', '--check', ...contextArgs, '--', patchPath], {
       cwd: engineDir,
     });

@@ -203,10 +203,32 @@ vi.mock('@clack/prompts', () => ({
   confirm: confirmMock,
 }));
 
+const replayQueueIndexOnlyMock = vi.hoisted(() =>
+  vi.fn<
+    (
+      engineDir: string,
+      patches: readonly { filename: string; path: string }[],
+      maxFuzz: number
+    ) => Promise<import('../../core/rebase-dry-run.js').DryRunReplay>
+  >((_engine, patches) =>
+    Promise.resolve({
+      verdicts: patches.map((p) => ({ filename: p.filename, outcome: 'clean' as const })),
+      firstRejectIndex: undefined,
+    })
+  )
+);
+vi.mock('../../core/rebase-dry-run.js', () => ({ replayQueueIndexOnly: replayQueueIndexOnlyMock }));
+
 import { Command } from 'commander';
 
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
-import { NoRebaseSessionError, RebaseSessionExistsError } from '../../errors/rebase.js';
+import { ExitCode } from '../../errors/codes.js';
+import {
+  NoRebaseSessionError,
+  RebaseDryRunRejectError,
+  RebaseSessionExistsError,
+} from '../../errors/rebase.js';
+import { info, warn } from '../../utils/logger.js';
 import { rebaseCommand, registerRebase } from '../rebase/index.js';
 
 const defaultPaths = {
@@ -1014,5 +1036,107 @@ describe('fireforge rebase — CLI registration', () => {
 
     const cmd = program.commands.find((c) => c.name() === 'rebase');
     expect(cmd?.opts()['maxFuzz']).toBe(5);
+  });
+});
+
+describe('fireforge rebase --dry-run replay', () => {
+  function manifestWith(stamps: Array<[string, string, string?]>): unknown {
+    return {
+      version: 1,
+      patches: stamps.map(([filename, version, product], index) => ({
+        filename,
+        order: index + 1,
+        category: 'ui',
+        name: filename,
+        description: 'test',
+        createdAt: '2025-01-01',
+        sourceVersion: version,
+        sourceEsrVersion: version,
+        ...(product !== undefined ? { sourceProduct: product } : {}),
+        filesAffected: [],
+      })),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupDefaults();
+    loadConfigMock.mockResolvedValue({
+      firefox: { version: '153.10.0esr', product: 'firefox-esr' },
+    });
+    discoverPatchesMock.mockResolvedValue([
+      { path: '/project/patches/001-a.patch', filename: '001-a.patch', order: 1 },
+      { path: '/project/patches/002-b.patch', filename: '002-b.patch', order: 2 },
+    ] as never);
+  });
+
+  it('replays the queue and exits 0 when every patch applies', async () => {
+    loadPatchesManifestMock.mockResolvedValue(
+      manifestWith([
+        ['001-a.patch', '153.2.0esr'],
+        ['002-b.patch', '153.2.0esr'],
+      ])
+    );
+
+    await rebaseCommand('/project', { dryRun: true, maxFuzz: 2 });
+
+    expect(replayQueueIndexOnlyMock).toHaveBeenCalledWith(
+      '/project/engine',
+      expect.arrayContaining([expect.objectContaining({ filename: '001-a.patch' })]),
+      2
+    );
+    expect(info).toHaveBeenCalledWith(
+      '[dry-run] 2 patch(es): 2 clean, 0 with reduced context, 0 rejected.'
+    );
+    expect(resetChangesMock).not.toHaveBeenCalled();
+    expect(saveRebaseSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('fails with exit 6 naming the rejected patch, and marks later rejects as possible cascades', async () => {
+    loadPatchesManifestMock.mockResolvedValue(manifestWith([['001-a.patch', '153.2.0esr']]));
+    replayQueueIndexOnlyMock.mockResolvedValueOnce({
+      verdicts: [
+        { filename: '001-a.patch', outcome: 'reject', files: ['browser/x.js'], detail: 'e' },
+        { filename: '002-b.patch', outcome: 'reject', files: [], detail: 'e' },
+      ],
+      firstRejectIndex: 0,
+    });
+
+    const rejection = rebaseCommand('/project', { dryRun: true });
+    await expect(rejection).rejects.toBeInstanceOf(RebaseDryRunRejectError);
+    await expect(rejection).rejects.toMatchObject({ code: ExitCode.PATCH_ERROR });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('001-a.patch: browser/x.js'));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('002-b.patch: see git output (after an earlier reject')
+    );
+    expect(resetChangesMock).not.toHaveBeenCalled();
+  });
+
+  it('takes "from" as the semantically oldest stamp and prints the spread', async () => {
+    loadPatchesManifestMock.mockResolvedValue(
+      manifestWith([
+        ['001-a.patch', '153.10.0esr', 'firefox-esr'],
+        ['002-b.patch', '153.2.0esr', 'firefox-esr'],
+        ['003-c.patch', '153.10.0esr', 'firefox-esr'],
+      ])
+    );
+
+    await rebaseCommand('/project', { dryRun: true });
+
+    // A lexical sort took 153.10.0esr as the oldest.
+    expect(info).toHaveBeenCalledWith('Rebasing patches: 153.2.0esr → 153.10.0esr');
+    expect(info).toHaveBeenCalledWith('Patch stamps: 1 at 153.2.0esr, 2 at 153.10.0esr');
+  });
+
+  it('warns when engine/ is not on the pinned target yet', async () => {
+    loadStateMock.mockResolvedValue({ downloadedVersion: '153.2.0esr' });
+    loadPatchesManifestMock.mockResolvedValue(manifestWith([['001-a.patch', '153.2.0esr']]));
+
+    await rebaseCommand('/project', { dryRun: true });
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('engine/ holds 153.2.0esr, not the pinned target 153.10.0esr')
+    );
   });
 });

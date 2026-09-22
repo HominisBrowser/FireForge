@@ -467,6 +467,16 @@ function parsePatchLintBlock(rec: ParsedRecord): NonNullable<FireForgeConfig['pa
     out.fileSizeThresholds = parsePatchLintFileSizeThresholds(fileSizeThresholds);
   }
 
+  const forwardRegistration = rec.raw('forwardRegistration');
+  if (forwardRegistration !== undefined) {
+    if (forwardRegistration !== 'support-files' && forwardRegistration !== 'extended') {
+      throw new ConfigError(
+        'Config field "patchLint.forwardRegistration" must be one of: support-files, extended'
+      );
+    }
+    out.forwardRegistration = forwardRegistration;
+  }
+
   for (const key of PATCH_LINT_SEVERITY_GATE_KEYS) {
     const gate = parseSeverityGate(rec.raw(key), `patchLint.${key}`);
     if (gate !== undefined) out[key] = gate;

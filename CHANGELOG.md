@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.48.0
+
+### Engine lifecycle
+
+- `download --force` asks before it discards work. It replaced `engine/` and deleted the backup without checking for applied patches, unexported edits or local commits. When the engine has changed paths or a HEAD off the recorded base commit, it now names the loss (changed paths, how many match the patch queue) and prompts. A non-interactive run refuses with exit 8 and prints the `--yes` form. A clean engine is replaced silently, as before.
+
+### Builds
+
+- `fireforge build` regenerates `engine/mozconfig` before its auto-configure, and a mozconfig that differs from the last successful build's is itself a configure trigger. Configure used to read the previous mozconfig, so a fix in `configs/*.mozconfig` (such as pinning `--with-macos-sdk` after the Xcode 27.0 update) could never take effect. The notice names the trigger. A baseline without `mozconfigHash` falls back to whether this run rewrote the file.
+
+### Smoke runs
+
+- **Default change:** `run --smoke-exit` launches on a fresh temporary profile unless `--profile <path>` names one. It ran against the developer's live profile, so leftover profile state could fail the release gate with nothing wrong in the tree.
+- New `run --profile <path>` and `run --temp-profile`, with or without `--smoke-exit`. FireForge creates the temporary profile, seeds the prefs `mach run` would, and removes it when the run ends, including on failure and SIGINT/SIGTERM. The next `run` sweeps one left by a SIGKILLed run.
+- For the record: mach's own flags are not forwarded. Desktop `mach run` has no `--profile`, and its `--temp-profile` leaks a directory in the objdir on every run.
+
+### Rebase
+
+- `rebase --dry-run` is real. It printed a patch count and exited 0 without testing a hunk. It now replays the queue onto the engine's HEAD in a throwaway index, walking the real run's context ladder, prints a verdict per patch (clean, reduced context, or reject with the files) and a tally, and exits 6 on any reject. `engine/` is never written.
+- The "from" version is the semantically oldest patch stamp, not the lexically smallest, so `153.10.0esr` no longer counts as older than `153.2.0esr`. A queue with several stamps prints the spread.
+- The header warns when `state.json`'s `downloadedVersion` is not the pinned target, meaning the download step has not run yet.
+
+### Performance
+
+- The worktree ownership scan behind `status`, `verify`, `doctor`, `import` and `discard` runs four git processes instead of one or more per managed file. On the Hominis tree (1,606 managed files) that was 1,625 spawns. `status --ownership` went from 13 to 16 s down to 5.7 s, and `verify` from 15 s to 7.6 s. Output is byte-identical to 0.47.1.
+- The batched untracked listing uses `ls-files -z`, so a non-ASCII name inside a collapsed directory is no longer expanded to a quoted path that names no file.
+
+### Typecheck and checkJs
+
+- The per-test-file checkJs programs share one parse of each lib, shim and helper file per run. On the Hominis queue (467 programs) the pass went from 66 to 85 s down to 22 to 25 s, with identical findings. This speeds up `typecheck` and every `lint --per-patch`, `export` or `re-export` that misses the lint cache.
+- `fireforge typecheck` keeps incremental build info per project in `.fireforge/typecheck/`, keyed so a shim, compiler or FireForge change never replays a stale verdict. New `typecheck --no-cache` checks from scratch and writes nothing. Nothing is written under `engine/`.
+- On the Hominis tree `typecheck` went from 93.8 s to 30.2 s.
+- For the record: the projects are not run in a worker pool. They took 6 of the 93.8 s; the per-file checkJs pass was the cost.
+
+### Re-export
+
+- A one-patch `re-export` roots its checkJs program at the patches it re-exports, as `lint --per-patch --patches` already did, instead of type-checking the whole queue. Cross-patch imports still resolve. On Hominis a cold `re-export <patch> --dry-run` went from 76.7 s to 8.0 s.
+- The queue lint context parses each patch once instead of once per created file: 3 to 4.4 s down to 0.3 s on 401 patches. Shared by `lint --per-patch`, `re-export`, `export` and `typecheck`.
+- `re-export` names its lint scope before the wait and prints a line when it builds a checkJs program. The elapsed time now includes the context build.
+
+### Patch queue and lint
+
+- New opt-in `patchLint.forwardRegistration: "extended"` widens `forward-registration` beyond test-manifest `support-files` to jar.mn lines, moz.build path tokens, test-manifest sections and `head`, and `customElements.js` chrome URLs. On the Hominis queue it finds 937 edges across 6 patches. The default (`"support-files"`) is unchanged. Each finding prints a `patch staged-dependency --add --kind registration` command, tested to quiet the queue without leaving `staged-dependency-unused` behind.
+- New public `findForwardRegistrations(patchesDir, { scope })` returns the same census as structured records.
+- New `lint --per-patch --notices summary|full`. `summary` prints one line per check instead of every NOTICE row (about 430 on a green Hominis queue). `full` stays the default and is unchanged. Errors, warnings and `--report` JSON are unaffected.
+
+### Programmatic API
+
+- New public `filesMeasuredByFileTooLarge(patchText)`: the files the `file-too-large` rule measures, which the rule itself now uses. A size-waiver audit can use the rule's own predicate. It covers the JS files a patch creates, not every created file, so `detectNewFilesInDiff` was not exported for this.
+
+### Doctor
+
+- New macOS `doctor` check: can the bootstrapped clang link against the SDK the build will use? Xcode 27.0 ships a `libSystem.tbd` the Mozilla clang/lld 21.1.8 rejects, and `mach configure` died with exit 5 without naming the cause. The check resolves the SDK from `engine/mozconfig` the way mach does, links a one-line C program, and on failure warns with clang's first error and the installed SDKs. It does nothing off macOS or without a bootstrapped clang.
+
 ## 0.47.0
 
 ### Test preflight

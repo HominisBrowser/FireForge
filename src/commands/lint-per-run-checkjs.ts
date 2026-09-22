@@ -65,6 +65,9 @@ export interface PerRunCheckJs {
   /** True when this file kind participates in the run's checkJs surface
    *  (`.sys.mjs`, plus test scripts when `checkJsTestFiles` is on). */
   isRelevant: (file: string) => boolean;
+  /** The program's roots under `rootScopePatches`, or undefined for the
+   *  whole queue. A file outside it is resolvable but never checked. */
+  rootScope: ReadonlySet<string> | undefined;
 }
 
 /**
@@ -158,5 +161,6 @@ export function buildPerRunCheckJs(
       return issues;
     },
     isRelevant: (file) => file.endsWith('.sys.mjs') || (testFilesEnabled && isTestScriptFile(file)),
+    rootScope: scopedRoots,
   };
 }

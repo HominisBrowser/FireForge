@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { InvalidArgumentError } from '../../errors/base.js';
 import {
+  compareFirefoxVersions,
   describePatchNameProblem,
   describeProductVersionIncompatibility,
   describeTokenNameProblem,
@@ -266,5 +267,31 @@ describe('FIREFOX_PRODUCTS', () => {
     for (const bad of ['Firefox', 'firefox-nightly', 'esr', '', 'firefox ']) {
       expect(isValidFirefoxProduct(bad)).toBe(false);
     }
+  });
+});
+
+describe('compareFirefoxVersions', () => {
+  const sorted = (versions: string[]): string[] => [...versions].sort(compareFirefoxVersions);
+
+  it('orders numeric components numerically, not lexically', () => {
+    expect(sorted(['153.10.0esr', '153.2.0esr'])).toEqual(['153.2.0esr', '153.10.0esr']);
+    expect(sorted(['140.0esr', '99.0'])).toEqual(['99.0', '140.0esr']);
+  });
+
+  it('treats a missing patch component as 0', () => {
+    expect(sorted(['153.3.0esr', '153.0esr'])).toEqual(['153.0esr', '153.3.0esr']);
+    expect(compareFirefoxVersions('153.0esr', '153.0.0esr')).toBe(0);
+  });
+
+  it('puts a beta before its release and orders betas numerically', () => {
+    expect(sorted(['153.0', '153.0b10', '153.0b7'])).toEqual(['153.0b7', '153.0b10', '153.0']);
+  });
+
+  it('ignores the esr suffix', () => {
+    expect(compareFirefoxVersions('153.3.0esr', '153.3.0')).toBe(0);
+  });
+
+  it('sorts strings that are not versions after every version', () => {
+    expect(sorted(['zzz', '153.0', 'aaa'])).toEqual(['153.0', 'aaa', 'zzz']);
   });
 });

@@ -94,6 +94,8 @@ export interface SetupOptions {
 export interface DownloadOptions {
   /** Force re-download, deleting existing engine/ */
   force?: boolean;
+  /** With `force`: skip the confirmation for an engine with changes to lose */
+  yes?: boolean;
 }
 
 /**
@@ -521,6 +523,13 @@ export interface RebaseOptions {
 export interface RunOptions {
   /** Additional arguments to pass to the browser */
   args?: string[];
+  /** Launch with this profile directory, passed to Firefox as `-profile`. */
+  profile?: string;
+  /**
+   * Launch with a fresh temporary profile, removed when the run ends.
+   * Implied by `smokeExit` unless `profile` is given.
+   */
+  tempProfile?: boolean;
   /**
    * Enable smoke-run mode. Launches the browser, streams the console,
    * sends SIGTERM to the whole process group after `smokeExit` seconds,
@@ -1160,4 +1169,10 @@ export interface LintCommandOptions {
    * {@link perPatch}.
    */
   report?: string;
+  /**
+   * With `--per-patch`: `'full'` (default) prints every NOTICE line;
+   * `'summary'` prints one line per check with its count and patch count.
+   * Errors and warnings always print in full.
+   */
+  notices?: 'summary' | 'full';
 }

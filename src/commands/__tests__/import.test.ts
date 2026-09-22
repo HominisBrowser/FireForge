@@ -53,6 +53,9 @@ vi.mock('../../core/patch-apply.js', async (importOriginal) => {
         computePatched: (file: string) => computePatchedContentMock('', '', file),
         getAffectingPatches: () => [],
         readPatchBody: vi.fn(),
+        prefetchBase: vi.fn(() => Promise.resolve()),
+        prefetchLiveBlobHashes: vi.fn(() => Promise.resolve()),
+        liveBlobHash: vi.fn(() => Promise.resolve(undefined)),
       })
     ),
     // Real matcher: --until scope-set resolution must share the apply

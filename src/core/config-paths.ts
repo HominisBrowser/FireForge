@@ -80,6 +80,7 @@ export const SUPPORTED_CONFIG_PATHS = [
   'patchLint.jsdocClassMethods',
   'patchLint.testAssertionFloor',
   'patchLint.chromeScriptJsDoc',
+  'patchLint.forwardRegistration',
   'patchPolicy',
   'typecheck',
   'typecheck.projects',

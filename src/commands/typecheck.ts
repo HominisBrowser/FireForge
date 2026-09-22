@@ -40,6 +40,11 @@ export interface TypecheckCommandOptions {
    * issues without waiting for the full set.
    */
   project?: string;
+  /**
+   * Build every project from scratch and write no incremental build info
+   * (`--no-cache`).
+   */
+  noCache?: boolean;
 }
 
 /**
@@ -127,7 +132,9 @@ async function runTypecheckCommandBody(
 
   info(`Running typecheck across ${cfg.projects.length} project(s): ${cfg.projects.join(', ')}`);
 
-  const results = await runTypecheck(projectRoot, cfg);
+  const results = await runTypecheck(projectRoot, cfg, {
+    ...(options.noCache === true ? { noCache: true } : {}),
+  });
   // Fold the EXPORT-TIME authority into this pass. Per-patch lint runs
   // checkJs over the queue's patch-owned modules in relative isolation and
   // resolves imported typedefs differently from the whole-project pass, so
@@ -250,11 +257,18 @@ export function registerTypecheck(
       '--project <path>',
       'Override typecheck.projects with a single jsconfig.json path (one-off run)'
     )
+    .option(
+      '--no-cache',
+      'Check every project from scratch; neither read nor write the incremental build info in .fireforge/typecheck/'
+    )
     .action(
-      withErrorHandling(async (options: { project?: string }) => {
+      withErrorHandling(async (options: { project?: string; cache?: boolean }) => {
         const opts: TypecheckCommandOptions = {};
         if (options.project !== undefined) {
           opts.project = options.project;
+        }
+        if (options.cache === false) {
+          opts.noCache = true;
         }
         await typecheckCommand(getProjectRoot(), opts);
       })

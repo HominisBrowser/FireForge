@@ -200,6 +200,20 @@ vi.mock('../../utils/fs.js', () => ({
   readText: vi.fn(() => Promise.resolve('')),
 }));
 
+// The macOS SDK probe depends on the host's bootstrapped clang; its own
+// suite covers it. Here it stays skipped so the counts are host-independent.
+vi.mock('../doctor-macos-sdk.js', () => ({
+  MACOS_SDK_LINK_DOCTOR_CHECK: {
+    name: 'macOS SDK links with the bootstrapped clang',
+    skipIf: () => true,
+    run: () => ({
+      name: 'macOS SDK links with the bootstrapped clang',
+      severity: 'ok',
+      message: 'OK',
+    }),
+  },
+}));
+
 vi.mock('../../utils/process.js', () => ({
   // Default to "watchman is installed" so the check shows ok for the broad
   // swath of tests that do not care about watch mode. The regression test

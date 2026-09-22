@@ -18,6 +18,11 @@ import { furnaceCreateCommand } from '../furnace/create.js';
 import { furnaceOverrideCommand } from '../furnace/override.js';
 import { furnaceRemoveCommand } from '../furnace/remove.js';
 
+/** clack's own cancellation sentinel (public since @clack/prompts 1.8.1). */
+const CANCEL_SYMBOL: (typeof import('@clack/prompts'))['CANCEL_SYMBOL'] = (
+  await vi.importActual<typeof import('@clack/prompts')>('@clack/prompts')
+).CANCEL_SYMBOL;
+
 const logger = vi.hoisted(() => ({
   intro: vi.fn(),
   outro: vi.fn(),
@@ -146,7 +151,7 @@ describe('Furnace authoring rollback integration', () => {
     it('create cancellation in interactive mode does not write furnace.json', async () => {
       restoreTTY?.();
       restoreTTY = setInteractiveMode(true);
-      vi.mocked(prompts.text).mockResolvedValueOnce(Symbol('cancel'));
+      vi.mocked(prompts.text).mockResolvedValueOnce(CANCEL_SYMBOL);
       logger.isCancel.mockReturnValueOnce(true);
 
       await furnaceCreateCommand(projectRoot);
@@ -160,7 +165,7 @@ describe('Furnace authoring rollback integration', () => {
       await writeFiles(projectRoot, {
         'engine/toolkit/content/widgets/moz-fake/moz-fake.mjs': '// fake mjs\n',
       });
-      vi.mocked(prompts.select).mockResolvedValueOnce(Symbol('cancel'));
+      vi.mocked(prompts.select).mockResolvedValueOnce(CANCEL_SYMBOL);
       logger.isCancel.mockReturnValueOnce(true);
 
       await furnaceOverrideCommand(projectRoot);

@@ -59,6 +59,19 @@ tool at
 `/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool`,
 plus `actool` via `xcrun`, `sips`, and `iconutil`.
 
+On macOS, `fireforge doctor` also checks that the bootstrapped clang
+(`~/.mozbuild/clang`, or under `MOZBUILD_STATE_PATH`) can link against the
+SDK the build will use. That is the SDK `engine/mozconfig` selects with
+`--with-macos-sdk`, resolved by sourcing the mozconfig the way mach does,
+or `xcrun --show-sdk-path` when it names none. The check links a trivial C
+program through the toolchain's lld in a temp directory. When that fails, it
+reports a warning with clang's first error and lists the SDKs installed
+under the mozbuild state directory, the Command Line Tools and the active
+Xcode. An Xcode update can ship an SDK the pinned toolchain cannot read, and
+`mach configure` then dies at its linker probe with nothing but `config.log`
+saying why. The check does nothing on other platforms and when no clang has
+been bootstrapped.
+
 ## `patchLint`
 
 Per-patch lint type-checks plain Firefox JS against a built-in
@@ -84,6 +97,28 @@ Firefox-globals shim that tracks upstream WebIDL additions per release.
   project's, then `npx --no-install`. Left at `'off'`, formatting is out of
   scope for the per-patch tier, and no other tier checks `.sys.mjs`
   formatting either.
+- `patchLint.forwardRegistration` (`'support-files'` or `'extended'`,
+  default `'support-files'`) picks which carriers the `forward-registration`
+  queue rule checks for a line naming a file that only a later patch
+  creates. The default checks test-manifest `support-files`. `'extended'`
+  also checks:
+  - jar.mn pair lines (the source in parentheses, relative to the jar.mn);
+  - moz.build path tokens (a quoted string with a `.` or `/`, relative to
+    the moz.build);
+  - test-manifest section headers and `head`;
+  - `customElements.js` `chrome://<pkg>/content/…` URLs, resolved through
+    the jar.mn lines the same queue adds.
+
+  A line whose target cannot be resolved without the build system is left
+  alone: a `%` or `@AB_CD@` substitution, `**`, `!`, a path that leaves the
+  tree, or a chrome URL no queue jar.mn line packages. Each finding prints
+  the same paste-and-run `patch staged-dependency --add --kind registration`
+  command as the `support-files` arm. The setting is opt-in because a queue
+  that predates it can carry many such edges, and a new error would red a
+  `--max-warnings 0` gate on install. The same census is on the public API as
+  `findForwardRegistrations(patchesDir, { scope })`, which defaults to
+  `'extended'`, for a consumer that keeps its own ratchet over these edges.
+
 - `patchLint.fileSizeThresholds` tunes the `file-too-large` line counts per
   file class:
 
@@ -104,6 +139,27 @@ Firefox-globals shim that tracks upstream WebIDL additions per release.
   the recommended gate posture `--max-warnings 0`, the `warning` band
   is a hard failure rather than a soft limit, which is what these thresholds
   exist to let you move.
+
+## `typecheck`
+
+`typecheck.projects` lists the jsconfig files `fireforge typecheck` checks
+as whole projects. `typecheck.extraShim` and `typecheck.projectOverrides`
+add declarations to the Firefox-globals shim, for every project or for one.
+When `patchLint.checkJs` is on, the same command also runs the per-patch
+checkJs pass that `export` enforces, so a green `typecheck` means
+export-clean types.
+
+Each project keeps incremental build info in `.fireforge/typecheck/`, one
+file per project. A warm run re-checks only the files whose content changed
+since the last run. The file name carries a key over everything outside the
+program's own files that can change a verdict: the composed shim, the
+TypeScript version, the compiler options, `typecheck.undefinedIdentifiers`
+and the FireForge version. A change to any of them selects a new file, so a
+stale verdict is never replayed, and the project's other build-info files are
+deleted. `fireforge typecheck --no-cache` checks every project from scratch
+and neither reads nor writes the build info. A jsconfig's own `incremental`
+and `tsBuildInfoFile` are still ignored, so nothing is written under
+`engine/`.
 
 ## `patchPolicy`
 
@@ -224,6 +280,31 @@ absorbs live input, which contaminates the console capture, so headed
 non-CI launches print a warning saying so. Exit codes 12 and 13 separate a
 console regression from a launch failure. See
 [`exit-codes.md`](exit-codes.md).
+
+A smoke run starts on a fresh temporary profile by default (since 0.48.0).
+The step exists to prove what the build does on a clean start. The
+developer's `obj-*/tmp/profile-default` carries whatever the last session
+left (a pre-reset database, a restored hand-made applet), and those reds
+say nothing about the tree. FireForge creates the directory under the OS
+temp dir, seeds the two prefs `mach run` writes into profiles it makes
+itself (`browser.shell.checkDefaultBrowser` and
+`browser.aboutConfig.showWarning`), and passes it to Firefox as
+`-profile`. The directory is removed when the run ends. That includes a
+failed run and a SIGINT/SIGTERM, which the signal handler removes after
+the browser tree has shut down. A FireForge that was SIGKILLed cannot clean
+up after itself, so the next `run` removes any temporary profile whose
+owning process is gone.
+
+- `--profile <path>` launches with a named profile directory and leaves it
+  in place. Under `--smoke-exit` it replaces the fresh default.
+- `--temp-profile` gives a plain `run` the same fresh, removed-afterwards
+  profile.
+
+A plain `run` without either flag keeps mach's `profile-default`. `mach run`'s
+desktop parser has no `--profile` option (its `--profile/-P` belongs to the
+Android parser), so the profile is always passed as a program parameter.
+With an explicit profile, mach neither writes its `runprefs` from
+`~/.mozbuild/machrc` nor accepts `--setpref`.
 
 The allowlist (`--console-allow-file`) is count-blind by default: a line that
 matches an entry never counts, however often it fires. A `# max-hits: N`

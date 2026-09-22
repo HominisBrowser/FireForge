@@ -16,6 +16,8 @@ export const PUBLIC_API_EXPORTS = [
   'countNonBinaryDiffLines',
   'getPatchSizeThresholds',
   'resolvePatchSizeTier',
+  'findForwardRegistrations',
+  'filesMeasuredByFileTooLarge',
   'ExitCode',
   'FireForgeError',
   'GeneralError',

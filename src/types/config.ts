@@ -377,6 +377,16 @@ export interface PatchLintConfig {
    * scope for the per-patch tier.
    */
   prettier?: PatchLintSeverityGate;
+  /**
+   * Which carriers the `forward-registration` queue rule checks for a line
+   * that names a file only a later patch creates. `'support-files'` (the
+   * default) checks test-manifest `support-files`. `'extended'` also checks
+   * jar.mn pair lines, moz.build path tokens, test-manifest sections and
+   * `head`, and customElements.js chrome URLs resolved through the queue's
+   * own jar.mn lines. Opt-in: a queue that predates the wider rule can carry
+   * such edges, and a new error on install would red its gate.
+   */
+  forwardRegistration?: 'support-files' | 'extended';
   /** Enforce JSDoc on class-method exports in patch-owned .sys.mjs files. Default: 'off'. */
   jsdocClassMethods?: PatchLintSeverityGate;
   /** Require ≥1 assertion in any patch-touched browser_*.js test file (new or modified). Default: 'off'. */

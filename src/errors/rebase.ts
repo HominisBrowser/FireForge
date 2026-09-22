@@ -60,3 +60,27 @@ export class CorruptRebaseSessionError extends RebaseError {
     );
   }
 }
+
+/**
+ * Thrown by `rebase --dry-run` when the replay rejects at least one patch.
+ * A dry run that exited 0 regardless used to read as "the rebase is ready".
+ */
+export class RebaseDryRunRejectError extends RebaseError {
+  constructor(readonly rejected: readonly string[]) {
+    super(
+      `Dry run: ${rejected.length} patch(es) would not apply: ${rejected.join(', ')}. ` +
+        'engine/ was not modified.'
+    );
+  }
+
+  override get userMessage(): string {
+    return (
+      `Rebase Error: ${this.message}` +
+      remedies([
+        'The per-patch lines above name the files that did not apply',
+        'Run "fireforge rebase" to start the real rebase; it stops at the first reject for manual resolution',
+        'Later rejects may cascade from an earlier one; resolve in queue order',
+      ])
+    );
+  }
+}

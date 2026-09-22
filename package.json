@@ -1,6 +1,6 @@
 {
   "name": "@hominis/fireforge",
-  "version": "0.47.1",
+  "version": "0.48.0",
   "description": "FireForge — a build tool for customizing Firefox",
   "type": "module",
   "main": "./dist/src/index.js",
@@ -75,9 +75,9 @@
     "eslint-plugin-simple-import-sort": "^14.0.0",
     "fast-check": "^4.6.0",
     "husky": "^9.1.7",
-    "knip": "6.35.1",
+    "knip": "6.37.0",
     "lint-staged": "^17.0.4",
-    "prettier": "3.9.6",
+    "prettier": "3.9.8",
     "tsx": "^4.7.0",
     "typescript": "~6.0.0",
     "typescript-eslint": "^8.0.0",
@@ -108,5 +108,9 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true
   }
 }

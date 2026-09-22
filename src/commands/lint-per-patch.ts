@@ -210,6 +210,16 @@ interface PerPatchTotals {
   suppressed: number;
 }
 
+/**
+ * A NOTICE held back for the `--notices summary` tally: the check, the
+ * patch it belongs to, and whether `lintIgnore` suppressed the finding.
+ */
+interface HeldNotice {
+  check: string;
+  patch: string;
+  suppressed: boolean;
+}
+
 /** Size-rule check IDs whose waived measurement is still reported. */
 const SUPPRESSED_SIZE_CHECKS = new Set([
   'large-patch-lines',
@@ -229,7 +239,8 @@ async function applyPerPatchResults(
   results: QueuedPatchResult[],
   issues: PatchLintIssue[],
   checkJs: PerRunCheckJs | undefined,
-  cache: PerPatchLintCacheFile | undefined
+  cache: PerPatchLintCacheFile | undefined,
+  heldNotices: HeldNotice[] | undefined
 ): Promise<PerPatchTotals> {
   const totals: PerPatchTotals = {
     linted: 0,
@@ -285,6 +296,10 @@ async function applyPerPatchResults(
     // can be calibrated without hand-measuring.
     for (const suppressedIssue of result.suppressedIssues) {
       if (!SUPPRESSED_SIZE_CHECKS.has(suppressedIssue.check)) continue;
+      if (heldNotices !== undefined) {
+        heldNotices.push({ check: suppressedIssue.check, patch: patch.filename, suppressed: true });
+        continue;
+      }
       info(
         `NOTICE [${suppressedIssue.check}] ${patch.filename}: suppressed by lintIgnore — ${suppressedIssue.message}`
       );
@@ -340,8 +355,12 @@ function reportPerPatchOutcome(
   issues: PatchLintIssue[],
   linted: number,
   skipped: number,
-  options: LintCommandOptions
+  options: LintCommandOptions,
+  heldNotices: HeldNotice[] | undefined
 ): void {
+  if (heldNotices !== undefined) {
+    reportNoticeSummary(heldNotices, issues);
+  }
   if (issues.length === 0) {
     if (linted === 0 && skipped > 0) {
       info(
@@ -360,7 +379,9 @@ function reportPerPatchOutcome(
   const errors = issues.filter((i) => i.severity === 'error');
   const warnings = issues.filter((i) => i.severity === 'warning');
   const notices = issues.filter((i) => i.severity === 'notice');
-  for (const issue of notices) info(`NOTICE ${formatPatchLintIssue(issue)}`);
+  if (heldNotices === undefined) {
+    for (const issue of notices) info(`NOTICE ${formatPatchLintIssue(issue)}`);
+  }
   for (const issue of warnings) warn(formatPatchLintIssue(issue));
   for (const issue of errors) warn(`ERROR ${formatPatchLintIssue(issue)}`);
 
@@ -388,6 +409,35 @@ function reportPerPatchOutcome(
     outro('Lint passed with notices');
   } else {
     outro('Lint passed');
+  }
+}
+
+/**
+ * `--notices summary`: one line per check instead of one per finding, for
+ * a green queue whose hundreds of NOTICE lines are reviewed waivers and
+ * under-threshold measurements. The full list stays in `--report`.
+ * Errors and warnings are never summarised.
+ */
+function reportNoticeSummary(heldNotices: HeldNotice[], issues: PatchLintIssue[]): void {
+  const byCheck = new Map<string, { count: number; suppressed: number; patches: Set<string> }>();
+  const tally = (check: string, patch: string, suppressed: boolean): void => {
+    const entry = byCheck.get(check) ?? { count: 0, suppressed: 0, patches: new Set<string>() };
+    entry.count += 1;
+    if (suppressed) entry.suppressed += 1;
+    entry.patches.add(patch);
+    byCheck.set(check, entry);
+  };
+  for (const held of heldNotices) tally(held.check, held.patch, held.suppressed);
+  for (const issue of issues) {
+    if (issue.severity !== 'notice') continue;
+    tally(issue.check, issue.patches?.[0] ?? issue.file.split(' :: ')[0] ?? issue.file, false);
+  }
+  for (const [check, entry] of [...byCheck].sort(([a], [b]) => a.localeCompare(b))) {
+    const suppressed =
+      entry.suppressed > 0 ? `, ${entry.suppressed} of them suppressed by lintIgnore` : '';
+    info(
+      `NOTICE [${check}]: ${entry.count} across ${entry.patches.size} patch(es)${suppressed} (see --report)`
+    );
   }
 }
 
@@ -542,8 +592,9 @@ async function lintPerPatchInner(
     checkJs,
   });
 
+  const heldNotices = options.notices === 'summary' ? [] : undefined;
   const { linted, skipped, cacheDirty, reusedCacheEntries, suppressed } =
-    await applyPerPatchResults(subset, results, issues, checkJs, cache);
+    await applyPerPatchResults(subset, results, issues, checkJs, cache, heldNotices);
 
   for (const issue of lintPatchQueue(ctx)) {
     if (isSubset && !subsetTouchedFiles.has(issue.file)) continue;
@@ -564,5 +615,5 @@ async function lintPerPatchInner(
     await writePerPatchLintReport(options.report, subset, results);
   }
 
-  reportPerPatchOutcome(issues, linted, skipped, options);
+  reportPerPatchOutcome(issues, linted, skipped, options, heldNotices);
 }

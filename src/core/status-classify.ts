@@ -15,6 +15,7 @@ import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import { isBrandingManagedPath } from './branding.js';
+import { isBinaryFile } from './git-file-ops.js';
 import type { PatchedContentContext } from './patch-apply.js';
 import { createPatchedContentContext } from './patch-apply.js';
 import { classifyBinaryOwnedFile } from './status-binary.js';
@@ -236,6 +237,8 @@ export async function classifyFiles(
   // when the content matches neither owner's expectation.
   const patchClaims = buildPatchClaims(ctx.manifestPatches);
 
+  await prefetchSingleOwnerContent(files, engineDir, patchClaims, ctx);
+
   const deps: ClassifyEntryDeps = {
     engineDir,
     patchesDir,
@@ -244,11 +247,41 @@ export async function classifyFiles(
     patchClaims,
     ctx,
   };
-  // Bounded pool over per-file classification (each single-owner file
-  // spawns git). Order preserved by the mapper. Per-file failures settle
+  // Bounded pool over per-file classification. Order preserved by the mapper. Per-file failures settle
   // inside classifySingleOwnerFile's catch, so one bad file never rejects
   // the batch.
   return mapWithConcurrency(files, CLASSIFY_CONCURRENCY, (entry) => classifyEntry(entry, deps));
+}
+
+/**
+ * Fetches, in two git processes, what the per-file comparison would
+ * otherwise spawn git for file by file: the HEAD content of every
+ * single-owner path (one `cat-file --batch`) and the live blob hash of every
+ * one that is binary on disk (one `hash-object` per ARG_MAX chunk). On a
+ * 1,600-file Firefox scan that was ~1,550 `git show` and `hash-object`
+ * spawns. Fetching for a path the classifier ends up routing elsewhere
+ * (a branding path, say) costs a few bytes, never a wrong answer.
+ */
+async function prefetchSingleOwnerContent(
+  files: readonly StatusFile[],
+  engineDir: string,
+  patchClaims: Map<string, string[]>,
+  ctx: PatchedContentContext
+): Promise<void> {
+  const singleOwner = files.filter((entry) => patchClaims.get(entry.file)?.length === 1);
+  if (singleOwner.length === 0) return;
+  await ctx.prefetchBase(singleOwner.map((entry) => entry.file));
+
+  const present = singleOwner.filter((entry) => getPrimaryStatusCode(entry.status) !== 'D');
+  const binary = await mapWithConcurrency(present, CLASSIFY_CONCURRENCY, async (entry) => {
+    try {
+      return (await isBinaryFile(engineDir, entry.file)) ? join(engineDir, entry.file) : undefined;
+    } catch {
+      // The per-file path probes again and settles the failure itself.
+      return undefined;
+    }
+  });
+  await ctx.prefetchLiveBlobHashes(binary.filter((path) => path !== undefined));
 }
 
 /** Concurrency bound for per-file classification (matches import's guard). */

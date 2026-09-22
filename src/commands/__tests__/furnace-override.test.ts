@@ -148,6 +148,11 @@ import { nativePath } from '../../test-utils/index.js';
 import { copyFile, ensureDir, pathExists, writeJson } from '../../utils/fs.js';
 import { cancel, isCancel } from '../../utils/logger.js';
 
+/** clack's own cancellation sentinel (public since @clack/prompts 1.8.1). */
+const CANCEL_SYMBOL: (typeof import('@clack/prompts'))['CANCEL_SYMBOL'] = (
+  await vi.importActual<typeof import('@clack/prompts')>('@clack/prompts')
+).CANCEL_SYMBOL;
+
 describe('furnaceOverrideCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -533,7 +538,7 @@ describe('furnaceOverrideCommand', () => {
           isRegistered: true,
         },
       ]);
-      vi.mocked(p.select).mockResolvedValueOnce(Symbol('cancel'));
+      vi.mocked(p.select).mockResolvedValueOnce(CANCEL_SYMBOL);
       vi.mocked(isCancel).mockReturnValueOnce(true);
 
       await furnaceOverrideCommand('/project');
@@ -543,7 +548,7 @@ describe('furnaceOverrideCommand', () => {
     });
 
     it('returns early when type selection is cancelled', async () => {
-      vi.mocked(p.select).mockResolvedValueOnce(Symbol('cancel'));
+      vi.mocked(p.select).mockResolvedValueOnce(CANCEL_SYMBOL);
       vi.mocked(isCancel).mockReturnValueOnce(true);
 
       await furnaceOverrideCommand('/project', 'moz-button');
@@ -563,7 +568,7 @@ describe('furnaceOverrideCommand', () => {
     });
 
     it('uses empty description when description prompt is cancelled', async () => {
-      vi.mocked(p.text).mockResolvedValueOnce(Symbol('cancel'));
+      vi.mocked(p.text).mockResolvedValueOnce(CANCEL_SYMBOL);
       vi.mocked(isCancel).mockReturnValueOnce(true);
 
       await furnaceOverrideCommand('/project', 'moz-button', { type: 'full' });

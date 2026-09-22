@@ -221,6 +221,25 @@ function isJsFile(file: string): boolean {
   return JS_EXTENSIONS.some((ext) => file.endsWith(ext));
 }
 
+/** The subset of a patch's new files that `file-too-large` measures. */
+function measuredByFileTooLarge(newFiles: Iterable<string>): Set<string> {
+  return new Set([...newFiles].filter(isJsFile));
+}
+
+/**
+ * The files the `file-too-large` rule measures for a patch: the JS files
+ * (`.js`, `.mjs`, `.sys.mjs`, …) the patch creates. A modified file is
+ * never measured, and neither is a new file of another kind (CSS, FTL,
+ * markup), however long. This is the rule's own predicate, not a mirror
+ * of it: the rule selects its files through the same function.
+ *
+ * @param patchText - Unified-diff body of one patch
+ * @returns Engine-relative paths the rule would size-check
+ */
+export function filesMeasuredByFileTooLarge(patchText: string): Set<string> {
+  return measuredByFileTooLarge(detectNewFilesInDiff(patchText));
+}
+
 /**
  * Returns true if the file path looks like a test file.
  * Matches paths containing `/test/` or filenames starting with
@@ -438,6 +457,7 @@ export async function lintPatchedJs(
 
   const issues: PatchLintIssue[] = [];
   const binaryName = config.binaryName.toLowerCase();
+  const sizeMeasured = measuredByFileTooLarge(newFiles);
 
   for (const file of jsFiles) {
     const filePath = join(repoDir, file);
@@ -459,8 +479,8 @@ export async function lintPatchedJs(
       });
     }
 
-    // 2. File size check (new files only)
-    if (isNew) {
+    // 2. File size check (new JS files only; see filesMeasuredByFileTooLarge)
+    if (sizeMeasured.has(file)) {
       const lineCount = countContentLines(content);
       const isTest = isTestFile(file);
       const thresholds = resolveFileSizeThresholds(config.patchLint?.fileSizeThresholds, isTest);

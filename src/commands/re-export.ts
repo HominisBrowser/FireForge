@@ -204,18 +204,21 @@ export async function reExportCommand(
 
   // Hoisted lint context, one per run: queue context + checkJs
   // program + per-patch result cache, shared across every loop iteration.
+  // Taken before the context build, so the elapsed time the progress line
+  // reports includes it.
+  const startedAt = Date.now();
   const lintCtx = await buildReExportLintContext(
     projectRoot,
     paths,
     config,
-    options.noCache === true
+    options.noCache === true,
+    new Set(selectedPatches.map((patch) => patch.filename))
   );
 
   let reExported = 0;
   const reExportedFilenames: string[] = [];
   const failedFilenames: string[] = [];
   const progress = spinner('Preparing re-export...');
-  const startedAt = Date.now();
 
   await withDryRunReExportLock(paths.fireforgeDir, isDryRun, async () =>
     withDryRunPurityGuard(paths.engine, paths.patches, isDryRun, async () => {

@@ -68,6 +68,35 @@ describe('registerTest', () => {
     });
   });
 
+  it('parses resource wait budgets and repeated profile overlays into the command options', async () => {
+    await parse(
+      '--wait-browser',
+      '120',
+      '--wait-port',
+      '300',
+      '--profile-file',
+      'a.css=chrome/userChrome.css',
+      '--profile-file',
+      'b.css=chrome/b.css'
+    );
+    expect(vi.mocked(testCommand).mock.calls[0]?.[2]).toMatchObject({
+      waitBrowser: 120,
+      waitPort: 300,
+      profileFile: ['a.css=chrome/userChrome.css', 'b.css=chrome/b.css'],
+    });
+  });
+
+  it.each(['--wait-browser', '--wait-port'])(
+    'accepts a bare %s and rejects an invalid budget through Commander',
+    async (flag) => {
+      await parse(flag);
+      expect(vi.mocked(testCommand).mock.calls[0]?.[2]).toMatchObject(
+        flag === '--wait-browser' ? { waitBrowser: true } : { waitPort: true }
+      );
+      await expect(parse(flag, '0')).rejects.toMatchObject({ code: 'commander.invalidArgument' });
+    }
+  );
+
   it('omits undefined options so exactOptionalPropertyTypes consumers stay clean', async () => {
     await parse();
     const options = vi.mocked(testCommand).mock.calls[0]?.[2] as Record<string, unknown>;

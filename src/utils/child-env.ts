@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Environment construction for spawned children.
- *
- * Its own module rather than a helper inside `process.ts` only because that
- * file sits on a 500-line budget. The logic belongs to the exec layer.
  */
 
 /** The `env` / `envUnset` slice of exec options this module needs. */

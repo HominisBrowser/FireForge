@@ -100,7 +100,7 @@ describe('findCategorySection scans pathological banner lines in linear time', (
     // `=+` and the lazy `(.+?)` both match `=`, so the run is re-partitioned
     // once per length. 4 000 `=` took ~8 s.
     expectLinearGrowth(
-      (n) => ['/*' + '='.repeat(n)],
+      (n) => [':root {', '/*' + '='.repeat(n), '}'],
       (lines) => {
         expect(() => findCategorySection(lines, 'Missing', 'tokens.css')).toThrow(
           /Category "Missing" not found/
@@ -115,11 +115,11 @@ describe('findCategorySection scans pathological banner lines in linear time', (
     // The leading `x` keeps the line out of the header-skip loop above it, so
     // the section-end scan is the code under test.
     expectLinearGrowth(
-      (n) => ['/* = Colors = */', '  --a: red;', 'x' + '/*='.repeat(n)],
+      (n) => [':root {', '/* = Colors = */', '  --a: red;', 'x' + '/*='.repeat(n), '}'],
       (lines) => {
         expect(findCategorySection(lines, 'Colors', 'tokens.css')).toEqual({
-          categoryLine: 0,
-          sectionEnd: 3,
+          categoryLine: 1,
+          sectionEnd: 4,
         });
       }
     );
@@ -127,14 +127,16 @@ describe('findCategorySection scans pathological banner lines in linear time', (
 
   it('still bounds a section at the next banner, blank name or not', () => {
     const lines = [
+      ':root {',
       '/* = Colors = */',
       '  --a: red;',
       '/* ===================== */',
       '  --b: blue;',
+      '}',
     ];
     expect(findCategorySection(lines, 'Colors', 'tokens.css')).toEqual({
-      categoryLine: 0,
-      sectionEnd: 2,
+      categoryLine: 1,
+      sectionEnd: 3,
     });
   });
 

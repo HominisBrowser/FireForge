@@ -7,8 +7,6 @@ import { info, success } from '../utils/logger.js';
 import type { TestRunOutcome } from './test-run.js';
 import { emitHarnessVerdict } from './test-verdict.js';
 
-type ProjectConfig = FireForgeConfig;
-
 /** Rejects pathless `fireforge test` unless the operator selected a pathless mode. */
 export function assertPathlessTestMode(testPaths: readonly string[], options: TestOptions): void {
   if (
@@ -57,7 +55,7 @@ export function assertTestModeCombinations(
 /** Resolves the canary path from CLI or config. */
 export function resolveCanaryPath(
   options: TestOptions,
-  projectConfig: ProjectConfig
+  projectConfig: FireForgeConfig
 ): string | undefined {
   if (options.canary === undefined || options.canary === false) return undefined;
   if (typeof options.canary === 'string') return options.canary;
@@ -65,7 +63,7 @@ export function resolveCanaryPath(
 }
 
 /** Returns the configured canary no-output budget, defaulting to 60 seconds. */
-export function canaryTimeoutSeconds(projectConfig: ProjectConfig): number {
+export function canaryTimeoutSeconds(projectConfig: FireForgeConfig): number {
   return projectConfig.test?.canaryTimeoutSeconds ?? 60;
 }
 

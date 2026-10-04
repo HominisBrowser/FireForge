@@ -45,12 +45,9 @@ export function mergeHarnessEnv(
 }
 
 /**
- * Resolves the `--shuffle` seed: a fresh one when the flag was bare, the
- * operator's when it carried one. Mach's `--shuffle` is an UNSEEDED
- * Fisher–Yates over `Math.random` (SimpleTest/setup.js), so a red found by
- * shuffling could not be reproduced. FireForge draws the seed, exports it
- * as `FIREFORGE_SHUFFLE_SEED` for harness code that reorders inside a file,
- * prints it, and stamps it on the verdict line.
+ * Resolves the seed for FireForge's isolated shard order and exports it for
+ * custom in-file task code. Native mach file shuffling remains unseeded;
+ * replaying this seed guarantees only the FireForge shard permutation.
  *
  * Mochitest-only: the xpcshell harness has no shuffle, and generic `mach
  * test` dispatch would forward the flag to every suite it fans out to.
@@ -69,6 +66,32 @@ export function resolveShuffleSeed(
   }
   const seed = shuffle === true ? randomInt(1, 2 ** 31 - 1) : shuffle;
   setVerdictRunAttribute('shuffle', String(seed));
-  info(`Test order shuffle: seed=${seed} (reproduce with "fireforge test --shuffle=${seed}")`);
+  info(
+    `Test shard order: seed=${seed} (replay with "fireforge test --shuffle=${seed}"). ` +
+      'Native harness file shuffle remains unseeded.'
+  );
   return seed;
+}
+
+/** Returns a deterministic Fisher–Yates permutation without mutating the selection. */
+export function shuffleTestGroups<T>(groups: readonly T[], seed: number): T[] {
+  const shuffled = [...groups];
+  // Hash the decimal seed so every accepted safe integer contributes, rather
+  // than silently discarding its high bits in the 32-bit PRNG.
+  let state = 2166136261;
+  for (const character of String(seed))
+    state = Math.imul(state ^ character.charCodeAt(0), 16777619);
+  state = state >>> 0 || 1;
+  for (let index = shuffled.length - 1; index > 0; index--) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    const destination = Math.floor(((state >>> 0) / 2 ** 32) * (index + 1));
+    // Both indexes are bounded by the array length, including under
+    // noUncheckedIndexedAccess; T may itself contain undefined.
+    const selected = shuffled[index] as T;
+    shuffled[index] = shuffled[destination] as T;
+    shuffled[destination] = selected;
+  }
+  return shuffled;
 }

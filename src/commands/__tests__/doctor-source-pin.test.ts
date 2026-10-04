@@ -10,6 +10,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../utils/process.js', () => ({ exec: vi.fn() }));
+
 vi.mock('../../core/firefox.js', () => ({
   getFirefoxVersion: vi.fn(() => Promise.resolve(undefined)),
 }));
@@ -17,6 +19,7 @@ vi.mock('../../core/firefox.js', () => ({
 import { getFirefoxVersion } from '../../core/firefox.js';
 import type { DoctorCheck } from '../../types/commands/index.js';
 import type { FireForgeConfig, FireForgeState } from '../../types/config.js';
+import { exec } from '../../utils/process.js';
 import type { DoctorCheckContext } from '../doctor-check-core.js';
 import { SOURCE_PIN_DOCTOR_CHECK } from '../doctor-source-pin.js';
 
@@ -53,6 +56,7 @@ async function run(ctx: DoctorCheckContext): Promise<DoctorCheck | DoctorCheck[]
 describe('source pin doctor check', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(exec).mockResolvedValue({ exitCode: 1, stdout: '', stderr: '' });
     vi.mocked(getFirefoxVersion).mockResolvedValue(undefined);
   });
 
@@ -66,6 +70,16 @@ describe('source pin doctor check', () => {
 
     expect(check).toMatchObject({ severity: 'ok' });
     expect(JSON.stringify(check)).toContain('140.9.0esr');
+  });
+
+  it('uses pristine HEAD even when branding rewrites the working version', async () => {
+    vi.mocked(exec).mockResolvedValue({ exitCode: 0, stdout: '153.3.0esr\n', stderr: '' });
+    vi.mocked(getFirefoxVersion).mockResolvedValue('hominis-1.0');
+    expect(await run(makeCtx({ version: '153.3.0esr' }))).toMatchObject({ severity: 'ok' });
+    expect(exec).toHaveBeenCalledWith('git', ['show', 'HEAD:browser/config/version.txt'], {
+      cwd: '/project/engine',
+    });
+    expect(getFirefoxVersion).not.toHaveBeenCalled();
   });
 
   it('warns when a reverted pin no longer matches version.txt', async () => {

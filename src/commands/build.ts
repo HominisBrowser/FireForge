@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { join } from 'node:path';
+
 import { Command, InvalidArgumentError as CommanderInvalidArgumentError } from 'commander';
 
 import { validateBrandOverride } from '../core/brand-validation.js';
@@ -20,6 +22,10 @@ import {
   runMach,
   withBuildLock,
 } from '../core/mach.js';
+import { findObjdirRelocationViolation } from '../core/mach-build-artifacts.js';
+import { ensureLaunchableBrowserNotRunning } from '../core/marionette-port.js';
+import { assertHealthyPartialConfig, pruneDanglingTestLinks } from '../core/objdir-maintenance.js';
+import { waitForPreflight } from '../core/preflight-wait.js';
 import {
   closeActiveRunLog,
   getActiveRunLogPath,
@@ -38,8 +44,13 @@ import type { BuildOptions } from '../types/commands/index.js';
 import { elapsedSince } from '../utils/elapsed.js';
 import { toError } from '../utils/errors.js';
 import { checkDiskSpace } from '../utils/fs.js';
-import { error, info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
-import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../utils/options.js';
+import { error, info, intro, notice, outro, spinner, verbose, warn } from '../utils/logger.js';
+import {
+  addWaitLockOption,
+  commanderArgParser,
+  pickDefined,
+  resolveWaitLockSeconds,
+} from '../utils/options.js';
 import { isPositiveInteger } from '../utils/validation.js';
 
 function parseJobCount(value: string): number {
@@ -102,6 +113,12 @@ async function rewriteAndReconfigure(
     );
   }
   configureSpinner.stop('mach configure regenerated the backend');
+  const violation = await findObjdirRelocationViolation({
+    engineDir,
+    objDir,
+    forbiddenDir: rewrite.oldTopsrcdir ?? '',
+  });
+  if (violation) throw new GeneralError(`Relocation incomplete: ${violation}`);
   info('Backend path-rewrite complete; continuing with the build.');
 }
 
@@ -172,7 +189,6 @@ function extractLikelyFailingCommand(captured: string): string | undefined {
     const line = lines[index];
     if (!line) continue;
     if (isWarningOnlyLine(line)) continue;
-    if (/^make(?:\[\d+\])?:/.test(line)) continue;
     if (/^g?make(?:\[\d+\])?:/.test(line)) continue;
     if (/^Error running mach:/.test(line)) continue;
     const comparable = line.replace(/^\d+:\d+\.\d+\s+/, '');
@@ -239,6 +255,27 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
     await closeActiveRunLog();
     if (logPath !== undefined) info(`Full build output: ${logPath}`);
   }
+}
+
+/** Checks objdir health and prevents deployments under a running browser. */
+async function preflightBuildObjdir(
+  engineDir: string,
+  binaryName: string,
+  objDir: string | undefined,
+  options: BuildOptions
+): Promise<void> {
+  if (!objDir) return;
+  await assertHealthyPartialConfig(engineDir, objDir);
+  const bundle = await hasRunnableBundle(engineDir, binaryName, objDir);
+  const expectedPath = bundle.expectedPath;
+  if (bundle.runnable && expectedPath) {
+    await waitForPreflight(
+      () => ensureLaunchableBrowserNotRunning(join(engineDir, expectedPath)),
+      options.waitBrowser === undefined ? undefined : resolveWaitLockSeconds(options.waitBrowser)
+    );
+  }
+  const pruned = await pruneDanglingTestLinks(engineDir, objDir);
+  if (pruned > 0) notice(`Pruned ${pruned} dangling _tests symlink(s).`);
 }
 
 async function runBuildCommandBody(projectRoot: string, options: BuildOptions): Promise<void> {
@@ -321,6 +358,7 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
   // auto-configure step there can detect moz.build-family changes since the
   // last successful build. The post-build audit below reuses the same
   // baseline to diff engine changes against dist artifacts.
+  await preflightBuildObjdir(paths.engine, config.binaryName, buildCheck.objDir, options);
   const previousBaseline = await readBuildBaseline(projectRoot);
 
   // Shared pre-flight: branding, Furnace, mozconfig, auto-configure
@@ -476,6 +514,11 @@ export function registerBuild(
   const build = program
     .command('build')
     .description('Build the browser (auto-applies Furnace components first)')
+    .option(
+      '--wait-browser [seconds]',
+      'Wait for this objdir browser to exit before changing its build (default 60)',
+      commanderArgParser((raw: string) => resolveWaitLockSeconds(raw))
+    )
     .option('--ui', 'Fast UI-only rebuild')
     .option('-j, --jobs <n>', 'Number of parallel jobs', parseJobCount)
     .option('--brand <name>', 'Build specific brand')

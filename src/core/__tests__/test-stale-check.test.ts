@@ -323,22 +323,19 @@ describe('findUncoveredRequestPaths', () => {
     ]);
   });
 
-  it('covers a same-manifest sibling of a covered file (item 5: manifest granularity)', () => {
-    // The field-incident shape: a run scoped to file_A refuses file_B of
-    // the same manifest, even though the scoped build staged the whole
-    // manifest directory into obj-*/_tests/.
+  it('refuses sibling files without resolved manifest ownership evidence', () => {
     expect(
       findUncoveredRequestPaths(
         ['browser/components/tiles/test/browser/browser_a.js'],
         ['browser/components/tiles/test/browser/browser_b.js']
       )
-    ).toEqual([]);
+    ).toEqual(['browser/components/tiles/test/browser/browser_b.js']);
   });
 
-  it('covers a directory request equal to the covered file manifest directory', () => {
+  it('does not widen a file claim to its containing directory', () => {
     expect(
       findUncoveredRequestPaths(['browser/foo/test/unit/test_a.js'], ['browser/foo/test/unit'])
-    ).toEqual([]);
+    ).toEqual(['browser/foo/test/unit']);
   });
 
   it('is not a prefix-string match: sibling paths sharing a prefix are uncovered', () => {

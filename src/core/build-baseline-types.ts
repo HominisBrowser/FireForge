@@ -39,6 +39,12 @@ export interface BuildBaseline {
    */
   packageableFingerprints?: Record<string, string>;
   /**
+   * All dirty staging inputs, including plain test scripts and support fixtures.
+   * Omitted when any input could not be fingerprinted; a partial map cannot
+   * anchor retained coverage.
+   */
+  testInputFingerprints?: Record<string, string>;
+  /**
    * Content hash per build-input manifest (`jar.mn`, `moz.build`,
    * `moz.configure`, `Makefile.in`, `mozbuild.in`) that was dirty
    * (modified-against-HEAD or untracked) when the recorded build succeeded.
@@ -86,20 +92,12 @@ export interface BuildBaseline {
    * checkouts are refused up-front (`AmbiguousBuildArtifactsError`), so at
    * most one obj dir exists per project.
    *
-   * Union/"shared coverage" across successive scoped builds is unsound in
-   * general: every baseline write refreshes `packageableFingerprints` for
-   * all dirty packageable paths, so a blind union would whitewash an
-   * earlier scope's edited fixtures while `obj-*`/`_tests/` still holds its
-   * stale staging. Coverage therefore replaces by default.
-   *
-   * The one exception is `test --build --extend-coverage`, which unions only
-   * after proving the previous record's anchor still holds: same engine
-   * HEAD, same {@link BuildBaseline.mozconfigHash}, and every previously
-   * fingerprinted path byte-identical, i.e. the wholesale fingerprint
-   * refresh is a no-op for everything the earlier scope's staging depended
-   * on. Any divergence refuses fail-closed. See `src/core/coverage-extend.ts`
-   * for the one boundary that guard does not cover (dirty non-packageable
-   * fixtures).
+   * Successive scoped builds retain the previous claim only when HEAD,
+   * mozconfig and complete testInputFingerprints outside the rebuilt scope
+   * remain anchored. Explicitly rebuilt paths may change. A failed anchor
+   * replaces coverage with a dropped-path notice, or refuses when the caller
+   * required --extend-coverage. Legacy packageable-only anchors cannot retain
+   * coverage because they cannot prove test scripts and fixtures unchanged.
    */
   testPackagingCoverage?: TestPackagingCoverage;
   /**

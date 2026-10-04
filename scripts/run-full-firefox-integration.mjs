@@ -6,6 +6,15 @@ import { access, copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  containedPath,
+  recoveryFailure,
+  restoreEngine,
+  restorePath,
+  snapshotEngine,
+  snapshotPath,
+} from './full-integration-workspace.mjs';
+
 const projectRoot = process.env.FIREFORGE_FULL_PROJECT_ROOT;
 const buildMode = process.env.FIREFORGE_FULL_BUILD_MODE === 'full' ? 'full' : 'ui';
 const targetFileOverride = process.env.FIREFORGE_FULL_TARGET_FILE;
@@ -32,9 +41,9 @@ const artifactStamp = new Date().toISOString().replace(/[:.]/g, '-');
 const artifactDir = join(projectRoot, '.fireforge', 'full-integration-artifacts', artifactStamp);
 const engineDir = join(projectRoot, 'engine');
 const backups = new Map();
-const initialDirtyContent = new Map();
+let engineBaseline;
+let mutationArmed = false;
 const createdPatchInfo = { filename: null };
-let initialEngineStatusEntries = [];
 
 function toError(error) {
   return error instanceof Error ? error : new Error(String(error));
@@ -146,6 +155,7 @@ function runCapture(command, args, options = {}) {
     encoding: 'utf8',
     env: {
       ...process.env,
+      GIT_OPTIONAL_LOCKS: '0',
       ...(options.env ?? {}),
     },
   });
@@ -292,28 +302,12 @@ function appendMarker(content, marker) {
 }
 
 async function backupRelative(relativePath) {
-  const absolutePath = join(projectRoot, relativePath);
-  if (await pathExists(absolutePath)) {
-    backups.set(relativePath, await readFile(absolutePath));
-  } else {
-    backups.set(relativePath, null);
-  }
+  backups.set(relativePath, await snapshotPath(join(projectRoot, relativePath)));
 }
 
 async function restoreRelative(relativePath) {
-  if (!backups.has(relativePath)) {
-    return;
-  }
-
-  const absolutePath = join(projectRoot, relativePath);
-  const original = backups.get(relativePath);
-
-  if (original === null) {
-    await rm(absolutePath, { recursive: true, force: true });
-  } else {
-    await mkdir(dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, original);
-  }
+  const snapshot = backups.get(relativePath);
+  if (snapshot) await restorePath(join(projectRoot, relativePath), snapshot);
 }
 
 async function loadJson(relativePath) {
@@ -335,35 +329,6 @@ function getManifestPatchedFiles(manifest) {
   }
 
   return files;
-}
-
-function parseStatusEntries(output) {
-  return output
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .filter(Boolean)
-    .map((line) => {
-      const payload = line.slice(3);
-      const [originalPath, currentPath] = payload.includes(' -> ')
-        ? payload.split(' -> ')
-        : [undefined, payload];
-
-      return {
-        code: line.slice(0, 2),
-        currentPath,
-        originalPath,
-      };
-    });
-}
-
-function collectIntroducedPaths(currentEntries, initialEntries) {
-  const initialPaths = new Set(
-    initialEntries.flatMap((entry) =>
-      entry.originalPath ? [entry.currentPath, entry.originalPath] : [entry.currentPath]
-    )
-  );
-
-  return currentEntries.map((entry) => entry.currentPath).filter((path) => !initialPaths.has(path));
 }
 
 function selectCandidateFromList(candidateFiles, manifestFiles, engineDir) {
@@ -565,16 +530,16 @@ async function main() {
     );
   }
 
-  const targetStatus = runCapture('git', ['-C', engineDir, 'status', '--short', '--', targetFile], {
-    allowFailure: true,
-  });
+  containedPath(engineDir, targetFile);
+  runCapture('git', ['-C', engineDir, 'ls-files', '--error-unmatch', '--', targetFile]);
+  const targetStatus = runCapture('git', ['-C', engineDir, 'status', '--short', '--', targetFile]);
   if (targetStatus.stdout.trim().length > 0) {
     throw new Error(
       `Target file ${targetFile} already has local changes. Choose a clean file with FIREFORGE_FULL_TARGET_FILE.`
     );
   }
 
-  for (const relativePath of [...setupManagedFiles, targetFile]) {
+  for (const relativePath of setupManagedFiles) {
     await backupRelative(relativePath);
   }
 
@@ -585,18 +550,22 @@ async function main() {
     'status',
     '--short',
   ]).stdout;
-  initialEngineStatusEntries = parseStatusEntries(
-    runCapture('git', ['-C', engineDir, 'status', '--porcelain=v1', '--untracked-files=all']).stdout
+  engineBaseline = await snapshotEngine(engineDir);
+  // Persist recoverable bytes before the first external mutation. A failed
+  // preflight/snapshot has no cleanup authority over the user's workspace.
+  await writeArtifact(
+    'recovery-baseline.json',
+    JSON.stringify(
+      {
+        indexPath: engineBaseline.indexPath,
+        index: engineBaseline.index,
+        engine: [...engineBaseline.paths],
+        project: [...backups],
+      },
+      null,
+      2
+    )
   );
-
-  for (const entry of initialEngineStatusEntries) {
-    const absPath = join(engineDir, entry.currentPath);
-    try {
-      initialDirtyContent.set(entry.currentPath, await readFile(absPath));
-    } catch {
-      initialDirtyContent.set(entry.currentPath, null);
-    }
-  }
 
   const effectiveFirefoxVersion = firefoxVersionOverride ?? config.firefox.version;
   const setupArgs = [
@@ -619,12 +588,16 @@ async function main() {
     setupArgs.push('--license', config.license);
   }
 
-  const targetAbsolutePath = join(engineDir, targetFile);
-  const originalTargetContent = await readFile(targetAbsolutePath, 'utf8');
+  const targetAbsolutePath = containedPath(engineDir, targetFile);
+  const originalTarget = await snapshotPath(targetAbsolutePath);
+  if (originalTarget.kind !== 'file')
+    throw new Error('Integration target must be a regular tracked source file');
+  const originalTargetContent = originalTarget.content.toString('utf8');
   const markerId = artifactStamp;
   const patchMarker = commentMarkerFor(targetFile, markerId, 'patch');
   const dirtyMarker = commentMarkerFor(targetFile, markerId, 'dirty');
 
+  mutationArmed = true;
   if (skipSetup) {
     report.observations.setup = 'Skipped because FIREFORGE_FULL_SKIP_SETUP=1';
   } else {
@@ -746,94 +719,29 @@ try {
   };
 } finally {
   try {
-    if (report.targetFile) {
-      const currentEngineStatusEntries = parseStatusEntries(
-        runCapture('git', ['-C', engineDir, 'status', '--porcelain=v1', '--untracked-files=all'], {
-          allowFailure: true,
-        }).stdout
-      );
-      const introducedPaths = collectIntroducedPaths(
-        currentEngineStatusEntries,
-        initialEngineStatusEntries
-      );
-
-      for (const file of introducedPaths) {
-        const absPath = join(engineDir, file);
-        const isTracked =
-          runCapture('git', ['-C', engineDir, 'ls-files', '--error-unmatch', '--', file], {
-            allowFailure: true,
-          }).exitCode === 0;
-
-        const result = isTracked
-          ? runCapture('git', ['-C', engineDir, 'checkout', '--', file], { allowFailure: true })
-          : runCapture('git', ['-C', engineDir, 'clean', '-f', '--', file], {
-              allowFailure: true,
-            });
-
-        if (result.exitCode === 0) {
-          report.cleanup.actions.push(
-            `Cleaned introduced engine path ${file} (${isTracked ? 'checkout' : 'clean'})`
-          );
-        } else {
-          try {
-            await rm(absPath, { recursive: true, force: true });
-            report.cleanup.actions.push(`Removed introduced engine path ${file} (fallback rm)`);
-          } catch (rmError) {
-            report.cleanup.errors.push(
-              `Failed to clean introduced engine path ${file}: ${toError(rmError).message}`
-            );
-          }
-        }
-      }
-
-      const initialDirtyPaths = new Set(initialEngineStatusEntries.map((e) => e.currentPath));
-      const introducedSet = new Set(introducedPaths);
-      for (const entry of currentEngineStatusEntries) {
-        if (introducedSet.has(entry.currentPath)) {
-          continue;
-        }
-        if (!initialDirtyPaths.has(entry.currentPath)) {
-          continue;
-        }
-        const savedContent = initialDirtyContent.get(entry.currentPath);
-        if (savedContent === undefined) {
-          continue;
-        }
-        const absPath = join(engineDir, entry.currentPath);
-        try {
-          if (savedContent === null) {
-            await rm(absPath, { recursive: true, force: true });
-          } else {
-            await writeFile(absPath, savedContent);
-          }
-          report.cleanup.actions.push(`Restored initially-dirty engine path ${entry.currentPath}`);
-        } catch (error) {
-          const msg = toError(error).message;
-          report.cleanup.errors.push(
-            `Failed to restore initially-dirty engine path ${entry.currentPath}: ${msg}`
-          );
-        }
-      }
+    if (mutationArmed) {
+      await restoreEngine(engineDir, engineBaseline, report.cleanup);
     }
 
-    if (!keepPatch && createdPatchInfo.filename) {
+    if (mutationArmed && !keepPatch && createdPatchInfo.filename) {
       await rm(join(projectRoot, 'patches', createdPatchInfo.filename), { force: true });
       report.cleanup.actions.push(`Removed temporary patch ${createdPatchInfo.filename}`);
     }
 
     const restoreTargets = keepPatch
-      ? [
-          ...setupManagedFiles.filter((relativePath) => relativePath !== 'patches/patches.json'),
-          report.targetFile,
-        ]
-      : [...setupManagedFiles, report.targetFile];
+      ? [...setupManagedFiles.filter((relativePath) => relativePath !== 'patches/patches.json')]
+      : setupManagedFiles;
 
-    for (const relativePath of restoreTargets) {
+    for (const relativePath of mutationArmed ? restoreTargets : []) {
       if (!relativePath) {
         continue;
       }
-      await restoreRelative(relativePath);
-      report.cleanup.actions.push(`Restored ${relativePath}`);
+      try {
+        await restoreRelative(relativePath);
+        report.cleanup.actions.push(`Restored ${relativePath}`);
+      } catch (error) {
+        report.cleanup.errors.push(`Failed to restore ${relativePath}: ${toError(error).message}`);
+      }
     }
   } catch (error) {
     const message = toError(error).message;
@@ -847,6 +755,10 @@ try {
     }
   }
 
+  mainError ??= recoveryFailure(report.cleanup.errors);
+  if (mainError && !report.failure) {
+    report.failure = { message: mainError.message, stack: mainError.stack };
+  }
   report.completedAt = new Date().toISOString();
   report.success = mainError === null;
 

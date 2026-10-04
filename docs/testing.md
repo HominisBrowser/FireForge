@@ -34,9 +34,59 @@ build, `test` fails before launching stale artifacts. Use `--build` to
 refresh, or `--allow-stale-build` only for intentional out-of-band rebuilds.
 
 `--build-only` packages mixed-harness paths once, and then each harness half
-can run without `--build`. `--extend-coverage` retains prior scoped coverage
-instead of replacing it. It is refused when the build anchor moved (engine
-HEAD, `engine/mozconfig`, or a previously fingerprinted packageable file).
+can run without `--build`. Scoped builds retain prior coverage automatically
+when engine HEAD, `engine/mozconfig` and recorded staging inputs outside the
+rebuilt scope are unchanged. Changed files explicitly included in this
+build are allowed. The fingerprints include test scripts and support files,
+not only packageable chrome sources. A failed anchor narrows the claim and
+prints the dropped paths; `--extend-coverage` instead refuses. Baselines
+without complete staging-input fingerprints require a new build before they
+can retain prior coverage.
+New dirty inputs outside the rebuilt scope invalidate retention conservatively,
+including shared fixtures outside test directories.
+
+When `patchLint.checkJs` and `patchLint.checkJsTestFiles` are enabled, named
+pre-test builds check the selected test scripts before deployment or mach.
+This includes new scripts not yet owned by an exported patch.
+
+### Shared browsers, ports and host state
+
+Browser ownership is checked before a pre-test deployment and before full
+or UI builds. A live or unreadable parent means busy, with its owner named
+when available. `--kill-stale-marionette` requires a dead parent plus harness
+arguments; a profile argument alone does not prove abandonment. A plain
+launchd-parented app remains unattributed and is not automatically killed.
+
+`test --wait-browser [seconds]` waits for this objdir's browser to exit;
+`test --wait-port [seconds]` waits for mochitest and Marionette listeners.
+`build --wait-browser [seconds]` queues a full or UI build behind the browser.
+Bare flags wait 60 seconds; explicit values accept 1–3600 seconds. They are
+independent of the FireForge lock budget. On expiry the normal preflight
+refusal and its remedy are preserved.
+
+Every suite samples host load and the highest CPU process before and after
+dispatch. Load at least 4 or a process at least 90% CPU produces a warning;
+verdicts include `host-load` and, when needed, `host-cpu-warning=true`.
+Perf runs include `power-source=ac|battery|unknown`; on macOS this comes from
+`pmset -g ps`, including charging on AC. Sample JSON gains a `fireforgeHost`
+object with start/end states and `powerSourceChanged`. A known power-source
+transition produces `FAIL reason=inconclusive power-changed=true`.
+Unknown power state is reported without inventing a transition.
+
+### Profile overlays
+
+Use repeatable `--profile-file source=relative/destination` to add files to
+the test profile, for example:
+
+```sh
+fireforge test --perf-samples sample.json --profile-file arm.css=chrome/userChrome.css browser/base/content/test/perf/browser_perf.js
+```
+
+The source resolves from the project root. Destinations must stay relative
+with no traversal. FireForge stages copies and merges only those staged
+directories into the harness profile, preserving existing chrome files.
+A raw `--extra-profile-file` directory collision is classified as
+`reason=harness-arguments` and names this remedy rather than a rebuild.
 
 ### What a pre-test build costs
 
@@ -183,15 +233,16 @@ redirected run keeps the reason as well as the verdict. See
 
 ## Seeded shuffle
 
-`fireforge test --shuffle` runs a mochitest selection in a seeded random file
-order and prints the seed; `--shuffle=<seed>` replays it. FireForge forwards
-mach's own `--shuffle`, exports `FIREFORGE_SHUFFLE_SEED=<seed>` to the harness
-so in-file task reordering (harness `head.js` code, not FireForge) can key off
-the same number, and stamps `shuffle=<seed>` on the verdict line. It is
-mochitest-only: the xpcshell harness has no shuffle, and generic `mach test`
-dispatch would hand the flag to every suite. Write the flag as
-`--shuffle=<seed>` or after the paths, because a bare `--shuffle <path>` reads
-the path as the seed.
+`fireforge test --shuffle` deterministically permutes isolated mochitest path
+arguments and prints the seed; `--shuffle=<seed>` replays that shard order for
+the same input selection. A directory remains one invocation. `--no-shard`
+disables this argument permutation. FireForge also forwards native mach
+`--shuffle` within each invocation, whose file order remains unseeded and is
+not replayed by the FireForge seed. `FIREFORGE_SHUFFLE_SEED=<seed>` is available
+to custom harness `head.js` code for in-file task ordering, and `shuffle=<seed>`
+is recorded on the verdict. The option is mochitest-only. Write
+`--shuffle=<seed>` or place it after the paths because a bare
+`--shuffle <path>` consumes the path as its optional seed.
 
 Exit code 14 (`INCONCLUSIVE`) is not red: it means `engine/` moved while the
 harness ran and the result was thrown away. Exit 15 (`LOCK_TIMEOUT`) means
@@ -256,3 +307,17 @@ instead, use a [verification tree](verification-trees.md).
 In dev builds, files under `obj-*/dist/bin` may be symlinks back into the
 source tree (prefs especially), so edit source prefs directly and keep a
 backup before bisection experiments.
+
+## Repository release gate
+
+Run `npm run release:check` with the exact Node version in `.nvmrc` and npm
+version in `package.json`'s `packageManager`. The gate verifies these pins
+before formatting, whitespace, zero-warning lint, strict typecheck, development
+and production dead-code checks, import cycles, coverage floors, and installed
+package smoke tests. `prepublishOnly` and the CI quality job run the same gate.
+Supported Node-version and OS matrices continue to run ordinary tests separately.
+
+The full-Firefox integration runner is opt-in. It snapshots project files,
+engine changes and the index before arming recovery; a refusal cannot erase an
+existing workspace. Failed recovery fails the run, preserves affected paths and
+writes recovery evidence for manual repair.

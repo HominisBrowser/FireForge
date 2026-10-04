@@ -1,38 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `test --build/--build-only --extend-coverage`: unions the requested paths
- * into the recorded `testPackagingCoverage` instead of replacing it, under
- * an anchor guard.
- *
- * Coverage replaces by default for a reason documented in
- * `build-baseline-types.ts`: every baseline write refreshes
- * `packageableFingerprints` for all dirty packageable paths, so a blind
- * union would whitewash an earlier scope's edited fixtures while
- * `obj-*`/`_tests/` still holds that scope's stale staging. Extending is
- * honest only while everything the previous record vouched for is still
- * true, which is what {@link checkExtendCoverageAnchor} and
- * {@link checkExtendMozconfigAnchor} verify:
- *
- *   1. engine HEAD is unchanged, so every committed edit is excluded.
- *   2. every path the previous baseline fingerprinted still hashes to the
- *      recorded digest, so the earlier scope's staging inputs are
- *      byte-identical. Files that became dirty since that build are fine:
- *      the current whole-tree `mach build faster` repackages `dist/` and
- *      vouches for them.
- *   3. the generated `engine/mozconfig` is unchanged. Engine HEAD does not
- *      cover this: the mozconfig is regenerated from project-side
- *      `configs/*.mozconfig` templates plus `fireforge.json` on every build,
- *      so two builds at the same engine SHA can configure differently.
- *
- * Every failure refuses fail-closed. The operator's remedy is always a plain
- * scoped build, which resets the claim to the paths it actually vouches for.
- *
- * Known boundary, documented rather than closed: dirty non-packageable
- * fixtures under previously covered paths (plain test files, manifests
- * `isPackageablePath` rejects) are invisible to check 2. Editing one
- * uncommitted between two builds leaves the earlier scope's `_tests/`
- * staging stale while extend still vouches for it. Plain replacement has no such
- * window, because the earlier scope simply stops being covered.
+ * Retains prior test staging only when HEAD, mozconfig and every recorded
+ * dirty input outside the newly rebuilt scope are unchanged. Complete
+ * input fingerprints are required: packageable-only legacy records cannot
+ * prove that a test fixture or manifest still matches its staged copy.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -47,6 +18,8 @@ import {
   type TestPackagingCoverage,
 } from './build-baseline-types.js';
 import { getHead, isMissingHeadError } from './git.js';
+import { git } from './git-base.js';
+import { getUntrackedFiles } from './git-status.js';
 
 /** Filename of the generated mozconfig, relative to the engine directory. */
 const MOZCONFIG_FILENAME = 'mozconfig';
@@ -75,7 +48,8 @@ export type ExtendAnchorResult =
  */
 export async function checkExtendCoverageAnchor(
   engineDir: string,
-  previousBaseline: BuildBaseline | undefined
+  previousBaseline: BuildBaseline | undefined,
+  rebuiltPaths: readonly string[] = []
 ): Promise<ExtendAnchorResult> {
   if (previousBaseline === undefined) {
     return { ok: false, reason: 'no-baseline', detail: [] };
@@ -83,7 +57,9 @@ export async function checkExtendCoverageAnchor(
   if (previousBaseline.mozconfigHash === undefined) {
     return { ok: false, reason: 'no-mozconfig-hash', detail: [] };
   }
-  const recordedFingerprints = previousBaseline.packageableFingerprints;
+  const recordedFingerprints = previousBaseline.testInputFingerprints;
+  const rebuilt = (file: string): boolean =>
+    rebuiltPaths.some((path) => file === path || file.startsWith(path.replace(/\/$/, '') + '/'));
   if (recordedFingerprints === undefined) {
     return { ok: false, reason: 'no-fingerprints', detail: [] };
   }
@@ -103,8 +79,22 @@ export async function checkExtendCoverageAnchor(
 
   const diverged: string[] = [];
   for (const [relPath, recordedHash] of Object.entries(recordedFingerprints)) {
+    if (rebuilt(relPath)) continue;
     const liveHash = await hashEngineFile(engineDir, relPath);
     if (liveHash !== recordedHash) diverged.push(relPath);
+  }
+  // New dirty test inputs are absent from the previous fingerprint map.
+  // They invalidate retained staging too; explicitly rebuilt inputs are safe.
+  if (previousBaseline.testInputFingerprints !== undefined) {
+    const changed = (await git(['diff', '--name-only', 'HEAD'], engineDir)).split('\n');
+    changed.push(...(await getUntrackedFiles(engineDir)));
+    for (const file of changed.filter(Boolean)) {
+      if (file === MOZCONFIG_FILENAME || rebuilt(file) || Object.hasOwn(recordedFingerprints, file))
+        continue;
+      // A retained manifest may stage a shared fixture outside test-named
+      // directories. Without its full dependency graph, refuse conservatively.
+      diverged.push(file);
+    }
   }
   if (diverged.length > 0) {
     return { ok: false, reason: 'fingerprint-diverged', detail: diverged.sort() };
@@ -178,7 +168,7 @@ export function formatExtendCoverageRefusal(result: {
       );
     case 'no-fingerprints':
       return (
-        '--extend-coverage refused: the recorded baseline carries no packageable fingerprints, so ' +
+        '--extend-coverage refused: the recorded baseline carries no complete test-input fingerprints, so ' +
         `the earlier scope's staging inputs cannot be verified unchanged. ${remedy}`
       );
     case 'head-moved':
@@ -190,7 +180,7 @@ export function formatExtendCoverageRefusal(result: {
     case 'fingerprint-diverged':
       return (
         '--extend-coverage refused: ' +
-        `${result.detail.length} packageable file(s) the recorded build staged have changed ` +
+        `${result.detail.length} staging input(s) the recorded build staged have changed ` +
         `since (${formatDivergedPaths(result.detail)}). Extending would vouch for the earlier scope ` +
         `while obj-*/_tests/ still holds its stale staging. ${remedy}`
       );

@@ -340,21 +340,46 @@ function parsePackResult(stdout: string): Array<{
   files?: Array<{ path: string }>;
 }> {
   const trimmed = stdout.trim();
-
-  for (
-    let index = trimmed.lastIndexOf('[');
-    index >= 0;
-    index = trimmed.lastIndexOf('[', index - 1)
-  ) {
+  // npm versions emit either an array or a map keyed by package name.
+  // prepack output may precede the JSON, so find a complete final document.
+  for (let index = trimmed.length - 1; index >= 0; index--) {
+    if (trimmed[index] !== '[' && trimmed[index] !== '{') continue;
     try {
-      return JSON.parse(trimmed.slice(index)) as Array<{ filename: string }>;
+      const parsed: unknown = JSON.parse(trimmed.slice(index));
+      if (typeof parsed !== 'object' || parsed === null) continue;
+      const entries: unknown[] = Array.isArray(parsed) ? parsed : Object.values(parsed);
+      if (
+        entries.length === 0 ||
+        !entries.every(
+          (entry) =>
+            typeof entry === 'object' &&
+            entry !== null &&
+            'filename' in entry &&
+            typeof entry.filename === 'string'
+        )
+      )
+        continue;
+      return entries as Array<{ filename: string; files?: Array<{ path: string }> }>;
     } catch {
       continue;
     }
   }
-
-  throw new Error(`Unexpected npm pack --json output: ${trimmed}`);
+  throw new Error('Unexpected npm pack --json output: no package records with tarball filenames');
 }
+
+// Keep all artifact and installed-consumer checks below using the same parser.
+describe('npm pack JSON compatibility', () => {
+  const record = { filename: 'fireforge.tgz', files: [{ path: 'dist/bin/fireforge.js' }] };
+  it('accepts array output with lifecycle banners', () => {
+    expect(parsePackResult('prepack banner\n' + JSON.stringify([record]))).toEqual([record]);
+  });
+  it('accepts package-name-keyed output', () => {
+    expect(parsePackResult(JSON.stringify({ '@hominis/fireforge': record }))).toEqual([record]);
+  });
+  it('refuses output without a tarball filename', () => {
+    expect(() => parsePackResult('{"unexpected":[]}')).toThrow(/Unexpected npm pack/);
+  });
+});
 
 async function listRelativeFiles(root: string, prefix = ''): Promise<string[]> {
   const entries = await readdir(join(root, prefix), { withFileTypes: true });

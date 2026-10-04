@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Stdin-fed command execution with byte-exact stdout.
- *
- * Its own module rather than a function in `process.ts` only because that
- * file sits on a 500-line budget. The logic belongs to the exec layer.
  */
 import { spawn } from 'node:child_process';
 

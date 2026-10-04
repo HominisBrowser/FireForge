@@ -435,7 +435,7 @@ export async function applyCustomComponent(
   // fragment-expanded form. The workspace source keeps only the directive,
   // so shared CSS stays single-sourced.
   const sharedDir = join(componentDir, '..', '..', SHARED_FRAGMENTS_DIR);
-  await Promise.all(
+  const copies = await Promise.allSettled(
     filesToCopy.map(async (entry) => {
       const src = join(componentDir, entry.name);
       const dest = join(targetDir, entry.name);
@@ -444,6 +444,9 @@ export async function applyCustomComponent(
       copiedFileNames.push(entry.name);
     })
   );
+
+  const failedCopy = copies.find((copy) => copy.status === 'rejected');
+  if (failedCopy?.status === 'rejected') throw failedCopy.reason;
 
   // See buildCustomDryRunActions for the rationale: when `sharedFtl` is set
   // the shared bundle is owned elsewhere and FireForge must not copy or
@@ -554,7 +557,7 @@ export async function applyOverrideComponent(
   }
 
   // Copy phase (parallel)
-  await Promise.all(
+  const copies = await Promise.allSettled(
     candidateEntries.map(async (entry) => {
       const src = join(componentDir, entry.name);
       const dest = getOverrideEngineTargetPath(engineDir, config, entry.name, ftlDir);
@@ -562,6 +565,9 @@ export async function applyOverrideComponent(
       affectedPaths.push(normalizePathSlashes(relative(engineDir, dest)));
     })
   );
+
+  const failedCopy = copies.find((copy) => copy.status === 'rejected');
+  if (failedCopy?.status === 'rejected') throw failedCopy.reason;
 
   if (affectedPaths.length === 0) {
     throw new FurnaceError(`No matching files found in override directory for "${name}"`, name);

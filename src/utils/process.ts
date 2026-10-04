@@ -5,6 +5,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import { ExecTimeoutError, type ExecTimeoutOutput } from '../errors/base.js';
 import { buildChildEnv } from './child-env.js';
+import { toError } from './errors.js';
 import { dispatchCompleteLines } from './line-dispatch.js';
 import { killProcessTree, sweepProcessGroup } from './process-group.js';
 
@@ -354,6 +355,7 @@ async function spawnTracked<C extends ChildProcess, T>(spec: TrackedSpawnSpec<C,
         ? installGracefulShutdownForwarder(child, spec.graceMs, killTarget)
         : undefined;
     const closure = trackChildClosure();
+    let rejection: Error | undefined;
 
     child.on('error', (error) => {
       // Abort/startup failure: make sure a partially-started tree does not
@@ -362,16 +364,23 @@ async function spawnTracked<C extends ChildProcess, T>(spec: TrackedSpawnSpec<C,
       if (options.processGroup === true) {
         killProcessTree(child, 'SIGKILL', usesProcessGroup);
       }
-      forwarder?.dispose();
-      closure.settle();
-      reject(toExecRejection(error, command, args, options.timeout, spec.rejectionOutput?.()));
+      // An abort emits error before close. Keep the dispatch tracked until
+      // the child closes and both teardown sweeps finish, including on timeout.
+      rejection = toExecRejection(error, command, args, options.timeout, spec.rejectionOutput?.());
     });
 
     child.on('close', (code, signal) => {
       forwarder?.dispose();
       const finish = (): void => {
         closure.settle();
-        resolve(spec.result(code, signal));
+        if (rejection) reject(rejection);
+        else {
+          try {
+            resolve(spec.result(code, signal));
+          } catch (error: unknown) {
+            reject(toError(error));
+          }
+        }
       };
       // Group sweep first (it takes the helpers that stayed in the group),
       // then the caller's own sweep (the ones that did not), then settle.
@@ -381,7 +390,7 @@ async function spawnTracked<C extends ChildProcess, T>(spec: TrackedSpawnSpec<C,
           finish();
           return;
         }
-        sweep().then(finish, finish);
+        Promise.resolve().then(sweep).then(finish, finish);
       };
       if (groupPid !== undefined) {
         sweepProcessGroup(groupPid).then(callerSweep, callerSweep);
@@ -459,8 +468,9 @@ const activeChildClosures = new Set<Promise<void>>();
  * Registers a child whose shutdown {@link waitForActiveChildShutdown} must
  * wait for, and returns the handle that deregisters it.
  *
- * @returns `settle()`. Call from both the child's `close` and `error`
- *   handlers so a dead child never holds the shutdown wait open
+ * @returns `settle()`. Call after child closure and required teardown finish.
+ *   An abort's `error` event does not prove closure; do not settle there.
+ *   A failed start may settle when no live child or teardown remains.
  */
 export function trackChildClosure(): { settle: () => void } {
   let resolveClosed: (() => void) | undefined;

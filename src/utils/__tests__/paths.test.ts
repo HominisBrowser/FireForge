@@ -77,6 +77,13 @@ describe('isContainedRelativePath', () => {
     expect(isContainedRelativePath('a/../../b')).toBe(false);
   });
 
+  it('accepts names beginning with dots without treating them as traversal', () => {
+    expect(isContainedRelativePath('..notes/file.js')).toBe(true);
+    expect(isContainedRelativePath('.../file.js')).toBe(true);
+    expect(isPathInsideRoot('/root', '/root/..notes/file.js')).toBe(true);
+    expect(isPathInsideRoot('/root', '/root/../..notes/file.js')).toBe(false);
+  });
+
   it('rejects POSIX absolute paths', () => {
     expect(isContainedRelativePath('/etc/passwd')).toBe(false);
   });

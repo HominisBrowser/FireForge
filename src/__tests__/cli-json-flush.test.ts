@@ -17,8 +17,8 @@
  * reader: the parent process eagerly buffers the whole payload internally
  * and defeats the backpressure this test depends on.
  */
-import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -31,6 +31,7 @@ import {
   writeFiles,
   writeFireForgeConfig,
 } from '../test-utils/index.js';
+import { runCapturedProcess } from '../test-utils/spawned-process.js';
 
 /** Enough unmanaged files that the JSON payload clears 64 KiB comfortably. */
 const UNMANAGED_FILE_COUNT = 600;
@@ -67,32 +68,16 @@ describe('status --json --fail-on refusal through a real pipe', () => {
     // During the sleep the pipe has no reader at all, so a CLI that exits
     // before Node flushes past the kernel buffer truncates stdout at exactly
     // 65 536 bytes.
+    const loader = pathToFileURL(join(dirname(TSX_CLI), 'loader.mjs')).href;
+    const quoteShell = (value: string): string => "'" + value.replaceAll("'", "'\\''") + "'";
     const pipeline = [
       'set -o pipefail',
-      `"${process.execPath}" "${TSX_CLI}" "${FIREFORGE_BIN_ENTRY}" status --json --fail-on unmanaged | { sleep 0.5; cat; }`,
+      `${quoteShell(process.execPath)} --import ${quoteShell(loader)} ${quoteShell(FIREFORGE_BIN_ENTRY)} status --json --fail-on unmanaged | { sleep 0.5; cat; }`,
     ].join('\n');
-    const child = spawn('bash', ['-c', pipeline], {
+    const { exitCode, stdout, stderr } = await runCapturedProcess('bash', ['-c', pipeline], {
       cwd: projectRoot,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      timeoutMs: 55_000,
     });
-
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-
-    const [exitCode] = await Promise.all([
-      new Promise<number>((resolve) => {
-        child.on('exit', (code) => {
-          resolve(code ?? -1);
-        });
-      }),
-      new Promise<void>((resolve) => child.stdout.on('close', resolve)),
-      new Promise<void>((resolve) => child.stderr.on('close', resolve)),
-    ]);
-
-    const stdout = Buffer.concat(stdoutChunks).toString('utf8');
-    const stderr = Buffer.concat(stderrChunks).toString('utf8');
 
     expect(exitCode).toBe(1);
     expect(Buffer.byteLength(stdout)).toBeGreaterThan(65_536);

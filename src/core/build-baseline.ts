@@ -20,9 +20,10 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { PreflightRefusalError } from '../errors/base.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getNodeErrorCode, toError } from '../utils/errors.js';
-import { pathExists, readJson, writeJson } from '../utils/fs.js';
+import { readJson, writeJson } from '../utils/fs.js';
 import { sha256Hex } from '../utils/hash.js';
 import { verbose } from '../utils/logger.js';
 import {
@@ -37,6 +38,7 @@ import {
   type StaticComponentsBaseline,
   type TestPackagingCoverage,
 } from './build-baseline-types.js';
+import { isBuildBaseline } from './build-baseline-validate.js';
 import { FIREFORGE_DIR } from './config-paths.js';
 import { hashEngineFile } from './coverage-extend.js';
 import { getHead, hasChanges, isMissingHeadError } from './git.js';
@@ -73,20 +75,29 @@ export function getBuildBaselinePath(projectRoot: string): string {
 
 /**
  * Reads the last-build baseline if present. Returns undefined when no
- * previous successful build has been recorded. Callers must tolerate that
- * path (first build, cleaned workspace).
+ * previous successful build has been recorded. Builds can replace invalid
+ * markers; dispatch preflights pass `refuse` so invalid coverage never
+ * becomes the legacy implicit full claim.
  * @param projectRoot - Root directory of the project
  */
-export async function readBuildBaseline(projectRoot: string): Promise<BuildBaseline | undefined> {
+export async function readBuildBaseline(
+  projectRoot: string,
+  invalid: 'ignore' | 'refuse' = 'ignore'
+): Promise<BuildBaseline | undefined> {
   const path = getBuildBaselinePath(projectRoot);
-  if (!(await pathExists(path))) {
-    return undefined;
-  }
   try {
-    return await readJson<BuildBaseline>(path);
-  } catch {
-    // A corrupt marker is equivalent to no marker: the audit/auto-configure
-    // will treat it as "first build" rather than block on the inconsistency.
+    const value = await readJson<unknown>(path);
+    if (!isBuildBaseline(value)) throw new Error('invalid baseline fields');
+    return value;
+  } catch (error: unknown) {
+    if (getNodeErrorCode(error) === 'ENOENT') return undefined;
+    if (invalid === 'refuse') {
+      throw new PreflightRefusalError(
+        `Build baseline ${path} is invalid: ${toError(error).message}. Run "fireforge build" to record a fresh baseline before dispatching tests.`,
+        'invalid-build-baseline'
+      );
+    }
+    verbose(`Ignoring invalid build baseline ${path}: ${toError(error).message}`);
     return undefined;
   }
 }
@@ -168,6 +179,11 @@ export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Pr
   }
 
   const packageableFingerprints = await collectPackageableFingerprints(engineDir);
+  const testInputFingerprints = await collectDirtyFingerprints(
+    engineDir,
+    () => true,
+    'test staging fingerprint'
+  );
   const buildInputFingerprints = await collectBuildInputFingerprints(
     engineDir,
     previousBaseline,
@@ -192,6 +208,7 @@ export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Pr
     builtAt: new Date().toISOString(),
     binaryName,
     ...(packageableFingerprints !== undefined ? { packageableFingerprints } : {}),
+    ...(testInputFingerprints !== undefined ? { testInputFingerprints } : {}),
     ...(buildInputFingerprints !== undefined ? { buildInputFingerprints } : {}),
     ...(testPackagingCoverage !== undefined ? { testPackagingCoverage } : {}),
     ...(mozconfigHash !== undefined ? { mozconfigHash } : {}),
@@ -334,6 +351,8 @@ async function collectDirtyFingerprints(
       }
     );
     const fingerprints: Record<string, string> = {};
+    // Incomplete maps cannot prove retained test inputs unchanged.
+    if (entries.some((entry) => entry === undefined)) return undefined;
     for (const entry of entries) {
       if (entry !== undefined) fingerprints[entry[0]] = entry[1];
     }

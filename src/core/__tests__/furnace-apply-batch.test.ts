@@ -4,6 +4,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { nativePath } from '../../test-utils/index.js';
 import { createFsMock } from '../../test-utils/module-mocks.js';
 
+vi.mock('../component-source-guard.js', () => ({
+  captureComponentSources: vi.fn(() => Promise.resolve({ roots: [], files: new Map() })),
+  componentSourceErrors: vi.fn(() => Promise.resolve([])),
+}));
+
+vi.mock('../engine-write-boundary.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../engine-write-boundary.js')>();
+  return {
+    ...actual,
+    // This orchestration fixture uses virtual engine paths. Real directory
+    // ownership and alias refusals are exercised by the filesystem regressions.
+    assertComponentWriteBoundaries: vi.fn<typeof actual.assertComponentWriteBoundaries>(() =>
+      Promise.resolve()
+    ),
+  };
+});
+
 vi.mock('../../utils/fs.js', () => createFsMock());
 
 vi.mock('../config.js', () => ({
@@ -141,6 +158,12 @@ import { runPostApplyConsistencyChecks } from '../furnace-validate-registration.
 describe('applyAllComponents', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Clear queued one-shot responses too: an earlier refusal can happen
+    // before these helpers run and must not change the next scenario's plan.
+    vi.mocked(hasComponentChanged).mockReset().mockResolvedValue(false);
+    vi.mocked(computeComponentChecksums).mockReset().mockResolvedValue({});
+    vi.mocked(diffDeletedFiles).mockReset().mockReturnValue([]);
+    vi.mocked(extractComponentChecksums).mockReset();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-07T12:00:00.000Z'));
 
@@ -691,10 +714,12 @@ describe('applyAllComponents', () => {
         expect.objectContaining({
           component: 'moz-card',
           action: 'undeploy-restore',
+          target: nativePath('/project/engine/toolkit/content/widgets/moz-card/moz-card.css'),
         }),
         expect.objectContaining({
           component: 'moz-panel',
           action: 'undeploy-remove',
+          target: nativePath('/project/engine/browser/components/panel/moz-panel.mjs'),
         }),
         expect.objectContaining({
           component: 'moz-panel',

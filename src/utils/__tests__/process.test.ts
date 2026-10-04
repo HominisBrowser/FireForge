@@ -17,6 +17,7 @@ import {
   execSmokeRun,
   execStream,
   findExecutable,
+  waitForActiveChildShutdown,
 } from '../process.js';
 import { sweepProcessGroup } from '../process-group.js';
 
@@ -856,6 +857,59 @@ describe('process-group reaping', () => {
       });
       child.emit('close', 3, null);
       await expect(promise).resolves.toBe(3);
+    });
+
+    it('keeps an aborted dispatch tracked through close and caller teardown', async () => {
+      const child = makeGroupChild();
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
+      let release: () => void = () => undefined;
+      const cleanup = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const postCloseSweep = vi.fn(() => cleanup);
+      let rejected = false;
+      const outcome = execStream('fake-mach', ['test'], {
+        timeout: 20,
+        processGroup: true,
+        postCloseSweep,
+      }).catch((error: unknown) => {
+        rejected = true;
+        return error;
+      });
+      child.emit('error', Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      await Promise.resolve();
+      expect(rejected).toBe(false);
+      child.emit('close', null, 'SIGKILL');
+      await vi.waitFor(() => {
+        expect(postCloseSweep).toHaveBeenCalledOnce();
+      });
+      let shutdownComplete = false;
+      const shutdown = waitForActiveChildShutdown(5000).then(() => {
+        shutdownComplete = true;
+      });
+      await Promise.resolve();
+      expect(shutdownComplete).toBe(false);
+      expect(rejected).toBe(false);
+      release();
+      expect(await outcome).toBeInstanceOf(ExecTimeoutError);
+      await shutdown;
+      expect(shutdownComplete).toBe(true);
+      killSpy.mockRestore();
+    });
+
+    it('runs caller cleanup after a failed spawn closes before rejecting', async () => {
+      const child = makeChild();
+      mockSpawn.mockReturnValueOnce(child);
+      const failure = new Error('spawn ENOENT');
+      const postCloseSweep = vi.fn(() => Promise.resolve());
+      const outcome = execStream('missing-command', [], { postCloseSweep }).catch(
+        (error: unknown) => error
+      );
+      child.emit('error', failure);
+      child.emit('close', -2, null);
+      expect(await outcome).toBe(failure);
+      expect(postCloseSweep).toHaveBeenCalledOnce();
     });
   });
 });

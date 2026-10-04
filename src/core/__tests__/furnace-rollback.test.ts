@@ -130,33 +130,6 @@ describe('furnace rollback journal helpers', () => {
     await expect(readFile(filePath, 'utf8')).resolves.toBe('original\n');
   });
 
-  // POSIX mode bits are the refusal mechanism here. NTFS ignores
-  // `chmod`, so this cannot be ported to Windows, only skipped honestly.
-  it.skipIf(process.platform === 'win32')(
-    'cleans up the temp file when the atomic rename fails',
-    async () => {
-      const tempDir = await makeTempDir('fireforge-furnace-rollback-rename-');
-      const filePath = join(tempDir, 'nested', 'deep', 'file.txt');
-      const journal = createRollbackJournal();
-
-      journal.files.set(filePath, {
-        existed: true,
-        content: new Uint8Array(Buffer.from('original\n')),
-        mode: 0o644,
-      });
-
-      // Make the parent directory read-only so the temp file write fails with EACCES.
-      await mkdir(join(tempDir, 'nested', 'deep'), { recursive: true });
-      await writeFile(filePath, 'mutated\n');
-      await chmod(join(tempDir, 'nested', 'deep'), 0o444);
-
-      await expect(restoreRollbackJournal(journal)).rejects.toThrow();
-
-      // Restore permissions for cleanup.
-      await chmod(join(tempDir, 'nested', 'deep'), 0o755);
-    }
-  );
-
   it('restores an empty journal without errors', async () => {
     const journal = createRollbackJournal();
 

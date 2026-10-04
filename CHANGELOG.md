@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.49.0
+
+### Furnace and builds
+
+- Safer Furnace deployment and objdir cloning protect component sources and peer checkouts from shared files and directory aliases. Failed copies finish before rollback; cloned build metadata is relocated and verified.
+- Build and test preflight detect broken partial configuration, stale artifacts and invalid build baselines. Scoped builds retain coverage only while their inputs remain unchanged, and builds remove dangling test links.
+
+### Test harness
+
+- Added `test --wait-browser [seconds]`, `--wait-port [seconds]` and repeatable `--profile-file source=destination`. Browser ownership checks protect running builds; orphan cleanup waits for process and port release.
+- Test verdicts include host load and perf power-source information. Power changes make perf results inconclusive. Seeded shuffle reproduces shard order; native file shuffle remains unseeded.
+
+### Typecheck and lint
+
+- Project typecheck uses fresh diagnostics with consistent cached and uncached results. Gecko constructor shims support instance narrowing and pen input; selected test scripts receive configured checkJs checks before pre-test builds.
+- Improved Lit accessibility checks and token category parsing. Doctor checks engine source pins and reports missing engine-local ESLint setup early.
+
+### Patch queue
+
+- Added `re-export --expect-removed <path>` for safely retiring deleted patch-created files. Patch deletion rechecks the approved queue under lock.
+
+### Command reliability
+
+- Fixed leaf-command `--wait-lock` handling, JSON error reporting and watch retries. Process tracking and independent cleanup preserve the original run outcome through cancellation and cleanup failures.
+
+### Tooling
+
+- Full-Firefox integration preserves existing workspace files and Git index state, and fails on incomplete recovery. Build identity includes untracked contents and binary changes. Release checks enforce the pinned toolchain and additional module coverage floors.
+
 ## 0.48.0
 
 ### Engine lifecycle

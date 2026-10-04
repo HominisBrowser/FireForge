@@ -29,6 +29,7 @@ import {
   truncateEvidence,
   unmarkedFailureEvidenceNote,
 } from './test-harness-verdict-notes.js';
+import { classifyProfileArgumentFailure } from './test-profile-files.js';
 // Defined in a leaf module so this file and `test-stall-triage.ts` can both
 // name it without forming an import cycle. Re-exported here because the
 // command layer imports its harness diagnostics from this module.
@@ -42,7 +43,7 @@ export { headedDisplayAsleepVerdictNote, headedNoOutputTimeoutHint } from './tes
 
 /** How a completed harness run should be interpreted. */
 export type HarnessRunClassification =
-  'tests-ran-ok' | 'test-failures' | 'harness-crash' | 'no-tests';
+  'tests-ran-ok' | 'test-failures' | 'harness-crash' | 'harness-arguments' | 'no-tests';
 
 /** Numeric counts parsed from the harness's embedded result summary. */
 export interface HarnessSummaryCounts {
@@ -586,6 +587,8 @@ export function classifyHarnessRun(
   requestedPaths: readonly string[]
 ): HarnessRunVerdict {
   const counts = extractSummaryCounts(output);
+  const profileFailure = classifyProfileArgumentFailure(output);
+  if (profileFailure) return { ...profileFailure, ...counts };
   const realFailures = realUnexpectedFailureLines(output);
   const firstRealFailure = realFailures[0];
   const failureBlocks = collectUnexpectedFailureBlocks(output);
@@ -802,12 +805,7 @@ export function formatFireforgeVerdictLine(
   if (verdict.kind === 'tests-ran-ok') {
     return `FIREFORGE-VERDICT: PASS${counts}${shardSuffix}${note}`;
   }
-  const reason =
-    verdict.kind === 'harness-crash'
-      ? 'crash'
-      : verdict.kind === 'no-tests'
-        ? 'no-tests'
-        : 'test-failures';
+  const reason = verdict.kind === 'harness-crash' ? 'crash' : verdict.kind;
   return `FIREFORGE-VERDICT: FAIL reason=${reason}${counts}${shardSuffix}${note}`;
 }
 

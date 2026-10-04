@@ -9,9 +9,12 @@
 // refusal for consumers that want the hard gate. Plain builds stay quiet
 // and never fail on git problems, because a git-less staging directory must
 // still build (the wrapper smoke test packs from one).
+import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const rootUrl = new URL('../', import.meta.url);
 const distUrl = new URL('./dist/', rootUrl);
@@ -29,20 +32,37 @@ function git(args) {
 
 const { version } = JSON.parse(await readFile(new URL('./package.json', rootUrl), 'utf8'));
 
-function readGitIdentity() {
+async function readGitIdentity() {
   try {
     const commit = git(['rev-parse', 'HEAD']).trim();
-    const status = git(['status', '--porcelain']);
+    const status = git(['status', '--porcelain=v1', '-z', '--untracked-files=all']);
     const dirty = status.length > 0;
     // Distinguishes two dirty packs from the same HEAD: same uncommitted
     // content -> same hash, different content -> different identity.
-    const dirtyHash = dirty
-      ? createHash('sha256')
-          .update(status)
-          .update(git(['diff', 'HEAD']))
-          .digest('hex')
-          .slice(0, 8)
-      : null;
+    let dirtyHash = null;
+    if (dirty) {
+      // Binary patches include object bytes, and mode/link changes are part
+      // of the tracked diff. Ignored generated outputs never enter this set.
+      const hash = createHash('sha256')
+        .update(status)
+        .update(git(['diff', '--binary', '--full-index', 'HEAD']));
+      const untracked = git(['ls-files', '-z', '--others', '--exclude-standard'])
+        .split('\0')
+        .filter(Boolean)
+        .sort();
+      for (const path of untracked) {
+        const absolute = join(fileURLToPath(rootUrl), path);
+        const stat = await lstat(absolute);
+        hash.update(
+          JSON.stringify([path, stat.mode & 0o777, stat.isSymbolicLink() ? 'link' : 'file'])
+        );
+        const content = stat.isSymbolicLink()
+          ? Buffer.from(await readlink(absolute))
+          : await readFile(absolute);
+        hash.update(JSON.stringify(content.length)).update(content);
+      }
+      dirtyHash = hash.digest('hex').slice(0, 8);
+    }
     return { commit, dirty, dirtyHash };
   } catch {
     // Not a git checkout (staging dir, tarball rebuild): identity fields
@@ -51,7 +71,7 @@ function readGitIdentity() {
   }
 }
 
-const { commit, dirty, dirtyHash } = readGitIdentity();
+const { commit, dirty, dirtyHash } = await readGitIdentity();
 const shortCommit = commit === null ? null : commit.slice(0, 12);
 const buildInfo = {
   schemaVersion: 1,

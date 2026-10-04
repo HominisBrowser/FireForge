@@ -293,7 +293,7 @@ function createProgram(): Command {
 // here, which keeps them meaningful on both platforms instead of pinning a
 // number that is only true on one.
 const passedCount = (posixCount: number): number =>
-  process.platform === 'win32' ? posixCount - 1 : posixCount;
+  process.platform === 'win32' ? posixCount : posixCount + 1;
 const PASSING_CHECK_COUNT = passedCount(17);
 
 describe('doctorCommand', () => {

@@ -1,32 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
-/**
- * Integrity test for the top-level command manifest.
- *
- * The manifest is a single point of failure for CLI dispatch: a typo in
- * an import, a `register` export that is not actually a function, or a
- * missing group label all break the CLI at runtime with the kind of
- * stack trace that masks the root cause. A ten-line structural check
- * that runs under `npm test` catches those before the bin script does.
- *
- * The test inspects the manifest structure rather than exercising
- * commander's `--help` output. Help parsing is already covered
- * elsewhere via snapshot, and the goal here is to pin the manifest
- * contract itself (each entry has a name, a known group, and a
- * callable register function, names are unique, and no entry is null).
- *
- * The drift test at the end walks every top-level command file under
- * `src/commands/` and asserts that each exported `register*` is
- * referenced by the manifest source. That catches the one remaining
- * silent-drift failure mode a structural check cannot see: "I added a
- * new command file and forgot to wire it into the manifest." Files that
- * export no registrar are helpers and are simply skipped.
- */
-
-import { readdir, readFile } from 'node:fs/promises';
+/** Command registration must be reachable from the real manifest and executable. */
+import { readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Command } from 'commander';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import type { CommandContext } from '../../types/cli.js';
@@ -34,49 +13,90 @@ import { COMMAND_MANIFEST } from '../manifest.js';
 
 const COMMANDS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-const ALLOWED_GROUPS = new Set(['project', 'workflow', 'engine', 'diagnostics', 'components']);
+function unwiredRegistrars(program: ts.Program, manifestPath: string, directory: string): string[] {
+  const checker = program.getTypeChecker();
+  const resolveSymbol = (node: ts.Node): ts.Symbol | undefined => {
+    const symbol = checker.getSymbolAtLocation(node);
+    return symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+      ? checker.getAliasedSymbol(symbol)
+      : symbol;
+  };
+  const manifest = program.getSourceFile(manifestPath);
+  if (!manifest) throw new Error(`Missing manifest: ${manifestPath}`);
+  const manifestModule = checker.getSymbolAtLocation(manifest);
+  const manifestDeclaration =
+    manifestModule &&
+    checker.getExportsOfModule(manifestModule).find((symbol) => symbol.name === 'COMMAND_MANIFEST')
+      ?.valueDeclaration;
+  if (
+    !manifestDeclaration ||
+    !ts.isVariableDeclaration(manifestDeclaration) ||
+    !manifestDeclaration.initializer
+  ) {
+    throw new Error('COMMAND_MANIFEST must export the registration table');
+  }
+  const reachable = new Set<ts.Symbol>();
+  const pending: ts.Symbol[] = [];
+  const visitRoots = (node: ts.Node): void => {
+    if (ts.isPropertyAssignment(node) && node.name.getText() === 'register') {
+      const symbol = resolveSymbol(node.initializer);
+      if (symbol) pending.push(symbol);
+    }
+    ts.forEachChild(node, visitRoots);
+  };
+  visitRoots(manifestDeclaration.initializer);
+  while (pending.length > 0) {
+    const symbol = pending.pop();
+    if (!symbol || reachable.has(symbol)) continue;
+    reachable.add(symbol);
+    const declaration = symbol.valueDeclaration;
+    if (!declaration || !declaration.getSourceFile().fileName.startsWith(directory)) continue;
+    const visitCalls = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        const called = resolveSymbol(node.expression);
+        if (called) pending.push(called);
+      }
+      ts.forEachChild(node, visitCalls);
+    };
+    visitCalls(declaration);
+  }
+  const missing = new Set<string>();
+  for (const file of program.getSourceFiles()) {
+    if (!file.fileName.startsWith(directory) || file.fileName.includes('__tests__')) continue;
+    const module = checker.getSymbolAtLocation(file);
+    if (!module) continue;
+    for (const exported of checker.getExportsOfModule(module)) {
+      if (!/^register[A-Z]/.test(exported.name)) continue;
+      const symbol =
+        (exported.flags & ts.SymbolFlags.Alias) !== 0
+          ? checker.getAliasedSymbol(exported)
+          : exported;
+      const declaration = symbol.valueDeclaration;
+      // `registerCommand` is an action; registrars accept a Commander program.
+      if (!declaration) continue;
+      const signature = checker
+        .getTypeOfSymbolAtLocation(symbol, declaration)
+        .getCallSignatures()[0];
+      const firstParameter = signature?.getParameters()[0];
+      if (
+        !firstParameter ||
+        checker.getTypeOfSymbolAtLocation(firstParameter, declaration).getSymbol()?.name !==
+          'Command'
+      )
+        continue;
+      if (!reachable.has(symbol))
+        missing.add(`${file.fileName.slice(directory.length + 1)}:${exported.name}`);
+    }
+  }
+  return [...missing].sort();
+}
 
 describe('COMMAND_MANIFEST integrity', () => {
-  it('has at least one entry', () => {
-    expect(COMMAND_MANIFEST.length).toBeGreaterThan(0);
-  });
-
-  it('every entry has a non-empty name, a known group, and a register function', () => {
-    for (const entry of COMMAND_MANIFEST) {
-      expect(entry).toBeDefined();
-      expect(typeof entry.name).toBe('string');
-      expect(entry.name.length).toBeGreaterThan(0);
-      expect(ALLOWED_GROUPS.has(entry.group)).toBe(true);
-      expect(typeof entry.register).toBe('function');
-    }
-  });
-
-  it('has no duplicate command names', () => {
-    const seen = new Set<string>();
-    for (const entry of COMMAND_MANIFEST) {
-      expect(seen.has(entry.name)).toBe(false);
-      seen.add(entry.name);
-    }
-  });
-
-  it('every register function accepts a Commander program without throwing', () => {
-    // A registrar with a broken import surface (e.g. an undefined export
-    // that slipped past the type system via re-exports) will throw at
-    // registration time, not at definition time. Running the registrars
-    // against a throwaway program catches those cases.
-    const noopContext: CommandContext = {
-      getProjectRoot: () => '/tmp/fireforge-manifest-test',
-      withErrorHandling: <T extends unknown[]>(handler: (...args: T) => Promise<void>) => {
-        return handler;
-      },
-    };
-
-    for (const entry of COMMAND_MANIFEST) {
-      const program = new Command();
-      expect(() => {
-        entry.register(program, noopContext);
-      }).not.toThrow();
-    }
+  it('has non-empty, unique command names', () => {
+    const names = COMMAND_MANIFEST.map((entry) => entry.name);
+    expect(names.length).toBeGreaterThan(0);
+    expect(names.every((name) => name.trim().length > 0)).toBe(true);
+    expect(new Set(names).size).toBe(names.length);
   });
 
   it('registers a command whose first positional name matches the manifest entry', () => {
@@ -99,54 +119,41 @@ describe('COMMAND_MANIFEST integrity', () => {
     }
   });
 
-  it('every top-level command file with a registrar is referenced by the manifest', async () => {
-    // Drift protection: scans src/commands/*.ts for `export function
-    // register*` declarations and asserts the manifest source imports each
-    // one. Without it a new command compiles and type-checks cleanly
-    // without being added to the manifest. It simply does not ship, and no
-    // test fails.
-    const manifestSource = await readFile(join(COMMANDS_DIR, 'manifest.ts'), 'utf-8');
-    const importedRegistrars = new Set<string>();
-    const importPattern = /\bregister[A-Z][A-Za-z0-9_]*/g;
-    let match: RegExpExecArray | null;
-    while ((match = importPattern.exec(manifestSource)) !== null) {
-      importedRegistrars.add(match[0]);
-    }
+  it('wires every exported registrar, including nested commands, through the manifest', async () => {
+    const entries = await readdir(COMMANDS_DIR, { recursive: true, withFileTypes: true });
+    const files = entries
+      .filter(
+        (entry) =>
+          entry.isFile() && entry.name.endsWith('.ts') && !entry.parentPath.includes('__tests__')
+      )
+      .map((entry) => join(entry.parentPath, entry.name));
+    const program = ts.createProgram(files, {
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      skipLibCheck: true,
+    });
+    expect(unwiredRegistrars(program, join(COMMANDS_DIR, 'manifest.ts'), COMMANDS_DIR)).toEqual([]);
+  });
 
-    const entries = await readdir(COMMANDS_DIR, { withFileTypes: true });
-    const topLevelFiles = entries
-      .filter((e) => e.isFile() && e.name.endsWith('.ts') && !e.name.endsWith('.test.ts'))
-      .map((e) => e.name);
-
-    const missing: Array<{ file: string; registrar: string }> = [];
-    // Match three export shapes:
-    //   - `export function registerXxx(...)`
-    //   - `export const registerXxx = ...`
-    //   - `export { registerXxx } from './x.js'` (barrel re-export)
-    // Barrel files like `rebase.ts` that re-export a registrar from a
-    // subdirectory should still satisfy the drift check. The file's
-    // job is to expose a registrar at a stable import path, not to
-    // declare one.
-    const declPattern = /export\s+(?:function|const)\s+(register[A-Z][A-Za-z0-9_]*)/g;
-    const reExportPattern = /export\s*\{[^}]*\b(register[A-Z][A-Za-z0-9_]*)\b[^}]*\}\s*from/g;
-    for (const filename of topLevelFiles) {
-      const content = await readFile(join(COMMANDS_DIR, filename), 'utf-8');
-      const registrars = new Set<string>();
-      let exportMatch: RegExpExecArray | null;
-      while ((exportMatch = declPattern.exec(content)) !== null) {
-        if (exportMatch[1]) registrars.add(exportMatch[1]);
-      }
-      while ((exportMatch = reExportPattern.exec(content)) !== null) {
-        if (exportMatch[1]) registrars.add(exportMatch[1]);
-      }
-      for (const registrar of registrars) {
-        if (!importedRegistrars.has(registrar)) {
-          missing.push({ file: filename, registrar });
-        }
-      }
-    }
-
-    expect(missing, `unreferenced registrars: ${JSON.stringify(missing)}`).toEqual([]);
+  it('does not count comments or unused registrar references as registration', () => {
+    const file = '/virtual/commands.ts';
+    const source = `
+      declare class Command { command(name: string): Command }
+      export function registerLive(program: Command) { program.command('live') }
+      export function registerMissing(program: Command) { program.command('missing') }
+      export const registerArrow = (program: Command) => { program.command('arrow') };
+      // registerMissing is mentioned but never registered.
+      const unused = { register: registerMissing };
+      export const COMMAND_MANIFEST = [{ register: registerLive }];
+    `;
+    const host = ts.createCompilerHost({ noLib: true });
+    host.getSourceFile = (path) =>
+      path === file ? ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true) : undefined;
+    const program = ts.createProgram([file], { noLib: true }, host);
+    expect(unwiredRegistrars(program, file, '/virtual')).toEqual([
+      'commands.ts:registerArrow',
+      'commands.ts:registerMissing',
+    ]);
   });
 
   it.each(['furnace', 'patch'])(

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { CustomComponentConfig, ValidationIssue } from '../types/furnace.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { createIssue } from './furnace-validate-helpers.js';
+import { collectLitTemplateRegions, parseTemplateAttributes } from './lit-template-regions.js';
 
 /**
  * Validates accessibility patterns in a component's .mjs file.
@@ -167,16 +168,17 @@ function hasUnlabelledFormInput(content: string): boolean {
   // (id implies an external <label for="..."> could exist). A control wrapped
   // in a <label> that carries actual text is implicitly associated and is
   // exempt as well.
+  content = collectLitTemplateRegions(content).join('\n');
   const labelledSpans = collectLabelledSpans(content);
-  const inputPattern = /<(input|select|textarea)\b([^>]*)>/gi;
+  const inputPattern = /<(input|select|textarea)\b((?:"[^"]*"|'[^']*'|[^'">])*)>/gi;
   let inputMatch: RegExpExecArray | null;
   while ((inputMatch = inputPattern.exec(content)) !== null) {
-    const attrs = inputMatch[2] ?? '';
+    const attrs = parseTemplateAttributes(inputMatch[2] ?? '');
     if (
-      /aria-label\s*=/.test(attrs) ||
-      /aria-labelledby\s*=/.test(attrs) ||
-      /\bid\s*=/.test(attrs) ||
-      /type\s*=\s*["']hidden["']/i.test(attrs)
+      attrs.has('aria-label') ||
+      attrs.has('aria-labelledby') ||
+      attrs.has('id') ||
+      attrs.get('type')?.toLowerCase() === 'hidden'
     ) {
       continue;
     }
@@ -389,12 +391,7 @@ function isFlaggableText(text: string): boolean {
 }
 
 function hasFlaggedTextInLitTemplates(content: string): boolean {
-  // Match `html\`…\`` regions, anchored on a non-identifier char before `html`
-  // so substrings like `otherhtml` do not spuriously open a template.
-  const htmlPattern = /(?:^|[^a-zA-Z0-9_$])html`([\s\S]*?)`/g;
-  let litMatch: RegExpExecArray | null;
-  while ((litMatch = htmlPattern.exec(content)) !== null) {
-    const region = litMatch[1] ?? '';
+  for (const region of collectLitTemplateRegions(content)) {
     const textPattern = />([^<$\s][^<$]*)</g;
     let textMatch: RegExpExecArray | null;
     while ((textMatch = textPattern.exec(region)) !== null) {

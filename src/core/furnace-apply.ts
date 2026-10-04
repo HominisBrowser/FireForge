@@ -13,7 +13,9 @@ import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info } from '../utils/logger.js';
+import { captureComponentSources, componentSourceErrors } from './component-source-guard.js';
 import { getProjectPaths, loadConfig } from './config.js';
+import { assertComponentWriteBoundaries } from './engine-write-boundary.js';
 import {
   applyCustomComponent,
   applyOverrideComponent,
@@ -81,8 +83,6 @@ function recordComponentChecksums(
   }
 }
 
-type FurnaceConfigData = FurnaceConfig;
-type FurnaceStateData = FurnaceState;
 type ApplyAccumulator = ApplyResult & {
   actions?: DryRunAction[];
   rollbackJournal?: RollbackJournal;
@@ -518,6 +518,11 @@ export async function applyAllComponents(
   const markerComment = resolveFurnaceMarkerComment(forgeConfig);
 
   await assertFurnaceEngineDirReady(engineDir);
+  if (!dryRun) {
+    await assertComponentWriteBoundaries(engineDir, config, ftlDir);
+  }
+
+  const sourceSnapshot = await captureComponentSources(furnacePaths, config, dryRun, options);
 
   const rollbackJournal = dryRun ? undefined : createRollbackJournal();
   if (rollbackJournal && operationContext) {
@@ -575,6 +580,8 @@ export async function applyAllComponents(
   };
   await applyOverrideBatch(batchContext);
   await applyCustomBatch(batchContext, root, markerComment);
+
+  result.errors.push(...(await componentSourceErrors(sourceSnapshot)));
 
   // Check for any partial failures (blocking step errors on applied
   // components). Advisory step errors (e.g. FTL degradation) are warnings
@@ -649,9 +656,9 @@ export async function applyAllComponents(
  * drift and made every new parameter a two-signature change.
  */
 interface ApplyBatchContext {
-  config: FurnaceConfigData;
+  config: FurnaceConfig;
   furnacePaths: FurnacePaths;
-  state: FurnaceStateData;
+  state: FurnaceState;
   engineDir: string;
   ftlDir: string;
   dryRun: boolean;

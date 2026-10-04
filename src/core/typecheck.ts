@@ -30,6 +30,7 @@ import { sha256Hex } from '../utils/hash.js';
 import { verbose } from '../utils/logger.js';
 import { getPackageVersion } from '../utils/package-root.js';
 import { normalizePathSlashes } from '../utils/paths.js';
+import { withGeckoDomTypes } from './gecko-dom-types.js';
 import {
   composeShimSource,
   SHIM_FILENAME,
@@ -308,7 +309,7 @@ async function runTypecheckForProject(
   const shimPath = normalizePathSlashes(resolve(projectDir, `.fireforge-${SHIM_FILENAME}`));
 
   const rootFiles = [...parsed.fileNames, shimPath];
-  const defaultHost = ts.createCompilerHost(options);
+  const defaultHost = withGeckoDomTypes(ts, ts.createCompilerHost(options));
   const host: import('typescript').CompilerHost = {
     ...defaultHost,
     getSourceFile(fileName, languageVersion, onError, shouldCreate) {
@@ -349,11 +350,14 @@ async function runTypecheckForProject(
   if (buildInfoFile === undefined) {
     program = ts.createProgram(rootFiles, options, host);
   } else {
-    const builder = ts.createIncrementalProgram({
-      rootNames: rootFiles,
-      options: { ...options, incremental: true, tsBuildInfoFile: buildInfoFile },
-      host: withSourceFileVersions(host),
-    });
+    // Always check the entire project in root order. Restoring TypeScript's
+    // per-file semantic cache makes checkJs inference depend on the first
+    // invalidated importer and can both invent and hide diagnostics.
+    const builder = ts.createEmitAndSemanticDiagnosticsBuilderProgram(
+      rootFiles,
+      { ...options, incremental: true, tsBuildInfoFile: buildInfoFile },
+      withSourceFileVersions(host)
+    );
     program = builder;
     // Under noEmit, emit() writes the build info and nothing else.
     writeBuildInfo = () => {

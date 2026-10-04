@@ -86,7 +86,10 @@ export async function reExportSinglePatchWithIndexLockRetry(
 async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boolean> {
   const { patch, paths, manifest, options, isDryRun, config, adjacentCtx, driftCtx, lintCtx } =
     args;
-  let currentFilesAffected = [...patch.filesAffected];
+  const removed = new Set(options.expectRemoved ?? []);
+  let currentFilesAffected = patch.filesAffected.filter((file) => !removed.has(file));
+  for (const file of patch.filesAffected.filter((path) => removed.has(path)))
+    info(`  - ${file} (--expect-removed)`);
 
   // --- Scan for new/removed files ---
   if (options.scan) {

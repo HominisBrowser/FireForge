@@ -10,6 +10,7 @@ import { verbose } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
 import { isObject, isString } from '../utils/validation.js';
 import { extractMozObjdirName } from './mach-mozconfig.js';
+import { findStaleObjdirLink, relocateObjdirProducts } from './objdir-maintenance.js';
 
 /**
  * Result of checking for build artifacts.
@@ -329,6 +330,8 @@ export interface MozinfoRewriteResult {
   reason?: string;
   /** New `topsrcdir` value written to disk (populated on success). */
   newTopsrcdir?: string;
+  /** Original source prefix checked after configure. */
+  oldTopsrcdir?: string;
   /** New `topobjdir` value written to disk (populated on success). */
   newTopobjdir?: string;
   /** New `mozconfig` value written to disk (populated on success when it lived inside topsrcdir). */
@@ -338,12 +341,10 @@ export interface MozinfoRewriteResult {
 /**
  * Safe-relocation rewriter for mozinfo.json under the active obj-* tree.
  *
- * Firefox build artefacts bake the topsrcdir into many generated files
- * (Makefiles, config.status, backend.mk, .deps dependency files, anything
- * produced by `mach configure`). A fresh `mach configure` rebuilds those
- * from the top, so the rewriter only needs to patch the one file `mach`
- * reads to learn where its checkout actually lives. Once mozinfo.json
- * agrees with the on-disk layout, `mach configure` regenerates the rest.
+ * Copied objdirs retain source symlinks, dependency metadata and tracking
+ * inventories as well as mozinfo.json. Repair them before configure so
+ * config.track cannot write nulls into the primary checkout. Configure then
+ * regenerates the root config files; callers verify old-source links too.
  *
  * Safety rules. The rewrite is refused when any of them are violated:
  *   - `topsrcdir` and `topobjdir` must both be present and non-empty.
@@ -439,10 +440,16 @@ export async function attemptMozinfoRewrite(
     // with `MOZCONFIG=…` or run a full clean rebuild.
   }
 
+  try {
+    await relocateObjdirProducts(engineDir, objDir, oldSrcResolved);
+  } catch (error: unknown) {
+    return { rewritten: false, reason: `objdir relocation refused: ${toError(error).message}` };
+  }
   await writeJson(mozinfoPath, patched);
   return {
     rewritten: true,
     newTopsrcdir: newSrc,
+    oldTopsrcdir: oldSrcResolved,
     newTopobjdir: newObj,
     ...(newMozconfig ? { newMozconfig } : {}),
   };
@@ -569,5 +576,5 @@ export async function findObjdirRelocationViolation(args: {
       return `${objDir}/${name} still contains the primary engine path ${forbidden}`;
     }
   }
-  return undefined;
+  return await findStaleObjdirLink(engineDir, objDir, forbidden);
 }

@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../utils/process.js', () => ({ exec: vi.fn() }));
 vi.mock('../marionette-port.js', () => ({ probeMarionettePort: vi.fn() }));
 
+import { exec } from '../../utils/process.js';
 import { probeMarionettePort } from '../marionette-port.js';
 import {
   classifyMochitestServerHolder,
@@ -50,6 +51,7 @@ afterAll(() => {
 
 beforeEach(() => {
   vi.mocked(probeMarionettePort).mockReset();
+  vi.mocked(exec).mockReset();
   stubPlatform('darwin');
 });
 
@@ -142,7 +144,7 @@ describe('ensureMochitestServerPortAvailable', () => {
     }
   });
 
-  it('keeps the PowerShell kill for this checkout only', async () => {
+  it('refuses a foreign Windows checkout without attempting cleanup', async () => {
     stubPlatform('win32');
     const { exec } = await import('../../utils/process.js');
     vi.mocked(exec).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
@@ -178,6 +180,13 @@ describe('ensureMochitestServerPortAvailable', () => {
   });
 
   it('refuses a recognized stale harness httpd and offers the flag', async () => {
+    vi.mocked(exec)
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '1\n', stderr: '' })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: `1 ${HARNESS_HTTPD.commandLine}\n`,
+        stderr: '',
+      });
     vi.mocked(probeMarionettePort).mockResolvedValue({ inUse: true, holder: HARNESS_HTTPD });
     await expect(ensureMochitestServerPortAvailable(undefined, OWN)).rejects.toThrow(
       /--kill-stale-marionette/
@@ -194,9 +203,37 @@ describe('ensureMochitestServerPortAvailable', () => {
     );
   });
 
-  it('terminates a recognized holder only when the operator opted in', async () => {
+  it("does not offer or perform cleanup of this checkout's live peer server", async () => {
     vi.mocked(probeMarionettePort).mockResolvedValue({ inUse: true, holder: HARNESS_HTTPD });
+    vi.mocked(exec)
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '99', stderr: '' })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: 'mach mochitest', stderr: '' });
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      await expect(
+        ensureMochitestServerPortAvailable(undefined, { ...OWN, killStaleServer: true })
+      ).rejects.toThrow(/live or unattributed/);
+      expect(kill).not.toHaveBeenCalled();
+      expect(
+        describeMochitestServerRefusal(8888, HARNESS_HTTPD, 'this-checkout', 99)
+      ).not.toContain('kill');
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it('terminates a recognized holder only when the operator opted in', async () => {
+    vi.mocked(probeMarionettePort)
+      .mockResolvedValueOnce({ inUse: true, holder: HARNESS_HTTPD })
+      .mockResolvedValue({ inUse: false });
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    vi.mocked(exec)
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '1\n', stderr: '' })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: `1 ${HARNESS_HTTPD.commandLine}\n`,
+        stderr: '',
+      });
     try {
       await expect(
         ensureMochitestServerPortAvailable(undefined, { ...OWN, killStaleServer: true })
@@ -224,6 +261,13 @@ describe('ensureMochitestServerPortAvailable', () => {
   });
 
   it('still refuses when the kill fails, rather than pretending the port is free', async () => {
+    vi.mocked(exec)
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '1\n', stderr: '' })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: `1 ${HARNESS_HTTPD.commandLine}\n`,
+        stderr: '',
+      });
     vi.mocked(probeMarionettePort).mockResolvedValue({ inUse: true, holder: HARNESS_HTTPD });
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
       throw new Error('EPERM');
@@ -250,4 +294,76 @@ describe('describeMochitestServerRefusal', () => {
     const message = describeMochitestServerRefusal(8888, UNRELATED_NODE, 'unrecognized');
     expect(message).toContain('lsof -nP -iTCP:8888');
   });
+});
+
+it.each([true, false])(
+  'waits for mochitest port release and refuses an ignored signal (release=%s)',
+  async (release) => {
+    vi.useFakeTimers();
+    let freed = false;
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      if (release)
+        setTimeout(() => {
+          freed = true;
+        }, 500);
+      return true;
+    });
+    vi.mocked(exec)
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '1\n', stderr: '' })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: `1 ${HARNESS_HTTPD.commandLine}\n`,
+        stderr: '',
+      });
+    vi.mocked(probeMarionettePort).mockImplementation(() =>
+      Promise.resolve(freed ? { inUse: false } : { inUse: true, holder: HARNESS_HTTPD })
+    );
+    try {
+      const result = ensureMochitestServerPortAvailable(undefined, {
+        ...OWN,
+        killStaleServer: true,
+      }).then(
+        () => 'released',
+        (error: unknown) => error
+      );
+      await vi.runAllTimersAsync();
+      if (release) expect(await result).toBe('released');
+      else expect(await result).toBeInstanceOf(Error);
+      expect(kill).toHaveBeenCalledTimes(1);
+    } finally {
+      kill.mockRestore();
+      vi.useRealTimers();
+    }
+  }
+);
+
+it('refuses orphan cleanup when the server PID now belongs to another process', async () => {
+  vi.mocked(probeMarionettePort).mockResolvedValue({ inUse: true, holder: HARNESS_HTTPD });
+  vi.mocked(exec)
+    .mockResolvedValueOnce({ exitCode: 0, stdout: '1', stderr: '' })
+    .mockResolvedValueOnce({ exitCode: 0, stdout: '1 node unrelated.js', stderr: '' });
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+  try {
+    await expect(
+      ensureMochitestServerPortAvailable(undefined, { ...OWN, killStaleServer: true })
+    ).rejects.toThrow(/mochitest server port/);
+    expect(kill).not.toHaveBeenCalled();
+  } finally {
+    kill.mockRestore();
+  }
+});
+
+it('keeps Windows ownership unknown and never invokes destructive cleanup', async () => {
+  stubPlatform('win32');
+  vi.mocked(probeMarionettePort).mockResolvedValue({ inUse: true, holder: HARNESS_HTTPD });
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+  try {
+    await expect(
+      ensureMochitestServerPortAvailable(undefined, { ...OWN, killStaleServer: true })
+    ).rejects.toThrow(/live or unattributed/);
+    expect(kill).not.toHaveBeenCalled();
+    expect(exec).not.toHaveBeenCalled();
+  } finally {
+    kill.mockRestore();
+  }
 });

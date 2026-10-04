@@ -95,7 +95,7 @@ describe('CLI help output', () => {
         .map((option) => [option.short, option.long].filter(Boolean).join(', '))
         .sort((left, right) => left.localeCompare(right));
       return [
-        `${name}: ${flags.join(' | ')}`,
+        `${name}: ${flags.join(' | ')}`.trimEnd(),
         ...[...command.commands]
           .sort((left, right) => left.name().localeCompare(right.name()))
           .flatMap((child) => collect(child, [...path, command.name()])),

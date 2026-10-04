@@ -41,6 +41,7 @@ import {
   applyReExportFilesPositionalFolding,
   validateReExportOptionCombinations,
 } from './re-export-options.js';
+import { validateExpectedRemovals } from './re-export-removed.js';
 import { normalizeEngineRelativeInput, normalizeScanFiles } from './re-export-scan.js';
 import { reExportSinglePatchWithIndexLockRetry } from './re-export-single.js';
 
@@ -157,6 +158,9 @@ export async function reExportCommand(
     outro('Nothing to re-export');
     return;
   }
+
+  const expectedRemovals = await validateExpectedRemovals(paths, selectedPatches, options);
+  if (expectedRemovals.length > 0) options = { ...options, expectRemoved: expectedRemovals };
 
   if (scanFilesByPatch !== undefined) {
     info(`Bulk scan assignments from ${options.scanFilesManifest}`);

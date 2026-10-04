@@ -26,6 +26,7 @@ import {
   headedDisplayAsleepVerdictNote,
   headedNoOutputTimeoutHint,
 } from '../core/test-harness-crash.js';
+import { reportTestHost, sampleTestHost, stampPerfHost } from '../core/test-host-state.js';
 import { retryAfterXpcshellSymlinkRepair } from '../core/test-xpcshell-retry.js';
 import { withXpcshellProfileDir } from '../core/xpcshell-profile-dir.js';
 import { TestFailureError } from '../errors/build.js';
@@ -33,7 +34,7 @@ import { info, note, warn } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
 import { maybeInjectAppdirArg } from './test-appdir.js';
 import { createHarnessTeardown } from './test-harness-teardown.js';
-import { emitHarnessVerdict } from './test-verdict.js';
+import { emitHarnessVerdict, setVerdictRunAttribute } from './test-verdict.js';
 
 /** Default bounded retry budget for recognized harness crashes. */
 export const DEFAULT_HARNESS_RETRIES = 2;
@@ -56,6 +57,8 @@ function machKindForSuite(suite: TestSuite): MachTestSuiteKind {
 
 /** Inputs shared by every harness invocation in one `fireforge test` run. */
 export interface TestRunContext {
+  /** A perf run changed power source; no green result can be trusted. */
+  powerChanged?: boolean;
   engineDir: string;
   objDir: string | undefined;
   classification: { xpcshell: string[]; nonXpcshell: string[] };
@@ -207,6 +210,14 @@ async function runTrackedMachTestSuite(
     objDir: ctx.objDir === undefined ? undefined : join(ctx.engineDir, ctx.objDir),
     pgidFile: ctx.pgidFile,
   });
+  const start = await sampleTestHost();
+  const warned = reportTestHost(start, 'suite start');
+  setVerdictRunAttribute('host-load', start.load.toFixed(2));
+  if (warned) setVerdictRunAttribute('host-cpu-warning', 'true');
+  if (env && Object.keys(env).some((key) => key.endsWith('_PERF_SAMPLE_JSON'))) {
+    setVerdictRunAttribute('power-source', start.power);
+    env = { ...env, FIREFORGE_POWER_SOURCE: start.power };
+  }
   try {
     await teardown.prepare();
     return await runMachTestSuite(kind, {
@@ -219,6 +230,12 @@ async function runTrackedMachTestSuite(
     });
   } finally {
     teardown.dispose();
+    const end = await sampleTestHost();
+    if (reportTestHost(end, 'suite end')) setVerdictRunAttribute('host-cpu-warning', 'true');
+    if (await stampPerfHost(env, start, end)) {
+      ctx.powerChanged = true;
+      setVerdictRunAttribute('power-changed', 'true');
+    }
   }
 }
 
@@ -265,6 +282,7 @@ const SHARD_STATUS_LABEL: Record<HarnessRunVerdict['kind'], string> = {
   'test-failures': 'FAIL',
   'harness-crash': 'CRASH',
   'no-tests': 'NO-TESTS',
+  'harness-arguments': 'ARGUMENTS',
 };
 
 /** Aggregate result of a sharded run, verdict emission deferred to the caller. */
@@ -285,6 +303,7 @@ export interface ShardedRunSummary {
  */
 export function deriveAggregateShardVerdict(shards: ShardOutcome[]): HarnessRunVerdict {
   const kinds = new Set(shards.map(({ outcome }) => outcome.verdict.kind));
+  if (kinds.has('harness-arguments')) return { kind: 'harness-arguments' };
   if (kinds.has('harness-crash')) return { kind: 'harness-crash' };
   if (kinds.has('no-tests')) return { kind: 'no-tests' };
   if (kinds.has('test-failures')) return { kind: 'test-failures' };

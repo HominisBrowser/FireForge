@@ -102,9 +102,6 @@ class ${className} extends MozLitElement {
   /** @type {Record<string, unknown>} */
   static properties = {};
 
-  constructor() {
-    super();
-  }
 ${lifecycleHooks}
   render() {
     return html\`

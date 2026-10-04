@@ -22,10 +22,11 @@
  * the missing half, and it reuses {@link probeMarionettePort}, which is
  * port-generic, rather than growing a second probe.
  */
-import { GeneralError } from '../errors/base.js';
+import { PreflightRefusalError } from '../errors/base.js';
 import { isExplicitAbsolutePath, isPathInsideRoot } from '../utils/paths.js';
-import { exec } from '../utils/process.js';
 import { type MarionettePortHolder, probeMarionettePort } from './marionette-port.js';
+import { waitForPreflight } from './preflight-wait.js';
+import { isStillOrphanedProcess, readProcessOwner } from './process-owner.js';
 
 /** Default port the mochitest harness binds its httpd to. */
 export const DEFAULT_MOCHITEST_SERVER_PORT = 8888;
@@ -129,18 +130,22 @@ export async function ensureMochitestServerPortAvailable(
   const holder = probe.holder;
   const holderClass = classifyMochitestServerHolder(holder, options.engineDir);
 
-  if (holderClass === 'this-checkout' && options.killStaleServer === true) {
+  const owner = await readProcessOwner(holder.pid);
+  if (
+    holderClass === 'this-checkout' &&
+    owner?.parentPid === 1 &&
+    options.killStaleServer === true &&
+    (await isStillOrphanedProcess(holder.pid, holder.commandLine))
+  ) {
     try {
-      if (process.platform === 'win32') {
-        await exec('powershell.exe', [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          `Stop-Process -Id ${holder.pid} -Force`,
-        ]);
-      } else {
-        process.kill(holder.pid, 'SIGTERM');
-      }
+      process.kill(holder.pid, 'SIGTERM');
+      await waitForPreflight(async () => {
+        if ((await probeMarionettePort(port)).inUse)
+          throw new PreflightRefusalError(
+            `Mochitest port ${port} remains busy after orphan cleanup; wait for the holder to exit.`,
+            'mochitest-port-busy'
+          );
+      }, 2);
       return;
     } catch {
       // Fall through to the refusal: a wedged httpd is exactly the case
@@ -149,7 +154,11 @@ export async function ensureMochitestServerPortAvailable(
     }
   }
 
-  throw new GeneralError(describeMochitestServerRefusal(port, holder, holderClass));
+  throw new PreflightRefusalError(
+    describeMochitestServerRefusal(port, holder, holderClass, owner?.parentPid) +
+      `\n  Parent: ${owner?.parentPid ?? 'unknown'} (${owner?.owner ?? 'unavailable'}). Use --wait-port [seconds] to queue.`,
+    'mochitest-port-busy'
+  );
 }
 
 /**
@@ -162,7 +171,8 @@ export async function ensureMochitestServerPortAvailable(
 export function describeMochitestServerRefusal(
   port: number,
   holder: MarionettePortHolder,
-  holderClass: MochitestServerHolderClass
+  holderClass: MochitestServerHolderClass,
+  parentPid?: number
 ): string {
   const killHint =
     process.platform === 'win32'
@@ -177,10 +187,15 @@ export function describeMochitestServerRefusal(
     '"Ran 0 checks".\n';
 
   if (holderClass === 'this-checkout') {
+    if (parentPid !== 1)
+      return (
+        evidence +
+        '  This checkout has a live or unattributed harness server. Wait for its owner to finish; --wait-port [seconds] queues behind it.'
+      );
     return (
       evidence +
       "  This is the mochitest harness's own server.js from THIS checkout's objdir, so it is " +
-      'debris from an interrupted run. Retry with "--kill-stale-marionette" to have FireForge ' +
+      'possibly debris from an interrupted run. For a dead parent, retry with "--kill-stale-marionette" to have FireForge ' +
       `stop it, or stop it yourself with "${killHint}" (a wedged httpd can ignore SIGTERM).`
     );
   }

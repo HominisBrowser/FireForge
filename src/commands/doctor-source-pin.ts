@@ -25,6 +25,7 @@
 import { getFirefoxVersion } from '../core/firefox.js';
 import type { DoctorCheck } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
+import { exec } from '../utils/process.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
 import { ok, warning } from './doctor-check-core.js';
 
@@ -48,7 +49,14 @@ async function runSourcePinCheck(ctx: DoctorCheckContext): Promise<DoctorCheck> 
     // A blank or whitespace-only version.txt (a truncated write, a partial
     // extraction) carries no version to compare, so treat it as absent
     // rather than reporting the engine as being at version "".
-    actual = (await getFirefoxVersion(ctx.paths.engine))?.trim() || undefined;
+    const pristine = await exec('git', ['show', 'HEAD:browser/config/version.txt'], {
+      cwd: ctx.paths.engine,
+    }).catch(() => undefined);
+    actual =
+      (pristine?.exitCode === 0
+        ? pristine.stdout
+        : await getFirefoxVersion(ctx.paths.engine)
+      )?.trim() || undefined;
   } catch (error: unknown) {
     // Best-effort: an unreadable version.txt is not a pin mismatch, and a
     // diagnostic must never turn into a failure of its own.
@@ -61,7 +69,7 @@ async function runSourcePinCheck(ctx: DoctorCheckContext): Promise<DoctorCheck> 
   const downloaded = ctx.state.downloadedVersion;
   const mismatches: string[] = [];
   if (actual !== undefined && actual !== pinned) {
-    mismatches.push(`engine/browser/config/version.txt reads ${actual}`);
+    mismatches.push(`engine baseline browser/config/version.txt reads ${actual}`);
   }
   if (downloaded !== undefined && downloaded !== pinned) {
     mismatches.push(`the last download recorded ${downloaded}`);

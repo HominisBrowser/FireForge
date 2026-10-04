@@ -204,7 +204,7 @@ export function sessionWaitLockMs(): number | undefined {
  * `--wait-lock nonsense` must still be a usage error everywhere, or the
  * uniformity would be a lie.
  */
-function addAcceptedWaitLockOption(command: Command): Command {
+export function addAcceptedWaitLockOption(command: Command): Command {
   return command.option(
     '--wait-lock [seconds]',
     'Accepted for scripting uniformity and ignored: this command takes no FireForge lock',
@@ -222,13 +222,15 @@ function hasWaitLockOption(command: Command): boolean {
 }
 
 /**
- * Recursively gives every command in the tree a `--wait-lock` flag: the
+ * Recursively gives every leaf command in the tree a `--wait-lock` flag: the
  * honoring registration where one already exists, the accept-and-ignore
  * one everywhere else.
  */
 export function ensureWaitLockOptionEverywhere(command: Command): void {
   for (const sub of command.commands) {
-    if (!hasWaitLockOption(sub)) addAcceptedWaitLockOption(sub);
+    // Commander groups otherwise capture a trailing leaf option before the
+    // action can see it. Register the uniform flag only on actionable leaves.
+    if (sub.commands.length === 0 && !hasWaitLockOption(sub)) addAcceptedWaitLockOption(sub);
     ensureWaitLockOptionEverywhere(sub);
   }
 }

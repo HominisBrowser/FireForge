@@ -3,16 +3,16 @@
 exports[`CLI help output > pins the CLI option inventory for every command > cli option inventory 1`] = `
 "fireforge: --ignore-corrupt-tree-marker | -v, --verbose
 fireforge bootstrap: --wait-lock
-fireforge build: --brand | --refuse-unexported-drift | --rewrite-mozinfo | --ui | --wait-lock | -j, --jobs
+fireforge build: --brand | --refuse-unexported-drift | --rewrite-mozinfo | --ui | --wait-browser | --wait-lock | -j, --jobs
 fireforge config: --wait-lock | -f, --force
 fireforge discard: --dry-run | --to-upstream | --wait-lock | -y, --yes
 fireforge doctor: --allow-metadata-loss | --clear-resolution | --dry-run | --post-rebase-audit | --repair-files-affected | --repair-furnace | --repair-patches-manifest | --wait-lock
 fireforge download: --wait-lock | -f, --force | -y, --yes
 fireforge export: --after | --allow-overlap | --allow-stale-furnace | --before | --dry-run | --exclude-furnace | --force-unsafe | --lint-ignore | --order | --skip-lint | --supersede | --tier | --wait-lock | -c, --category | -d, --description | -n, --name | -y, --yes
 fireforge export-all: --allow-overlap | --dry-run | --exclude-furnace | --force-unsafe | --name | --skip-lint | --supersede | --wait-lock | -c, --category | -d, --description
-fireforge furnace: --wait-lock
+fireforge furnace:
 fireforge furnace apply: --dry-run | --force | --wait-lock | -w, --watch
-fireforge furnace chrome-doc: --wait-lock
+fireforge furnace chrome-doc:
 fireforge furnace chrome-doc create: --browser-window | --dry-run | --no-titlebar | --wait-lock | --with-tests
 fireforge furnace chrome-doc remove: --dry-run | --wait-lock | -y, --yes
 fireforge furnace create: --allow-prefix-mismatch | --compose | --dry-run | --localized | --no-register | --shared-ftl | --test-dir | --test-style | --wait-lock | --with-tests | --xpcshell | -d, --description
@@ -34,7 +34,7 @@ fireforge lint: --max-warnings | --no-cache | --notices | --only-introduced | --
 fireforge lint cache: --wait-lock
 fireforge lint cache clear: --wait-lock
 fireforge package: --brand | --wait-lock
-fireforge patch: --wait-lock
+fireforge patch:
 fireforge patch compact: --dry-run | --force-unsafe | --wait-lock | -y, --yes
 fireforge patch delete: --dry-run | --force-unsafe | --wait-lock | -y, --yes
 fireforge patch lint-ignore: --add | --clear | --dry-run | --remove | --wait-lock | -y, --yes
@@ -44,23 +44,23 @@ fireforge patch reorder: --after | --before | --dry-run | --force-unsafe | --to 
 fireforge patch split: --after | --before | --category | --description | --dry-run | --files | --force-unsafe | --name | --order | --skip-lint | --wait-lock | -y, --yes
 fireforge patch staged-dependency: --add | --clear | --creates | --dry-run | --file | --kind | --line | --owner | --reason | --remove | --specifier | --wait-lock | -y, --yes
 fireforge patch tier: --clear | --dry-run | --tier | --wait-lock | -y, --yes
-fireforge re-export: --allow-shrink | --allow-stale-furnace | --dry-run | --expect | --expect-unmanaged | --files | --force-unsafe | --lint-ignore | --no-cache | --refuse-adjacent-unmanaged | --refuse-foreign-drift | --scan-file | --scan-files | --skip-lint | --stamp | --tier | --wait-lock | -a, --all | -s, --scan | -y, --yes
+fireforge re-export: --allow-shrink | --allow-stale-furnace | --dry-run | --expect | --expect-removed | --expect-unmanaged | --files | --force-unsafe | --lint-ignore | --no-cache | --refuse-adjacent-unmanaged | --refuse-foreign-drift | --scan-file | --scan-files | --skip-lint | --stamp | --tier | --wait-lock | -a, --all | -s, --scan | -y, --yes
 fireforge rebase: --abort | --continue | --dry-run | --max-fuzz | --wait-lock | -y, --yes
 fireforge register: --after | --create-manifest | --dry-run | --wait-lock
 fireforge reset: --dry-run | --wait-lock | -y, --yes
 fireforge resolve: --wait-lock | -y, --yes
 fireforge run: --capture-console | --console-allow | --console-allow-file | --headless | --profile | --smoke-exit | --temp-profile | --wait-lock
 fireforge setup: --app-id | --binary-name | --firefox-version | --license | --name | --product | --vendor | --wait-lock | -f, --force | -y, --yes
-fireforge source: --wait-lock
+fireforge source:
 fireforge source set: --candidate | --clear-candidate | --clear-sha256 | --product | --sha256 | --version | --wait-lock
 fireforge status: --check | --fail-on | --include-ownership | --json | --lock | --ownership | --raw | --summary | --test-coverage | --unmanaged | --wait-lock
-fireforge test: --allow-stale-build | --allow-stale-components | --auto | --build | --build-only | --canary | --doctor | --extend-coverage | --full-output | --generic-mach-test | --harness-retries | --headless | --kill-stale-marionette | --mach-arg | --marionette-port | --no-shard | --perf-samples | --pgid-file | --reap-orphans | --refuse-unexported-drift | --shuffle | --wait-lock
-fireforge token: --wait-lock
+fireforge test: --allow-stale-build | --allow-stale-components | --auto | --build | --build-only | --canary | --doctor | --extend-coverage | --full-output | --generic-mach-test | --harness-retries | --headless | --kill-stale-marionette | --mach-arg | --marionette-port | --no-shard | --perf-samples | --pgid-file | --profile-file | --reap-orphans | --refuse-unexported-drift | --shuffle | --wait-browser | --wait-lock | --wait-port
+fireforge token:
 fireforge token add: --category | --create-category | --dark-value | --description | --dry-run | --mode | --variant | --wait-lock
 fireforge token coverage: --wait-lock
 fireforge token list: --category | --json | --wait-lock
 fireforge token show: --json | --wait-lock
-fireforge tree: --wait-lock
+fireforge tree:
 fireforge tree create: --force-copy | --wait-lock | --with-objdir
 fireforge tree exec: --wait-lock
 fireforge tree list: --json | --wait-lock

@@ -180,6 +180,43 @@ describe('withErrorHandling', () => {
 
     afterEach(() => {
       process.argv = originalArgv;
+      vi.restoreAllMocks();
+    });
+
+    it.each([
+      [
+        new InternalInvariantError('broken invariant'),
+        'internal-invariant',
+        ExitCode.INTERNAL_ERROR,
+      ],
+      [new CancellationError(), 'cancellation', ExitCode.USER_CANCELLED],
+      [new Error('unexpected I/O failure'), 'unexpected-error', ExitCode.GENERAL_ERROR],
+    ])('emits one failure document for %s', async (failure, code, exitCode) => {
+      process.argv = ['node', 'fireforge', 'status', '--json'];
+      vi.mocked(isStdoutSealed).mockReturnValue(false);
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+      await expect(withErrorHandling(() => Promise.reject(failure))()).rejects.toMatchObject({
+        exitCode,
+      });
+      const written = stdout.mock.calls.map((call) => String(call[0])).join('');
+      expect(JSON.parse(written)).toEqual({ schemaVersion: 1, code, error: failure.message });
+    });
+
+    it.each([
+      new InternalInvariantError('broken invariant'),
+      new CancellationError(),
+      new Error('unexpected failure'),
+    ])('preserves a sealed payload for %s', async (failure) => {
+      process.argv = ['node', 'fireforge', 'status', '--json'];
+      vi.mocked(isStdoutSealed).mockReturnValue(true);
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+      await expect(withErrorHandling(() => Promise.reject(failure))()).rejects.toBeInstanceOf(
+        CommandError
+      );
+      expect(stdout).not.toHaveBeenCalled();
+      vi.mocked(isStdoutSealed).mockReturnValue(false);
     });
 
     it('emits a parseable refusal on stdout when the run asked for --json', async () => {

@@ -4,7 +4,7 @@
  *
  * Two contracts, and they are different:
  *
- *  - Every command accepts `--wait-lock`, so a scripted sequence that
+ *  - Every actionable command accepts `--wait-lock`, so a scripted sequence that
  *    blanket-appends the flag gets a lock message where one applies and a
  *    no-op elsewhere, never a usage error that kills the sequence.
  *  - Exactly the lock-taking commands honor it. Any command that
@@ -91,11 +91,24 @@ describe('--wait-lock structural coverage', () => {
     ).toEqual(EXPECTED_WAIT_LOCK_COMMANDS);
   });
 
-  it('is ACCEPTED by every command, so a blanket-appended flag is never a usage error', () => {
+  it('is ACCEPTED by every actionable leaf, with pure groups excluded to avoid shadowing', () => {
     const missing = collect(
-      (command) => !command.options.some((option) => option.long === '--wait-lock')
+      (command) =>
+        command.commands.length === 0 &&
+        !command.options.some((option) => option.long === '--wait-lock')
     );
     expect(missing).toEqual([]);
+  });
+
+  it('keeps group default actions accepting the uniform flag', () => {
+    const program = createProgram();
+    const lint = program.commands.find((command) => command.name() === 'lint');
+    expect(lint?.options.some((option) => option.long === '--wait-lock')).toBe(true);
+    expect(
+      lint?.commands
+        .find((command) => command.name() === 'cache')
+        ?.options.some((option) => option.long === '--wait-lock')
+    ).toBe(true);
   });
 
   it('marks the lock-free registrations as ignored rather than implying they wait', () => {

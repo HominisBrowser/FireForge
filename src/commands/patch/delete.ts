@@ -23,6 +23,7 @@ import {
 } from '../../core/patch-lint.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import { removePatchFileAndManifest } from '../../core/patch-manifest.js';
+import { GeneralError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchDeleteOptions } from '../../types/commands/index.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
@@ -61,11 +62,14 @@ export async function patchDeleteCommand(
   // check is built directly from `baseCtx` rather than by diffing lint runs
   // over a projected state.
   const targetEntry = baseCtx.entries.find((e) => e.filename === target.filename);
+  if (!targetEntry || JSON.stringify(targetEntry.metadata) !== JSON.stringify(target)) {
+    throw new GeneralError(
+      'Patch queue changed while preparing deletion. Re-run patch delete to review the current target.'
+    );
+  }
   const targetNewFileLeaves = new Set<string>();
-  if (targetEntry) {
-    for (const fullPath of targetEntry.newFiles.keys()) {
-      targetNewFileLeaves.add(basename(fullPath));
-    }
+  for (const fullPath of targetEntry.newFiles.keys()) {
+    targetNewFileLeaves.add(basename(fullPath));
   }
 
   // Scan every later patch's new files and its added lines on pre-existing
@@ -192,6 +196,23 @@ export async function patchDeleteCommand(
   await withPatchDirectoryLock(
     paths.patches,
     async () => {
+      const current = await buildPatchQueueContext(paths.patches);
+      const snapshot = (context: typeof baseCtx): string =>
+        JSON.stringify(
+          context.entries.map(({ filename, order, diff, metadata }) => ({
+            filename,
+            order,
+            diff,
+            metadata,
+          }))
+        );
+      // A changed body or manifest invalidates the dependency scan approved
+      // before the prompt. Recheck all of its inputs while holding the lock.
+      if (snapshot(current) !== snapshot(baseCtx)) {
+        throw new GeneralError(
+          'Patch queue changed while waiting for confirmation or the lock. Re-run patch delete to review the current dependencies.'
+        );
+      }
       await removePatchFileAndManifest(paths.patches, target.filename);
       await appendHistoryBestEffort(
         paths.patches,

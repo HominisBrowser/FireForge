@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -194,6 +194,99 @@ describe('reExportCommand integration', () => {
   afterEach(async () => {
     restoreTTY?.();
     await removeTempProject(projectRoot);
+  });
+
+  async function prepareRetirement(): Promise<void> {
+    const manifest = JSON.parse(makeManifest()) as { patches: { filesAffected: string[] }[] };
+    const first = manifest.patches[0];
+    if (!first) throw new Error('missing fixture patch');
+    first.filesAffected = ['tracked.txt', 'retired.svg'];
+    await writeFiles(projectRoot, {
+      'patches/patches.json': JSON.stringify(manifest),
+      'patches/001-ui-test.patch':
+        makeNewFileDiff('retired.svg', '<svg/>\n') + 'diff --git a/tracked.txt b/tracked.txt\n',
+      'engine/tracked.txt': blankContextModified,
+    });
+  }
+
+  it('retires exactly the named patch-created file while both re-export belts remain armed', async () => {
+    await prepareRetirement();
+    const before = await readProjectText(projectRoot, 'patches/patches.json');
+    const options = {
+      refuseAdjacentUnmanaged: true,
+      refuseForeignDrift: true,
+      expect: ['tracked.txt'],
+      expectRemoved: ['engine/retired.svg'],
+    };
+    await reExportCommand(projectRoot, ['001'], { ...options, dryRun: true });
+    expect(await readProjectText(projectRoot, 'patches/patches.json')).toBe(before);
+    await reExportCommand(projectRoot, ['001'], options);
+    expect(await readProjectText(projectRoot, 'patches/001-ui-test.patch')).not.toContain(
+      'retired.svg'
+    );
+    expect(await readProjectText(projectRoot, 'patches/001-ui-test.patch')).toContain('+new line');
+    expect(
+      (
+        JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+          patches: { filesAffected: string[] }[];
+        }
+      ).patches[0]?.filesAffected
+    ).toEqual(['tracked.txt']);
+  });
+
+  it.each(['typo', 'present', 'dangling', 'tracked', 'not-created', 'empty'])(
+    'refuses invalid retirement (%s) without changing any patch',
+    async (failure) => {
+      await prepareRetirement();
+      let path = 'retired.svg';
+      if (failure === 'typo') path = 'typo.svg';
+      if (failure === 'dangling')
+        await symlink('missing.svg', join(projectRoot, 'engine/retired.svg'));
+      if (failure === 'present') await writeFiles(projectRoot, { 'engine/retired.svg': '<svg/>' });
+      if (failure === 'tracked') {
+        path = 'tracked.txt';
+        await rm(join(projectRoot, 'engine/tracked.txt'));
+      }
+      if (failure === 'not-created')
+        await writeFiles(projectRoot, {
+          'patches/001-ui-test.patch':
+            'diff --git a/retired.svg b/retired.svg\n--- a/retired.svg\n+++ b/retired.svg\n',
+        });
+      if (failure === 'empty') {
+        const manifest = JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+          patches: { filesAffected: string[] }[];
+        };
+        const first = manifest.patches[0];
+        if (!first) throw new Error('missing fixture patch');
+        first.filesAffected = ['retired.svg'];
+        await writeFiles(projectRoot, { 'patches/patches.json': JSON.stringify(manifest) });
+      }
+      const beforePatch = await readProjectText(projectRoot, 'patches/001-ui-test.patch');
+      const beforeManifest = await readProjectText(projectRoot, 'patches/patches.json');
+      await expect(
+        reExportCommand(projectRoot, ['001'], { expectRemoved: [path] })
+      ).rejects.toThrow(failure === 'empty' ? 'use patch delete instead' : undefined);
+      expect(await readProjectText(projectRoot, 'patches/001-ui-test.patch')).toBe(beforePatch);
+      expect(await readProjectText(projectRoot, 'patches/patches.json')).toBe(beforeManifest);
+    }
+  );
+
+  it('does not let explicit retirement absorb adjacent unmanaged files or foreign drift', async () => {
+    await prepareRetirement();
+    await writeFiles(projectRoot, { 'engine/unmanaged.svg': '<svg/>' });
+    await expect(
+      reExportCommand(projectRoot, ['001'], {
+        expectRemoved: ['retired.svg'],
+        refuseAdjacentUnmanaged: true,
+      })
+    ).rejects.toThrow(/unmanaged/);
+    await rm(join(projectRoot, 'engine/unmanaged.svg'));
+    await expect(
+      reExportCommand(projectRoot, ['001'], {
+        expectRemoved: ['retired.svg'],
+        refuseForeignDrift: true,
+      })
+    ).rejects.toThrow(/drift/i);
   });
 
   it('preserves preexisting staged state while re-exporting', async () => {

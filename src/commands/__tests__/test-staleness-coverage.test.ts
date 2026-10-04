@@ -95,7 +95,7 @@ import {
   runMachTestSuite,
   runProtectedMachBuild,
 } from '../../core/mach.js';
-import {} from '../../core/marionette-port.js';
+import { ensureLaunchableBrowserNotRunning } from '../../core/marionette-port.js';
 import { runMarionettePreflight } from '../../core/marionette-preflight.js';
 import {
   checkStaleBuildForTest,
@@ -103,10 +103,12 @@ import {
   formatStaleBuildWarning,
 } from '../../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../../core/xpcshell-appdir.js';
+import { PreflightRefusalError } from '../../errors/base.js';
 import { GeneralError } from '../../errors/base.js';
 import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
-import { info, warn } from '../../utils/logger.js';
+import { info, notice, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
+import * as browserPreflight from '../test-browser-preflight.js';
 
 // The stale-build and packaging-coverage gates, plus the --build-only /
 // --extend-coverage union claims. Split out of `test.test.ts`. The shared
@@ -183,6 +185,31 @@ describe('testCommand staleness and packaging coverage', () => {
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('stale warning'));
     expect(runMachTestSuite).toHaveBeenCalled();
+  });
+
+  it('packages build-only requests without probing or reaping harness resources', async () => {
+    const environment = vi
+      .spyOn(browserPreflight, 'ensureTestBrowserEnvironment')
+      .mockRejectedValue(new Error('peer owns harness port'));
+    try {
+      await expect(testCommand('/project', [], { buildOnly: true })).resolves.toBeUndefined();
+      expect(ensureLaunchableBrowserNotRunning).toHaveBeenCalled();
+      expect(environment).not.toHaveBeenCalled();
+      expect(runProtectedMachBuild).toHaveBeenCalled();
+      expect(runMachTestSuite).not.toHaveBeenCalled();
+    } finally {
+      environment.mockRestore();
+    }
+  });
+
+  it('still refuses build-only replacement while this objdir browser is busy', async () => {
+    vi.mocked(ensureLaunchableBrowserNotRunning).mockRejectedValueOnce(
+      new PreflightRefusalError('peer browser busy', 'browser-busy')
+    );
+    await expect(testCommand('/project', [], { buildOnly: true })).rejects.toThrow(
+      'peer browser busy'
+    );
+    expect(runProtectedMachBuild).not.toHaveBeenCalled();
   });
 
   it('skips the stale-build preflight when --build was requested', async () => {
@@ -471,25 +498,12 @@ describe('testCommand staleness and packaging coverage', () => {
     expect(runMachTestSuite).toHaveBeenCalled();
   });
 
-  // Coverage is manifest-granular: a scoped rebuild stages the whole
-  // manifest directory, so a same-manifest sibling of a covered file must
-  // pass the coverage gate.
-
-  it('lets a same-manifest sibling of the covered file pass the coverage gate', async () => {
+  it('refuses an unrecorded sibling without evidence of shared manifest scope', async () => {
     vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(false));
-    vi.mocked(runMachTestSuite).mockResolvedValue({
-      exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
-      stderr: '',
-    });
-
-    // Coverage records …/browser_tiles.js. The sibling lives in the same
-    // manifest directory and was staged by the same scoped rebuild.
     await expect(
       testCommand('/project', ['browser/components/tiles/test/browser/browser_other.js'])
-    ).resolves.toBeUndefined();
-
-    expect(runMachTestSuite).toHaveBeenCalled();
+    ).rejects.toThrow(/coverage/);
+    expect(runMachTestSuite).not.toHaveBeenCalled();
   });
 
   // components.conf registrations bake into the compiled StaticComponents
@@ -652,6 +666,7 @@ describe('testCommand staleness and packaging coverage', () => {
         engineHeadSha: 'abc',
         builtAt: '2026-08-11T00:00:00.000Z',
         binaryName: 'mybrowser',
+        testInputFingerprints: {},
         testPackagingCoverage: [SLICE_A],
       });
 
@@ -677,6 +692,7 @@ describe('testCommand staleness and packaging coverage', () => {
         engineHeadSha: 'abc',
         builtAt: '2026-08-11T00:00:00.000Z',
         binaryName: 'mybrowser',
+        testInputFingerprints: {},
         testPackagingCoverage: 'full',
       });
 
@@ -697,6 +713,52 @@ describe('testCommand staleness and packaging coverage', () => {
         staticComponentsHandling: 'carry-forward',
         buildKind: 'faster',
       });
+    });
+
+    it('automatically retains unchanged prior scopes without --extend-coverage', async () => {
+      greenBuild();
+      vi.mocked(readBuildBaseline).mockResolvedValue({
+        engineHeadSha: 'abc',
+        builtAt: '2026-10-04',
+        binaryName: 'mybrowser',
+        testInputFingerprints: {},
+        testPackagingCoverage: [SLICE_A],
+      });
+      await testCommand('/project', [SLICE_B], { build: true });
+      expect(writeBuildBaseline).toHaveBeenCalledWith(
+        expect.objectContaining({
+          testPackagingCoverage: [SLICE_A, SLICE_B],
+          staticComponentsHandling: 'carry-forward',
+        })
+      );
+      expect(checkExtendCoverageAnchor).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.anything(),
+        [SLICE_B]
+      );
+    });
+
+    it('warns with the dropped paths when earlier staging no longer has a sound anchor', async () => {
+      greenBuild();
+      vi.mocked(readBuildBaseline).mockResolvedValue({
+        engineHeadSha: 'abc',
+        builtAt: '2026-10-04',
+        binaryName: 'mybrowser',
+        testInputFingerprints: {},
+        testPackagingCoverage: [SLICE_A],
+      });
+      vi.mocked(checkExtendCoverageAnchor).mockResolvedValueOnce({
+        ok: false,
+        reason: 'fingerprint-diverged',
+        detail: [SLICE_A],
+      });
+      await testCommand('/project', [SLICE_B], { build: true });
+      expect(writeBuildBaseline).toHaveBeenCalledWith(
+        expect.objectContaining({ testPackagingCoverage: [SLICE_B] })
+      );
+      expect(notice).toHaveBeenCalledWith(
+        expect.stringContaining(`drops previous packaging coverage: ${SLICE_A}`)
+      );
     });
 
     it('refuses before building when the head/fingerprint anchor moved', async () => {
@@ -761,6 +823,7 @@ describe('testCommand staleness and packaging coverage', () => {
         engineHeadSha: 'abc',
         builtAt: '2026-08-11T00:00:00.000Z',
         binaryName: 'mybrowser',
+        testInputFingerprints: {},
         testPackagingCoverage: [SLICE_A],
       });
 

@@ -2,7 +2,7 @@
 /**
  * D13: Tests furnace behavior under file permission errors (EACCES, EPERM).
  */
-import { access, chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,6 +11,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    readFile: vi.fn(actual.readFile),
+    rename: vi.fn(actual.rename),
+    writeFile: vi.fn(actual.writeFile),
+  };
+});
 
 import { withFileLock } from '../file-lock.js';
 import {
@@ -33,22 +43,16 @@ afterEach(async () => {
   await Promise.all(
     cleanupPaths.splice(0).map((path) => rm(path, { recursive: true, force: true }))
   );
-  vi.clearAllMocks();
+  vi.restoreAllMocks();
+  vi.mocked(readFile).mockClear();
+  vi.mocked(rename).mockClear();
+  vi.mocked(writeFile).mockClear();
 });
 
 async function makeTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), `fireforge-test-${prefix}-`));
   cleanupPaths.push(dir);
   return dir;
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 describe('permission error handling', () => {
@@ -78,89 +82,59 @@ describe('permission error handling', () => {
     }
   );
 
-  it('rollback journal snapshot handles files that become unreadable', async () => {
+  it('refuses an unreadable snapshot without recording a false recoverable entry', async () => {
     const tempDir = await makeTempDir('perm-snapshot');
     const testFile = join(tempDir, 'test.txt');
     await writeFile(testFile, 'original content');
-
+    const denied = Object.assign(new Error('snapshot denied'), { code: 'EACCES' });
+    vi.mocked(readFile).mockRejectedValueOnce(denied);
     const journal = createRollbackJournal();
-    await snapshotFile(journal, testFile);
-
-    // Overwrite the file
-    await writeFile(testFile, 'modified content');
-
-    // Restore should work since we have the snapshot
-    await restoreRollbackJournal(journal);
-
-    const { readFile } = await import('node:fs/promises');
-    const restoredContent = await readFile(testFile, 'utf-8');
-    expect(restoredContent).toBe('original content');
+    await expect(snapshotFile(journal, testFile)).rejects.toBe(denied);
+    expect(journal.files.has(testFile)).toBe(false);
+    expect(await readFile(testFile, 'utf8')).toBe('original content');
   });
 
-  it('rollback journal restores files even when some writes fail', async () => {
-    const tempDir = await makeTempDir('perm-restore');
-    const file1 = join(tempDir, 'file1.txt');
-    const file2 = join(tempDir, 'file2.txt');
-    await writeFile(file1, 'content1');
-    await writeFile(file2, 'content2');
-
-    const journal = createRollbackJournal();
-    await snapshotFile(journal, file1);
-    await snapshotFile(journal, file2);
-
-    // Modify both files
-    await writeFile(file1, 'modified1');
-    await writeFile(file2, 'modified2');
-
-    // Restore should succeed for both
-    await restoreRollbackJournal(journal);
-
-    const { readFile } = await import('node:fs/promises');
-    expect(await readFile(file1, 'utf-8')).toBe('content1');
-    expect(await readFile(file2, 'utf-8')).toBe('content2');
-  });
-
-  // POSIX mode bits are the refusal mechanism here. NTFS ignores
-  // `chmod`, so this cannot be ported to Windows, only skipped honestly.
-  it.skipIf(process.platform === 'win32')(
-    'snapshot captures file mode and restores it',
-    async () => {
-      const tempDir = await makeTempDir('perm-mode');
-      const testFile = join(tempDir, 'executable.sh');
-      await writeFile(testFile, '#!/bin/bash\necho hello');
-      await chmod(testFile, 0o755);
-
+  it.each(['write', 'rename'] as const)(
+    'continues other restores and removes temporary files when %s fails',
+    async (stage) => {
+      const tempDir = await makeTempDir('perm-restore');
+      const blocked = join(tempDir, 'blocked.txt');
+      const healthy = join(tempDir, 'healthy.txt');
+      await writeFile(blocked, 'original blocked');
+      await writeFile(healthy, 'original healthy');
       const journal = createRollbackJournal();
-      await snapshotFile(journal, testFile);
-
-      // Overwrite with different content and mode
-      await writeFile(testFile, 'overwritten');
-      await chmod(testFile, 0o644);
-
-      await restoreRollbackJournal(journal);
-
-      const { readFile, stat } = await import('node:fs/promises');
-      expect(await readFile(testFile, 'utf-8')).toBe('#!/bin/bash\necho hello');
-      const stats = await stat(testFile);
-      // Check executable bit is restored (at least owner execute)
-      expect(stats.mode & 0o100).toBe(0o100);
+      await snapshotFile(journal, blocked);
+      await snapshotFile(journal, healthy);
+      await writeFile(blocked, 'modified blocked');
+      await writeFile(healthy, 'modified healthy');
+      const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      const denied = Object.assign(new Error(`${stage} denied`), { code: 'EACCES' });
+      if (stage === 'write') {
+        vi.mocked(writeFile).mockImplementation((path, data, options) =>
+          typeof path === 'string' && path.startsWith(`${blocked}.rollback-`)
+            ? Promise.reject(denied)
+            : actual.writeFile(path, data, options)
+        );
+      } else {
+        vi.mocked(rename).mockImplementation((source, destination) =>
+          destination === blocked ? Promise.reject(denied) : actual.rename(source, destination)
+        );
+      }
+      try {
+        await expect(restoreRollbackJournal(journal)).rejects.toThrow(`${stage} denied`);
+        expect(await readFile(blocked, 'utf8')).toBe('modified blocked');
+        expect(await readFile(healthy, 'utf8')).toBe('original healthy');
+        expect((await readdir(tempDir)).filter((name) => name.includes('.rollback-'))).toEqual([]);
+        if (stage === 'rename') {
+          expect(rename).toHaveBeenCalledWith(
+            expect.stringContaining(`${blocked}.rollback-`),
+            blocked
+          );
+        }
+      } finally {
+        vi.mocked(writeFile).mockImplementation(actual.writeFile);
+        vi.mocked(rename).mockImplementation(actual.rename);
+      }
     }
   );
-
-  it('snapshot of nonexistent file causes deletion on restore', async () => {
-    const tempDir = await makeTempDir('perm-nonexist');
-    const testFile = join(tempDir, 'new-file.txt');
-
-    const journal = createRollbackJournal();
-    // Snapshot a file that does not exist yet
-    await snapshotFile(journal, testFile);
-
-    // Create the file (simulating a mutation that adds it)
-    await writeFile(testFile, 'new content');
-    expect(await exists(testFile)).toBe(true);
-
-    // Restore should delete the file
-    await restoreRollbackJournal(journal);
-    expect(await exists(testFile)).toBe(false);
-  });
 });

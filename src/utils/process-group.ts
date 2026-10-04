@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Process-group kill and post-run sweep helpers for the exec layer. Split
- * out of `process.ts` to keep that file within the per-file line budget.
+ * Process-group kill and post-run sweep helpers for the exec layer.
  * Spawn-based rather than `exec`-based so the two modules do not import
  * each other cyclically.
  */

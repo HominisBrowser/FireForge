@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HISTORY_LOG_FILENAME } from '../../core/destructive.js';
+import * as patchLint from '../../core/patch-lint.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import {
   createTempProject,
@@ -117,6 +118,76 @@ describe('patch delete', () => {
     restoreTTY();
     vi.restoreAllMocks();
     await removeTempProject(projectRoot);
+  });
+
+  it('refuses a target changed between initial manifest loading and dependency scanning', async () => {
+    restoreTTY = setInteractiveMode(false);
+    const original = {
+      metadata: makeMetadata('001-infra-a.patch', 1, ['foo/A.sys.mjs']),
+      body: createDiff('foo/A.sys.mjs', 'export const A = 1;'),
+    };
+    await seed(patchesDir, [original]);
+    const build = patchLint.buildPatchQueueContext;
+    vi.spyOn(patchLint, 'buildPatchQueueContext').mockImplementationOnce(async (directory) => {
+      await seed(patchesDir, [
+        { ...original, metadata: { ...original.metadata, name: 'concurrent rename' } },
+      ]);
+      return build(directory);
+    });
+    await expect(
+      patchDeleteCommand(projectRoot, '001-infra-a.patch', { yes: true })
+    ).rejects.toThrow(/changed while preparing deletion/);
+    expect(await readFile(join(patchesDir, original.metadata.filename), 'utf8')).toBe(
+      original.body
+    );
+    expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
+  });
+
+  it('refuses deletion when a dependent patch is exported during confirmation', async () => {
+    restoreTTY = setInteractiveMode(true);
+    const original = {
+      metadata: makeMetadata('001-infra-a.patch', 1, ['foo/A.sys.mjs']),
+      body: createDiff('foo/A.sys.mjs', 'export const A = 1;'),
+    };
+    await seed(patchesDir, [original]);
+    vi.mocked(confirm).mockImplementationOnce(async () => {
+      await seed(patchesDir, [
+        original,
+        {
+          metadata: makeMetadata('002-infra-b.patch', 2, ['foo/B.sys.mjs']),
+          body: createDiff('foo/B.sys.mjs', 'import { A } from "./A.sys.mjs";'),
+        },
+      ]);
+      return true;
+    });
+    await expect(patchDeleteCommand(projectRoot, '001-infra-a.patch')).rejects.toThrow(
+      /Patch queue changed/
+    );
+    expect(await readFile(join(patchesDir, original.metadata.filename), 'utf8')).toBe(
+      original.body
+    );
+    expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
+  });
+
+  it('refuses a body-only change during confirmation without altering the manifest or history', async () => {
+    restoreTTY = setInteractiveMode(true);
+    const metadata = makeMetadata('001-infra-a.patch', 1, ['foo/A.sys.mjs']);
+    await seed(patchesDir, [
+      { metadata, body: createDiff('foo/A.sys.mjs', 'export const A = 1;') },
+    ]);
+    const manifestBefore = await readFile(join(patchesDir, 'patches.json'), 'utf8');
+    const changedBody = createDiff('foo/A.sys.mjs', 'export const A = 2;');
+    vi.mocked(confirm).mockImplementationOnce(async () => {
+      await writeFile(join(patchesDir, metadata.filename), changedBody);
+      return true;
+    });
+
+    await expect(patchDeleteCommand(projectRoot, metadata.filename)).rejects.toThrow(
+      /Patch queue changed/
+    );
+    expect(await readFile(join(patchesDir, metadata.filename), 'utf8')).toBe(changedBody);
+    expect(await readFile(join(patchesDir, 'patches.json'), 'utf8')).toBe(manifestBefore);
+    expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
   });
 
   it('rejects non-TTY runs without --yes', async () => {

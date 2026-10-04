@@ -11,13 +11,8 @@
  * says the opposite: nothing the operator could have done would have
  * prevented it.
  *
- * Every check routes through a helper here rather than being open-coded
- * as `if (!condition) throw`. An inline throw adds a
- * permanently-uncovered branch to every function it appears in, and the
- * per-module coverage floors in `scripts/check-coverage-thresholds.mjs`
- * would pay for it in ~40 places. Routed through a call, the branch lives
- * here once and is covered here once, and the `complexity` ceiling in
- * `eslint.config.js` does not see it at all.
+ * Shared helpers provide consistent classification and TypeScript narrowing,
+ * and keep expensive failure descriptions lazy on successful paths.
  *
  * This module is a leaf: it imports the error class and nothing else, per
  * the dependency-direction note in `src/utils/errors.ts`.

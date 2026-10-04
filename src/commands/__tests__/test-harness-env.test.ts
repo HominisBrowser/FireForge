@@ -5,7 +5,12 @@ vi.mock('../../utils/logger.js', () => ({ info: vi.fn(), setStdoutSealed: vi.fn(
 
 import { nativeAbsPath } from '../../test-utils/index.js';
 import { info } from '../../utils/logger.js';
-import { buildPerfSampleEnv, mergeHarnessEnv, resolveShuffleSeed } from '../test-harness-env.js';
+import {
+  buildPerfSampleEnv,
+  mergeHarnessEnv,
+  resolveShuffleSeed,
+  shuffleTestGroups,
+} from '../test-harness-env.js';
 import { resetVerdictEmission } from '../test-verdict.js';
 
 beforeEach(() => {
@@ -56,5 +61,17 @@ describe('buildPerfSampleEnv', () => {
     expect(buildPerfSampleEnv('/project', 'my-browser', 'artifacts/perf.json')).toEqual({
       MY_BROWSER_PERF_SAMPLE_JSON: nativeAbsPath('/project/artifacts/perf.json'),
     });
+  });
+});
+
+describe('shuffleTestGroups', () => {
+  it('replays a seed without mutating or losing selection entries', () => {
+    const groups = Array.from({ length: 12 }, (_, index) => `file-${index}`);
+    const original = [...groups];
+    const order = shuffleTestGroups(groups, 42);
+    expect(shuffleTestGroups(groups, 42)).toEqual(order);
+    expect(shuffleTestGroups(groups, 7)).not.toEqual(order);
+    expect([...order].sort()).toEqual([...groups].sort());
+    expect(groups).toEqual(original);
   });
 });

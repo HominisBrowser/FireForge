@@ -19,6 +19,7 @@ import { addWaitLockOption } from '../utils/options.js';
 import { findExecutable } from '../utils/process.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
 import { failure, ok, warning } from './doctor-check-core.js';
+import { ENGINE_ESLINT_DOCTOR_CHECK } from './doctor-engine-eslint.js';
 import { EXTERNAL_TOOLCHAIN_DOCTOR_CHECK } from './doctor-external-toolchains.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
 import { MACOS_SDK_LINK_DOCTOR_CHECK } from './doctor-macos-sdk.js';
@@ -268,6 +269,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
     },
   },
   SOURCE_PIN_DOCTOR_CHECK,
+  ENGINE_ESLINT_DOCTOR_CHECK,
   {
     name: 'Engine is git repository',
     skipIf: (ctx) => !ctx.engineExists,

@@ -58,6 +58,7 @@ afterAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockExec.mockReset().mockResolvedValue({ exitCode: 1, stdout: '', stderr: '' });
   mockGetPlatform.mockReturnValue('darwin');
   stubPlatform('darwin');
 });
@@ -94,6 +95,7 @@ describe('objdir browser process preflight', () => {
       pid: 41,
       commandLine: `${binary} -marionette -profile /tmp/test`,
       elapsedSeconds: 750,
+      parentPid: 1,
     });
     expect(message).toContain('PID 41 running for 12m30s');
     expect(message).toContain('-marionette -profile /tmp/test');
@@ -109,7 +111,7 @@ describe('objdir browser process preflight', () => {
       elapsedSeconds: 4,
     });
     expect(message).toContain('PID 54000 running for 4s');
-    expect(message).toContain('NO harness arguments');
+    expect(message).toContain('does not prove a harness orphan');
     expect(message).not.toContain('retry with "--kill-stale-marionette"');
   });
 
@@ -142,11 +144,45 @@ describe('objdir browser process preflight', () => {
       stdout: `37002 ${binary} -profile /tmp/mochitest\n`,
       stderr: '',
     });
+    mockExec
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: `37002 ${binary} -profile /tmp/mochitest\n`,
+        stderr: '',
+      })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '1\n', stderr: '' })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: `1 ${binary} -profile /tmp/mochitest\n`,
+        stderr: '',
+      })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' });
+
     try {
       await expect(
         ensureLaunchableBrowserNotRunning(binary, { killStaleBrowser: true })
       ).resolves.toBeUndefined();
       expect(killSpy).toHaveBeenCalledWith(37002, 'SIGTERM');
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it('does not signal a bundle PID whose identity changed after its process listing', async () => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    mockExec
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: `37002 00:10 ${binary} -marionette\n`,
+        stderr: '',
+      })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '1\n', stderr: '' })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '1 /usr/bin/node unrelated.js\n', stderr: '' });
+    try {
+      await expect(
+        ensureLaunchableBrowserNotRunning(binary, { killStaleBrowser: true })
+      ).rejects.toThrow(/changed identity/);
+      expect(killSpy).not.toHaveBeenCalled();
     } finally {
       killSpy.mockRestore();
     }
@@ -299,7 +335,7 @@ describe('assertMarionettePortAvailable', () => {
     );
   });
 
-  it('names the kill command in the browser-holder error message', async () => {
+  it('names the cleanup option only for a browser whose harness parent exited', async () => {
     mockExec
       .mockResolvedValueOnce({
         exitCode: 0,
@@ -310,14 +346,15 @@ describe('assertMarionettePortAvailable', () => {
         exitCode: 0,
         stdout: '/usr/bin/firefox -marionette\n',
         stderr: '',
-      });
+      })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '1\n', stderr: '' });
 
     try {
       await assertMarionettePortAvailable();
       throw new Error('expected throw');
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      expect(message).toMatch(/kill 12345/);
+      expect(message).toContain('--kill-stale-marionette');
     }
   });
 
@@ -358,6 +395,15 @@ describe('assertMarionettePortAvailable', () => {
         stdout: '/usr/bin/firefox -marionette\n',
         stderr: '',
       });
+
+    mockExec
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '1\n', stderr: '' })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: '1 /usr/bin/firefox -marionette\n',
+        stderr: '',
+      })
+      .mockResolvedValueOnce({ exitCode: 1, stdout: '', stderr: '' });
 
     try {
       await expect(
@@ -505,4 +551,107 @@ describe('shouldAutoForwardMarionettePortToMach', () => {
     expect(shouldAutoForwardMarionettePortToMach(['--flavor=mochitest'])).toBe(true);
     expect(shouldAutoForwardMarionettePortToMach(['--headless'])).toBe(true);
   });
+});
+
+it.each([true, false])(
+  'waits for browser termination and refuses an ignored signal (release=%s)',
+  async (release) => {
+    vi.useFakeTimers();
+    const binary = '/project/engine/obj-debug/dist/bin/firefox';
+    let freed = false;
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      if (release)
+        setTimeout(() => {
+          freed = true;
+        }, 500);
+      return true;
+    });
+    mockExec.mockImplementation((_command, args) =>
+      Promise.resolve({
+        exitCode: 0,
+        stderr: '',
+        stdout: args.includes('-axo')
+          ? freed
+            ? ''
+            : `37002 00:10 ${binary} -marionette\n`
+          : args.includes('ppid=,args=')
+            ? `1 ${binary} -marionette\n`
+            : '1\n',
+      })
+    );
+    try {
+      const result = ensureLaunchableBrowserNotRunning(binary, { killStaleBrowser: true }).then(
+        () => 'released',
+        (error: unknown) => error
+      );
+      await vi.runAllTimersAsync();
+      if (release) expect(await result).toBe('released');
+      else expect(await result).toBeInstanceOf(GeneralError);
+      expect(kill).toHaveBeenCalledTimes(1);
+    } finally {
+      kill.mockRestore();
+      vi.useRealTimers();
+    }
+  }
+);
+
+it.each([true, false])(
+  'waits for Marionette port release and refuses an ignored signal (release=%s)',
+  async (release) => {
+    vi.useFakeTimers();
+    let freed = false;
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      if (release)
+        setTimeout(() => {
+          freed = true;
+        }, 500);
+      return true;
+    });
+    mockExec.mockImplementation((command, args) =>
+      Promise.resolve({
+        exitCode: 0,
+        stderr: '',
+        stdout:
+          command === 'lsof'
+            ? freed
+              ? ''
+              : lsofOutput(4242, 'firefox')
+            : args.includes('ppid=,args=')
+              ? '1 /usr/bin/firefox -marionette\n'
+              : args.includes('ppid=')
+                ? '1\n'
+                : '/usr/bin/firefox -marionette\n',
+      })
+    );
+    try {
+      const result = ensureMarionettePortAvailable(undefined, { killStaleBrowser: true }).then(
+        () => 'released',
+        (error: unknown) => error
+      );
+      await vi.runAllTimersAsync();
+      if (release) expect(await result).toBe('released');
+      else expect(await result).toBeInstanceOf(GeneralError);
+      expect(kill).toHaveBeenCalledTimes(1);
+    } finally {
+      kill.mockRestore();
+      vi.useRealTimers();
+    }
+  }
+);
+
+it('does not signal a Marionette PID whose identity changed since its port probe', async () => {
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+  mockExec
+    .mockResolvedValueOnce({ exitCode: 0, stdout: lsofOutput(4242, 'firefox'), stderr: '' })
+    .mockResolvedValueOnce({ exitCode: 0, stdout: '/usr/bin/firefox -marionette', stderr: '' })
+    .mockResolvedValueOnce({ exitCode: 0, stdout: '1', stderr: '' })
+    .mockResolvedValueOnce({ exitCode: 0, stdout: '1 /usr/bin/node unrelated.js', stderr: '' });
+  try {
+    await expect(
+      ensureMarionettePortAvailable(undefined, { killStaleBrowser: true })
+    ).rejects.toThrow(/changed identity/);
+    expect(kill).not.toHaveBeenCalled();
+  } finally {
+    kill.mockRestore();
+  }
 });

@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { Command } from 'commander';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { pickDefined, resolveWaitLockSeconds, WAIT_LOCK_ENV_VAR } from '../options.js';
+import {
+  addWaitLockOption,
+  ensureWaitLockOptionEverywhere,
+  pickDefined,
+  resolveWaitLockSeconds,
+  WAIT_LOCK_ENV_VAR,
+} from '../options.js';
 
 describe('pickDefined', () => {
   it('strips undefined values', () => {
@@ -81,5 +88,46 @@ describe(`resolveWaitLockSeconds and ${WAIT_LOCK_ENV_VAR}`, () => {
   it.each(['0', '3601', 'soon'])('refuses %s rather than silently failing fast', (raw) => {
     process.env[WAIT_LOCK_ENV_VAR] = raw;
     expect(() => resolveWaitLockSeconds(undefined)).toThrow(WAIT_LOCK_ENV_VAR);
+  });
+});
+
+describe('nested wait-lock routing', () => {
+  it.each(['furnace', 'patch', 'tree', 'token', 'source'])(
+    'delivers a trailing flag to the %s leaf action',
+    async (family) => {
+      const program = new Command();
+      program.option('--verbose');
+      const group = program.command(family);
+      const leaf = addWaitLockOption(group.command('mutate'));
+      let received: unknown;
+      leaf.action((options: { waitLock?: number | boolean }) => {
+        received = options.waitLock;
+      });
+      ensureWaitLockOptionEverywhere(program);
+      await program.parseAsync([
+        'node',
+        'fireforge',
+        '--verbose',
+        family,
+        'mutate',
+        '--wait-lock',
+        '300',
+      ]);
+      expect(received).toBe(300);
+      expect(group.opts()).not.toHaveProperty('waitLock');
+      expect(program.opts()['verbose']).toBe(true);
+    }
+  );
+
+  it('routes the bare wait flag as the leaf default', async () => {
+    const program = new Command();
+    const leaf = addWaitLockOption(program.command('furnace').command('deploy'));
+    let received: unknown;
+    leaf.action((options: { waitLock?: number | boolean }) => {
+      received = options.waitLock;
+    });
+    ensureWaitLockOptionEverywhere(program);
+    await program.parseAsync(['node', 'fireforge', 'furnace', 'deploy', '--wait-lock']);
+    expect(resolveWaitLockSeconds(received as boolean)).toBe(60);
   });
 });

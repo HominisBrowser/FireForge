@@ -73,7 +73,7 @@ describe('re-export full-refusal exit code across the process boundary', () => {
     });
     // Materialize real old bodies, then introduce foreign drift in both.
     const materialize = await runFireforgeCli(projectRoot, ['re-export', '--all']);
-    expect(materialize.exitCode).toBe(0);
+    expect(materialize.exitCode, materialize.stderr + materialize.stdout).toBe(0);
     await writeFiles(join(projectRoot, 'engine'), {
       [FILE_A]: 'line1\nforeign X\nline2\npatched a\nline3\n',
       [FILE_B]: 'line1\nforeign Y\nline2\npatched b\nline3\n',

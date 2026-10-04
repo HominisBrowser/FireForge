@@ -195,6 +195,11 @@ function handleNonZeroTestExit(
 ): void {
   if (result.exitCode === 0 || result.exitCode === 130) return;
   const combinedOutput = `${result.stdout}\n${result.stderr}`;
+  if (/copyExtraFilesToProfile/.test(combinedOutput) && /FileExistsError/.test(combinedOutput)) {
+    throw new GeneralError(
+      'Harness argument failure: --extra-profile-file collided with the existing profile directory. Use --profile-file source=chrome/userChrome.css to merge an individual file; rebuilding does not repair this argument.'
+    );
+  }
   const failureContext = postRebuildContext
     ? completePostRebuildFailureContext(postRebuildContext, combinedOutput)
     : undefined;

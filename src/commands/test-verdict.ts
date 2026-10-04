@@ -17,7 +17,14 @@ import { setStdoutSealed } from '../utils/logger.js';
  * of the others.
  */
 export type FireforgeVerdictReason =
-  'crash' | 'no-tests' | 'test-failures' | 'preflight' | 'inconclusive' | 'lock-timeout' | 'killed';
+  | 'crash'
+  | 'harness-arguments'
+  | 'no-tests'
+  | 'test-failures'
+  | 'preflight'
+  | 'inconclusive'
+  | 'lock-timeout'
+  | 'killed';
 
 let emitted = false;
 
@@ -36,7 +43,13 @@ let emitted = false;
 const runAttributes = new Map<VerdictRunAttributeKey, string>();
 
 /** Additive keys a run can stamp on its verdict line. */
-export type VerdictRunAttributeKey = 'shuffle' | 'orphans-reaped';
+export type VerdictRunAttributeKey =
+  | 'shuffle'
+  | 'orphans-reaped'
+  | 'host-load'
+  | 'host-cpu-warning'
+  | 'power-source'
+  | 'power-changed';
 
 /** Records an additive attribute for this run's verdict line. */
 export function setVerdictRunAttribute(key: VerdictRunAttributeKey, value: string): void {

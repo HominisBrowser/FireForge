@@ -7,23 +7,10 @@ import {
   assertEngineGenerationUnchanged,
   snapshotEngineGeneration,
 } from '../core/engine-session-lock.js';
-import { reportOrphanedHarnessProcesses } from '../core/harness-orphans.js';
 import { hasBuildArtifacts, hasRunnableBundle } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
-import {
-  assertMarionettePortAvailable,
-  ensureLaunchableBrowserNotRunning,
-  ensureMarionettePortAvailable,
-  extractForwardedMarionettePort,
-  forwardedMachArgsIncludeMarionetteClient,
-  shouldAutoForwardMarionettePortToMach,
-} from '../core/marionette-port.js';
-import {
-  formatMarionettePreflightLine,
-  reportMarionettePreflight,
-  runMarionettePreflight,
-} from '../core/marionette-preflight.js';
-import { ensureMochitestServerPortAvailable } from '../core/mochitest-server-port.js';
+import { ensureLaunchableBrowserNotRunning } from '../core/marionette-port.js';
+import { waitForPreflight } from '../core/preflight-wait.js';
 import {
   closeActiveRunLog,
   openRunLog,
@@ -36,6 +23,11 @@ import {
   formatScopeNotice,
   type TestPathScope,
 } from '../core/test-path-scope.js';
+import {
+  cleanupProfileFiles,
+  type StagedProfileFiles,
+  stageProfileFiles,
+} from '../core/test-profile-files.js';
 import { assertObjdirMatchesTreeMarker } from '../core/tree-store.js';
 import { FireForgeError, GeneralError, PreflightRefusalError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
@@ -43,11 +35,22 @@ import type { TestOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, notice, outro, verbose } from '../utils/logger.js';
+import { info, intro, notice, warn } from '../utils/logger.js';
+import { resolveWaitLockSeconds } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
+import {
+  appendMarionetteForwardingArgs,
+  ensureTestBrowserEnvironment,
+  runDoctorPreflight,
+} from './test-browser-preflight.js';
 import { runTestBuildPhase } from './test-build-phase.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
-import { buildPerfSampleEnv, mergeHarnessEnv, resolveShuffleSeed } from './test-harness-env.js';
+import {
+  buildPerfSampleEnv,
+  mergeHarnessEnv,
+  resolveShuffleSeed,
+  shuffleTestGroups,
+} from './test-harness-env.js';
 import { removePgidFile, setActivePgidFile } from './test-harness-teardown.js';
 import {
   assertPathlessTestMode,
@@ -69,13 +72,7 @@ import {
   type TestRunOutcome,
   type TestSuite,
 } from './test-run.js';
-import {
-  addVerdictRunCount,
-  emitFailVerdict,
-  emitPassVerdict,
-  resetVerdictEmission,
-  verdictEmitted,
-} from './test-verdict.js';
+import { emitFailVerdict, resetVerdictEmission, verdictEmitted } from './test-verdict.js';
 
 async function assertTestPathsExist(engineDir: string, testPaths: string[]): Promise<void> {
   const missingPaths: string[] = [];
@@ -172,209 +169,6 @@ function logTestSelection(scopes: readonly TestPathScope[]): void {
   info('');
 }
 
-/**
- * Runs the `--doctor` marionette handshake probe. With no test paths the
- * probe is the entire command (returns `'stop'` after reporting). With
- * paths it gates the mach invocation, where a FAIL throws before mach runs.
- */
-async function runDoctorPreflight(args: {
-  engineDir: string;
-  effectivePort: number | undefined;
-  hasTestPaths: boolean;
-  objDir: string | undefined;
-  binaryName: string;
-  launchablePath: string | undefined;
-}): Promise<'stop' | 'continue'> {
-  const { engineDir, effectivePort, hasTestPaths, objDir, binaryName, launchablePath } = args;
-  // Non-TTY captures need the banner even if clack's renderer defers output
-  // in pipe mode. TTY users need the clack framing. Gated rather than
-  // written twice: the unconditional pair printed the same line twice on a
-  // terminal.
-  if (process.stdout.isTTY) {
-    info('Running marionette preflight...');
-  } else {
-    process.stdout.write('Running marionette preflight...\n');
-  }
-  const preflight =
-    effectivePort !== undefined
-      ? await runMarionettePreflight(engineDir, { port: effectivePort })
-      : await runMarionettePreflight(engineDir);
-  // The authoritative PASS/FAIL line is written with `process.stdout.write`
-  // as the first output after the probe returns, because clack's renderer
-  // can drop the summary under non-TTY capture.
-  //
-  // Gated on non-TTY: unconditional, it stacks with the two clack renderings
-  // below and the same line appears three times on a terminal. Captured
-  // streams are exactly where this branch still fires.
-  const directLine = formatMarionettePreflightLine(preflight);
-  if (!process.stdout.isTTY) {
-    process.stdout.write(`${directLine}\n`);
-  }
-  process.stdout.write(
-    `Marionette preflight environment: objdir=${objDir ?? '(none)'}; binary=${binaryName}; app=${launchablePath ? `engine/${launchablePath}` : '(unknown)'}; port=${effectivePort ?? 2828}; elapsed=${preflight.durationMs}ms\n`
-  );
-  reportMarionettePreflight(preflight);
-  if (!hasTestPaths) {
-    if (!preflight.ok) {
-      emitFailVerdict('preflight');
-      throw new GeneralError('Marionette preflight reported FAIL — see output above.');
-    }
-    // Doctor-only runs end here, so they carry their own verdict line
-    // (reason=preflight on failure). With test paths the verdict comes
-    // from the actual harness run downstream.
-    emitPassVerdict();
-    outro('Test completed');
-    return 'stop';
-  }
-  if (!preflight.ok) {
-    emitFailVerdict('preflight');
-    throw new GeneralError(
-      'Marionette preflight reported FAIL — see output above. Aborting before mach test runs.'
-    );
-  }
-  return 'continue';
-}
-
-/**
- * Auto-forwards `--marionette-port` to mach (`--setpref=marionette.port`
- * for the listener, `--marionette=127.0.0.1:<n>` for the mochitest
- * client), skipping each piece the operator already forwarded via
- * `--mach-arg` and the xpcshell flavor that ignores the pref entirely.
- * Mutates `extraArgs` in place.
- */
-function appendMarionetteForwardingArgs(
-  extraArgs: string[],
-  options: TestOptions,
-  forwardedPort: number | undefined,
-  xpcshellOnly = false
-): void {
-  // Auto-forward the Marionette port to mach when `--marionette-port` is set.
-  // `--setpref=marionette.port=<n>` configures where the browser listener
-  // binds. `--marionette=127.0.0.1:<n>` tells the mochitest harness client to
-  // connect there (default client is 127.0.0.1:2828). xpcshell ignores both
-  // for browser Marionette.
-  //
-  // Skip setpref forwarding when the operator already supplied an equivalent
-  // arg via `--mach-arg`: duplicates would confuse without changing
-  // semantics. Skip when mach args explicitly request `--flavor=xpcshell` (or
-  // `xpcshell-tests`): the preflight still honours `--marionette-port`, but
-  // mach does not use the marionette.port pref on that harness. Any other arg
-  // shape still forwards so toolkit widget paths and mixed suites stay
-  // aligned with the probe without duplicate `--mach-arg` flags.
-  //
-  // Skip auto `--marionette=...` when `--mach-arg` already includes a client
-  // `--marionette=...` (or two-token `--marionette host:port`).
-  if (options.marionettePort === undefined) return;
-  if (xpcshellOnly) {
-    // Manifest classification says every requested path is xpcshell.
-    // xpcshell ignores the browser Marionette path entirely, and forwarding
-    // the mochitest client flags here makes mach reject the dispatch.
-    info(
-      `--marionette-port=${options.marionettePort} applied to the preflight probe only: the requested paths are xpcshell-only, and xpcshell ignores the browser Marionette port. Not forwarding --setpref=marionette.port or --marionette to mach.`
-    );
-    return;
-  }
-  {
-    const operatorAlreadyForwarded = forwardedPort !== undefined;
-    const machArgs = options.machArg ?? [];
-    if (operatorAlreadyForwarded) {
-      info(
-        `--marionette-port=${options.marionettePort} set, but the same port is already forwarded via --mach-arg; skipping auto-forward.`
-      );
-    } else if (shouldAutoForwardMarionettePortToMach(machArgs)) {
-      extraArgs.push(`--setpref=marionette.port=${options.marionettePort}`);
-    } else {
-      info(
-        `--marionette-port=${options.marionettePort} applied to the preflight probe, but --flavor=xpcshell is set — mach is not auto-configured with --setpref=marionette.port or --marionette (xpcshell ignores the browser Marionette path). Pass --mach-arg --setpref=marionette.port=${options.marionettePort} explicitly if you still need mach to see the port.`
-      );
-    }
-
-    if (
-      shouldAutoForwardMarionettePortToMach(machArgs) &&
-      !forwardedMachArgsIncludeMarionetteClient(machArgs)
-    ) {
-      extraArgs.push(`--marionette=127.0.0.1:${options.marionettePort}`);
-    }
-  }
-}
-
-async function ensureTestMarionettePortAvailable(
-  port: number | undefined,
-  binaryName: string,
-  options: TestOptions,
-  skip: { xpcshellOnly: boolean; doctor: boolean }
-): Promise<void> {
-  // Refuse a stale listener before mach surfaces a generic bind failure.
-  // This also recognizes a fork-branded browser via binaryName.
-  if (skip.xpcshellOnly && !skip.doctor) {
-    // xpcshell does not bind the browser Marionette port, so a developer's
-    // interactive browser holding 2828 must not kill an xpcshell run.
-    // --doctor keeps the preflight: its probe launches a
-    // Marionette browser regardless of the requested harness.
-    const message =
-      'Skipping the Marionette stale-port preflight: all requested paths are xpcshell ' +
-      '(xpcshell does not bind the browser Marionette port).';
-    if (options.marionettePort !== undefined || options.killStaleMarionette === true) {
-      info(message);
-    } else {
-      verbose(message);
-    }
-    return;
-  }
-  if (options.killStaleMarionette === true) {
-    await ensureMarionettePortAvailable(port, { binaryName, killStaleBrowser: true });
-    return;
-  }
-  await assertMarionettePortAvailable(port, { binaryName });
-}
-
-async function ensureTestBrowserEnvironment(
-  engineDir: string,
-  launchablePath: string | undefined,
-  xpcshellOnly: boolean,
-  projectConfig: FireForgeConfig,
-  options: TestOptions,
-  objDir: string | undefined
-): Promise<{ forwardedPort: number | undefined; effectivePort: number | undefined }> {
-  // A timed-out mochitest can leave the built app alive after its Marionette
-  // listener has disappeared. The port probe cannot see that case, but the
-  // survivor can still steal focus and wedge every later headed run.
-  if (!xpcshellOnly && launchablePath) {
-    await ensureLaunchableBrowserNotRunning(join(engineDir, launchablePath), {
-      killStaleBrowser: options.killStaleMarionette === true,
-    });
-  }
-  // A zombie mochitest httpd squatting the server port makes a fresh
-  // browser connect to a server that cannot serve this run's manifest,
-  // which surfaces as a 370s "Ran 0 checks" stall naming nothing. xpcshell
-  // does not use the httpd, so an xpcshell-only run is never blocked by it.
-  if (!xpcshellOnly) {
-    await ensureMochitestServerPortAvailable(undefined, {
-      engineDir,
-      killStaleServer: options.killStaleMarionette === true,
-    });
-  }
-  // Helpers that outlived an earlier run (httpd, pywebsocket, ssltunnel,
-  // moz-http2) slow every later run without appearing in its output. Both
-  // harnesses are affected, so this census is not gated on xpcshellOnly.
-  // Reaping is opt-in per invocation (--reap-orphans) or per repo
-  // (test.reapOrphans: "reap"); a reap is stamped on the verdict line so a
-  // green after one is not mistaken for a green on a quiet machine.
-  const census = await reportOrphanedHarnessProcesses(objDir, {
-    reap: options.reapOrphans === true || projectConfig.test?.reapOrphans === 'reap',
-  });
-  addVerdictRunCount('orphans-reaped', census.reaped);
-  const forwardedPort = options.machArg
-    ? extractForwardedMarionettePort(options.machArg)
-    : undefined;
-  const effectivePort = options.marionettePort ?? forwardedPort;
-  await ensureTestMarionettePortAvailable(effectivePort, projectConfig.binaryName, options, {
-    xpcshellOnly,
-    doctor: options.doctor === true,
-  });
-  return { forwardedPort, effectivePort };
-}
-
 /** Build-artifact preflight wording for `fireforge test`. */
 const TEST_BUILD_PREFLIGHT = {
   label: 'Tests',
@@ -410,8 +204,13 @@ export async function testCommand(
   // `finally`, after the verdict line has already read the path.
   setActiveRunLog(await openRunLog(projectRoot, 'test'));
   setActivePgidFile(options.pgidFile);
+  let staged: StagedProfileFiles | undefined;
   try {
-    await runTestCommandBody(projectRoot, testPaths, options);
+    if (options.profileFile?.length) {
+      staged = await stageProfileFiles(projectRoot, options.profileFile);
+      options = { ...options, machArg: [...(options.machArg ?? []), ...staged.args] };
+    }
+    await runTestCommandBody(projectRoot, testPaths, options, staged?.env);
   } catch (error: unknown) {
     if (!verdictEmitted()) {
       renderPreflightRefusal(error);
@@ -421,8 +220,19 @@ export async function testCommand(
   } finally {
     // A run that ends under FireForge's control owns no harness group any
     // more; the file only outlives FireForge when FireForge was killed.
-    await removePgidFile(options.pgidFile);
-    await closeActiveRunLog();
+    const stagedRoot = staged?.root;
+    const cleanups = [
+      ...(stagedRoot === undefined ? [] : [() => cleanupProfileFiles(stagedRoot)]),
+      () => removePgidFile(options.pgidFile),
+      () => closeActiveRunLog(),
+    ];
+    for (const cleanup of cleanups) {
+      try {
+        await cleanup();
+      } catch (error: unknown) {
+        warn(`Test cleanup failed: ${toError(error).message}`);
+      }
+    }
   }
 }
 
@@ -471,20 +281,96 @@ function renderPreflightRefusal(error: unknown): void {
  */
 async function verifyEngineGenerationOrEmitInconclusive(
   engineDir: string,
-  before: string
+  before: string,
+  powerChanged = false
 ): Promise<void> {
   try {
     await assertEngineGenerationUnchanged(engineDir, before);
+    if (powerChanged)
+      throw new GeneralError(
+        'Perf power source changed during the run; repeat this sitting on a stable power source.'
+      );
   } catch (error: unknown) {
     emitFailVerdict('inconclusive');
     throw error;
   }
 }
 
+async function guardBuildBrowser(
+  engineDir: string,
+  launchablePath: string | undefined,
+  options: TestOptions
+): Promise<void> {
+  if ((options.build || options.buildOnly) && launchablePath) {
+    await waitForPreflight(
+      () =>
+        ensureLaunchableBrowserNotRunning(join(engineDir, launchablePath), {
+          killStaleBrowser: options.killStaleMarionette === true,
+        }),
+      options.waitBrowser === undefined ? undefined : resolveWaitLockSeconds(options.waitBrowser)
+    );
+  }
+}
+
+function prepareExtraMachArgs(
+  options: TestOptions,
+  shuffleSeed: number | undefined,
+  canaryPath: string | undefined,
+  projectConfig: FireForgeConfig,
+  forwardedMachArgs: string[]
+): string[] {
+  const extraArgs: string[] = [];
+
+  if (options.headless) {
+    extraArgs.push('--headless');
+  }
+  if (shuffleSeed !== undefined) {
+    extraArgs.push('--shuffle');
+  }
+  if (options.auto === true) {
+    extraArgs.push('--auto');
+  }
+  if (canaryPath !== undefined) extraArgs.push(`--timeout=${canaryTimeoutSeconds(projectConfig)}`);
+
+  // --mach-arg is a verbatim passthrough for upstream mach/xpcshell/mochitest
+  // flags FireForge does not model directly (see the xpcshell appdir hint
+  // above for why). Appended after --headless so mach sees
+  // the FireForge-managed flags first and the escape-valve ones last, which
+  // keeps the override precedence predictable.
+  if (forwardedMachArgs.length > 0) extraArgs.push(...forwardedMachArgs);
+
+  return extraArgs;
+}
+
+function prepareDispatchArguments(
+  classification: HarnessClassification,
+  options: TestOptions,
+  canaryPath: string | undefined,
+  projectConfig: FireForgeConfig
+): { suite: TestSuite; shuffleSeed: number | undefined; extraArgs: string[] } {
+  const suite = resolveTestSuite(classification, options.genericMachTest === true);
+  const shuffleSeed = resolveShuffleSeed(options.shuffle, suite);
+  const forwardedMachArgs =
+    options.machArg && options.machArg.length > 0
+      ? filterRedundantXpcshellFlavorArgs(options.machArg, classification)
+      : [];
+
+  const extraArgs = prepareExtraMachArgs(
+    options,
+    shuffleSeed,
+    canaryPath,
+    projectConfig,
+    forwardedMachArgs
+  );
+
+  return { suite, shuffleSeed, extraArgs };
+}
+
 async function runTestCommandBody(
   projectRoot: string,
   testPaths: string[],
-  options: TestOptions = {}
+  options: TestOptions = {},
+  profileEnv?: Record<string, string>
 ): Promise<void> {
   const paths = getProjectPaths(projectRoot);
 
@@ -535,15 +421,7 @@ async function runTestCommandBody(
     { allowMixed: options.buildOnly === true }
   );
 
-  if (
-    await runTestBuildPhase(projectRoot, paths, projectConfig, harnessRetries, options, {
-      classification,
-      normalizedPaths,
-    })
-  ) {
-    return;
-  }
-
+  await guardBuildBrowser(paths.engine, launchablePath, options);
   // Resolve the effective Marionette port. Operator precedence:
   //   1. `--marionette-port` (first-class option, parsed at the CLI layer)
   //   2. forwarded `--mach-arg --marionette-port=NNNN` /
@@ -554,6 +432,15 @@ async function runTestCommandBody(
   // documented `--mach-arg --marionette-port=NNNN` route still hits the
   // wrapper preflight refusing on 2828 before the forwarded arg reaches
   // mach.
+  if (
+    await runTestBuildPhase(projectRoot, paths, projectConfig, harnessRetries, options, {
+      classification,
+      normalizedPaths,
+    })
+  ) {
+    return;
+  }
+
   const { forwardedPort, effectivePort } = await ensureTestBrowserEnvironment(
     paths.engine,
     launchablePath,
@@ -576,33 +463,12 @@ async function runTestCommandBody(
   }
 
   await assertTestPathsExist(paths.engine, normalizedPaths);
-  const suite = resolveTestSuite(classification, options.genericMachTest === true);
-  const shuffleSeed = resolveShuffleSeed(options.shuffle, suite);
-  const forwardedMachArgs =
-    options.machArg && options.machArg.length > 0
-      ? filterRedundantXpcshellFlavorArgs(options.machArg, classification)
-      : [];
-
-  const extraArgs: string[] = [];
-
-  if (options.headless) {
-    extraArgs.push('--headless');
-  }
-  if (shuffleSeed !== undefined) {
-    extraArgs.push('--shuffle');
-  }
-  if (options.auto === true) {
-    extraArgs.push('--auto');
-  }
-  if (canaryPath !== undefined) extraArgs.push(`--timeout=${canaryTimeoutSeconds(projectConfig)}`);
-
-  // --mach-arg is a verbatim passthrough for upstream mach/xpcshell/mochitest
-  // flags FireForge does not model directly (see the xpcshell appdir hint
-  // above for why). Appended after --headless so mach sees
-  // the FireForge-managed flags first and the escape-valve ones last, which
-  // keeps the override precedence predictable.
-  if (forwardedMachArgs.length > 0) extraArgs.push(...forwardedMachArgs);
-
+  const { suite, shuffleSeed, extraArgs } = prepareDispatchArguments(
+    classification,
+    options,
+    canaryPath,
+    projectConfig
+  );
   appendMarionetteForwardingArgs(extraArgs, options, forwardedPort, xpcshellOnly);
 
   // Directory arguments mean exactly that directory: mozbuild's test
@@ -633,6 +499,7 @@ async function runTestCommandBody(
 
   const harnessEnv = mergeHarnessEnv(
     buildPerfSampleEnv(projectRoot, projectConfig.binaryName, options.perfSamples),
+    profileEnv,
     shuffleSeed === undefined ? undefined : { FIREFORGE_SHUFFLE_SEED: String(shuffleSeed) }
   );
 
@@ -671,7 +538,9 @@ async function runTestCommandBody(
     const generationBefore = await snapshotEngineGeneration(paths.engine);
     let summary: ShardedRunSummary;
     try {
-      summary = await runShardedTests(runCtx, dispatchGroups, (outcome, label) =>
+      const orderedGroups =
+        shuffleSeed === undefined ? dispatchGroups : shuffleTestGroups(dispatchGroups, shuffleSeed);
+      summary = await runShardedTests(runCtx, orderedGroups, (outcome, label) =>
         diagnoseShardOutcome(outcome, label, projectConfig.binaryName, postRebuildContext)
       );
     } finally {
@@ -679,7 +548,11 @@ async function runTestCommandBody(
       // `FAIL reason=inconclusive` and throws, so an invalidated run can
       // never print `PASS shards=N/N` first. (A throw here masks an
       // in-flight shard error, as the plain assert always did.)
-      await verifyEngineGenerationOrEmitInconclusive(paths.engine, generationBefore);
+      await verifyEngineGenerationOrEmitInconclusive(
+        paths.engine,
+        generationBefore,
+        runCtx.powerChanged
+      );
     }
     finalizeShardedOutcome(summary);
     return;
@@ -697,7 +570,11 @@ async function runTestCommandBody(
       error instanceof Error ? error : undefined
     );
   } finally {
-    await verifyEngineGenerationOrEmitInconclusive(paths.engine, generationBefore);
+    await verifyEngineGenerationOrEmitInconclusive(
+      paths.engine,
+      generationBefore,
+      runCtx.powerChanged
+    );
   }
 
   if (canaryPath !== undefined) {

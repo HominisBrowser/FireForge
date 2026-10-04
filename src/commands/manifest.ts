@@ -56,8 +56,7 @@ export interface CommandManifestEntry {
    */
   name: string;
   /**
-   * Short one-line group label, used purely for grouping in generated
-   * documentation. Not surfaced in the CLI itself.
+   * Group label used by the root CLI help and generated documentation.
    */
   group: 'project' | 'workflow' | 'engine' | 'diagnostics' | 'components';
   /** Registers the command (and any subcommands) on the Commander program. */

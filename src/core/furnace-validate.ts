@@ -3,14 +3,12 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { ComponentType, FurnaceConfig, ValidationIssue } from '../types/furnace.js';
-import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { extractComponentChecksums } from './furnace-checksum-utils.js';
 import { getFurnacePaths, loadFurnaceConfig, loadFurnaceState } from './furnace-config.js';
 import { resolveFtlDir, xpcshellTestParentDir } from './furnace-constants.js';
 import { validateCssFragments } from './furnace-css-fragments.js';
-import { detectComposesCycles, validateComposesReferences } from './furnace-graph-utils.js';
 import { findJsconfigPathsDrift } from './furnace-jsconfig.js';
 import {
   validateAccessibility,
@@ -169,47 +167,6 @@ export async function validateAllComponents(root: string): Promise<Map<string, V
     const config = await loadFurnaceConfig(root);
     const furnacePaths = getFurnacePaths(root);
     const results = new Map<string, ValidationIssue[]>();
-
-    // Validate composition graph integrity (dangling references and cycles)
-    try {
-      validateComposesReferences(config.stock, config.overrides, config.custom);
-    } catch (err: unknown) {
-      const message = toError(err).message;
-      // Attribute the issue to the first custom component with a bad composes reference
-      for (const [name, cfg] of Object.entries(config.custom)) {
-        if (cfg.composes) {
-          const existing = results.get(name) ?? [];
-          existing.push({
-            component: name,
-            severity: 'error',
-            check: 'composes-dangling-reference',
-            message,
-          });
-          results.set(name, existing);
-          break;
-        }
-      }
-    }
-
-    try {
-      detectComposesCycles(config.custom);
-    } catch (err: unknown) {
-      const message = toError(err).message;
-      // Attribute the cycle issue to the first custom component in the cycle
-      for (const name of Object.keys(config.custom)) {
-        if (config.custom[name]?.composes) {
-          const existing = results.get(name) ?? [];
-          existing.push({
-            component: name,
-            severity: 'error',
-            check: 'composes-cycle',
-            message,
-          });
-          results.set(name, existing);
-          break;
-        }
-      }
-    }
 
     // Override components
     for (const name of Object.keys(config.overrides)) {

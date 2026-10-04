@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { constants as osConstants, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import type { GitStatusEntry } from '../core/git-base.js';
@@ -259,9 +259,13 @@ export function setInteractiveMode(isInteractive: boolean): () => void {
   return () => {
     if (stdinDescriptor) {
       Object.defineProperty(process.stdin, 'isTTY', stdinDescriptor);
+    } else {
+      Reflect.deleteProperty(process.stdin, 'isTTY');
     }
     if (stdoutDescriptor) {
       Object.defineProperty(process.stdout, 'isTTY', stdoutDescriptor);
+    } else {
+      Reflect.deleteProperty(process.stdout, 'isTTY');
     }
   };
 }
@@ -293,33 +297,18 @@ export interface SpawnedCliResult {
  * command function. `env` extends (never replaces) the parent environment
  * for cases that must inject a loader.
  */
-export function runFireforgeCli(
+export async function runFireforgeCli(
   cwd: string,
   args: string[],
   env?: NodeJS.ProcessEnv
 ): Promise<SpawnedCliResult> {
-  const child = spawn(process.execPath, [TSX_CLI, FIREFORGE_BIN_ENTRY, ...args], {
+  // Many suites import fixture builders from hoisted mock factories. Loading
+  // process teardown (and its logger) here keeps those imports side-effect free.
+  const { runCapturedProcess } = await import('./spawned-process.js');
+  // Import the loader directly: the tsx CLI adds an unnecessary IPC server.
+  const loader = pathToFileURL(resolve(dirname(TSX_CLI), 'loader.mjs')).href;
+  return runCapturedProcess(process.execPath, ['--import', loader, FIREFORGE_BIN_ENTRY, ...args], {
     cwd,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    ...(env ? { env: { ...process.env, ...env } } : {}),
-  });
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
-  child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-  child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-  return new Promise<SpawnedCliResult>((resolve, reject) => {
-    // A spawn failure (tsx shim missing, EACCES) must fail the test with a
-    // message rather than leave the promise pending until vitest's timeout.
-    child.on('error', reject);
-    // 'close', not 'exit': the stdio pipes may still hold the final chunk
-    // when 'exit' fires, and the verdict-line assertions read the last line.
-    child.on('close', (code, signal) => {
-      const signalNumber = signal ? osConstants.signals[signal] : undefined;
-      resolve({
-        exitCode: code ?? (signalNumber === undefined ? -1 : 128 + signalNumber),
-        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-        stderr: Buffer.concat(stderrChunks).toString('utf8'),
-      });
-    });
+    ...(env ? { env } : {}),
   });
 }

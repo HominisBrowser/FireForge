@@ -64,7 +64,7 @@ describe('extend-coverage anchor probes', () => {
       engineHeadSha: head,
       builtAt: '2026-08-11T00:00:00.000Z',
       binaryName: 'mybrowser',
-      packageableFingerprints: { [DIRTY_FILE]: sha256('pref("x", true);\n') },
+      testInputFingerprints: { [DIRTY_FILE]: sha256('pref("x", true);\n') },
       mozconfigHash: sha256('ac_add_options --enable-application=browser\n'),
       testPackagingCoverage: ['browser/base/content/test/a'],
       ...overrides,
@@ -92,6 +92,47 @@ describe('extend-coverage anchor probes', () => {
     });
   });
 
+  it('rejects a legacy packageable-only fingerprint record', async () => {
+    const previous = baselineFor();
+    previous.packageableFingerprints = previous.testInputFingerprints ?? {};
+    delete previous.testInputFingerprints;
+    await expect(checkExtendCoverageAnchor(engineDir, previous)).resolves.toMatchObject({
+      ok: false,
+      reason: 'no-fingerprints',
+    });
+  });
+
+  it('ignores changed inputs explicitly rebuilt but refuses unchanged-scope fixture drift', async () => {
+    const a = 'browser/base/content/test/a/fixture.txt';
+    const b = 'browser/base/content/test/b/test_b.js';
+    await writeFiles(engineDir, { [a]: 'a', [b]: 'b' });
+    const previous = baselineFor({
+      testInputFingerprints: {
+        [DIRTY_FILE]: sha256('pref("x", true);\n'),
+        [a]: sha256('a'),
+        [b]: sha256('b'),
+      },
+    });
+    await writeFiles(engineDir, { [b]: 'changed b' });
+    await expect(checkExtendCoverageAnchor(engineDir, previous, [b])).resolves.toEqual({
+      ok: true,
+    });
+    await writeFiles(engineDir, { [a]: 'changed a' });
+    await expect(checkExtendCoverageAnchor(engineDir, previous, [b])).resolves.toMatchObject({
+      ok: false,
+      reason: 'fingerprint-diverged',
+      detail: [a],
+    });
+  });
+
+  it('refuses a newly dirty test fixture outside the rebuilt scope', async () => {
+    const fixture = 'browser/base/content/test/a/new.txt';
+    await writeFiles(engineDir, { [fixture]: 'new fixture' });
+    await expect(
+      checkExtendCoverageAnchor(engineDir, baselineFor(), ['browser/base/content/test/b'])
+    ).resolves.toMatchObject({ ok: false, detail: [fixture] });
+  });
+
   it('refuses when there is no previous baseline', async () => {
     const result = await checkExtendCoverageAnchor(engineDir, undefined);
     expect(result).toEqual({ ok: false, reason: 'no-baseline', detail: [] });
@@ -106,7 +147,7 @@ describe('extend-coverage anchor probes', () => {
 
   it('refuses a baseline whose fingerprint probe had failed', async () => {
     const previous = baselineFor();
-    delete previous.packageableFingerprints;
+    delete previous.testInputFingerprints;
     const result = await checkExtendCoverageAnchor(engineDir, previous);
     expect(result).toMatchObject({ ok: false, reason: 'no-fingerprints' });
   });
@@ -154,17 +195,26 @@ describe('extend-coverage anchor probes', () => {
 
   it('refuses when a previously fingerprinted file disappeared', async () => {
     const previous = baselineFor({
-      packageableFingerprints: { 'browser/app/profile/gone.js': sha256('x\n') },
+      testInputFingerprints: { 'browser/app/profile/gone.js': sha256('x\n') },
     });
     const result = await checkExtendCoverageAnchor(engineDir, previous);
     expect(result).toMatchObject({ ok: false, reason: 'fingerprint-diverged' });
   });
 
-  it('accepts a file that became dirty AFTER the recorded build (this build vouches for it)', async () => {
+  it('refuses newly dirty inputs outside the rebuilt scope conservatively', async () => {
     await writeFiles(engineDir, { 'browser/app/profile/new.js': 'pref("new", 1);\n' });
-    await expect(checkExtendCoverageAnchor(engineDir, baselineFor())).resolves.toEqual({
-      ok: true,
+    await expect(checkExtendCoverageAnchor(engineDir, baselineFor())).resolves.toMatchObject({
+      ok: false,
+      detail: ['browser/app/profile/new.js'],
     });
+  });
+
+  it('rejects a previously clean shared fixture outside test-named directories', async () => {
+    const fixture = 'browser/shared/fixture.txt';
+    await writeFiles(engineDir, { [fixture]: 'changed shared fixture' });
+    await expect(
+      checkExtendCoverageAnchor(engineDir, baselineFor(), ['browser/base/content/test/b/test_b.js'])
+    ).resolves.toMatchObject({ ok: false, detail: [fixture] });
   });
 
   it('accepts an unchanged mozconfig and refuses a regenerated one', async () => {
@@ -211,7 +261,7 @@ describe('formatExtendCoverageRefusal', () => {
       reason: 'fingerprint-diverged',
       detail: ['a.js', 'b.js'],
     });
-    expect(message).toContain('2 packageable file(s)');
+    expect(message).toContain('2 staging input(s)');
     expect(message).toContain('a.js, b.js');
     expect(message).toContain('stale staging');
   });

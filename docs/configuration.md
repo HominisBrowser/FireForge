@@ -149,17 +149,18 @@ When `patchLint.checkJs` is on, the same command also runs the per-patch
 checkJs pass that `export` enforces, so a green `typecheck` means
 export-clean types.
 
-Each project keeps incremental build info in `.fireforge/typecheck/`, one
-file per project. A warm run re-checks only the files whose content changed
-since the last run. The file name carries a key over everything outside the
-program's own files that can change a verdict: the composed shim, the
-TypeScript version, the compiler options, `typecheck.undefinedIdentifiers`
-and the FireForge version. A change to any of them selects a new file, so a
-stale verdict is never replayed, and the project's other build-info files are
-deleted. `fireforge typecheck --no-cache` checks every project from scratch
-and neither reads nor writes the build info. A jsconfig's own `incremental`
-and `tsBuildInfoFile` are still ignored, so nothing is written under
-`engine/`.
+Project build info is written in `.fireforge/typecheck/`, outside `engine/`,
+with a key covering the shim, TypeScript version, compiler options and
+FireForge version. Diagnostics always use a fresh project
+program: prior incremental diagnostic state is never restored. Cached and
+`--no-cache` runs therefore check the same complete file set. `--no-cache`
+also disables build-info writes. A jsconfig's own `incremental` and
+`tsBuildInfoFile` remain ignored.
+
+Both project and per-patch checkJs provide Gecko DOM constructor
+`isInstance(value)` predicates with instance narrowing, plus
+`MouseEvent.MOZ_SOURCE_PEN`. These declarations retain normal DOM member
+checking; they do not turn constructors or instances into `any`.
 
 ## `patchPolicy`
 

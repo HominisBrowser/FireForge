@@ -30,6 +30,7 @@ vi.mock('../../core/mach.js', () => ({
   generateMozconfig: vi.fn(() => Promise.resolve()),
   build: vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '' })),
   buildUI: vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '' })),
+  hasRunnableBundle: vi.fn(() => Promise.resolve({ runnable: false })),
   hasBuildArtifacts: vi.fn(() => Promise.resolve({ exists: true, objDir: 'obj-debug' })),
   buildArtifactMismatchMessage: vi.fn(() => undefined),
   // The package command uses `machPackageCapture` so it can feed stderr

@@ -7,6 +7,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // accident they used to rely on: `/project` is a filesystem root on POSIX,
 // so the best-effort open failed and degraded to "no log". On Windows the
 // same path resolves against the current drive and succeeds.
+vi.mock('../../core/test-host-state.js', () => ({
+  sampleTestHost: vi.fn(() => Promise.resolve({ load: 0, power: 'unknown' })),
+  reportTestHost: vi.fn(() => false),
+  stampPerfHost: vi.fn(() => Promise.resolve(false)),
+}));
+
 vi.mock('../../core/run-log.js', async () =>
   (await import('../../test-utils/module-mocks.js')).createRunLogMock()
 );
@@ -281,7 +287,7 @@ describe('testCommand harness resilience', () => {
       );
       // The sharded aggregate ends with the machine-readable verdict.
       expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
-        'FIREFORGE-VERDICT: PASS shards=2/2\n'
+        'FIREFORGE-VERDICT: PASS shards=2/2 host-load=0.00\n'
       );
     } finally {
       writeSpy.mockRestore();
@@ -304,30 +310,39 @@ describe('testCommand harness resilience', () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('Tests failed with exit code 1'));
       // The FAIL aggregate verdict is emitted before the throw.
       expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
-        'FIREFORGE-VERDICT: FAIL reason=test-failures shards=1/2\n'
+        'FIREFORGE-VERDICT: FAIL reason=test-failures shards=1/2 host-load=0.00\n'
       );
     } finally {
       writeSpy.mockRestore();
     }
   });
 
-  it('--no-shard keeps multiple paths in one combined invocation', async () => {
-    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
+  it.each([undefined, 42])(
+    '--no-shard keeps supplied paths in one invocation (shuffle=%s)',
+    async (shuffle) => {
+      vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
 
-    await expect(
-      testCommand(
-        '/project',
-        ['browser/components/a/test/browser_a.js', 'browser/components/b/test/browser_b.js'],
-        { shard: false }
-      )
-    ).resolves.toBeUndefined();
+      await expect(
+        testCommand(
+          '/project',
+          ['browser/components/a/test/browser_a.js', 'browser/components/b/test/browser_b.js'],
+          { shard: false, ...(shuffle === undefined ? {} : { shuffle }) }
+        )
+      ).resolves.toBeUndefined();
 
-    expect(runMachTestSuite).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(runMachTestSuite).mock.calls[0]?.[1]?.testPaths).toEqual([
-      'browser/components/a/test/browser_a.js',
-      'browser/components/b/test/browser_b.js',
-    ]);
-  });
+      expect(runMachTestSuite).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(runMachTestSuite).mock.calls[0]?.[1]?.testPaths).toEqual([
+        'browser/components/a/test/browser_a.js',
+        'browser/components/b/test/browser_b.js',
+      ]);
+      if (shuffle !== undefined) {
+        expect(vi.mocked(runMachTestSuite).mock.calls[0]?.[1]?.args).toContain('--shuffle');
+        expect(vi.mocked(runMachTestSuite).mock.calls[0]?.[1]?.env).toMatchObject({
+          FIREFORGE_SHUFFLE_SEED: '42',
+        });
+      }
+    }
+  );
 
   it('--perf-samples publishes the artifact path via <BINARYNAME>_PERF_SAMPLE_JSON', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
@@ -341,6 +356,7 @@ describe('testCommand harness resilience', () => {
     const envArg = vi.mocked(runMachTestSuite).mock.calls[0]?.[1]?.env;
     expect(envArg).toEqual({
       MYBROWSER_PERF_SAMPLE_JSON: nativeAbsPath('/project/artifacts/perf-samples.json'),
+      FIREFORGE_POWER_SOURCE: 'unknown',
     });
   });
 
@@ -359,11 +375,28 @@ describe('testCommand harness resilience', () => {
       expect(info).toHaveBeenCalledWith(expect.stringContaining('--shuffle=42'));
       // The seed rides the verdict line so a shuffled red carries its own repro.
       expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
-        'FIREFORGE-VERDICT: PASS shuffle=42\n'
+        'FIREFORGE-VERDICT: PASS shuffle=42 host-load=0.00\n'
       );
     } finally {
       writeSpy.mockRestore();
     }
+  });
+
+  it('repeats observed shard dispatch order for the same seed and changes it for another', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
+    const paths = Array.from({ length: 8 }, (_, index) => `browser/test/browser_${index}.js`);
+    const run = async (seed: number): Promise<string[][]> => {
+      vi.mocked(runMachTestSuite).mockClear();
+      await testCommand('/project', paths, { shuffle: seed });
+      return vi.mocked(runMachTestSuite).mock.calls.map(([, options]) => {
+        if (!options.testPaths) throw new Error('Shard dispatch omitted its requested paths');
+        return options.testPaths;
+      });
+    };
+    const first = await run(42);
+    expect(await run(42)).toEqual(first);
+    expect(await run(7)).not.toEqual(first);
+    expect(first.flat().sort()).toEqual([...paths].sort());
   });
 
   it('a bare --shuffle draws a fresh positive seed and reports it', async () => {
@@ -390,6 +423,7 @@ describe('testCommand harness resilience', () => {
 
     expect(vi.mocked(runMachTestSuite).mock.calls[0]?.[1]?.env).toEqual({
       MYBROWSER_PERF_SAMPLE_JSON: nativeAbsPath('/project/artifacts/perf-samples.json'),
+      FIREFORGE_POWER_SOURCE: 'unknown',
       FIREFORGE_SHUFFLE_SEED: '7',
     });
   });

@@ -96,11 +96,24 @@ function validateWhitelistFlagDependencies(options: ReExportOptions): void {
   }
 }
 
+function validateExpectedRemovalUsage(patches: readonly string[], options: ReExportOptions): void {
+  if (
+    options.expectRemoved?.length &&
+    (options.scan || options.all || options.files !== undefined || patches.length === 0)
+  ) {
+    throw new InvalidArgumentError(
+      '--expect-removed requires explicit selected patches and the scan-less path (no --scan, --files, or --all).',
+      '--expect-removed'
+    );
+  }
+}
+
 /** Validates mutually exclusive `re-export` targeting and metadata options. */
 export function validateReExportOptionCombinations(
   patches: readonly string[],
   options: ReExportOptions
 ): void {
+  validateExpectedRemovalUsage(patches, options);
   if (options.files !== undefined) {
     if (options.all || options.scan) {
       throw new InvalidArgumentError('--files cannot be combined with --scan or --all.', '--files');

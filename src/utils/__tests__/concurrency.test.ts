@@ -59,4 +59,59 @@ describe('mapWithConcurrency', () => {
     const results = await mapWithConcurrency([1, 2], 16, (item) => Promise.resolve(item + 1));
     expect(results).toEqual([2, 3]);
   });
+
+  it.each([0, -1, 1.5, NaN, Infinity])('rejects invalid limit %s', async (limit) => {
+    await expect(mapWithConcurrency([1], limit, (item) => Promise.resolve(item))).rejects.toThrow(
+      RangeError
+    );
+  });
+
+  it('settles started writes before rejecting and stops scheduling more work', async () => {
+    let release: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started: number[] = [];
+    const written: number[] = [];
+    const failure = new Error('copy failed');
+    let settled = false;
+    const outcome = mapWithConcurrency([0, 1, 2, 3], 2, async (item) => {
+      started.push(item);
+      if (item === 0) throw failure;
+      await pending;
+      written.push(item);
+      return item;
+    }).catch((error: unknown) => {
+      settled = true;
+      return error;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(started).toEqual([0, 1]);
+    release();
+    expect(await outcome).toBe(failure);
+    expect(written).toEqual([1]);
+    expect(started).toEqual([0, 1]);
+  });
+
+  it('propagates even undefined rejections after settlement', async () => {
+    // A foreign callback can reject without an Error; still stop and propagate it.
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+    const rejectWithoutReason = (): Promise<never> => Promise.reject(undefined);
+    await expect(mapWithConcurrency([1], 1, rejectWithoutReason)).rejects.toBeUndefined();
+  });
+
+  it('preserves the first failure when another started operation also fails', async () => {
+    const first = new Error('original copy failure');
+    const later = new Error('another copy failed during cleanup');
+    const started: number[] = [];
+    await expect(
+      mapWithConcurrency([0, 1, 2], 2, (item) => {
+        started.push(item);
+        return Promise.reject(item === 0 ? first : later);
+      })
+    ).rejects.toBe(first);
+    expect(started).toEqual([0, 1]);
+  });
 });

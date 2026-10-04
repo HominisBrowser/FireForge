@@ -14,7 +14,9 @@ import {
   formatExtendCoverageRefusal,
   unionTestPackagingCoverage,
 } from '../core/coverage-extend.js';
+import { hasBuildArtifacts } from '../core/mach.js';
 import { runProtectedMachBuild, withBuildLock } from '../core/mach.js';
+import { assertHealthyPartialConfig, pruneDanglingTestLinks } from '../core/objdir-maintenance.js';
 import { buildHarnessCrashMessage } from '../core/test-harness-crash.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
@@ -22,6 +24,7 @@ import type { TestOptions } from '../types/commands/index.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { info, notice, spinner, verbose } from '../utils/logger.js';
+import { checkRequestedTestTypes } from './test-checkjs.js';
 import type { HarnessClassification } from './test-modes.js';
 import { reportBuildOnlyCompletion } from './test-modes.js';
 import { enforceStaleBuildGate, enforceStaticComponentsGate } from './test-stale-gate.js';
@@ -67,6 +70,17 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
     // `mach build faster` would: a failed pre-test build followed by a full
     // rebuild is an hour where an incremental one would have sufficed.
     const previousBaseline = await readBuildBaseline(projectRoot);
+    const artifacts = await hasBuildArtifacts(paths.engine);
+    if (artifacts.objDir) {
+      await assertHealthyPartialConfig(paths.engine, artifacts.objDir);
+      const pruned = await pruneDanglingTestLinks(paths.engine, artifacts.objDir);
+      if (pruned > 0) notice(`Pruned ${pruned} dangling _tests symlink(s).`);
+    }
+    await checkRequestedTestTypes(
+      paths,
+      projectConfig,
+      testPackagingCoverage === 'full' ? [] : testPackagingCoverage
+    );
     const preparation = await prepareBuildEnvironment(projectRoot, paths, projectConfig, {
       previousBaseline,
       refuseUnexportedDrift,
@@ -76,10 +90,33 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
     // only be checked once prepareBuildEnvironment has regenerated
     // engine/mozconfig (the file this build will configure with), and must
     // still be checked before mach, so a refusal costs no build.
-    if (extend !== undefined) {
+    let retainCoverage = false;
+    if (testPackagingCoverage !== 'full' && previousBaseline) {
+      const anchor = await checkExtendCoverageAnchor(
+        paths.engine,
+        previousBaseline,
+        testPackagingCoverage
+      );
       const mozconfigAnchor = await checkExtendMozconfigAnchor(paths.engine, previousBaseline);
-      if (!mozconfigAnchor.ok) {
-        throw new GeneralError(formatExtendCoverageRefusal(mozconfigAnchor));
+      retainCoverage =
+        anchor.ok && mozconfigAnchor.ok && previousBaseline.testInputFingerprints !== undefined;
+      if (extend !== undefined && (!anchor.ok || !mozconfigAnchor.ok)) {
+        throw new GeneralError(
+          formatExtendCoverageRefusal(
+            !anchor.ok ? anchor : (mozconfigAnchor as Exclude<typeof mozconfigAnchor, { ok: true }>)
+          )
+        );
+      }
+      if (!retainCoverage) {
+        const old = previousBaseline.testPackagingCoverage;
+        const dropped =
+          old === undefined || old === 'full'
+            ? ['full coverage outside this scope']
+            : old.filter((file) => !testPackagingCoverage.includes(file));
+        if (dropped.length)
+          notice(
+            `Scoped build drops previous packaging coverage: ${dropped.join(', ')}. Earlier staging inputs changed or have no complete fingerprint anchor; rebuild those paths together to retain them.`
+          );
       }
     }
 
@@ -129,13 +166,12 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
         // is always carried forward: that union can evaluate to 'full'
         // while the build behind it was a scoped `mach build faster` that
         // did not rebake the compiled table.
-        const recordedCoverage =
-          extend !== undefined
-            ? unionTestPackagingCoverage(
-                previousBaseline?.testPackagingCoverage,
-                extend.requestedPaths
-              )
-            : testPackagingCoverage;
+        const recordedCoverage = retainCoverage
+          ? unionTestPackagingCoverage(
+              previousBaseline?.testPackagingCoverage,
+              testPackagingCoverage === 'full' ? [] : testPackagingCoverage
+            )
+          : testPackagingCoverage;
         await writeBuildBaseline({
           projectRoot,
           engineDir: paths.engine,
@@ -145,7 +181,7 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
           recordedBy: describeBuildInvocation(extend !== undefined, testPackagingCoverage),
           staticComponentsHandling: preparation.fullBuildRequired
             ? 'refresh'
-            : extend !== undefined
+            : retainCoverage
               ? 'carry-forward'
               : 'auto',
           buildKind,
@@ -244,7 +280,11 @@ export async function runTestBuildPhase(
       if (extending) {
         // Head/fingerprint half of the anchor, before the build lock: a
         // refusal here costs neither build time nor the lock.
-        const anchor = await checkExtendCoverageAnchor(paths.engine, previousBaseline);
+        const anchor = await checkExtendCoverageAnchor(
+          paths.engine,
+          previousBaseline,
+          normalizedPaths
+        );
         if (!anchor.ok) {
           throw new GeneralError(formatExtendCoverageRefusal(anchor));
         }

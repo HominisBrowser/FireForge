@@ -8,12 +8,16 @@
  * categories a project actually has, so the only way to name one correctly
  * was to hand-parse a neighbouring `= Category =` banner out of the file.
  * This module is that report. It reuses the banner and
- * `:root`-bounds primitives from `token-category.ts` rather than parsing
+ * category-region model from `token-category.ts` rather than parsing
  * tokens CSS a second way: two readers that disagree on what a banner is
  * would put `token list` and `token add` in different sections of the same
  * file.
  */
-import { categoryBannerNameAt, findBaseRootBounds, maskCommentLines } from './token-category.js';
+import {
+  findBaseRootBounds,
+  maskCommentLines,
+  parseTokenCategorySections,
+} from './token-category.js';
 
 /** One token declaration inside the base `:root` block. */
 export interface TokenInventoryEntry {
@@ -68,15 +72,18 @@ export function collectTokenInventory(lines: string[]): TokenCategoryInventory[]
   if (bounds === undefined || bounds.close === -1) return [];
 
   const masked = maskCommentLines(lines);
+  const sections = parseTokenCategorySections(lines);
+  const headers = new Map(sections.map((section) => [section.categoryLine, section]));
   const groups: TokenCategoryInventory[] = [];
   let current: TokenCategoryInventory | undefined;
+  let sectionEnd = bounds.close;
 
   for (let i = bounds.open + 1; i < bounds.close; i++) {
-    // Banners are read from the raw lines: `maskCommentLines` blanks comment
-    // bodies, which is exactly what a banner is.
-    const banner = categoryBannerNameAt(lines, i);
-    if (banner !== undefined) {
-      current = { category: banner, tokens: [] };
+    if (i >= sectionEnd) current = undefined;
+    const section = headers.get(i);
+    if (section !== undefined) {
+      current = { category: section.name, tokens: [] };
+      sectionEnd = section.sectionEnd;
       groups.push(current);
       continue;
     }
@@ -84,6 +91,7 @@ export function collectTokenInventory(lines: string[]): TokenCategoryInventory[]
     if (!match?.[1]) continue;
     if (current === undefined) {
       current = { category: null, tokens: [] };
+      sectionEnd = bounds.close;
       groups.push(current);
     }
     current.tokens.push({ name: match[1], line: i + 1, value: (match[2] ?? '').trim() });

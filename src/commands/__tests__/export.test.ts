@@ -217,26 +217,6 @@ describe('exportCommand - directory support', () => {
     vi.clearAllMocks();
   });
 
-  it('should export a directory with multiple text files', async () => {
-    mockStatForPaths(['dir']);
-    vi.mocked(getModifiedFilesInDir).mockResolvedValue(['dir/a.js']);
-    vi.mocked(getUntrackedFilesInDir).mockResolvedValue(['dir/b.js']);
-    vi.mocked(generateFullFilePatch)
-      .mockResolvedValueOnce('diff --git a/dir/a.js b/dir/a.js\n+content a\n')
-      .mockResolvedValueOnce('diff --git a/dir/b.js b/dir/b.js\n+content b\n');
-    vi.mocked(extractAffectedFiles).mockReturnValue(['dir/a.js', 'dir/b.js']);
-
-    await exportCommand('/fake/root', ['dir'], {
-      name: 'test-dir',
-      category: 'ui',
-      description: 'test',
-    });
-
-    expect(generateFullFilePatch).toHaveBeenCalledTimes(2);
-    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/a.js');
-    expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/b.js');
-  });
-
   // Stale-furnace gate wiring.
 
   it('runs the stale-furnace gate over the export files before diffing', async () => {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 const WINDOWS_ABSOLUTE_PATH = /^[a-zA-Z]:[\\/]/;
 const RELATIVE_PATH_ROOT = resolve('/__fireforge_path_root__');
@@ -62,7 +62,8 @@ export function isPathInsideRoot(root: string, candidate: string): boolean {
 
   return (
     relativePath === '' ||
-    (!relativePath.startsWith('..') &&
+    (relativePath !== '..' &&
+      !relativePath.startsWith(`..${sep}`) &&
       !isAbsolute(relativePath) &&
       !WINDOWS_ABSOLUTE_PATH.test(relativePath))
   );

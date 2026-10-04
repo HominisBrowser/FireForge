@@ -194,47 +194,32 @@ export function withErrorHandling<T extends unknown[]>(
         throw error;
       }
 
+      const normalizedError = toError(error);
+      const exitCode = error instanceof FireForgeError ? error.code : ExitCode.GENERAL_ERROR;
       if (error instanceof CancellationError) {
         cancel('Operation cancelled');
-        // 130 (128+SIGINT) is the conventional "user interrupted" code, so
-        // scripts/CI can distinguish a prompt cancellation from a real
-        // failure (which exits 1).
-        throw new CommandError(ExitCode.USER_CANCELLED);
-      }
-
-      // An invariant failure is the one FireForgeError whose stack is part
-      // of the report: the userMessage asks the operator to file the run,
-      // and without the stack there is nothing in it that locates the bug.
-      // console.error keeps it on stderr, so a --json payload stays intact.
-      if (error instanceof InternalInvariantError) {
+      } else if (error instanceof InternalInvariantError) {
+        // Invariant failures always include their stack for a bug report.
         logError(error.userMessage);
-        if (error.stack) {
-          console.error(error.stack);
-        }
-        throw new CommandError(error.code);
-      }
-
-      if (error instanceof FireForgeError) {
-        // In machine mode the payload contract owes the consumer a parseable
-        // refusal on stdout, not just a non-zero exit. `logError` has already
-        // been routed to stderr by the mode, so the two do not collide.
+        if (error.stack) console.error(error.stack);
+      } else if (error instanceof FireForgeError) {
         logError(error.userMessage);
         printCauseChain(error);
-        // Not when a payload already owns stdout: `status --json --fail-on`
-        // writes its full document and then refuses, and appending an
-        // envelope would make that two JSON documents.
-        if (machineOutput && !isStdoutSealed()) {
-          emitMachineError(machineErrorCode(error), error.message, error.code);
-        }
-        throw new CommandError(error.code);
+      } else {
+        logError(`Unexpected error: ${normalizedError.message}`);
+        if (normalizedError.stack) console.error(normalizedError.stack);
       }
 
-      const normalizedError = toError(error);
-      logError(`Unexpected error: ${normalizedError.message}`);
-      if (normalizedError.stack) {
-        console.error(normalizedError.stack);
+      // One final sink covers every classification. A command that already
+      // sealed stdout owns its payload; appending an envelope would corrupt it.
+      if (machineOutput && !isStdoutSealed()) {
+        emitMachineError(
+          error instanceof FireForgeError ? machineErrorCode(error) : 'unexpected-error',
+          normalizedError.message,
+          exitCode
+        );
       }
-      throw new CommandError(ExitCode.GENERAL_ERROR);
+      throw new CommandError(exitCode);
     } finally {
       // Central machine-mode and stdout-seal reset. Commands leave both
       // engaged while an error propagates (a mid-throw restore would route

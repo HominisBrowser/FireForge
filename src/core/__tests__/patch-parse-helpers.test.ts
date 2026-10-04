@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it } from 'vitest';
 
+import { expectLinearGrowth } from '../../test-utils/linear-growth.js';
 import {
   extractAffectedFiles,
   extractConflictingFiles,
@@ -268,6 +269,30 @@ describe('patch parsing — order, hunks, and diff headers', () => {
       sourcePath: 'lib b/x.js',
       targetPath: 'lib b/x.js',
     });
+  });
+
+  it('splits a rename header at the first " b/" with a path on each side', () => {
+    expect(parseDiffGitHeader('diff --git a/old.js b/new.js')).toEqual({
+      sourcePath: 'old.js',
+      targetPath: 'new.js',
+    });
+    expect(parseDiffGitHeader('diff --git a/ b/x b/y')).toEqual({
+      sourcePath: ' b/x',
+      targetPath: 'y',
+    });
+    expect(parseDiffGitHeader('diff --git a/x b/')).toBeNull();
+    expect(parseDiffGitHeader('diff --git a/x b/y\nz')).toBeNull();
+  });
+
+  it('rejects a header with an embedded line break in linear time', () => {
+    // Old: /^(.+?) b\/(.+)$/. `(.+)$` cannot cross the break, so the lazy
+    // group retried the tail scan after every " b/" (CodeQL alert 12).
+    expectLinearGrowth(
+      (n) => 'diff --git a/' + 'a b/a'.repeat(n) + '\n',
+      (line) => {
+        expect(parseDiffGitHeader(line)).toBeNull();
+      }
+    );
   });
 
   it('marks binary sections and never yields hunks for them', () => {

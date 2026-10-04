@@ -110,6 +110,7 @@ async function runWatchLoop(projectRoot: string): Promise<void> {
   // because the post-apply checksum snapshot already reflects the edit so
   // the 30s poll also sees no diff.
   let pendingChange = false;
+  let retryNeeded = false;
   let lastChecksums = new Map<string, string>();
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -121,16 +122,19 @@ async function runWatchLoop(projectRoot: string): Promise<void> {
         applyAllComponents(projectRoot, false, { operationContext: ctx })
       );
       logApplyResult(result, false);
+      if (result.errors.length > 0 || countEntriesWithBlockingStepErrors(result.applied) > 0) {
+        throw new FurnaceError('Watch apply did not complete; retrying on the next poll.');
+      }
       const applied = result.applied.length;
       const skipped = result.skipped.length;
       info(`Re-applied: ${applied} applied, ${skipped} skipped`);
+      retryNeeded = false;
+      lastChecksums = await snapshotWatchedChecksums(watchDirs);
     } catch (err: unknown) {
+      retryNeeded = true;
       warn(classifyWatchApplyError(err));
     } finally {
       applyInFlight = false;
-      // Update checksums after apply so the next poll does not re-trigger
-      // for changes that are already reflected in the engine.
-      lastChecksums = await snapshotWatchedChecksums(watchDirs);
     }
 
     // Another change arrived while we were applying, so run again and the
@@ -241,7 +245,9 @@ async function runWatchLoop(projectRoot: string): Promise<void> {
           return;
         }
         const current = await snapshotWatchedChecksums(watchDirs);
-        if (!checksumMapsEqual(current, lastChecksums)) {
+        // A failed apply remains dirty even if source checksums did not
+        // change. The polling interval bounds retries without a busy loop.
+        if (retryNeeded || !checksumMapsEqual(current, lastChecksums)) {
           triggerApply();
         }
       } catch {

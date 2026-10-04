@@ -29,9 +29,14 @@ export interface GenerateMjsContentOptions {
  * `MozXULElement`. Calling it from `connectedCallback` on a Lit-based
  * component throws `TypeError: this.insertFTLIfNeeded is not a function` at
  * every connect. Upstream Firefox components (e.g. `moz-input-folder.mjs`)
- * solve this with a module-level guarded call on `window.MozXULElement` and
- * per-instance shadow-DOM Fluent attachment via `l10n.connectRoot`. We mirror
- * that pattern here so `--localized` produces functional code.
+ * solve this with a module-level guarded call on `window.MozXULElement`, and
+ * the template mirrors that call so `--localized` produces functional code.
+ *
+ * The template emits no `connectedCallback`/`disconnectedCallback` pair for
+ * Fluent. `MozLitElement` already connects its shadow render root to
+ * `document.l10n` on connect and disconnects it on disconnect, so a second
+ * `l10n.connectRoot(shadowRoot)` registers the same root twice, which
+ * `DOMLocalization::ConnectRoot` asserts against in debug builds.
  *
  * Path resolution precedence (when `localized` is true):
  *   1. `sharedFtl`: used verbatim. The caller has resolved it from
@@ -68,26 +73,6 @@ window.MozXULElement?.insertFTLIfNeeded(${JSON.stringify(ftlPath)});
 `
     : '';
 
-  const lifecycleHooks = localized
-    ? `
-  connectedCallback() {
-    super.connectedCallback();
-    const { shadowRoot } = this;
-    if (shadowRoot) {
-      this.ownerDocument.l10n?.connectRoot(shadowRoot);
-    }
-  }
-
-  disconnectedCallback() {
-    super.disconnectedCallback();
-    const { shadowRoot } = this;
-    if (shadowRoot) {
-      this.ownerDocument.l10n?.disconnectRoot(shadowRoot);
-    }
-  }
-`
-    : '';
-
   return `${header}
 
 import { html } from "chrome://global/content/vendor/lit.all.mjs";
@@ -102,10 +87,6 @@ class ${className} extends MozLitElement {
   /** @type {Record<string, unknown>} */
   static properties = {};
 
-  constructor() {
-    super();
-  }
-${lifecycleHooks}
   render() {
     return html\`
       <link rel="stylesheet" href="chrome://global/content/elements/${name}.css" />

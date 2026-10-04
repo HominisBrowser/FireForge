@@ -64,8 +64,8 @@ const STALE_PATHS_LIMIT = 10;
  * Probes the engine tree for packageable changes since the last successful
  * `fireforge build`. Returns a summary the `fireforge test` handler renders
  * as an up-front warning when `--build` was not passed. The probe never
- * throws. Git failures and a missing baseline both degrade to `stale: false`
- * so a broken probe cannot block a test run.
+ * refuses a malformed persisted baseline. Git failures and a missing baseline
+ * degrade to `stale: false` because they provide no comparison anchor.
  *
  * @param projectRoot Root directory of the project.
  * @param engineDir Path to the engine directory.
@@ -74,7 +74,7 @@ export async function checkStaleBuildForTest(
   projectRoot: string,
   engineDir: string
 ): Promise<StaleBuildResult> {
-  const baseline = await readBuildBaseline(projectRoot);
+  const baseline = await readBuildBaseline(projectRoot, 'refuse');
   if (!baseline) {
     return { stale: false, changedPaths: [], truncated: 0, baseline: undefined };
   }
@@ -138,11 +138,10 @@ export const FULL_SUITE_REQUEST = '(entire suite)';
  * `_tests/` support fixtures and hang rather than fail.
  *
  * Coverage semantics: an absent claim and `'full'` cover everything. A
- * scoped list covers a request path when the request equals a covered entry,
- * sits beneath a covered directory entry, or shares a manifest granule with
- * a covered entry (see {@link toManifestGranule}: a scoped `test --build`
- * packages the whole manifest directory, so a same-manifest sibling of a
- * covered file is packaged too). Both sides are normalized to forward
+ * scoped list covers a request path when the request equals a covered entry
+ * or sits beneath it. A file claim never widens to its containing directory:
+ * sibling files can belong to different manifests or harnesses, and a dot in
+ * a directory name does not make it a file. Both sides are normalized to forward
  * slashes so Windows-style CLI input cannot defeat the prefix rule (baseline
  * paths are POSIX by convention). A request with no paths is a full-suite
  * run and is never covered by a scoped list, so the
@@ -162,31 +161,8 @@ export function findUncoveredRequestPaths(
   }
   return requestedPaths.filter((requested) => {
     const path = normalizeCoveragePath(requested);
-    const granule = toManifestGranule(path);
-    return !covered.some(
-      (c) => path === c || path.startsWith(`${c}/`) || granule === toManifestGranule(c)
-    );
+    return !covered.some((c) => path === c || path.startsWith(`${c}/`));
   });
-}
-
-/**
- * Maps a normalized request/coverage path to the "manifest granule" the
- * packaged runtime actually staged: an extension-bearing basename (a test
- * FILE) maps to its containing directory, a directory (no dot in the
- * basename) maps to itself. Purely lexical: the directory-as-manifest
- * approximation holds because xpcshell/mochitest manifests live next to
- * their test files and a scoped `test --build` stages the whole manifest
- * directory into `obj-*`/`_tests/`, not single files. Caveat: a directory
- * whose basename contains a dot is misread as a file and mapped to its
- * parent, which widens (never narrows) the covered granule.
- */
-function toManifestGranule(path: string): string {
-  const slash = path.lastIndexOf('/');
-  const base = slash === -1 ? path : path.slice(slash + 1);
-  if (!base.includes('.')) {
-    return path;
-  }
-  return slash === -1 ? '' : path.slice(0, slash);
 }
 
 /** Normalizes a path for coverage comparison: forward slashes, no trailing slash. */
@@ -254,9 +230,7 @@ export async function findChangedTestManifestsForPaths(
     verbose(`Coverage refusal: manifest probe failed — ${toError(error).message}`);
     return [];
   }
-  const requestDirs = uncovered
-    .filter((p) => p !== FULL_SUITE_REQUEST)
-    .map((p) => toManifestGranule(normalizeCoveragePath(p)));
+  const requestDirs = uncovered.filter((p) => p !== FULL_SUITE_REQUEST).map(normalizeCoveragePath);
   const hits = changed.filter((path) => {
     if (!isTestManifestPath(path)) return false;
     const dir = path.slice(0, Math.max(0, path.lastIndexOf('/')));

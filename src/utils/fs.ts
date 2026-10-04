@@ -121,7 +121,16 @@ export async function isSymlink(path: string): Promise<boolean> {
  */
 export async function copyFile(src: string, dest: string): Promise<void> {
   await ensureParentDir(dest);
-  await fsCopyFile(src, dest);
+  // Never follow a destination symlink or truncate a shared hardlink:
+  // build/deploy copies must not write through into components/ or a peer.
+  const tempPath = createAtomicTempPath(dest);
+  try {
+    await fsCopyFile(src, tempPath);
+    await renameWithRetries(tempPath, dest);
+    await syncParentDir(dest);
+  } finally {
+    await rm(tempPath, { force: true });
+  }
 }
 
 /**

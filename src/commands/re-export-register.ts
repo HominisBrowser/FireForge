@@ -70,6 +70,11 @@ export function registerReExport(
       'With --refuse-adjacent-unmanaged, name an engine-relative file that is a REVIEWED, recorded exception to the adjacency refusal: an approved unmanaged path is still listed, but no longer refuses. Repeatable, and the carve-out applies across EVERY patch in this invocation, not per patch. Use it to keep the belt armed for everything else instead of dropping --refuse-adjacent-unmanaged entirely.',
       ...stringListOption()
     )
+    .option(
+      '--expect-removed <path>',
+      'Retire an absent file created by the selected patch while keeping scan-less refusals armed. Repeatable.',
+      ...stringListOption()
+    )
     .option('--dry-run', 'Show what would change without writing')
     .option('--skip-lint', 'Skip patch lint checks (downgrade errors to warnings)')
     .option('--no-cache', 'Bypass per-patch lint result cache reads and writes for this re-export')
@@ -112,6 +117,7 @@ export function registerReExport(
           refuseForeignDrift?: boolean;
           expect?: string[];
           expectUnmanaged?: string[];
+          expectRemoved?: string[];
           dryRun?: boolean;
           skipLint?: boolean;
           yes?: boolean;

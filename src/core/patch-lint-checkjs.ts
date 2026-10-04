@@ -38,6 +38,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
+import { withGeckoDomTypes } from './gecko-dom-types.js';
 import { type CheckJsSourceFileCache, withSharedSourceFiles } from './patch-lint-checkjs-cache.js';
 import {
   collectUnmanagedCompanions,
@@ -384,7 +385,7 @@ export async function runCheckJsGrouped(
   // Custom compiler host: reads patch-owned files from disk, returns
   // the shim for the shim path, and returns empty content for
   // anything else to avoid reading the full Firefox tree.
-  const defaultHost = ts.createCompilerHost(options);
+  const defaultHost = withGeckoDomTypes(ts, ts.createCompilerHost(options));
   // Files pulled in via a reviewed `paths` mapping: outside the owned set
   // but read from disk so the resolver's targets actually type-check.
   const pathsResolved = new Set<string>();

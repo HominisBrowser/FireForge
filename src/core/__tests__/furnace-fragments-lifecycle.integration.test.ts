@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTempProject, removeTempProject } from '../../test-utils/index.js';
+import * as fsUtils from '../../utils/fs.js';
 import { applyAllComponents } from '../furnace-apply.js';
 
 vi.mock('../../utils/logger.js', () => ({
@@ -140,6 +141,24 @@ describe('CSS fragment deploy lifecycle (applyAllComponents, real fs)', () => {
     const fourth = await applyAllComponents(projectRoot);
     expect(fourth.applied).toEqual([]);
     expect(fourth.skipped).toHaveLength(1);
+  });
+
+  it('rolls back and refuses a proof when component sources change during deploy', async () => {
+    const copy = fsUtils.copyFile;
+    const sourceCss = join(componentDir, 'moz-fancy.css');
+    const spy = vi.spyOn(fsUtils, 'copyFile').mockImplementation(async (src, dest) => {
+      await copy(src, dest);
+      if (src.endsWith('.mjs')) await writeFile(sourceCss, 'reverted source');
+    });
+    try {
+      const result = await applyAllComponents(projectRoot);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]?.name).toBe('component-sources');
+      expect(result.errors[0]?.error).toContain('changed during deployment');
+      expect(result.rolledBack).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('fails the component (with rollback) when a fragment is missing', async () => {

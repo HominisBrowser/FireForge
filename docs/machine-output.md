@@ -86,15 +86,16 @@ moved.
 `FIREFORGE-VERDICT: FAIL reason=<reason>` uses a closed set
 (`FireforgeVerdictReason`, `src/commands/test-verdict.ts`):
 
-| Reason          | Meaning                                                                                                                                                                                                                                                                                                                                                           |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `crash`         | The harness or the browser died, so there is no trustworthy suite result.                                                                                                                                                                                                                                                                                         |
-| `no-tests`      | The run dispatched but nothing ran.                                                                                                                                                                                                                                                                                                                               |
-| `test-failures` | The suite ran and reported unexpected results.                                                                                                                                                                                                                                                                                                                    |
-| `preflight`     | The run was refused before the harness was reached.                                                                                                                                                                                                                                                                                                               |
-| `inconclusive`  | A result exists, but `engine/` moved under it, so the result was discarded.                                                                                                                                                                                                                                                                                       |
-| `lock-timeout`  | The run never started: the engine session lock stayed contended.                                                                                                                                                                                                                                                                                                  |
-| `killed`        | A signal terminated the run, or FireForge ended it because its parent process vanished. Written from the signal handler (or the parent-exit watchdog) so that a log tail always describes itself. A killed run must never be silent, or "killed", "still running" and "never started" all look alike. `signal=` names the cause: a signal name, or `parent-exit`. |
+| Reason              | Meaning                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crash`             | The harness or the browser died, so there is no trustworthy suite result.                                                                                                                                                                                                                                                                                         |
+| `harness-arguments` | Profile or other harness argument setup failed before any tests could run; a rebuild is not the repair.                                                                                                                                                                                                                                                           |
+| `no-tests`          | The run dispatched but nothing ran.                                                                                                                                                                                                                                                                                                                               |
+| `test-failures`     | The suite ran and reported unexpected results.                                                                                                                                                                                                                                                                                                                    |
+| `preflight`         | The run was refused before the harness was reached.                                                                                                                                                                                                                                                                                                               |
+| `inconclusive`      | A result exists, but `engine/` moved under it or a perf run changed power source, so the result was discarded.                                                                                                                                                                                                                                                    |
+| `lock-timeout`      | The run never started: the engine session lock stayed contended.                                                                                                                                                                                                                                                                                                  |
+| `killed`            | A signal terminated the run, or FireForge ended it because its parent process vanished. Written from the signal handler (or the parent-exit watchdog) so that a log tail always describes itself. A killed run must never be silent, or "killed", "still running" and "never started" all look alike. `signal=` names the cause: a signal name, or `parent-exit`. |
 
 ### The additive `note=` key
 
@@ -109,20 +110,19 @@ unchanged and still comes from the closed set above, so a consumer that
 tokenises `key=value` pairs is unaffected, and a gate that names no class
 emits no `note=` at all. The classes are not a closed set and may grow, so
 consumers should treat an unrecognised one as opaque. Current values:
-`stale-browser`, `stale-browser-kill-failed`, `marionette-port-busy`,
+`browser-busy`, `stale-browser`, `stale-browser-kill-failed`, `marionette-port-busy`, `mochitest-port-busy`,
 `coverage-replaced`, `stale-build`, `stale-components`.
 
 ### The additive `shuffle=` key
 
-A `fireforge test --shuffle [seed]` run forwards mach's `--shuffle` (an
-unseeded shuffle of file order in the harness) and exports the seed FireForge
-drew or was given as `FIREFORGE_SHUFFLE_SEED` in the harness environment. The
-seed is appended to the verdict line as `shuffle=<seed>` on every emission
-form, so a red found by shuffling carries its own reproduction
-(`fireforge test --shuffle=<seed> …`) on the one line a pipe keeps. Reordering
-tasks _inside_ a file is harness code that reads the exported seed; FireForge
-owns the seed, the plumbing and the record. Absent when the run did not
-shuffle.
+A `fireforge test --shuffle [seed]` run records the seed used to permute
+FireForge's isolated path-argument shards. Repeating the seed and selection
+repeats that shard order. It also forwards native mach `--shuffle`, which
+randomizes files within an invocation without using this seed. `--no-shard`
+disables FireForge's seeded argument permutation. The seed is exported as
+`FIREFORGE_SHUFFLE_SEED` for custom in-file task code and appended as
+`shuffle=<seed>` to every verdict form. This field does not claim replayable
+native harness file order. Absent when shuffle was not requested.
 
 ### The additive `orphans-reaped=` key
 
@@ -141,3 +141,20 @@ A preflight refusal's own text is written to stdout before the verdict line,
 and into the run log, so the verdict stays the last stdout write while the
 reason survives both a redirect and a `tail`. See
 [`run-logs.md`](run-logs.md).
+
+### Additive host and perf keys
+
+`host-load=<number>` records the one-minute load at suite startup. Each suite
+also samples the highest CPU process before and after dispatch. A contention
+warning appends `host-cpu-warning=true`; the diagnostic names the process
+and measured CPU. These diagnostics annotate a test failure without changing
+its classifier reason.
+
+Perf runs append `power-source=ac|battery|unknown`. On macOS the source is
+read from `pmset -g ps`, so charging on AC is correctly `ac`. A known source
+transition appends `power-changed=true` and refuses the run as
+`reason=inconclusive`. The producer's sample JSON retains its fields and
+gains `fireforgeHost: { start, end, powerSourceChanged }`, where each host
+state includes `load`, `power` and an optional `topProcess` with CPU and
+command. Consumers should tolerate this additive object. Unknown power
+state is visible but never treated as a proven transition.

@@ -34,6 +34,7 @@ import type { CommandContext } from '../types/cli.js';
 import type { LintCommandOptions, PatchLintIssue } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
+import { addAcceptedWaitLockOption } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { lintPerPatch } from './lint-per-patch.js';
 
@@ -697,6 +698,8 @@ export function registerLint(
       )
     );
 
+  // This action also has subcommands; all its wait flags are accept-only.
+  addAcceptedWaitLockOption(lint);
   const lintCache = lint
     .command('cache')
     .description('Manage the per-patch lint result cache')
@@ -713,6 +716,8 @@ export function registerLint(
         return Promise.resolve();
       })
     );
+  addAcceptedWaitLockOption(lintCache);
+
   lintCache
     .command('clear')
     .description('Clear cached per-patch lint results')

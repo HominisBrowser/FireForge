@@ -37,7 +37,7 @@ const TEST_HELP_TEXT = [
   '',
   'Machine-readable verdict: every run (single, sharded, --canary,',
   '--doctor) ends with exactly one raw stdout line',
-  '  FIREFORGE-VERDICT: PASS|FAIL [reason=crash|test-failures|',
+  '  FIREFORGE-VERDICT: PASS|FAIL [reason=crash|harness-arguments|test-failures|',
   '  no-tests|preflight|inconclusive|lock-timeout|killed] [checks=<n>]',
   '  [unexpected=<n>] [shards=<p>/<t>] [(<note>)] [shuffle=<seed>]',
   '  [log=<path>]',
@@ -50,8 +50,8 @@ const TEST_HELP_TEXT = [
   'a green-summary-override pass says PASS despite a non-zero mach',
   'exit. reason=preflight covers any failure before the harness ran',
   '(missing/stale build, invalid paths, port conflicts, config',
-  'errors); reason=inconclusive means engine/ changed while the',
-  'tests ran, so the harness result cannot be trusted;',
+  'errors); reason=inconclusive means engine/ or perf power source',
+  'changed while tests ran, so the result cannot be trusted;',
   'reason=lock-timeout means the run never started because another',
   'engine-mutating command held the lock past the wait budget;',
   'reason=killed means a signal terminated the run before it reached',
@@ -66,6 +66,25 @@ const TEST_HELP_TEXT = [
   'stall whose display was measured asleep. Key on this line',
   'instead of mach internals.',
 ].join('\n');
+
+function registerTestSharingOptions(test: Command): Command {
+  return test
+    .option(
+      '--wait-browser [seconds]',
+      'Wait for this objdir browser before any deployment/build (default 60)',
+      commanderArgParser((raw: string) => resolveWaitLockSeconds(raw))
+    )
+    .option(
+      '--wait-port [seconds]',
+      'Wait for the mochitest and Marionette ports (default 60)',
+      commanderArgParser((raw: string) => resolveWaitLockSeconds(raw))
+    )
+    .option(
+      '--profile-file <source=destination>',
+      'Merge a file into the harness profile, e.g. sheet.css=chrome/userChrome.css. Repeatable.',
+      ...stringListOption()
+    );
+}
 
 /** Registers the test command on the CLI program. */
 export function registerTest(
@@ -129,7 +148,7 @@ export function registerTest(
     )
     .option(
       '--shuffle [seed]',
-      'Run the mochitest files in a seeded random order: forwards mach --shuffle and exports FIREFORGE_SHUFFLE_SEED=<seed> to the harness (a fresh seed when omitted). The seed rides the FIREFORGE-VERDICT line as shuffle=<seed>; replay a red with --shuffle=<seed>. Mochitest-only. Write it as --shuffle=<seed> or after the paths, since a bare "--shuffle <path>" reads the path as the seed.',
+      'Shuffle isolated mochitest path arguments in a repeatable seeded order (fresh seed when omitted). Native mach --shuffle within each invocation remains unseeded. Export FIREFORGE_SHUFFLE_SEED for custom task code and stamp shuffle=<seed> on the verdict. --no-shard disables the seeded argument permutation. Write --shuffle=<seed> or place it after the paths.',
       commanderArgParser((raw: string) => parsePositiveIntegerFlag('--shuffle', raw))
     )
     .option(
@@ -167,7 +186,7 @@ export function registerTest(
       })
     )
     .addHelpText('after', TEST_HELP_TEXT);
-  addWaitLockOption(test).action(
+  addWaitLockOption(registerTestSharingOptions(test)).action(
     withErrorHandling(
       async (
         paths: string[],
@@ -194,6 +213,9 @@ export function registerTest(
           perfSamples?: string;
           shuffle?: number | boolean;
           waitLock?: number | boolean;
+          waitBrowser?: number | boolean;
+          waitPort?: number | boolean;
+          profileFile?: string[];
         }
       ) => {
         const projectRoot = getProjectRoot();

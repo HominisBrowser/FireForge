@@ -857,16 +857,17 @@ describe('furnaceCreateCommand validation', () => {
     expect(configArg?.custom['moz-test-widget']?.localized).toBe(true);
 
     // The generated .mjs must use the MozLitElement-compatible l10n pattern:
-    // a module-level `window.MozXULElement?.insertFTLIfNeeded(...)` call and
-    // null-guarded `connectRoot(shadowRoot)` in connectedCallback. The old (broken)
-    // template called `this.insertFTLIfNeeded(...)` on MozLitElement, which
-    // threw TypeError at every connect.
+    // a module-level `window.MozXULElement?.insertFTLIfNeeded(...)` call and no
+    // Fluent root registration of its own, because MozLitElement already
+    // connects and disconnects its shadow root. Calling
+    // `this.insertFTLIfNeeded(...)` on MozLitElement throws TypeError at
+    // every connect.
     const mjsCall = mockWriteText.mock.calls.find((c) => c[0].endsWith('.mjs'));
     expect(mjsCall).toBeDefined();
     const mjsContent = mjsCall?.[1] ?? '';
     expect(mjsContent).toContain('window.MozXULElement?.insertFTLIfNeeded(');
-    expect(mjsContent).toContain('this.ownerDocument.l10n?.connectRoot(shadowRoot)');
-    expect(mjsContent).toContain('this.ownerDocument.l10n?.disconnectRoot(shadowRoot)');
+    expect(mjsContent).not.toContain('connectRoot');
+    expect(mjsContent).not.toContain('disconnectRoot');
     expect(mjsContent).not.toContain('this.insertFTLIfNeeded(');
     expect(mjsContent).toContain('/** @type {Record<string, unknown>} */');
     expect(mjsContent).toContain('/** @type {CustomElementConstructor} */');

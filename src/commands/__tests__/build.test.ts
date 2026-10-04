@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeProjectPaths, nativePath } from '../../test-utils/index.js';
 
+vi.mock('../../core/mach-build-artifacts.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/mach-build-artifacts.js')>()),
+  findObjdirRelocationViolation: vi.fn(() => Promise.resolve(undefined)),
+}));
+
 vi.mock('../../core/config.js', () => ({
   loadConfig: vi.fn(),
   getProjectPaths: vi.fn(),

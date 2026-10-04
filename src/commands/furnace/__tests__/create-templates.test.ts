@@ -66,25 +66,27 @@ describe('generateMjsContent', () => {
     expect(mjs).not.toContain('insertFTLIfNeeded("toolkit/global/mybrowser-dock-button.ftl")');
   });
 
-  it('still emits the l10n.connectRoot lifecycle hooks when sharedFtl is used', () => {
-    // The shared bundle still flows through Fluent the same way a
-    // per-component bundle would. Disabling the lifecycle hooks would
-    // break l10n on the shadow root.
-    const mjs = generateMjsContent({
-      name: 'mybrowser-dock-button',
-      className: 'MyBrowserDockButton',
-      description: 'Dock button',
-      localized: true,
-      header: LICENSE,
-      ftlChromeSubPath: 'toolkit/global',
-      sharedFtl: 'browser/mybrowser-dock.ftl',
-    });
-    expect(mjs).toContain(
-      'if (shadowRoot) {\n      this.ownerDocument.l10n?.connectRoot(shadowRoot);'
-    );
-    expect(mjs).toContain(
-      'if (shadowRoot) {\n      this.ownerDocument.l10n?.disconnectRoot(shadowRoot);'
-    );
+  it('leaves Fluent root registration to MozLitElement when localized', () => {
+    // MozLitElement connects its shadow render root to document.l10n on
+    // connect and disconnects it on disconnect. A scaffolded pair would
+    // register the same root twice, which DOMLocalization::ConnectRoot
+    // asserts against in debug builds.
+    for (const sharedFtl of [undefined, 'browser/mybrowser-dock.ftl']) {
+      const mjs = generateMjsContent({
+        name: 'mybrowser-dock-button',
+        className: 'MyBrowserDockButton',
+        description: 'Dock button',
+        localized: true,
+        header: LICENSE,
+        ftlChromeSubPath: 'toolkit/global',
+        sharedFtl,
+      });
+      expect(mjs).toContain('window.MozXULElement?.insertFTLIfNeeded(');
+      expect(mjs).not.toContain('connectRoot');
+      expect(mjs).not.toContain('disconnectRoot');
+      expect(mjs).not.toContain('connectedCallback');
+      expect(mjs).not.toContain('disconnectedCallback');
+    }
   });
 
   it('emits strict-checkJs-friendly class metadata and custom element registration', () => {

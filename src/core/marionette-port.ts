@@ -30,6 +30,8 @@ import { toError } from '../utils/errors.js';
 import { getPlatform, type Platform } from '../utils/platform.js';
 import { exec } from '../utils/process.js';
 import { formatPsDuration, parsePsDuration } from '../utils/ps-duration.js';
+import { waitForPreflight } from './preflight-wait.js';
+import { isOrphanedHarness, isStillOrphanedProcess, readProcessOwner } from './process-owner.js';
 
 /** Default Marionette control port set by `-marionette`. */
 export const DEFAULT_MARIONETTE_PORT = 2828;
@@ -84,6 +86,8 @@ export interface RunningBundleProcess {
    * exactly the wrong attribution for a peer session's long-lived browser.
    */
   elapsedSeconds: number;
+  parentPid?: number;
+  owner?: string;
 }
 
 /**
@@ -145,7 +149,12 @@ export function parseProcessList(stdout: string, launchableBinary: string): Runn
     const commandLine = Number.isNaN(elapsedSeconds)
       ? `${maybeElapsed} ${match[3] ?? ''}`.trim()
       : (match[3] ?? '');
-    if (!commandLine.includes(launchableBinary)) continue;
+    if (!(
+      commandLine === launchableBinary ||
+      commandLine.startsWith(launchableBinary + ' ') ||
+      commandLine.startsWith('"' + launchableBinary + '" ')
+    ))
+      continue;
     matches.push({ pid, commandLine, elapsedSeconds });
   }
   return matches;
@@ -168,18 +177,19 @@ export async function ensureLaunchableBrowserNotRunning(
   const holder = parent ?? processes[0];
   if (!holder) return;
 
-  if (options.killStaleBrowser) {
+  const ownership = await readProcessOwner(holder.pid);
+  if (ownership) Object.assign(holder, ownership);
+  const orphan = isOrphanedHarness(holder.commandLine, holder.parentPid);
+  if (options.killStaleBrowser && orphan) {
+    if (!(await isStillOrphanedProcess(holder.pid, holder.commandLine))) {
+      throw new PreflightRefusalError(
+        `Browser PID ${holder.pid} changed identity or ownership; re-run the preflight before requesting cleanup.`,
+        'browser-busy'
+      );
+    }
     try {
-      if (process.platform === 'win32') {
-        await exec('powershell.exe', [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          `Stop-Process -Id ${holder.pid} -Force`,
-        ]);
-      } else {
-        process.kill(holder.pid, 'SIGTERM');
-      }
+      process.kill(holder.pid, 'SIGTERM');
+      await waitForPreflight(() => ensureLaunchableBrowserNotRunning(launchableBinary), 2);
       return;
     } catch (error: unknown) {
       throw new PreflightRefusalError(
@@ -189,22 +199,10 @@ export async function ensureLaunchableBrowserNotRunning(
     }
   }
 
-  throw new PreflightRefusalError(describeRunningBundleRefusal(holder), 'stale-browser');
-}
-
-/**
- * True when the process was launched by a test harness, i.e. its command
- * line carries `-marionette` (the control channel every `fireforge test`
- * browser is started with) or a harness `-profile`.
- *
- * This is the distinction the refusal turns on. The objdir-bundle probe
- * matches any process running this project's binary, which on a shared
- * checkout includes a peer session's live browser and a developer's own
- * interactive one. Only a marionette-driven browser is safely
- * attributable to an interrupted run.
- */
-function isHarnessDrivenBrowser(commandLine: string): boolean {
-  return /\s-marionette(?:\s|$)/.test(commandLine) || /\s-profile(?:\s|=)/.test(commandLine);
+  throw new PreflightRefusalError(
+    describeRunningBundleRefusal(holder),
+    orphan ? 'stale-browser' : 'browser-busy'
+  );
 }
 
 /**
@@ -232,10 +230,11 @@ export function describeRunningBundleRefusal(holder: RunningBundleProcess): stri
       : `kill ${holder.pid}  # or "kill -9 ${holder.pid}" if it doesn't exit`;
   const elapsed = formatPsDuration(holder.elapsedSeconds);
   const age = elapsed !== undefined ? ` running for ${elapsed}` : '';
-  const harnessDriven = isHarnessDrivenBrowser(holder.commandLine);
+  const harnessDriven = isOrphanedHarness(holder.commandLine, holder.parentPid);
   const evidence =
     `A browser from this project's objdir is already running (PID ${holder.pid}${age}).\n` +
-    `  command: ${holder.commandLine}\n`;
+    `  command: ${holder.commandLine}\n` +
+    `  owner: parent ${holder.parentPid ?? 'unknown'} (${holder.owner ?? 'unavailable'})\n`;
 
   if (harnessDriven) {
     return (
@@ -247,11 +246,8 @@ export function describeRunningBundleRefusal(holder: RunningBundleProcess): stri
   }
   return (
     evidence +
-    '  This one carries NO harness arguments (-marionette/-profile), so it is not a test browser — ' +
-    "it is more likely a developer's own window, or another session sharing this checkout.\n" +
-    '  "--kill-stale-marionette" is deliberately NOT suggested here: FireForge cannot tell an orphan ' +
-    "from someone else's live browser. Confirm the owner (start time above, and the command line), " +
-    `then stop it yourself with "${killHint}" if it is in fact yours.`
+    '  This browser is busy; its ownership does not prove a harness orphan. ' +
+    'FireForge will not terminate it. Use --wait-browser [seconds] to queue behind the owner.'
   );
 }
 
@@ -408,16 +404,15 @@ export async function assertMarionettePortAvailable(
 
   const holder = probe.holder;
   if (isBrowserMarionettePortHolder(holder, options.binaryName)) {
-    const killHint =
-      process.platform === 'win32'
-        ? `Stop-Process -Id ${holder.pid} -Force`
-        : `kill ${holder.pid}  # or "kill -9 ${holder.pid}" if it doesn't exit`;
+    const owner = await readProcessOwner(holder.pid);
+    const orphan = isOrphanedHarness(holder.commandLine, owner?.parentPid);
     throw new PreflightRefusalError(
       `Marionette port ${port} is already in use by ${holder.command} (PID ${holder.pid}). ` +
-        `This is usually a browser left running by a previously interrupted "fireforge test" run. ` +
-        `Kill it with "${killHint}", then retry. ` +
-        `(If you expected ${holder.command} to be running on ${port}, stop it manually or pass ` +
-        `"--marionette-port <port>" to launch mach test on a different port.)`,
+        `Owner: parent ${owner?.parentPid ?? 'unknown'} (${owner?.owner ?? 'unavailable'}). ` +
+        (orphan
+          ? 'The harness parent exited; retry with --kill-stale-marionette to reap this orphan. '
+          : 'A live peer may own it; FireForge will not suggest terminating it. ') +
+        'Use --wait-port [seconds] to queue, or --marionette-port <port> to use a different port.',
       'marionette-port-busy'
     );
   }
@@ -450,18 +445,21 @@ export async function ensureMarionettePortAvailable(
     await assertMarionettePortAvailable(port, options);
     return;
   }
+  const owner = await readProcessOwner(holder.pid);
+  if (!isOrphanedHarness(holder.commandLine, owner?.parentPid)) {
+    await assertMarionettePortAvailable(port, options);
+    return;
+  }
+
+  if (!(await isStillOrphanedProcess(holder.pid, holder.commandLine))) {
+    throw new PreflightRefusalError(
+      `Marionette listener PID ${holder.pid} changed identity or ownership; re-run the preflight before requesting cleanup.`,
+      'marionette-port-busy'
+    );
+  }
 
   try {
-    if (process.platform === 'win32') {
-      await exec('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `Stop-Process -Id ${holder.pid} -Force`,
-      ]);
-    } else {
-      process.kill(holder.pid, 'SIGTERM');
-    }
+    process.kill(holder.pid, 'SIGTERM');
   } catch (error: unknown) {
     throw new PreflightRefusalError(
       `Marionette port ${port} is held by stale browser ${holder.command} (PID ${holder.pid}), ` +
@@ -469,6 +467,7 @@ export async function ensureMarionettePortAvailable(
       'stale-browser-kill-failed'
     );
   }
+  await waitForPreflight(() => assertMarionettePortAvailable(port, options), 2);
 }
 
 /**

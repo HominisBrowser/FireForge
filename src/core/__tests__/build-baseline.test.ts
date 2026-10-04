@@ -425,4 +425,18 @@ describe('build-baseline', () => {
       await rm(engineDir, { recursive: true, force: true });
     }
   });
+
+  it('omits the complete staging anchor when one dirty input cannot be read', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    await ensureDir(join(engineDir, 'browser/tests/broken.js'));
+    vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
+    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
+    const gitBase = await import('../git-base.js');
+    const gitStatus = await import('../git-status.js');
+    vi.spyOn(gitBase, 'git').mockResolvedValue('browser/tests/broken.js\n');
+    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
+    await writeBuildBaseline({ projectRoot, engineDir, binaryName: 'mybrowser' });
+    const stored = await readBuildBaseline(projectRoot, 'refuse');
+    expect(stored?.testInputFingerprints).toBeUndefined();
+  });
 });

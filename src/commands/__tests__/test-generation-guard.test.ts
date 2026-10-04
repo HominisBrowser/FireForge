@@ -16,6 +16,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // accident they used to rely on: `/project` is a filesystem root on POSIX,
 // so the best-effort open failed and degraded to "no log". On Windows the
 // same path resolves against the current drive and succeeds.
+vi.mock('../../core/test-host-state.js', () => ({
+  sampleTestHost: vi.fn(() => Promise.resolve({ load: 0, power: 'unknown' })),
+  reportTestHost: vi.fn(() => false),
+  stampPerfHost: vi.fn(() => Promise.resolve(false)),
+}));
+
 vi.mock('../../core/run-log.js', async () =>
   (await import('../../test-utils/module-mocks.js')).createRunLogMock()
 );
@@ -200,7 +206,9 @@ describe('engine-generation guard verdict ordering', () => {
     } finally {
       capture.restore();
     }
-    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: FAIL reason=inconclusive\n']);
+    expect(capture.verdicts()).toEqual([
+      'FIREFORGE-VERDICT: FAIL reason=inconclusive host-load=0.00\n',
+    ]);
   });
 
   it('a green single run whose engine mutated emits FAIL reason=inconclusive instead of nothing', async () => {
@@ -215,7 +223,9 @@ describe('engine-generation guard verdict ordering', () => {
     } finally {
       capture.restore();
     }
-    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: FAIL reason=inconclusive\n']);
+    expect(capture.verdicts()).toEqual([
+      'FIREFORGE-VERDICT: FAIL reason=inconclusive host-load=0.00\n',
+    ]);
   });
 
   it('an unchanged engine leaves the sharded aggregate verdict intact', async () => {
@@ -232,7 +242,7 @@ describe('engine-generation guard verdict ordering', () => {
     } finally {
       capture.restore();
     }
-    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: PASS shards=2/2\n']);
+    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: PASS shards=2/2 host-load=0.00\n']);
     // The guard ran before the verdict was emitted.
     expect(assertEngineGenerationUnchanged).toHaveBeenCalledWith(
       '/project/engine',

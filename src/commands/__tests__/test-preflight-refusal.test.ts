@@ -90,13 +90,26 @@ vi.mock('../../core/tree-store.js', async () =>
   (await import('./test-command-mocks.js')).treeStoreMock()
 );
 
+vi.mock('../../core/mochitest-server-port.js', () => ({
+  ensureMochitestServerPortAvailable: vi.fn(),
+}));
+vi.mock('../../core/harness-orphans.js', () => ({
+  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve({ reaped: 0 })),
+}));
+
+import { prepareBuildEnvironment } from '../../core/build-prepare.js';
+import { loadConfig } from '../../core/config.js';
+import { reportOrphanedHarnessProcesses } from '../../core/harness-orphans.js';
 import { hasBuildArtifacts, runProtectedMachBuild } from '../../core/mach.js';
+import { assertMarionettePortAvailable } from '../../core/marionette-port.js';
 import { ensureLaunchableBrowserNotRunning } from '../../core/marionette-port.js';
+import { ensureMochitestServerPortAvailable } from '../../core/mochitest-server-port.js';
 import { checkStaleBuildForTest } from '../../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../../core/xpcshell-appdir.js';
 import { PreflightRefusalError } from '../../errors/base.js';
 import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
 import { testCommand } from '../test.js';
+import { ensureTestBrowserEnvironment } from '../test-browser-preflight.js';
 
 const STALE_BROWSER_TEXT =
   "A browser from this project's objdir is already running (PID 4242).\nStop it and retry.";
@@ -159,6 +172,18 @@ describe('preflight refusals reach the captured stream and the run log', () => {
     expect(await readRunLog()).toContain('already running (PID 4242)');
   });
 
+  it('refuses a live peer before any pre-test deploy or build starts', async () => {
+    vi.mocked(ensureLaunchableBrowserNotRunning).mockRejectedValueOnce(
+      new PreflightRefusalError('Live peer browser; parent fireforge test', 'browser-busy')
+    );
+    await expect(
+      testCommand(projectRoot, ['browser/base/content/test/browser_a.js'], { build: true })
+    ).rejects.toThrow(/Live peer/);
+    expect(prepareBuildEnvironment).not.toHaveBeenCalled();
+    expect(runProtectedMachBuild).not.toHaveBeenCalled();
+    expect(stdout).toContain('note=browser-busy');
+  });
+
   it('keeps the verdict as the LAST stdout line, with reason unchanged and note added', async () => {
     vi.mocked(ensureLaunchableBrowserNotRunning).mockRejectedValueOnce(
       new PreflightRefusalError(STALE_BROWSER_TEXT, 'stale-browser')
@@ -207,4 +232,34 @@ describe('preflight refusals reach the captured stream and the run log', () => {
     expect(stdout).toMatch(/FIREFORGE-VERDICT: FAIL reason=preflight log=/);
     expect(stdout).not.toContain('note=');
   });
+});
+
+it('build-only protects the browser without probing or reaping harness ports', async () => {
+  await expect(
+    ensureTestBrowserEnvironment(
+      '/engine',
+      'obj/dist/bin/firefox',
+      false,
+      await loadConfig(projectRoot),
+      { buildOnly: true, reapOrphans: true },
+      'obj'
+    )
+  ).resolves.toEqual({ forwardedPort: undefined, effectivePort: undefined });
+  expect(ensureLaunchableBrowserNotRunning).toHaveBeenCalled();
+  expect(ensureMochitestServerPortAvailable).not.toHaveBeenCalled();
+  expect(assertMarionettePortAvailable).not.toHaveBeenCalled();
+  expect(reportOrphanedHarnessProcesses).not.toHaveBeenCalled();
+  vi.mocked(ensureLaunchableBrowserNotRunning).mockRejectedValueOnce(
+    new PreflightRefusalError('busy browser', 'browser-busy')
+  );
+  await expect(
+    ensureTestBrowserEnvironment(
+      '/engine',
+      'obj/dist/bin/firefox',
+      false,
+      await loadConfig(projectRoot),
+      { buildOnly: true },
+      'obj'
+    )
+  ).rejects.toThrow('busy browser');
 });

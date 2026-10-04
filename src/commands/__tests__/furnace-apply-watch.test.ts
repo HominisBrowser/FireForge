@@ -129,7 +129,7 @@ vi.mock('node:fs', () => ({
   }),
 }));
 
-import { applyAllComponents } from '../../core/furnace-apply.js';
+import { applyAllComponents, computeComponentChecksums } from '../../core/furnace-apply.js';
 import { loadFurnaceConfig } from '../../core/furnace-config.js';
 import { pathExists } from '../../utils/fs.js';
 import { info } from '../../utils/logger.js';
@@ -182,6 +182,73 @@ describe('furnaceApplyCommand — watch mode', () => {
     process.emit('SIGINT', 'SIGINT');
     // Suppress unhandled rejection from the never-resolving promise.
     commandPromise.catch(() => {});
+  });
+
+  it.each(['throw', 'result-error', 'blocking-step-error'] as const)(
+    'retries a failed apply on the next poll without another edit (%s)',
+    async (failure) => {
+      const commandPromise = furnaceApplyCommand('/project', undefined, { watch: true });
+      await vi.advanceTimersByTimeAsync(0);
+      vi.mocked(computeComponentChecksums).mockResolvedValue({ 'moz-card.css': 'edited' });
+      if (failure === 'throw')
+        vi.mocked(applyAllComponents).mockRejectedValueOnce(new Error('lock busy'));
+      else if (failure === 'result-error')
+        vi.mocked(applyAllComponents).mockResolvedValueOnce({
+          applied: [],
+          skipped: [],
+          errors: [{ name: 'moz-card', error: 'write failed' }],
+          actions: [],
+        });
+      else
+        vi.mocked(applyAllComponents).mockResolvedValueOnce({
+          applied: [
+            {
+              name: 'moz-card',
+              type: 'override',
+              filesAffected: ['moz-card.css'],
+              stepErrors: [{ step: 'registration', error: 'registration failed' }],
+            },
+          ],
+          skipped: [],
+          errors: [],
+          actions: [],
+        });
+      mockWatchers[0]?.callback('change', 'moz-card.css');
+      await vi.advanceTimersByTimeAsync(350);
+      expect(applyAllComponents).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(applyAllComponents).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(applyAllComponents).toHaveBeenCalledTimes(3);
+      process.emit('SIGINT', 'SIGINT');
+      void commandPromise.catch(() => undefined);
+    }
+  );
+
+  it('accepts advisory step errors without retrying an unchanged successful apply', async () => {
+    const commandPromise = furnaceApplyCommand('/project', undefined, { watch: true });
+    await vi.advanceTimersByTimeAsync(0);
+    vi.mocked(computeComponentChecksums).mockResolvedValue({ 'moz-card.css': 'edited' });
+    vi.mocked(applyAllComponents).mockResolvedValueOnce({
+      applied: [
+        {
+          name: 'moz-card',
+          type: 'override',
+          filesAffected: ['moz-card.css'],
+          stepErrors: [{ step: 'locale', error: 'optional locale unavailable', advisory: true }],
+        },
+      ],
+      skipped: [],
+      errors: [],
+      actions: [],
+    });
+    mockWatchers[0]?.callback('change', 'moz-card.css');
+    await vi.advanceTimersByTimeAsync(350);
+    expect(applyAllComponents).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(applyAllComponents).toHaveBeenCalledTimes(2);
+    process.emit('SIGINT', 'SIGINT');
+    void commandPromise.catch(() => undefined);
   });
 
   it('filters non-source file changes', async () => {

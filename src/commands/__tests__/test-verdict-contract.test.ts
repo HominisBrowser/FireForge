@@ -1,12 +1,32 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { sampleTestHost, stampPerfHost } from '../../core/test-host-state.js';
+
 // The run log is opened before any preflight and its path rides the
 // FIREFORGE-VERDICT line as ` log=<path>`, so these exact-string verdict
 // assertions require no log to be open. Stating that here replaces the
 // accident they used to rely on: `/project` is a filesystem root on POSIX,
 // so the best-effort open failed and degraded to "no log". On Windows the
 // same path resolves against the current drive and succeeds.
+vi.mock('../../core/test-host-state.js', () => ({
+  sampleTestHost: vi.fn(() => Promise.resolve({ load: 0, power: 'unknown' })),
+  reportTestHost: vi.fn(() => false),
+  stampPerfHost: vi.fn(() => Promise.resolve(false)),
+}));
+
+vi.mock('../../core/test-profile-files.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/test-profile-files.js')>()),
+  stageProfileFiles: vi.fn(() =>
+    Promise.resolve({ root: '/tmp/staged-profile', args: [], env: {} })
+  ),
+  cleanupProfileFiles: vi.fn(() => Promise.resolve()),
+}));
+vi.mock('../test-harness-teardown.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../test-harness-teardown.js')>()),
+  removePgidFile: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../../core/run-log.js', async () =>
   (await import('../../test-utils/module-mocks.js')).createRunLogMock()
 );
@@ -89,10 +109,13 @@ import {
 } from '../../core/mach.js';
 import {} from '../../core/marionette-port.js';
 import { runMarionettePreflight } from '../../core/marionette-preflight.js';
+import { closeActiveRunLog } from '../../core/run-log.js';
+import { cleanupProfileFiles } from '../../core/test-profile-files.js';
 import {} from '../../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../../core/xpcshell-appdir.js';
 import { isSymlink, pathExists } from '../../utils/fs.js';
 import { testCommand } from '../test.js';
+import { removePgidFile } from '../test-harness-teardown.js';
 
 // The one-verdict-line-per-run contract, split out of `test.test.ts`. The
 // shared `vi.mock` header comes from `test-command-mocks.ts`.
@@ -120,12 +143,43 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(cleanupProfileFiles).mockReset().mockResolvedValue(undefined);
+    vi.mocked(removePgidFile).mockReset().mockResolvedValue(undefined);
+    vi.mocked(closeActiveRunLog).mockReset().mockResolvedValue(undefined);
+    vi.mocked(sampleTestHost).mockResolvedValue({ load: 0, power: 'unknown' });
+    vi.mocked(stampPerfHost).mockReset().mockResolvedValue(false);
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
     vi.mocked(buildArtifactMismatchMessage).mockReturnValue(undefined);
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(null);
     vi.mocked(isSymlink).mockResolvedValue(false);
   });
+
+  it.each([false, true])(
+    'runs all cleanup without replacing the harness result (failure=%s)',
+    async (failure) => {
+      vi.mocked(cleanupProfileFiles).mockRejectedValueOnce(new Error('profile cleanup denied'));
+      vi.mocked(removePgidFile).mockRejectedValueOnce(new Error('PGID cleanup denied'));
+      vi.mocked(closeActiveRunLog).mockRejectedValueOnce(new Error('log cleanup denied'));
+      vi.mocked(runMachTestSuite).mockResolvedValue(failure ? REAL_FAILURE : GREEN);
+      const capture = captureVerdictLines();
+      try {
+        const run = testCommand('/project', ['browser/test/browser_a.js'], {
+          profileFile: ['sheet.css=chrome/userChrome.css'],
+          pgidFile: '/tmp/test.pgid',
+        });
+        if (failure) await expect(run).rejects.toThrow(/Tests failed/);
+        else await expect(run).resolves.toBeUndefined();
+        expect(cleanupProfileFiles).toHaveBeenCalledWith('/tmp/staged-profile');
+        expect(removePgidFile).toHaveBeenCalledWith('/tmp/test.pgid');
+        expect(closeActiveRunLog).toHaveBeenCalled();
+        expect(capture.verdicts()).toHaveLength(1);
+        expect(capture.verdicts()[0]).toContain(failure ? 'FAIL reason=test-failures' : 'PASS');
+      } finally {
+        capture.restore();
+      }
+    }
+  );
 
   function captureVerdictLines(): {
     all: () => string[];
@@ -147,6 +201,31 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
       },
     };
   }
+
+  it('refuses a perf sample with a power transition even when every harness assertion passed', async () => {
+    vi.mocked(sampleTestHost).mockResolvedValue({ load: 2, power: 'ac' });
+    vi.mocked(stampPerfHost).mockResolvedValueOnce(true);
+    vi.mocked(runMachTestSuite).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | t\nTEST-OK | t',
+      stderr: '',
+    });
+    const capture = captureVerdictLines();
+    try {
+      await expect(
+        testCommand('/project', ['browser/base/content/test/tiles/browser_test.js'], {
+          perfSamples: 'sample.json',
+        })
+      ).rejects.toThrow(/power source changed/i);
+    } finally {
+      capture.restore();
+    }
+    expect(capture.verdicts()).toHaveLength(1);
+    expect(capture.verdicts()[0]).toContain('FAIL reason=inconclusive');
+    expect(capture.verdicts()[0]).toContain('power-source=ac');
+    expect(capture.verdicts()[0]).toContain('power-changed=true');
+    vi.mocked(sampleTestHost).mockResolvedValue({ load: 0, power: 'unknown' });
+  });
 
   it('a missing engine emits exactly one FAIL reason=preflight line', async () => {
     vi.mocked(pathExists).mockResolvedValue(false);
@@ -203,7 +282,9 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
     } finally {
       capture.restore();
     }
-    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: FAIL reason=crash shards=1/2\n']);
+    expect(capture.verdicts()).toEqual([
+      'FIREFORGE-VERDICT: FAIL reason=crash shards=1/2 host-load=0.00\n',
+    ]);
   });
 
   it('a single failing run emits its classifier verdict once, with no preflight fallback on top', async () => {
@@ -217,7 +298,9 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
     } finally {
       capture.restore();
     }
-    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: FAIL reason=test-failures\n']);
+    expect(capture.verdicts()).toEqual([
+      'FIREFORGE-VERDICT: FAIL reason=test-failures host-load=0.00\n',
+    ]);
   });
 
   it('a failing doctor preflight emits its reason=preflight line exactly once', async () => {

@@ -4,7 +4,8 @@
  *
  * The category, dark-mode and variant scanners each carried a regex whose
  * backtracking was super-linear in the length of a single line (CodeQL
- * `js/polynomial-redos`, alerts 1-6). The input is not adversarial in the
+ * `js/polynomial-redos`, alerts 1-6), and CodeQL flagged the root-bounds
+ * string stripper's ambiguous alternation the same way (alert 13). The input is not adversarial in the
  * usual sense. `tokens.css` and `docs/design/SRC_TOKENS.md` are files
  * FireForge reads out of a consumer's engine tree, so a line that happens to
  * repeat `:root`, `var(` or `/*=` is enough to wedge `token add` with no
@@ -24,7 +25,8 @@
  * has nothing to do with the algorithm — cache residency, a scavenge landing
  * in the larger run — can cover that on its own. A node 24 runner measured
  * `time(4N)/time(N) = 10.6` against a threshold of 10 on a scan that is
- * linear. At 16x the same effect is nowhere near the 64x threshold.
+ * linear. At 16x the same effect is nowhere near the 64x threshold. The
+ * harness lives in `test-utils/linear-growth.ts` so other parsers share it.
  */
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -32,67 +34,11 @@ import { join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { findCategorySection } from '../token-category.js';
+import { expectLinearGrowth } from '../../test-utils/linear-growth.js';
+import { findBaseRootBounds, findCategorySection } from '../token-category.js';
 import { findDarkRootInsertionIndex } from '../token-dark-mode.js';
 import { addTokenToDocs } from '../token-docs.js';
 import { validateVariantSelector, variantBlockExists } from '../token-variant.js';
-
-/**
- * How much larger the second input is than the first.
- */
-const SIZE_FACTOR = 16;
-
-/**
- * Upper bound on time(16N) / time(N). Linear growth sits at ~16, quadratic
- * at ~256. Four times the linear figure leaves generous room for scheduler
- * noise and memory-hierarchy effects without coming close to admitting the
- * old implementations.
- */
-const MAX_GROWTH_RATIO = 64;
-
-/**
- * Below this, the large run finished so fast that the ratio is timer noise
- * rather than algorithmic growth, so treat it as trivially linear. A quadratic
- * scan at these sizes cost seconds, not single-digit milliseconds.
- */
-const NOISE_FLOOR_MS = 5;
-
-const BASE_N = 10_000;
-
-function bestOfMs(run: () => void, reps = 3): number {
-  let best = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < reps; i++) {
-    const start = performance.now();
-    run();
-    best = Math.min(best, performance.now() - start);
-  }
-  return best;
-}
-
-/**
- * Times `run` on inputs of size N and {@link SIZE_FACTOR}N (inputs are built
- * outside the timed region) and asserts the growth is linear-ish. `run` must return the same
- * shape at either size. Behaviour is pinned separately.
- */
-function expectLinearGrowth<T>(build: (n: number) => T, run: (input: T) => void): void {
-  const small = build(BASE_N);
-  const large = build(BASE_N * SIZE_FACTOR);
-  // Warm-up: JIT and regex compilation must not land on the small run.
-  run(small);
-  run(large);
-  const smallMs = bestOfMs(() => {
-    run(small);
-  });
-  const largeMs = bestOfMs(() => {
-    run(large);
-  });
-  if (largeMs < NOISE_FLOOR_MS) return;
-  const ratio = largeMs / smallMs;
-  expect(
-    ratio,
-    `time(${SIZE_FACTOR}N)=${largeMs.toFixed(2)}ms / time(N)=${smallMs.toFixed(2)}ms`
-  ).toBeLessThan(MAX_GROWTH_RATIO);
-}
 
 describe('findCategorySection scans pathological banner lines in linear time', () => {
   it('does not backtrack over an unterminated banner while listing categories', () => {
@@ -100,7 +46,7 @@ describe('findCategorySection scans pathological banner lines in linear time', (
     // `=+` and the lazy `(.+?)` both match `=`, so the run is re-partitioned
     // once per length. 4 000 `=` took ~8 s.
     expectLinearGrowth(
-      (n) => ['/*' + '='.repeat(n)],
+      (n) => [':root {', '/*' + '='.repeat(n), '}'],
       (lines) => {
         expect(() => findCategorySection(lines, 'Missing', 'tokens.css')).toThrow(
           /Category "Missing" not found/
@@ -115,11 +61,11 @@ describe('findCategorySection scans pathological banner lines in linear time', (
     // The leading `x` keeps the line out of the header-skip loop above it, so
     // the section-end scan is the code under test.
     expectLinearGrowth(
-      (n) => ['/* = Colors = */', '  --a: red;', 'x' + '/*='.repeat(n)],
+      (n) => [':root {', '/* = Colors = */', '  --a: red;', 'x' + '/*='.repeat(n), '}'],
       (lines) => {
         expect(findCategorySection(lines, 'Colors', 'tokens.css')).toEqual({
-          categoryLine: 0,
-          sectionEnd: 3,
+          categoryLine: 1,
+          sectionEnd: 4,
         });
       }
     );
@@ -127,14 +73,16 @@ describe('findCategorySection scans pathological banner lines in linear time', (
 
   it('still bounds a section at the next banner, blank name or not', () => {
     const lines = [
+      ':root {',
       '/* = Colors = */',
       '  --a: red;',
       '/* ===================== */',
       '  --b: blue;',
+      '}',
     ];
     expect(findCategorySection(lines, 'Colors', 'tokens.css')).toEqual({
-      categoryLine: 0,
-      sectionEnd: 2,
+      categoryLine: 1,
+      sectionEnd: 3,
     });
   });
 
@@ -152,6 +100,34 @@ describe('findCategorySection scans pathological banner lines in linear time', (
     expect(() => findCategorySection(lines, 'Missing', 'tokens.css')).toThrow(
       /Available categories in the file: "Colors", "Spacing"\./
     );
+  });
+});
+
+describe('findBaseRootBounds strips CSS strings in linear time', () => {
+  it('does not backtrack over a run of escaped quotes in an unterminated string', () => {
+    // Old: /(["'])(?:\\.|(?!\1).)*\1/g. A backslash matched both alternatives,
+    // which CodeQL flags as ambiguous on this shape (alert 13). The scanner has
+    // one parse per character, so this pins the line to linear growth.
+    expectLinearGrowth(
+      (n) => [':root {', '"' + '\\"'.repeat(n), '}'],
+      (lines) => {
+        expect(findBaseRootBounds(lines)).toEqual({ open: 0, close: 2 });
+      }
+    );
+  });
+
+  it('still ignores braces inside complete strings of either quote style', () => {
+    const lines = [
+      ':root {',
+      '  --icon: url("data:image/svg+xml,<svg>}</svg>");',
+      "  --quote: '\\'}';",
+      '}',
+    ];
+    expect(findBaseRootBounds(lines)).toEqual({ open: 0, close: 3 });
+  });
+
+  it('still counts braces after an unterminated quote', () => {
+    expect(findBaseRootBounds([':root { --a: "x; }'])).toEqual({ open: 0, close: 0 });
   });
 });
 

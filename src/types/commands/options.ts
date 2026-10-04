@@ -120,6 +120,8 @@ export interface SourceSetOptions {
  * Options for the build command.
  */
 export interface BuildOptions extends EngineLockWaitable {
+  /** Wait for the objdir browser before deploying/building. */
+  waitBrowser?: number | boolean;
   /** Fast UI-only rebuild */
   ui?: boolean;
   /** Number of parallel jobs */
@@ -385,6 +387,8 @@ export interface ReExportOptions extends EngineLockWaitable {
    * rather than hidden.
    */
   expectUnmanaged?: string[];
+  /** Explicitly retire named absent patch-created files in a scan-less export. */
+  expectRemoved?: string[];
 }
 
 /**
@@ -576,6 +580,12 @@ export interface RunOptions {
  * Options for the test command.
  */
 export interface TestOptions extends EngineLockWaitable {
+  /** Queue behind a browser using this objdir; bare flag means 60 seconds. */
+  waitBrowser?: number | boolean;
+  /** Queue behind the mochitest/Marionette port holder. */
+  waitPort?: number | boolean;
+  /** Copy a file into the profile at a relative destination (repeatable source=destination). */
+  profileFile?: string[];
   /** Run tests in headless mode */
   headless?: boolean;
   /**
@@ -700,9 +710,10 @@ export interface TestOptions extends EngineLockWaitable {
    */
   perfSamples?: string;
   /**
-   * Seeded file-order shuffle for mochitest runs. `true` draws a fresh seed;
-   * a number replays one. Forwarded as mach `--shuffle` with the seed
-   * exported as `FIREFORGE_SHUFFLE_SEED` and stamped on the verdict line.
+   * Seeded isolated path-argument order for mochitest runs. `true` draws a
+   * fresh seed; a number replays the shard permutation. Native mach
+   * `--shuffle` within a shard remains unseeded. Also exported as
+   * `FIREFORGE_SHUFFLE_SEED` for custom task code and recorded on the verdict.
    */
   shuffle?: number | boolean;
 }

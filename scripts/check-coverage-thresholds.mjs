@@ -15,6 +15,18 @@ const MODULE_THRESHOLDS = {
   // Pinned just below landing coverage. The extend anchor is the fail-closed
   // guard for a coverage claim, so every refusal branch must stay exercised.
   'src/core/coverage-extend.ts': { lines: 95, branches: 85 },
+  // Hold measured refusal, recovery and retry
+  // coverage so unrelated well-covered modules cannot hide a regression.
+  'src/core/build-baseline-validate.ts': { lines: 98, branches: 95, functions: 100 },
+  'src/core/engine-write-boundary.ts': { lines: 98, branches: 85, functions: 100 },
+  'src/core/process-owner.ts': { lines: 98, branches: 95, functions: 100 },
+  'src/core/marionette-port.ts': { lines: 90, branches: 80, functions: 100 },
+  'src/core/mochitest-server-port.ts': { lines: 98, branches: 95, functions: 100 },
+  'src/core/test-profile-files.ts': { lines: 98, branches: 90, functions: 100 },
+  'src/commands/test-harness-env.ts': { lines: 98, branches: 90, functions: 100 },
+  'src/commands/patch/delete.ts': { lines: 97, branches: 85, functions: 90 },
+  'src/commands/furnace/apply.ts': { lines: 88, branches: 75, functions: 94 },
+  'src/core/token-category.ts': { lines: 95, branches: 80, functions: 100 },
   'src/commands/status-ownership.ts': { lines: 95, branches: 85 },
   'src/commands/export-placement-conflicts.ts': { lines: 95, branches: 80 },
   'src/commands/patch/staged-dependency-validate.ts': { lines: 95, branches: 85 },

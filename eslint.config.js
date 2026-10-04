@@ -117,6 +117,7 @@ export default tseslint.config(
       // `restrict-template-expressions` already allows numbers. The removal
       // pass is only worth doing once, so the rule keeps it done.
       '@typescript-eslint/no-unnecessary-type-conversion': 'error',
+      '@typescript-eslint/no-useless-constructor': 'error',
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-non-null-assertion': 'error',
       '@typescript-eslint/explicit-function-return-type': [

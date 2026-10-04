@@ -113,11 +113,15 @@ command, read the decision table at the bottom first.
    carry primary shebangs, and mach rebuilds them in-tree), and runs
    `mach configure` inside the tree so the configure-generated root files are
    regenerated against the tree's paths rather than keeping the primary's. It
-   then verifies exactly that set afterwards (config.status, backend.mk,
-   Makefile, config/autoconf.mk, via `findObjdirRelocationViolation`, pinned
-   by `mach-objdir-relocation.test.ts`). Nested Makefiles are products of the
-   verified config.status, and `.deps` build products are out of scope as
-   read-only staleness that the first in-tree rebuild corrects. Finally it
+   Before configure, relocation rewrites old-source symlinks, `.pp`/`.d`,
+   FasterMake and Cargo fingerprint metadata, and removes copied
+   `config.statusd/*/config.track` inventories. Those inventories contain
+   absolute WRITE destinations and must never be consumed from a clone.
+   Aliased objdirs or partial-config directories are refused. Afterwards
+   `findObjdirRelocationViolation` verifies config.status, backend.mk,
+   Makefile, config/autoconf.mk and every remaining objdir symlink for the
+   old source prefix. External toolchain links are allowed; source links
+   must no longer consult the old checkout. Finally it
    copies `last-build.json` so the in-tree stale-build gates anchor
    correctly.
 

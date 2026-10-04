@@ -72,6 +72,7 @@ import { BuildError } from '../errors/build.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, writeText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
+import { PROFILE_MERGE_PYTHON } from './test-profile-files.js';
 
 /**
  * Prefix of the per-user directory (under the OS temp dir) holding the
@@ -104,6 +105,7 @@ import collections
 import inspect
 import sys
 import warnings
+${PROFILE_MERGE_PYTHON}
 
 # Any psutil degradation observed in this process. Once set, monitors are
 # kept inert (start never spawns the collector child) — on a flapping host a

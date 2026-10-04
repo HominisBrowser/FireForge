@@ -56,6 +56,21 @@ requested path produces no hunk. That is checked against the full requested
 list rather than the subset left after filtering, so nothing dropped upstream
 can pass as a silent success.
 
+An absent file originally created by a selected patch can be retired with
+repeatable `--expect-removed <path>` on scan-less re-export:
+
+```sh
+fireforge re-export 202 --refuse-adjacent-unmanaged --refuse-foreign-drift --expect browser/themes/shared/hominis/widgets.css --expect-removed browser/themes/shared/hominis/stop.svg
+```
+
+The removal must have exactly one selected owner, be absent from disk and
+engine HEAD, and have a `new file mode` section in that owner's patch.
+Every removal is validated before writes, in dry-run too. Other paths keep
+both refusal checks; retirement grants no unmanaged or foreign-drift
+exception. Removing every file would empty the patch and requires `patch
+drop` instead. `--expect-removed` cannot combine with `--scan`, `--files` or
+`--all`.
+
 ## Queue maintenance
 
 Under `fireforge patch`:

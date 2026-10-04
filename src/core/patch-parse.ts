@@ -166,12 +166,12 @@ export function parseDiffGitHeader(line: string): DiffGitHeader | null {
     }
   }
 
-  // Rename/copy (differing paths): non-greedy split at the first ` b/`.
-  const asymmetric = /^(.+?) b\/(.+)$/.exec(rest);
-  if (asymmetric?.[1] !== undefined && asymmetric[2] !== undefined) {
-    return { sourcePath: asymmetric[1], targetPath: asymmetric[2] };
-  }
-  return null;
+  // Rename/copy (differing paths): split at the first ` b/` with a path on
+  // each side. indexOf keeps this linear where a lazy regex backtracks.
+  if (/[\n\r\u2028\u2029]/.test(rest)) return null;
+  const split = rest.indexOf(' b/', 1);
+  if (split === -1 || split + 3 >= rest.length) return null;
+  return { sourcePath: rest.slice(0, split), targetPath: rest.slice(split + 3) };
 }
 
 /**

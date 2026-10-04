@@ -73,27 +73,31 @@ vi.mock('../furnace-config.js', () => ({
   updateFurnaceState: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock('../furnace-apply-helpers.js', () => ({
-  applyCustomComponent: vi.fn(),
-  applyOverrideComponent: vi.fn(),
-  computeComponentChecksums: vi.fn(),
-  // Default: no files were deleted, so undeploy paths stay quiet. Tests
-  // that exercise the undeploy branch override these per-call.
-  diffDeletedFiles: vi.fn(() => []),
-  extractComponentChecksums: vi.fn(),
-  getOverrideEngineTargetPath: vi.fn(
-    (engineDir: string, config: { basePath: string }, fileName: string) =>
-      fileName.endsWith('.ftl')
-        ? `${engineDir}/toolkit/locales/en-US/toolkit/global/${fileName}`
-        : `${engineDir}/${config.basePath}/${fileName}`
-  ),
-  hasComponentChanged: vi.fn(),
-  hasCustomEngineDrift: vi.fn(() => Promise.resolve(false)),
-  hasOverrideEngineDrift: vi.fn(() => Promise.resolve(false)),
-  prefixChecksums: vi.fn(),
-  undeployCustomFiles: vi.fn(() => Promise.resolve([])),
-  undeployOverrideFiles: vi.fn(() => Promise.resolve({ restored: [], removed: [] })),
-}));
+vi.mock('../furnace-apply-helpers.js', async () => {
+  const { join } = await import('node:path');
+  return {
+    applyCustomComponent: vi.fn(),
+    applyOverrideComponent: vi.fn(),
+    computeComponentChecksums: vi.fn(),
+    // Default: no files were deleted, so undeploy paths stay quiet. Tests
+    // that exercise the undeploy branch override these per-call.
+    diffDeletedFiles: vi.fn(() => []),
+    extractComponentChecksums: vi.fn(),
+    // Mirrors the real helper's `join` so targets use native separators.
+    getOverrideEngineTargetPath: vi.fn(
+      (engineDir: string, config: { basePath: string }, fileName: string) =>
+        fileName.endsWith('.ftl')
+          ? join(engineDir, 'toolkit/locales/en-US/toolkit/global', fileName)
+          : join(engineDir, config.basePath, fileName)
+    ),
+    hasComponentChanged: vi.fn(),
+    hasCustomEngineDrift: vi.fn(() => Promise.resolve(false)),
+    hasOverrideEngineDrift: vi.fn(() => Promise.resolve(false)),
+    prefixChecksums: vi.fn(),
+    undeployCustomFiles: vi.fn(() => Promise.resolve([])),
+    undeployOverrideFiles: vi.fn(() => Promise.resolve({ restored: [], removed: [] })),
+  };
+});
 
 vi.mock('../furnace-apply-overwrite-warn.js', () => ({
   findPatchOwnedOverwrites: vi.fn(() => Promise.resolve([])),

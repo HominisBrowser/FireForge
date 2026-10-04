@@ -13,10 +13,15 @@ const metadata = JSON.parse(
 const pinnedNpm = metadata.packageManager.slice(4);
 
 function check(userAgent: string): ReturnType<typeof spawnSync> {
+  // Windows env names are case-insensitive and spawn keeps the first key in
+  // sort order, so an inherited NPM_CONFIG_USER_AGENT would beat the override.
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'npm_config_user_agent')
+  );
   return spawnSync(process.execPath, [script], {
     encoding: 'utf8',
     timeout: 10_000,
-    env: { ...process.env, npm_config_user_agent: userAgent },
+    env: { ...env, npm_config_user_agent: userAgent },
   });
 }
 

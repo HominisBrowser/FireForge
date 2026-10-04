@@ -49,6 +49,15 @@ function replacePrefix(value: string, oldRoot: string, newRoot: string): string 
     : value;
 }
 
+/** Rewrites references under oldRoot, including the forward-slash spelling mozbuild writes on Windows. */
+function rewriteRootReferences(content: string, oldRoot: string, newRoot: string): string {
+  const rewritten = content.replaceAll(oldRoot + sep, newRoot + sep);
+  if (sep !== '\\') return rewritten;
+  return rewritten
+    .replaceAll(oldRoot + '/', newRoot + '/')
+    .replaceAll(oldRoot.replaceAll('\\', '/') + '/', newRoot.replaceAll('\\', '/') + '/');
+}
+
 function isDependencyMetadata(path: string): boolean {
   return (
     /\.(?:pp|d)$/.test(path) ||
@@ -99,13 +108,18 @@ export async function relocateObjdirProducts(
         await symlink(relocated, temp);
         try {
           await rename(temp, path);
+        } catch (error: unknown) {
+          // Windows refuses to rename over a directory link; replace it in two steps.
+          if (process.platform !== 'win32' || getNodeErrorCode(error) !== 'EPERM') throw error;
+          await rm(path);
+          await rename(temp, path);
         } finally {
           await rm(temp, { force: true });
         }
       }
     } else if (isDependencyMetadata(path)) {
       const content = await readFile(path, 'utf8');
-      const rewritten = content.replaceAll(oldRoot + sep, newRoot + sep);
+      const rewritten = rewriteRootReferences(content, oldRoot, newRoot);
       if (content !== rewritten) await writeText(path, rewritten);
     }
   });

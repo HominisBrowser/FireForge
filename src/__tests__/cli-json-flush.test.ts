@@ -67,17 +67,17 @@ describe('status --json --fail-on refusal through a real pipe', () => {
     // cat's 0). The pipeline exit code is what the consumer's gate keys on.
     // During the sleep the pipe has no reader at all, so a CLI that exits
     // before Node flushes past the kernel buffer truncates stdout at exactly
-    // 65 536 bytes.
+    // 65 536 bytes. Paths travel as positional parameters, never as script text.
     const loader = pathToFileURL(join(dirname(TSX_CLI), 'loader.mjs')).href;
-    const quoteShell = (value: string): string => "'" + value.replaceAll("'", "'\\''") + "'";
     const pipeline = [
       'set -o pipefail',
-      `${quoteShell(process.execPath)} --import ${quoteShell(loader)} ${quoteShell(FIREFORGE_BIN_ENTRY)} status --json --fail-on unmanaged | { sleep 0.5; cat; }`,
+      '"$1" --import "$2" "$3" status --json --fail-on unmanaged | { sleep 0.5; cat; }',
     ].join('\n');
-    const { exitCode, stdout, stderr } = await runCapturedProcess('bash', ['-c', pipeline], {
-      cwd: projectRoot,
-      timeoutMs: 55_000,
-    });
+    const { exitCode, stdout, stderr } = await runCapturedProcess(
+      'bash',
+      ['-c', pipeline, 'bash', process.execPath, loader, FIREFORGE_BIN_ENTRY],
+      { cwd: projectRoot, timeoutMs: 55_000 }
+    );
 
     expect(exitCode).toBe(1);
     expect(Buffer.byteLength(stdout)).toBeGreaterThan(65_536);

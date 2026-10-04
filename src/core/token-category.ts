@@ -241,6 +241,33 @@ export function findCategorySection(
   return { categoryLine: section.categoryLine, sectionEnd: section.sectionEnd };
 }
 
+/**
+ * Drops complete quoted strings from one CSS line in linear time. An
+ * unterminated quote is kept, and once one fails to close every later quote
+ * of that kind fails too, so no start position is ever rescanned.
+ */
+function stripCssStrings(line: string): string {
+  let out = '';
+  const unterminated = new Set<string>();
+  for (let i = 0; i < line.length; i++) {
+    const quote = line.charAt(i);
+    if ((quote !== '"' && quote !== "'") || unterminated.has(quote)) {
+      out += quote;
+      continue;
+    }
+    let end = i + 1;
+    while (end < line.length && line.charAt(end) !== quote)
+      end += line.charAt(end) === '\\' ? 2 : 1;
+    if (end >= line.length) {
+      unterminated.add(quote);
+      out += quote;
+    } else {
+      i = end;
+    }
+  }
+  return out;
+}
+
 /** 0-based open/close line indices of the base `:root {` block. */
 export function findBaseRootBounds(lines: string[]): { open: number; close: number } | undefined {
   const open = lines.findIndex((line) => /:root\s*\{/.test(line));
@@ -249,7 +276,7 @@ export function findBaseRootBounds(lines: string[]): { open: number; close: numb
   let depth = 0;
   for (let i = open; i < lines.length; i++) {
     // Ignore braces in CSS strings (including data URLs).
-    const code = (masked[i] ?? '').replace(/(["'])(?:\\.|(?!\1).)*\1/g, '');
+    const code = stripCssStrings(masked[i] ?? '');
     for (const char of code) {
       if (char === '{') depth++;
       if (char === '}' && --depth === 0) return { open, close: i };

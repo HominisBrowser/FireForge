@@ -186,6 +186,22 @@ describe('furnaceApplyCommand', () => {
     expect(success).toHaveBeenCalled();
   });
 
+  it('names the reason for a skip in the summary line', async () => {
+    // `Applied 0, skipped 1` alone could not say whether the component was
+    // already current (e.g. a peer's build deployed it) or refused.
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [],
+      skipped: [
+        { name: 'moz-card', reason: 'No changes since last apply', kind: 'already-current' },
+      ],
+      errors: [],
+    });
+
+    await furnaceApplyCommand('/project', 'moz-card', { force: true });
+
+    expect(outro).toHaveBeenCalledWith('Applied 0, skipped 1 (1 already current)');
+  });
+
   it('prints planned actions in dry-run mode', async () => {
     vi.mocked(applyAllComponents).mockResolvedValue({
       applied: [

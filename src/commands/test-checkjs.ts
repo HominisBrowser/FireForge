@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
+import {
+  findUnownedSupportHeads,
+  formatUnownedSupportHeadNotice,
+} from '../core/checkjs-support-heads.js';
 import { runCheckJsTestFilesGrouped } from '../core/patch-lint-checkjs.js';
 import { isTestScriptFile } from '../core/patch-lint-ownership.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
@@ -26,6 +30,12 @@ export async function checkRequestedTestTypes(
   const scopes = await analyzeTestPathScopes(paths.engine, requested);
   const selected = new Set(scopes.flatMap((scope) => scope.dispatchPaths.filter(isTestScriptFile)));
   for (const file of selected) owned.add(file);
+  // A support head a named test brings into scope joins the pass even
+  // before any patch owns it, or every name it declares reads as undefined.
+  for (const head of await findUnownedSupportHeads(paths.engine, selected, owned)) {
+    owned.add(head.file);
+    notice(`Pre-build checkJs: ${formatUnownedSupportHeadNotice(head)}`);
+  }
   const result = await runCheckJsTestFilesGrouped(
     paths.engine,
     owned,

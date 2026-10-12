@@ -215,3 +215,37 @@ describe('removeCustomElementRegistration — reformatted files (AST robustness)
     expect(after).toContain('moz-card');
   });
 });
+
+describe('removeCustomElementRegistration — declared registration list', () => {
+  it('removes an entry from an array declared by name and iterated by for-of', async () => {
+    // The add path has always written into this shape, so a remove (and a
+    // rename) that cannot see it leaves the old entry behind.
+    const before = `const MYBROWSER_ELEMENTS = [
+  ["moz-alpha", "chrome://global/content/elements/moz-alpha.mjs"],  // MYBROWSER:
+  ["moz-beta", "chrome://global/content/elements/moz-beta.mjs"],  // MYBROWSER:
+];
+for (let [tag, script] of MYBROWSER_ELEMENTS) {
+  customElements.setElementCreationCallback(tag, () => ChromeUtils.importESModule(script));
+}
+`;
+    const { engineDir, customElementsPath } = await makeEngineWithContent(before);
+
+    await removeCustomElementRegistration(engineDir, 'moz-alpha');
+
+    const after = await readFile(customElementsPath, 'utf8');
+    expect(after).not.toContain('moz-alpha');
+    expect(after).toContain('["moz-beta", "chrome://global/content/elements/moz-beta.mjs"],');
+  });
+
+  it('leaves an array that no for-of loop iterates alone', async () => {
+    const before = `const unrelated = [
+  ["moz-alpha", "x"],
+];
+`;
+    const { engineDir, customElementsPath } = await makeEngineWithContent(before);
+
+    await removeCustomElementRegistration(engineDir, 'moz-alpha');
+
+    expect(await readFile(customElementsPath, 'utf8')).toBe(before);
+  });
+});

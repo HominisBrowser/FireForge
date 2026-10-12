@@ -9,10 +9,13 @@ import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js
 import type { TestPackagingCoverage } from '../core/build-baseline-types.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import {
-  checkExtendCoverageAnchor,
-  checkExtendMozconfigAnchor,
+  applyMozconfigAnchor,
+  type CoverageRetentionPlan,
+  formatCoverageRetentionNotice,
   formatExtendCoverageRefusal,
-  unionTestPackagingCoverage,
+  planCoverageRetention,
+  type RecordedCoverage,
+  recordScopedCoverage,
 } from '../core/coverage-extend.js';
 import { hasBuildArtifacts } from '../core/mach.js';
 import { runProtectedMachBuild, withBuildLock } from '../core/mach.js';
@@ -24,7 +27,7 @@ import type { TestOptions } from '../types/commands/index.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { info, notice, spinner, verbose } from '../utils/logger.js';
-import { checkRequestedTestTypes } from './test-checkjs.js';
+import { reportPreTestFurnace } from './test-build-furnace.js';
 import type { HarnessClassification } from './test-modes.js';
 import { reportBuildOnlyCompletion } from './test-modes.js';
 import { enforceStaleBuildGate, enforceStaticComponentsGate } from './test-stale-gate.js';
@@ -45,6 +48,8 @@ interface RunPreTestBuildOptions {
   refuseUnexportedDrift: boolean;
   /** `--extend-coverage` request paths, when the flag is in force. */
   extend?: { requestedPaths: string[] } | undefined;
+  /** `--no-furnace-apply`: package engine/ without the Furnace apply. */
+  skipFurnaceApply: boolean;
 }
 
 /**
@@ -62,6 +67,7 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
     testPackagingCoverage,
     refuseUnexportedDrift,
     extend,
+    skipFurnaceApply,
   } = options;
   await withBuildLock(projectRoot, async () => {
     // Pass the previous baseline exactly like `fireforge build` does, so
@@ -76,48 +82,31 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
       const pruned = await pruneDanglingTestLinks(paths.engine, artifacts.objDir);
       if (pruned > 0) notice(`Pruned ${pruned} dangling _tests symlink(s).`);
     }
-    await checkRequestedTestTypes(
-      paths,
-      projectConfig,
-      testPackagingCoverage === 'full' ? [] : testPackagingCoverage
-    );
+    // The named-file checkJs pass runs before the engine lock is even
+    // requested (test-prelock.ts), so a type error refuses without a wait.
     const preparation = await prepareBuildEnvironment(projectRoot, paths, projectConfig, {
       previousBaseline,
       refuseUnexportedDrift,
+      skipFurnaceApply,
     });
+    await reportPreTestFurnace(projectRoot, preparation, skipFurnaceApply);
 
-    // The mozconfig half of the --extend-coverage anchor can
-    // only be checked once prepareBuildEnvironment has regenerated
-    // engine/mozconfig (the file this build will configure with), and must
-    // still be checked before mach, so a refusal costs no build.
-    let retainCoverage = false;
-    if (testPackagingCoverage !== 'full' && previousBaseline) {
-      const anchor = await checkExtendCoverageAnchor(
+    // Which earlier claims this scoped build keeps, per staged path. The
+    // mozconfig half can only be checked once prepareBuildEnvironment has
+    // regenerated engine/mozconfig (the file this build will configure
+    // with), and must still be checked before mach, so a refusal costs no
+    // build.
+    let plan: CoverageRetentionPlan | undefined;
+    if (testPackagingCoverage !== 'full') {
+      plan = await applyMozconfigAnchor(
         paths.engine,
-        previousBaseline,
-        testPackagingCoverage
+        await planCoverageRetention(paths.engine, previousBaseline, testPackagingCoverage)
       );
-      const mozconfigAnchor = await checkExtendMozconfigAnchor(paths.engine, previousBaseline);
-      retainCoverage =
-        anchor.ok && mozconfigAnchor.ok && previousBaseline.testInputFingerprints !== undefined;
-      if (extend !== undefined && (!anchor.ok || !mozconfigAnchor.ok)) {
-        throw new GeneralError(
-          formatExtendCoverageRefusal(
-            !anchor.ok ? anchor : (mozconfigAnchor as Exclude<typeof mozconfigAnchor, { ok: true }>)
-          )
-        );
+      if (extend !== undefined && plan.dropped.length > 0) {
+        throw new GeneralError(formatExtendCoverageRefusal(plan.dropped));
       }
-      if (!retainCoverage) {
-        const old = previousBaseline.testPackagingCoverage;
-        const dropped =
-          old === undefined || old === 'full'
-            ? ['full coverage outside this scope']
-            : old.filter((file) => !testPackagingCoverage.includes(file));
-        if (dropped.length)
-          notice(
-            `Scoped build drops previous packaging coverage: ${dropped.join(', ')}. Earlier staging inputs changed or have no complete fingerprint anchor; rebuild those paths together to retain them.`
-          );
-      }
+      const retentionNotice = formatCoverageRetentionNotice(plan);
+      if (retentionNotice !== undefined) notice(retentionNotice);
     }
 
     const buildKind = preparation.fullBuildRequired ? 'full' : 'faster';
@@ -161,27 +150,25 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
       // carries the static-components anchor forward, since `mach build
       // faster` does not rebake components.conf into the compiled table.
       try {
-        // Under --extend-coverage the claim is the union of the previous
-        // record and this build's paths, and the static-components anchor
-        // is always carried forward: that union can evaluate to 'full'
-        // while the build behind it was a scoped `mach build faster` that
+        // A scoped claim records this build's paths plus every earlier path
+        // the plan kept, each with its own staging-input anchor. When it
+        // kept anything the static-components anchor is carried forward
+        // explicitly: a kept full claim is still a `mach build faster` that
         // did not rebake the compiled table.
-        const recordedCoverage = retainCoverage
-          ? unionTestPackagingCoverage(
-              previousBaseline?.testPackagingCoverage,
-              testPackagingCoverage === 'full' ? [] : testPackagingCoverage
-            )
-          : testPackagingCoverage;
+        const recorded: RecordedCoverage =
+          plan === undefined || testPackagingCoverage === 'full'
+            ? { testPackagingCoverage }
+            : await recordScopedCoverage(paths.engine, plan, testPackagingCoverage);
         await writeBuildBaseline({
           projectRoot,
           engineDir: paths.engine,
           binaryName: projectConfig.binaryName,
-          testPackagingCoverage: recordedCoverage,
+          ...recorded,
           previousBaseline,
           recordedBy: describeBuildInvocation(extend !== undefined, testPackagingCoverage),
           staticComponentsHandling: preparation.fullBuildRequired
             ? 'refresh'
-            : retainCoverage
+            : plan !== undefined && (plan.keepFull || Object.keys(plan.retained).length > 0)
               ? 'carry-forward'
               : 'auto',
           buildKind,
@@ -202,8 +189,8 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
 }
 
 /**
- * `--extend-coverage` only means something for a scoped build: it unions
- * this build's paths onto the recorded claim. Without `--build`/
+ * `--extend-coverage` only means something for a scoped build: it refuses
+ * a build that would drop an earlier claim. Without `--build`/
  * `--build-only` there is no build to extend from, and a path-less build
  * records `'full'`, which already covers everything. Refusing both is more
  * honest than silently ignoring the flag.
@@ -211,7 +198,7 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
 function assertExtendCoverageUsage(options: TestOptions, normalizedPaths: string[]): void {
   if (options.build !== true && options.buildOnly !== true) {
     throw new InvalidArgumentError(
-      '--extend-coverage requires --build or --build-only: it unions the paths a build packages onto the recorded coverage claim.',
+      '--extend-coverage requires --build or --build-only: it guards the coverage claim a build records.',
       '--extend-coverage'
     );
   }
@@ -235,6 +222,16 @@ function assertRefuseUnexportedDriftUsage(options: TestOptions): void {
   throw new InvalidArgumentError(
     '--refuse-unexported-drift requires --build or --build-only: it guards the pre-test build, and this run dispatches none.',
     '--refuse-unexported-drift'
+  );
+}
+
+/** Refuses `--no-furnace-apply` on a run that dispatches no build, for the same reason. */
+function assertNoFurnaceApplyUsage(options: TestOptions): void {
+  if (options.furnaceApply !== false) return;
+  if (options.build === true || options.buildOnly === true) return;
+  throw new InvalidArgumentError(
+    "--no-furnace-apply requires --build or --build-only: it skips the pre-test build's Furnace apply, and this run dispatches no build.",
+    '--no-furnace-apply'
   );
 }
 
@@ -267,6 +264,7 @@ export async function runTestBuildPhase(
     assertExtendCoverageUsage(options, normalizedPaths);
   }
   assertRefuseUnexportedDriftUsage(options);
+  assertNoFurnaceApplyUsage(options);
   if (options.build || options.buildOnly) {
     // A path-less `test --build` runs (and packages for) the full suite.
     // A scoped invocation only vouches for the requested paths. A scoped
@@ -278,15 +276,11 @@ export async function runTestBuildPhase(
       const previousBaseline = await readBuildBaseline(projectRoot);
       await enforceStaticComponentsGate(paths.engine, previousBaseline, options);
       if (extending) {
-        // Head/fingerprint half of the anchor, before the build lock: a
-        // refusal here costs neither build time nor the lock.
-        const anchor = await checkExtendCoverageAnchor(
-          paths.engine,
-          previousBaseline,
-          normalizedPaths
-        );
-        if (!anchor.ok) {
-          throw new GeneralError(formatExtendCoverageRefusal(anchor));
+        // Staging-input half of the plan, before the build lock: a refusal
+        // here costs neither build time nor the lock.
+        const plan = await planCoverageRetention(paths.engine, previousBaseline, normalizedPaths);
+        if (plan.dropped.length > 0) {
+          throw new GeneralError(formatExtendCoverageRefusal(plan.dropped));
         }
       }
     }
@@ -298,6 +292,7 @@ export async function runTestBuildPhase(
       testPackagingCoverage: coverage,
       refuseUnexportedDrift: options.refuseUnexportedDrift === true,
       extend: extending ? { requestedPaths: normalizedPaths } : undefined,
+      skipFurnaceApply: options.furnaceApply === false,
     });
     info('');
     if (options.buildOnly) {

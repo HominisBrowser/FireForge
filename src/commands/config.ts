@@ -51,6 +51,7 @@ const STRING_TYPED_KEYS = new Set([
   'firefox.candidate',
   'license',
   'wire.subscriptDir',
+  'history.path',
 ]);
 
 /**
@@ -164,12 +165,10 @@ export async function configCommand(
       // Readers stay lock-free (see `withConfigFileLock`).
       unchanged = await withConfigFileLock(projectRoot, async () => {
         // Short-circuit when the new value matches the current on-disk
-        // value. Running every set through `mutateConfig` + `writeConfig`
-        // round-trips through `JSON.stringify` and rewrites the file even
-        // when nothing changed semantically, reordering top-level keys
-        // (`license`, `markerComment`, …) on every harmless re-set. The
-        // check uses the raw on-disk document so forced keys round-trip the
-        // same as known keys.
+        // value, so a harmless re-set neither rewrites the file nor bumps
+        // its mtime. The check uses the raw on-disk document so forced keys
+        // round-trip the same as known keys. A real change is written by
+        // `writeConfigDocument`, which edits only the changed value in place.
         const rawConfig = await loadRawConfigDocument(projectRoot);
         const currentValue = getNestedValue(rawConfig, key);
         if (deepEqual(currentValue, parsedValue)) {

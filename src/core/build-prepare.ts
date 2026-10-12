@@ -21,7 +21,8 @@ import {
   formatJarEscalationNotice,
 } from './build-jar-escalation.js';
 import {
-  findUnexportedDriftAtRisk,
+  assessUnexportedDrift,
+  formatDeployedUnexportedNote,
   formatUnexportedDriftWarning,
 } from './build-overwrite-guard.js';
 import { hashEngineFile } from './coverage-extend.js';
@@ -46,6 +47,8 @@ import { explainMachError } from './mach-error-hints.js';
 export interface BuildPreparation {
   /** Number of Furnace components applied (0 if none or no furnace.json) */
   furnaceApplied: number;
+  /** Names of the Furnace components applied, in apply order. */
+  furnaceAppliedNames?: string[];
   /** True when `mach configure` was auto-run to refresh a stale backend. */
   reconfigured: boolean;
   /** A changed packaging manifest cannot be safely handled by `mach build faster`. */
@@ -72,6 +75,11 @@ export interface PrepareBuildOptions {
    * Scripted gates want the stop. An interactive build wants the warning.
    */
   refuseUnexportedDrift?: boolean | undefined;
+  /**
+   * Skip the Furnace apply, so the build packages engine/ as it stands
+   * (`fireforge test --build --no-furnace-apply`).
+   */
+  skipFurnaceApply?: boolean | undefined;
 }
 
 /** Path fragments of files whose edits invalidate the recursive-make backend. */
@@ -236,7 +244,11 @@ async function reportUnexportedDriftBeforeOverwrite(
   config: FireForgeConfig,
   options: PrepareBuildOptions
 ): Promise<void> {
-  const atRisk = await findUnexportedDriftAtRisk(projectRoot, config);
+  const { atRisk, deployedUnexported } = await assessUnexportedDrift(projectRoot, config);
+  // Deployed Furnace files that are their component source's own
+  // deployment never block: the overwrite loses nothing. Say so, since
+  // their patches still owe a re-export.
+  if (deployedUnexported.length > 0) info(formatDeployedUnexportedNote(deployedUnexported));
   if (atRisk.length === 0) return;
   const message = formatUnexportedDriftWarning(atRisk);
   if (options.refuseUnexportedDrift === true) {
@@ -250,15 +262,15 @@ async function reportUnexportedDriftBeforeOverwrite(
  * Prints every warning the apply computed, then the loud sync banner.
  *
  * @param projectRoot - Project root
- * @returns Number of components written to engine/
+ * @returns Names of the components written to engine/
  */
-async function applyFurnaceBeforeBuild(projectRoot: string): Promise<number> {
-  if (!(await furnaceConfigExists(projectRoot))) return 0;
+async function applyFurnaceBeforeBuild(projectRoot: string): Promise<string[]> {
+  if (!(await furnaceConfigExists(projectRoot))) return [];
   const furnaceConfig = await loadFurnaceConfig(projectRoot);
   const hasComponents =
     Object.keys(furnaceConfig.overrides).length > 0 || Object.keys(furnaceConfig.custom).length > 0;
 
-  if (!hasComponents) return 0;
+  if (!hasComponents) return [];
   const furnaceSpinner = spinner('Applying Furnace components...');
   let result: ApplyAllComponentsResult;
   try {
@@ -320,7 +332,7 @@ async function applyFurnaceBeforeBuild(projectRoot: string): Promise<number> {
   } else {
     furnaceSpinner.stop('Components up to date');
   }
-  return furnaceApplied;
+  return result.applied.map((entry) => entry.name);
 }
 
 /**
@@ -454,7 +466,8 @@ export async function prepareBuildEnvironment(
     }
   }
 
-  const furnaceApplied = await applyFurnaceBeforeBuild(projectRoot);
+  const furnaceAppliedNames =
+    options.skipFurnaceApply === true ? [] : await applyFurnaceBeforeBuild(projectRoot);
 
   // Generate mozconfig
   const mozconfigSpinner = spinner('Generating mozconfig...');
@@ -488,7 +501,8 @@ export async function prepareBuildEnvironment(
   }
 
   return {
-    furnaceApplied,
+    furnaceApplied: furnaceAppliedNames.length,
+    furnaceAppliedNames,
     reconfigured,
     fullBuildRequired,
     ...(fullBuildReason !== undefined ? { fullBuildReason } : {}),

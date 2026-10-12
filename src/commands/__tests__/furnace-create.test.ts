@@ -135,6 +135,7 @@ import {
   loadFurnaceConfig,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
+import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import { isComponentInEngine, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
 import { registerTestManifest } from '../../core/moz-manifest-register.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
@@ -187,6 +188,28 @@ beforeEach(() => {
     if (path.includes(nativePath('components/custom/moz-test-widget')))
       return Promise.resolve(false);
     return Promise.resolve(false);
+  });
+});
+
+describe('furnaceCreateCommand --wait-lock', () => {
+  it('threads the budget into the furnace lock', async () => {
+    const origTTY = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+    try {
+      await furnaceCreateCommand('/project', 'moz-test-widget', {
+        description: 'A test widget',
+        waitLockSeconds: 10,
+      });
+    } finally {
+      process.stdin.isTTY = origTTY;
+    }
+
+    expect(runFurnaceMutation).toHaveBeenCalledWith(
+      '/project',
+      'create-rollback',
+      expect.any(Function),
+      { lockTimeoutMs: 10_000 }
+    );
   });
 });
 

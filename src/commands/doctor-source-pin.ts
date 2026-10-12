@@ -68,7 +68,10 @@ async function runSourcePinCheck(ctx: DoctorCheckContext): Promise<DoctorCheck> 
 
   const downloaded = ctx.state.downloadedVersion;
   const mismatches: string[] = [];
-  if (actual !== undefined && actual !== pinned) {
+  // Firefox's version.txt never carries the `esr` suffix (an ESR 153.4.0esr
+  // tree reads 153.4.0), so the engine comparison drops it from the pin. The
+  // last download recorded the full pin, so that comparison keeps it.
+  if (actual !== undefined && actual !== pinned && actual !== pinned.replace(/esr$/, '')) {
     mismatches.push(`engine baseline browser/config/version.txt reads ${actual}`);
   }
   if (downloaded !== undefined && downloaded !== pinned) {

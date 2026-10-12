@@ -12,14 +12,26 @@ import {
   pruneStaleJarMnEntries,
 } from '../../core/furnace-registration.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
+import {
+  applyValidationExceptions,
+  type ValidationExceptionOutcome,
+} from '../../core/furnace-validate-exceptions.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceValidateOptions } from '../../types/commands/index.js';
 import type { ComponentType, ValidationIssue } from '../../types/furnace.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
-import { info, intro, note, outro, success, warn } from '../../utils/logger.js';
-import { displayValidationIssues } from './validation-output.js';
+import {
+  info,
+  intro,
+  isMachineOutputMode,
+  note,
+  outro,
+  setMachineOutputMode,
+  warn,
+} from '../../utils/logger.js';
+import { judgeValidateReport, renderValidateHuman, renderValidateJson } from './validate-report.js';
 
 /** Checks that auto-fix can correct. */
 const FIXABLE_CHECKS = new Set([
@@ -133,16 +145,149 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
   return fixed;
 }
 
+/** What one validation pass judged, before exceptions are applied. */
+interface ValidationRun {
+  /** Findings per component, in validation order. */
+  results: Map<string, ValidationIssue[]>;
+  /** Whether the run judged a component (for stale-exception reporting). */
+  judged: (component: string) => boolean;
+}
+
+/**
+ * Resolves the named component's type and directory.
+ * @returns undefined for a stock component (nothing local to validate)
+ */
+function resolveNamedComponent(
+  name: string,
+  config: FurnaceConfig,
+  furnacePaths: FurnacePaths
+): { type: ComponentType; componentDir: string } | undefined {
+  if (name in config.overrides) {
+    return { type: 'override', componentDir: join(furnacePaths.overridesDir, name) };
+  }
+  if (name in config.custom) {
+    return { type: 'custom', componentDir: join(furnacePaths.customDir, name) };
+  }
+  if (config.stock.includes(name)) return undefined;
+  throw new FurnaceError(`Component "${name}" not found in furnace.json.`, name);
+}
+
+/**
+ * Runs the first validation pass: one named component, or every override
+ * and custom component. Returns undefined when there is nothing local to
+ * validate (a stock component, or no components at all), after saying so.
+ */
+async function runValidationPass(
+  projectRoot: string,
+  name: string | undefined,
+  config: FurnaceConfig,
+  furnacePaths: FurnacePaths
+): Promise<ValidationRun | undefined> {
+  if (name) {
+    const target = resolveNamedComponent(name, config, furnacePaths);
+    if (target === undefined) {
+      info(`"${name}" is a stock component. Stock components are not validated locally.`);
+      return undefined;
+    }
+    if (!(await pathExists(target.componentDir))) {
+      throw new FurnaceError(`Component directory not found for "${name}".`, name);
+    }
+    const issues = await validateComponent(
+      target.componentDir,
+      name,
+      target.type,
+      config,
+      projectRoot
+    );
+    return { results: new Map([[name, issues]]), judged: (component) => component === name };
+  }
+
+  if (Object.keys(config.overrides).length === 0 && Object.keys(config.custom).length === 0) {
+    info('No components to validate.');
+    return undefined;
+  }
+  if (config.stock.length > 0) {
+    info(`Skipping ${config.stock.length} stock component(s) (no local files to validate).`);
+  }
+  return { results: await validateAllComponents(projectRoot), judged: () => true };
+}
+
+/**
+ * Runs `--fix` over the fixable findings, then re-validates the affected
+ * components and swaps their findings in, so the summary and the JSON
+ * report what auto-fix actually accomplished. The counter `autoFixIssues`
+ * returns only counts calls that did not throw, so a write that succeeded
+ * but did not resolve the finding would otherwise still be reported fixed.
+ */
+async function applyAutoFix(
+  projectRoot: string,
+  config: FurnaceConfig,
+  furnacePaths: FurnacePaths,
+  run: ValidationRun,
+  countedIssues: readonly ValidationIssue[]
+): Promise<void> {
+  const fixableIssues = countedIssues.filter((issue) => FIXABLE_CHECKS.has(issue.check));
+  if (fixableIssues.length === 0) {
+    info('\nNo auto-fixable issues found. Remaining issues require manual resolution.');
+    return;
+  }
+  await autoFixIssues(projectRoot, fixableIssues);
+
+  const reValidated = await reValidateComponents(
+    projectRoot,
+    config,
+    furnacePaths,
+    new Set(fixableIssues.map((issue) => issue.component))
+  );
+  for (const [component, issues] of reValidated) run.results.set(component, issues);
+
+  const fixableAfter = [...reValidated.values()]
+    .flat()
+    .filter((issue) => FIXABLE_CHECKS.has(issue.check)).length;
+  const actuallyFixed = Math.max(0, fixableIssues.length - fixableAfter);
+  if (actuallyFixed > 0) {
+    info(`\nAuto-fixed ${actuallyFixed} issue(s).`);
+  }
+  if (fixableAfter > 0) {
+    warn(`${fixableAfter} fixable issue(s) remain after auto-fix — investigate manually.`);
+  }
+}
+
+/** Applies `validationExceptions` to every finding of the run. */
+function exceptRun(run: ValidationRun, config: FurnaceConfig): ValidationExceptionOutcome {
+  return applyValidationExceptions(
+    [...run.results.values()].flat(),
+    config.validationExceptions,
+    run.judged
+  );
+}
+
 /**
  * Runs the furnace validate command to perform static analysis on components.
  * @param projectRoot - Root directory of the project
  * @param name - Optional component name to validate (validates all if omitted)
- * @param options - Optional command options (e.g. --fix)
+ * @param options - Optional command options (`--fix`, `--json`, `--max-warnings`)
  */
 export async function furnaceValidateCommand(
   projectRoot: string,
   name?: string,
   options: FurnaceValidateOptions = {}
+): Promise<void> {
+  const previousMachineOutputMode = isMachineOutputMode();
+  // `--json` owns stdout: every diagnostic routes to stderr from here on.
+  // On a throw the mode stays engaged and withErrorHandling resets it, so
+  // the refusal cannot land on stdout after the payload.
+  if (options.json === true) setMachineOutputMode(true);
+  await runFurnaceValidate(projectRoot, name, options);
+  if (isMachineOutputMode() !== previousMachineOutputMode) {
+    setMachineOutputMode(previousMachineOutputMode);
+  }
+}
+
+async function runFurnaceValidate(
+  projectRoot: string,
+  name: string | undefined,
+  options: FurnaceValidateOptions
 ): Promise<void> {
   intro('Furnace Validate');
 
@@ -152,126 +297,51 @@ export async function furnaceValidateCommand(
   const { config } = await assertFurnaceReady(projectRoot);
   const furnacePaths = getFurnacePaths(projectRoot);
 
-  let totalErrors = 0;
-  let totalWarnings = 0;
-  let componentCount: number;
-  let allIssues: ValidationIssue[] = [];
-
-  if (name) {
-    // --- Single component validation ---
-    let type: ComponentType;
-    let componentDir: string;
-
-    if (name in config.overrides) {
-      type = 'override';
-      componentDir = join(furnacePaths.overridesDir, name);
-    } else if (name in config.custom) {
-      type = 'custom';
-      componentDir = join(furnacePaths.customDir, name);
-    } else if (config.stock.includes(name)) {
-      info(`"${name}" is a stock component. Stock components are not validated locally.`);
-      outro('Validation complete');
-      return;
-    } else {
-      throw new FurnaceError(`Component "${name}" not found in furnace.json.`, name);
+  const run = await runValidationPass(projectRoot, name, config, furnacePaths);
+  if (run === undefined) {
+    if (options.json === true) {
+      renderValidateJson({
+        components: [],
+        outcome: { issues: [], excepted: [], stale: [] },
+        maxWarnings: options.maxWarnings,
+      });
     }
-
-    if (!(await pathExists(componentDir))) {
-      throw new FurnaceError(`Component directory not found for "${name}".`, name);
-    }
-
-    const issues = await validateComponent(componentDir, name, type, config, projectRoot);
-    componentCount = 1;
-    allIssues = issues;
-
-    if (issues.length === 0) {
-      success(`${name} — all checks passed`);
-    } else {
-      const [e, w] = displayValidationIssues(issues);
-      totalErrors += e;
-      totalWarnings += w;
-    }
-  } else {
-    // --- Validate all components ---
-    const overrideCount = Object.keys(config.overrides).length;
-    const customCount = Object.keys(config.custom).length;
-
-    if (overrideCount === 0 && customCount === 0) {
-      info('No components to validate.');
-      outro('Done');
-      return;
-    }
-
-    if (config.stock.length > 0) {
-      info(`Skipping ${config.stock.length} stock component(s) (no local files to validate).`);
-    }
-
-    const results = await validateAllComponents(projectRoot);
-    componentCount = results.size;
-
-    for (const [componentName, issues] of results) {
-      allIssues.push(...issues);
-      if (issues.length === 0) {
-        success(`${componentName} — all checks passed`);
-      } else {
-        const [e, w] = displayValidationIssues(issues);
-        totalErrors += e;
-        totalWarnings += w;
-      }
-    }
+    outro(name ? 'Validation complete' : 'Done');
+    return;
   }
 
-  // Auto-fix fixable issues when --fix is passed. The counter returned by
-  // `autoFixIssues` only counts function calls that did not throw, so a
-  // write that succeeded but did not actually resolve the issue
-  // (addJarMnEntries appending to a file mach later ignores) would still
-  // bump it. Re-validate the affected components and compute the real drop
-  // in fixable issues so the reported number is honest.
-  if (options.fix && allIssues.length > 0) {
-    const fixableIssues = allIssues.filter((issue) => FIXABLE_CHECKS.has(issue.check));
-    if (fixableIssues.length > 0) {
-      await autoFixIssues(projectRoot, fixableIssues);
+  const firstPass = exceptRun(run, config);
+  renderValidateHuman([...run.results.keys()], firstPass.issues);
 
-      const reValidated = await reValidateComponents(
-        projectRoot,
-        config,
-        furnacePaths,
-        new Set(fixableIssues.map((issue) => issue.component))
-      );
-
-      const fixableBefore = fixableIssues.length;
-      const fixableAfter = reValidated.issues.filter((issue) =>
-        FIXABLE_CHECKS.has(issue.check)
-      ).length;
-      const actuallyFixed = Math.max(0, fixableBefore - fixableAfter);
-
-      // Replace the pre-fix issue totals with the post-fix view so the
-      // summary reflects current reality. Issues that auto-fix could not
-      // address still count toward totalErrors / totalWarnings.
-      totalErrors = reValidated.totalErrors;
-      totalWarnings = reValidated.totalWarnings;
-
-      if (actuallyFixed > 0) {
-        info(`\nAuto-fixed ${actuallyFixed} issue(s).`);
-      }
-      if (fixableAfter > 0) {
-        warn(`${fixableAfter} fixable issue(s) remain after auto-fix — investigate manually.`);
-      }
-    } else {
-      info('\nNo auto-fixable issues found. Remaining issues require manual resolution.');
-    }
+  let outcome = firstPass;
+  if (options.fix && firstPass.issues.length > 0) {
+    await applyAutoFix(projectRoot, config, furnacePaths, run, firstPass.issues);
+    outcome = exceptRun(run, config);
   }
 
-  // Summary
+  const report = {
+    components: [...run.results.keys()],
+    outcome,
+    maxWarnings: options.maxWarnings,
+  };
+  const verdict = judgeValidateReport(report);
+  const excepted = outcome.excepted.length > 0 ? `, ${outcome.excepted.length} excepted` : '';
   note(
-    `${totalErrors} error(s), ${totalWarnings} warning(s) across ${componentCount} component(s)`,
+    `${verdict.errors} error(s), ${verdict.warnings} warning(s)${excepted} across ${report.components.length} component(s)`,
     'Validation Summary'
   );
+  if (options.json === true) renderValidateJson(report);
 
-  if (totalErrors > 0) {
+  if (verdict.errors > 0) {
     const fixHint = options.fix ? '' : ' Use --fix to auto-correct registration issues.';
     info(`Fix the errors above and run "fireforge furnace validate" again.${fixHint}`);
-    throw new FurnaceError(`Validation failed with ${totalErrors} error(s).`);
+    throw new FurnaceError(`Validation failed with ${verdict.errors} error(s).`);
+  }
+  if (verdict.warningBudgetExceeded) {
+    throw new FurnaceError(
+      `Validation failed: ${verdict.warnings} warning(s) exceed --max-warnings ${String(options.maxWarnings)}. ` +
+        'Fix them, or record a reviewed finding in furnace.json validationExceptions.'
+    );
   }
 
   outro('Validation passed');
@@ -279,20 +349,16 @@ export async function furnaceValidateCommand(
 
 /**
  * Re-validates a specific set of components after an auto-fix pass and
- * returns the post-fix issue list with the recomputed error / warning
- * totals. Used by the `--fix` path to honestly report what auto-fix
- * actually accomplished.
+ * returns each one's post-fix findings. Used by the `--fix` path to
+ * honestly report what auto-fix actually accomplished.
  */
 async function reValidateComponents(
   projectRoot: string,
   config: FurnaceConfig,
   furnacePaths: FurnacePaths,
   componentNames: Set<string>
-): Promise<{ issues: ValidationIssue[]; totalErrors: number; totalWarnings: number }> {
-  const issues: ValidationIssue[] = [];
-  let totalErrors = 0;
-  let totalWarnings = 0;
-
+): Promise<Map<string, ValidationIssue[]>> {
+  const results = new Map<string, ValidationIssue[]>();
   for (const componentName of componentNames) {
     let type: ComponentType;
     let componentDir: string;
@@ -310,19 +376,10 @@ async function reValidateComponents(
 
     if (!(await pathExists(componentDir))) continue;
 
-    const componentIssues = await validateComponent(
-      componentDir,
+    results.set(
       componentName,
-      type,
-      config,
-      projectRoot
+      await validateComponent(componentDir, componentName, type, config, projectRoot)
     );
-    issues.push(...componentIssues);
-    for (const issue of componentIssues) {
-      if (issue.severity === 'error') totalErrors += 1;
-      else totalWarnings += 1;
-    }
   }
-
-  return { issues, totalErrors, totalWarnings };
+  return results;
 }

@@ -4,7 +4,15 @@ import { basename, dirname, isAbsolute, join, posix } from 'node:path';
 
 import { text } from '@clack/prompts';
 
-import { getProjectPaths, loadConfig, mutateConfig, writeConfig } from '../../core/config.js';
+import {
+  getProjectPaths,
+  loadConfig,
+  loadRawConfigDocument,
+  mutateConfig,
+  validateConfig,
+  withConfigFileLock,
+  writeConfigDocument,
+} from '../../core/config.js';
 import { stdioIsInteractive } from '../../core/destructive.js';
 import {
   createDefaultFurnaceConfig,
@@ -284,14 +292,25 @@ async function scaffoldTokensCss(projectRoot: string): Promise<{ tokensCssPath?:
   // `fireforge lint` after a `token add` fails on raw-color-value issues for
   // tokens the operator just created. The add is idempotent, so re-running
   // `furnace init --force` does not duplicate the entry.
+  // The edit seeds from the raw document under the config lock, like
+  // `fireforge config`: a validated round-trip would drop keys written with
+  // `config --force`, and an unlocked one could lose a concurrent write.
   try {
     const existingAllowlist = forgeConfig.patchLint?.rawColorAllowlist ?? [];
     if (!existingAllowlist.includes(tokensCssPath)) {
-      const updatedConfig = mutateConfig(forgeConfig, 'patchLint.rawColorAllowlist', [
-        ...existingAllowlist,
-        tokensCssPath,
-      ]);
-      await writeConfig(projectRoot, updatedConfig);
+      await withConfigFileLock(projectRoot, async () => {
+        const raw = await loadRawConfigDocument(projectRoot);
+        const current = validateConfig(raw).patchLint?.rawColorAllowlist ?? [];
+        if (current.includes(tokensCssPath)) return;
+        const updated = mutateConfig(
+          raw,
+          'patchLint.rawColorAllowlist',
+          [...current, tokensCssPath],
+          true
+        );
+        validateConfig(updated);
+        await writeConfigDocument(projectRoot, updated);
+      });
       info(`Added ${tokensCssPath} to patchLint.rawColorAllowlist`);
     }
   } catch (error: unknown) {

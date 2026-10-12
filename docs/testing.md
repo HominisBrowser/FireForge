@@ -19,6 +19,134 @@ FireForge announces this with a notice, since isolated instances do not
 exercise cross-argument state. `--no-shard` restores one combined
 invocation.
 
+## Several runs under one lock hold
+
+Every `fireforge test` holds the engine-session lock for its whole run. Three
+request shapes run more than one mach invocation inside that one hold, so a
+peer cannot take the lock, build, or replace the packaging record between
+them:
+
+- **Mixed harnesses.** xpcshell and browser/mochitest paths in one request
+  run as two consecutive mach invocations, the xpcshell half first. With
+  `--build`, one pre-test build packages both halves (its coverage claim is
+  the union), and the second half runs build-less against it. Before 0.50.0
+  a mixed request was refused, and the documented split lost its coverage
+  claim to peers' scoped builds between the steps.
+- **`--repeat <n>`** runs the same selection n times. A `--build` builds
+  once, and `--doctor` probes once. Every run is reported, so a flaky suite's
+  rate is visible from one invocation.
+- **`--negative-control <diff>`**, below.
+
+Each sub-run prints the verdict it would have printed alone as a
+`FIREFORGE-RUN:` line (its own status, reason and counts, plus
+`run=<i>/<n>` and, for a mixed request, `harness=xpcshell|mochitest`). The
+invocation still ends with exactly one `FIREFORGE-VERDICT:` line:
+`PASS runs=<n>/<n>`, or `FAIL reason=<most structural failing run>
+[note=…] runs=<passed>/<planned>`. Runs continue after a red or a crash; a
+preflight refusal or an inconclusive run stops the invocation, since the
+runs after it would not be comparable. `--mach-arg` and every other option
+apply to each sub-run. `--repeat` and `--negative-control` need explicit
+paths and cannot be combined with `--build-only`, `--canary` or `--auto`.
+
+## Negative controls
+
+A negative control proves a test can fail: neuter the code under test, run
+the test, and expect red. Done by hand on a shared engine it is dangerous.
+The objdir's chrome and widget files are symlinks into `engine/`, so the
+browser reads the sources when it loads them, after the build step. A
+mutation is therefore live for every build and suite that touches the file
+while it is in place: a peer's `test --build` can build and test the
+neuter, a `--build` run re-deploys `components/` over an engine-side
+control, and a neuter restored at `Build complete` (or after the first
+`TEST_START`) is already gone for the later shards of the same run.
+
+`fireforge test --negative-control <diff> <paths…>` makes the control part
+of the run:
+
+1. The diff is read (resolved against the project root), parsed, and every
+   hunk is checked against the current file before anything else, so a
+   stale control is refused (`note=negative-control`) before the build. A
+   `components/` target is checked after the build instead, because the
+   build redeploys it.
+2. With `--build`, the pre-test build (including the Furnace deploy)
+   runs first and packages the clean sources.
+3. After every gate has passed and right before the harness spawns, the
+   control is applied. It stays in place until the run, every shard of it,
+   has finished.
+4. The files are restored byte-exact. Then the next repetition (if any)
+   re-applies it, and only after the last restore is the lock released.
+
+The diff is `git diff` output (a `diff --git` header per file). Paths may be
+project-relative (`engine/…`, `components/…`) or engine-relative, so both
+`git diff` at the project root and `git -C engine diff` work. A
+`components/custom/<name>/<file>.mjs|.css` or
+`components/overrides/<name>/<file>` path is applied to the engine copy
+Furnace deployed it to, since that is what the run reads; the component
+source itself is never touched. Only modifications of existing text files
+are accepted: a created, deleted, renamed or binary file, or a symlinked
+target, is refused. Hunks must match exactly; the only tolerance is a line
+offset, as in `git apply`, never fuzz.
+
+The verdict says how the control came out with `control=`:
+
+- `caught`: every repetition went red with `reason=test-failures`, which is
+  what a control is for. The invocation exits 0.
+- `missed`: a repetition stayed green with the mutation in place, so the
+  selected tests do not detect it. Exit 5, like a red suite.
+- `inconclusive`: a run crashed, found no tests, was refused, or did not
+  run. The exit code is that failure's.
+
+The status word keeps describing what the harness saw, so a caught control
+reads `FIREFORGE-VERDICT: FAIL reason=test-failures … control=caught` and
+exits 0. Key a control's success on `control=caught`, not on `PASS`.
+
+A one-run control keeps its own counts on the verdict line; a repeated or
+mixed one aggregates them as above. The mutation targets what the objdir
+symlinks. A file the build preprocesses or copies (rather than links) is
+read from the objdir, not from `engine/`, so a control on it stays green
+and reports `missed`: that result is the signal to target the file the
+browser actually loads.
+
+### The restore safety model
+
+- **Only under the lock.** Apply, run and restore all happen inside the
+  engine-session lock hold of the `fireforge test` invocation, and the
+  control is applied after the pre-test build. No peer build or test
+  observes it, and the build cannot overwrite it or trip `stale-build`
+  over it.
+- **Journal first.** Before the first mutated byte is written, the
+  original bytes of every target go to `.fireforge/negative-control/`
+  with a journal of each file's original and mutated SHA-256, mode and
+  timestamps. Every write (originals, journal, mutation, restore) is an
+  atomic temp-file-and-rename. A failure while writing the mutation puts
+  back whatever was written before the run can start.
+- **Byte-exact restore, verified.** Restore writes the original bytes back,
+  re-applies the original mode and timestamps (so make-based tooling sees
+  no change either), and reads the file back to prove the bytes match. The
+  stale-build gate hashes content, so a repeated control's next run is not
+  refused.
+- **Never clobber.** A file is only restored while it still holds exactly
+  the bytes the control wrote. A file someone edited while the control ran
+  (an agent working outside the lock, say) keeps that edit. Its original
+  stays in the journal directory, and the run ends
+  `FAIL reason=inconclusive note=negative-control-restore` with the paths
+  named. Reconcile by hand, then delete the directory.
+- **Every exit path.** Pass, red, crash and a refusal after the apply all
+  restore in the run's own control flow. SIGINT and SIGTERM restore in the
+  signal pipeline after the harness has shut down and before the held
+  locks are released. A restore already in flight is awaited, not
+  repeated.
+- **Even after SIGKILL.** A SIGKILLed FireForge cannot restore, but the
+  journal survives it. Every later `fireforge test` checks for it first,
+  under the lock, before any gate or build: a file still holding the
+  control's bytes is restored, with a notice; any other state refuses with
+  `note=negative-control-pending` rather than guess.
+
+The shorthand `--mutate <file> <old> <new>` that was proposed alongside this
+was not added. Commander options take one value, so a three-value option
+would have to swallow the positional test paths. A one-hunk diff expresses
+the same edit and can be reviewed before it runs.
+
 ## Pathless runs must choose a mode
 
 - `--auto` forwards mach's own auto-selection.
@@ -32,22 +160,81 @@ invocation.
 When packageable engine files changed since the last successful FireForge
 build, `test` fails before launching stale artifacts. Use `--build` to
 refresh, or `--allow-stale-build` only for intentional out-of-band rebuilds.
+The refusal prints the one-line repackaging command for the requested paths
+(`fireforge test --build-only <paths>`), so a build-less sitting can
+repackage without dispatching anything.
+
+Two kinds of edit do not count as stale, because the packaged runtime
+already serves them. FireForge reads the objdir's install manifests
+(`obj-*/_build_manifests/install/*`, `obj-*/faster/install_*`) to decide:
+
+- a file whose every objdir copy is a symlink resolving to the edited source
+  (the usual dev-build shape on macOS and Linux for chrome scripts and test
+  files);
+- a test file the build does not package: one installed only by `mach test`
+  itself at dispatch (`_test_files`), or a test-tree file no manifest installs.
+
+A copy, a preprocessed file, a symlink that does not resolve to the source,
+or an unreadable objdir keeps the edit stale. Exempted edits are named on
+the run (and in the refusal, when other edits are stale). On a
+`--perf-samples` run the refusal also says which stale files are staging
+inputs of the sampled test and which lie elsewhere, so a sample whose fixture
+is unaffected can proceed knowingly under `--allow-stale-build`.
+
+### Packaging coverage
 
 `--build-only` packages mixed-harness paths once, and then each harness half
-can run without `--build`. Scoped builds retain prior coverage automatically
-when engine HEAD, `engine/mozconfig` and recorded staging inputs outside the
-rebuilt scope are unchanged. Changed files explicitly included in this
-build are allowed. The fingerprints include test scripts and support files,
-not only packageable chrome sources. A failed anchor narrows the claim and
-prints the dropped paths; `--extend-coverage` instead refuses. Baselines
-without complete staging-input fingerprints require a new build before they
-can retain prior coverage.
-New dirty inputs outside the rebuilt scope invalidate retention conservatively,
-including shared fixtures outside test directories.
+can run without `--build`. A plain mixed `test --build` now does both in one
+invocation (see [Several runs under one lock hold](#several-runs-under-one-lock-hold)). Coverage is kept per staged path. Each path of a
+scoped build records its own staging inputs: its manifest directory (the
+nearest directory at or above it with a test manifest) plus whatever a
+manifest there names outside it (`support-files`, `head`, `!/` shared
+fixtures), with their content at that build. A later scoped build keeps every
+earlier path whose own inputs and `engine/mozconfig` are unchanged, whatever
+moved elsewhere in the engine, including a peer's edits and an engine HEAD
+move that touches none of them. A path whose inputs changed is dropped and
+named, with the inputs that changed. Changed inputs this build restages are
+allowed.
+
+A scoped build after a full build keeps the claim full while nothing outside
+its scope moved. Otherwise it carries the full build's anchor forward, and a
+later build-less run over any path stays covered while that path's own
+staging inputs are unchanged since the full build. A refusal names the inputs
+that did change.
+
+`--extend-coverage` remains accepted. Retention is now the default, so the
+flag only turns a drop into a refusal before the build. Before 0.50.0 a
+scoped build without the flag replaced the claim whenever anything outside
+its scope had changed, and the flag refused unless engine HEAD, the
+mozconfig and every staging input recorded by the previous build were
+unchanged. Baselines without complete staging-input fingerprints (older than
+0.49.0) cannot prove anything unchanged and are dropped once.
+
+### Furnace components in a pre-test build
+
+`test --build` and `--build-only` run `furnace apply` first, like
+`fireforge build`, and that apply deploys every component whose
+`components/` source changed since its last deploy, another session's
+undeployed edits included. The run names those components in a notice and
+on the verdict line (`furnace-applied=<names>`). `--no-furnace-apply`
+packages `engine/` as it stands, for example for a before-capture, names the
+components with undeployed edits it left out, and stamps
+`furnace-apply=skipped`.
 
 When `patchLint.checkJs` and `patchLint.checkJsTestFiles` are enabled, named
 pre-test builds check the selected test scripts before deployment or mach.
-This includes new scripts not yet owned by an exported patch.
+This includes new scripts not yet owned by an exported patch. The check runs
+before the engine lock is requested, so a type error refuses at once instead
+of after a place in the lock queue. An unowned `head*.js` in a named test's
+directory joins the check when that test loads it with `loadSubScript` or a
+manifest beside it lists it in `support-files`, so a suite moved onto a new
+support head can be proven before the head is exported. A notice names each
+such head and the `re-export --scan --scan-file` command that adopts it.
+
+`--restart-between-tests` forwards mochitest's flag of the same name, which
+restarts the browser between test files (the run shape a manifest's
+`standalone` key asks for). It is refused for an xpcshell or generic
+dispatch, like `--shuffle`.
 
 ### Shared browsers, ports and host state
 
@@ -61,8 +248,39 @@ launchd-parented app remains unattributed and is not automatically killed.
 `test --wait-port [seconds]` waits for mochitest and Marionette listeners.
 `build --wait-browser [seconds]` queues a full or UI build behind the browser.
 Bare flags wait 60 seconds; explicit values accept 1–3600 seconds. They are
-independent of the FireForge lock budget. On expiry the normal preflight
-refusal and its remedy are preserved.
+independent of the FireForge lock budget, and they are spent BEFORE the
+engine session lock is requested, so a run waiting out a browser or a port
+does not hold every peer's build, test and re-export behind it. The run then
+joins the lock queue and re-checks once under the lock; the normal preflight
+refusal and its remedy apply if the resource is busy again (or still busy)
+there. With `--kill-stale-marionette` a reapable stale browser counts as
+clear before the lock, and the port waits stay under the lock, where the
+stale listener can be reaped.
+
+A path-shaped argument right after `--wait-lock`, `--wait-browser`,
+`--wait-port` or `--shuffle` (it has a `/`, a file extension, or is `.`) is
+a test path, not the flag's value, and the flag takes its default:
+`fireforge test --wait-lock browser_x.js` waits 60 seconds and runs
+`browser_x.js`. A bare word (`--wait-lock soon`) is still a usage error.
+
+`--wait-port` makes sibling checkouts take turns. `--auto-ports` (or
+`test.mochitestPorts: "auto"` in `fireforge.json`) lets them run browser
+suites at the same time. Desktop `mach mochitest` has no `--http-port` or
+`--ssl-port` option; those exist only for Android and iOS. Recent engines
+do something better instead: `testing/mochitest/runtests.py` bind-probes
+the HTTP server, ssltunnel and WebSocket ports before starting its servers,
+and the Marionette port before launching the browser, moves each busy one to
+a free port, and routes `mochi.test:8888` to wherever the server landed.
+FireForge's own refusal used to fire before that fallback could. In auto
+mode the mochitest-server and Marionette gates step aside, with a notice
+naming the holder, when the holder is not this checkout's own (a sibling
+checkout's live suite or an unrelated listener). This checkout's own
+leftovers are refused exactly as before, and `--kill-stale-marionette`
+still applies to them. Auto mode takes effect only when the engine's
+`runtests.py` carries the fallback; otherwise a notice says so and the
+default refusal stays. It never applies to `--doctor`'s Marionette probe,
+which launches its own browser on that port. The default (`"fixed"`) is
+unchanged.
 
 Every suite samples host load and the highest CPU process before and after
 dispatch. Load at least 4 or a process at least 90% CPU produces a warning;
@@ -215,8 +433,19 @@ group sweep.
 Every test run ends with one machine-readable line:
 
 ```
-FIREFORGE-VERDICT: PASS|FAIL reason=… [note=<class>] [shuffle=<seed>] [orphans-reaped=<n>] [log=<path>]
+FIREFORGE-VERDICT: PASS|FAIL reason=… [note=<class>] [started=<n>/<m> first-unstarted=<path>] [runs=<p>/<n>] [control=<outcome>] [shuffle=<seed>] [orphans-reaped=<n>] [furnace-applied=<names>|furnace-apply=skipped] [log=<path>]
 ```
+
+A run is never `PASS` when its summary reports unexpected results, when the
+harness printed "Application shut down (without crashing) in the middle of a
+test", or when a requested test file never produced a start (or skip)
+marker, even if mach exited 0. A browser that quits cleanly mid-suite does
+exactly that: the counts then cover only the files that ran. Such a run is
+`FAIL reason=test-failures`, and a short start count adds
+`started=<n>/<m> first-unstarted=<path>`: how many requested files started,
+and the first, in dispatch order, that never did. The file count is only
+taken when the output's start lines name the requested files; an xpcshell
+dispatch that proves execution with a result summary alone is not counted.
 
 Automation should branch on this line rather than on the raw process code,
 and has to treat a missing verdict as a failure. The closed set of `reason=`
@@ -240,9 +469,9 @@ disables this argument permutation. FireForge also forwards native mach
 `--shuffle` within each invocation, whose file order remains unseeded and is
 not replayed by the FireForge seed. `FIREFORGE_SHUFFLE_SEED=<seed>` is available
 to custom harness `head.js` code for in-file task ordering, and `shuffle=<seed>`
-is recorded on the verdict. The option is mochitest-only. Write
-`--shuffle=<seed>` or place it after the paths because a bare
-`--shuffle <path>` consumes the path as its optional seed.
+is recorded on the verdict. The option is mochitest-only. A path-shaped
+argument right after a bare `--shuffle` is a test path, not a seed (see
+"Shared browsers, ports and host state" above).
 
 Exit code 14 (`INCONCLUSIVE`) is not red: it means `engine/` moved while the
 harness ran and the result was thrown away. Exit 15 (`LOCK_TIMEOUT`) means
@@ -299,14 +528,41 @@ The two phases handle it differently, on purpose:
 
 A test run holds the engine-session lock and snapshots the engine git
 generation before and after the harness run, failing the verdict as invalid
-if the tree changed mid-run. To verify beside a busy primary checkout
+if the tree changed mid-run. The checks that need no lock run before it is
+requested: the launchable binary, the named-file checkJs pass, and the
+`--wait-browser`/`--wait-port` budgets. The run log is open from the start,
+so a `reason=lock-timeout` line carries `log=` too.
+A `--perf-samples` run fails only when HEAD
+moved or a changed path is packaged by the running build (an install-manifest
+source or a test file); an edit no manifest installs, such as a compiled
+source, leaves the sample standing with a warning. To verify beside a busy primary checkout
 instead, use a [verification tree](verification-trees.md).
 
 ## Dev-build gotcha
 
 In dev builds, files under `obj-*/dist/bin` may be symlinks back into the
-source tree (prefs especially), so edit source prefs directly and keep a
-backup before bisection experiments.
+source tree (prefs, chrome JS and CSS, deployed widgets), so edit source
+prefs directly and keep a backup before bisection experiments. The same
+symlinks mean a running suite reads `engine/` when its browser loads a file,
+after any `--build` step: `Build complete` is not a snapshot. An edit to
+`engine/`, yours or a peer session's, made before the `FIREFORGE-VERDICT`
+line can reach the running suite, so keep a temporary edit, such as a
+hand-made neuter, in place until the verdict line, or use
+`--negative-control` for deliberate mutations. `fireforge test --help` says
+so too.
+
+## Missing launchable binary
+
+`test` checks for the launchable binary before it requests the engine lock,
+and names the cause when the bundle is incomplete. Every protected mach
+build (`build`, `build --ui`, `test --build`) records itself in
+`.fireforge/build-run.json` while it runs. A successful build removes the
+record, a failed one keeps it with its exit code, and a build whose process
+died part-way leaves it marked running with a PID that no longer exists. The
+refusal (`note=no-launchable-binary`) then says, in any session, that the
+last build was interrupted or failed, by which command and when. A missing
+binary while a build is still running is not refused early: the run queues
+behind that build, which relinks the bundle before it releases the lock.
 
 ## Repository release gate
 

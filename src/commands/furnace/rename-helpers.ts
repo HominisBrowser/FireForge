@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { updateFurnaceState } from '../../core/furnace-config.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
+import { escapeRegex } from '../../utils/regex.js';
 
 /**
  * Applies a component rename to scaffold-owned filenames only.
@@ -18,6 +19,23 @@ export function renameComponentFileName(
 }
 
 /**
+ * Rewrites whole-tag mentions of the old name in a component description,
+ * so a rename does not carry a description that still names the old tag.
+ * Boundary-aware like the source rewrite: `moz-panel` inside
+ * `moz-panel-group` is left alone.
+ */
+export function renameTagInDescription(
+  description: string,
+  oldName: string,
+  newName: string
+): string {
+  return description.replace(
+    new RegExp(`(?<![\\w-])${escapeRegex(oldName)}(?![\\w-])`, 'g'),
+    newName
+  );
+}
+
+/**
  * Re-keys a custom component config entry and same-config compose references.
  */
 export function updateConfigForCustomRename(
@@ -30,6 +48,7 @@ export function updateConfigForCustomRename(
 
   config.custom[newName] = {
     ...oldConfig,
+    description: renameTagInDescription(oldConfig.description, oldName, newName),
     targetPath: oldConfig.targetPath.replace(new RegExp(`(^|/)${oldName}$`), `$1${newName}`),
   };
   // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- idiomatic key removal from config record
@@ -53,7 +72,10 @@ export function updateConfigForOverrideRename(
   const oldConfig = config.overrides[oldName];
   if (!oldConfig) return;
 
-  config.overrides[newName] = { ...oldConfig };
+  config.overrides[newName] = {
+    ...oldConfig,
+    description: renameTagInDescription(oldConfig.description, oldName, newName),
+  };
   // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- idiomatic key removal from config record
   delete config.overrides[oldName];
 }

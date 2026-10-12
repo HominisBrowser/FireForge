@@ -4,7 +4,7 @@ import { GeneralError } from '../errors/base.js';
 import type { TestOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { info, success } from '../utils/logger.js';
-import type { TestRunOutcome } from './test-run.js';
+import type { TestRunOutcome, TestSuite } from './test-run.js';
 import { emitHarnessVerdict } from './test-verdict.js';
 
 /** Rejects pathless `fireforge test` unless the operator selected a pathless mode. */
@@ -112,7 +112,8 @@ export interface HarnessClassification {
   nonXpcshell: string[];
 }
 
-async function classifyTestHarnesses(
+/** Buckets normalized request paths by the harness their nearest manifest selects. */
+export async function classifyTestHarnesses(
   engineDir: string,
   normalizedPaths: readonly string[]
 ): Promise<HarnessClassification> {
@@ -185,4 +186,32 @@ export function reportBuildOnlyCompletion(
   } else if (normalizedPaths.length > 0) {
     info(`Run: fireforge test ${normalizedPaths.join(' ')}`);
   }
+}
+
+/**
+ * The mach args `--restart-between-tests` forwards: mochitest's own flag,
+ * which restarts the browser between test files (the run shape a
+ * `standalone` manifest key asks for). Mochitest-only, refused otherwise
+ * for the reason `--shuffle` is: xpcshell has no such flag and generic
+ * `mach test` would hand it to every suite. Not duplicated when
+ * `--mach-arg` already forwards it.
+ *
+ * @param options - Parsed test options
+ * @param suite - The resolved dispatch target
+ * @param forwardedMachArgs - `--mach-arg` values after filtering
+ */
+export function restartBetweenTestsArgs(
+  options: TestOptions,
+  suite: TestSuite,
+  forwardedMachArgs: readonly string[]
+): string[] {
+  if (options.restartBetweenTests !== true) return [];
+  if (suite !== 'mochitest') {
+    throw new GeneralError(
+      "--restart-between-tests forwards the mochitest harness's per-file browser restart; the " +
+        'xpcshell harness has none, and generic `mach test` dispatch would hand it to every ' +
+        'suite. Narrow the paths to browser-chrome/mochitest files (and drop --generic-mach-test).'
+    );
+  }
+  return forwardedMachArgs.includes('--restart-between-tests') ? [] : ['--restart-between-tests'];
 }

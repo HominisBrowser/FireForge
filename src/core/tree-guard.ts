@@ -60,6 +60,9 @@ export const TREE_COMMAND_VERDICTS: Readonly<
   lint: 'allowed',
   typecheck: 'allowed',
   verify: 'allowed',
+  // Its furnace-validate and token-coverage steps are commands a tree
+  // refuses. Run the allowed gates one by one in a tree.
+  check: 'refused',
   furnace: 'refused',
   // No nesting. `tree list` inside a tree is pointless but harmless, and
   // the subcommand check below allows only `list`.

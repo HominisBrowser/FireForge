@@ -20,6 +20,7 @@ import {
   compileAllowlistFromStrings,
   type CompiledAllowlistEntry,
   findOverCapAllowlistEntries,
+  isBrowserConsoleLine,
   matchAllowlist,
   matchesSmokeError,
   type OverCapAllowlistEntry,
@@ -136,6 +137,7 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
   const profile = await resolveRunProfile({
     profile: options.profile,
     tempProfile: options.tempProfile,
+    purgeCaches: options.purgeCaches,
     smoke: options.smokeExit !== undefined,
   });
   try {
@@ -246,6 +248,7 @@ async function runSmokeExit(
   });
 
   const findings: SmokeFinding[] = [];
+  let browserConsoleLines = 0;
   let allowlistedErrorHits = 0;
   let allowlistedTotalHits = 0;
   const allowlistHits = new Array<number>(allowlist.length).fill(0);
@@ -256,6 +259,7 @@ async function runSmokeExit(
     // mirror preserves stdout/stderr separation for downstream piping.
     const sink = stream === 'stdout' ? process.stdout : process.stderr;
     sink.write(`${line}\n`);
+    if (isBrowserConsoleLine(line)) browserConsoleLines += 1;
 
     // Count allowlist hits up-front, regardless of error-pattern match.
     // Incrementing only when the line also matches an error pattern makes an
@@ -338,6 +342,18 @@ async function runSmokeExit(
   }
 
   if (result.exitCode === 0 || result.exitCode === 130 || result.exitCode === 143) {
+    // A clean status before the window with no browser output at all is a
+    // launch that never reached a window (a profile lock, a startup-crash
+    // streak's silent exit, a self-restart), not a clean run.
+    if (browserConsoleLines === 0) {
+      throw new SmokeRunError(
+        `Browser exited with code ${result.exitCode} after ${(elapsedMs / 1000).toFixed(1)}s, ` +
+          'before the smoke-exit window elapsed, without any console output. A silent early ' +
+          'exit means the launch never reached a window: check the profile for a stale ' +
+          '.parentlock or a startup-crash streak (toolkit.startup.recent_crashes).',
+        ExitCode.SMOKE_LAUNCH_FAILURE
+      );
+    }
     return;
   }
 
@@ -511,7 +527,11 @@ export function registerRun(
     )
     .option(
       '--profile <path>',
-      'Launch with this profile directory (passed to Firefox as -profile). Left in place after the run. With --smoke-exit it replaces the default fresh profile.'
+      'Launch with this profile directory (passed to Firefox as -profile). Left in place after the run. With --smoke-exit it replaces the default fresh profile. Firefox gets -purgecaches too, so the profile does not run chrome scripts an earlier build cached.'
+    )
+    .option(
+      '--no-purge-caches',
+      'With --profile, keep the profile startup cache (do not pass -purgecaches).'
     )
     .option(
       '--temp-profile',

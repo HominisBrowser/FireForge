@@ -54,6 +54,13 @@ export interface RunProfileRequest {
   /** `--temp-profile`: launch with a fresh directory removed afterwards. */
   tempProfile?: boolean | undefined;
   /**
+   * Whether a named `profile` launches with `-purgecaches` (default `true`).
+   * A UI build does not change the build id the profile's startup cache is
+   * keyed on, so without it a kept profile runs the chrome scripts an
+   * earlier build cached. Temporary profiles start without a cache.
+   */
+  purgeCaches?: boolean | undefined;
+  /**
    * Whether this is a `--smoke-exit` run. A smoke run with neither flag gets
    * a temporary profile: the step exists to prove what the build does on a
    * clean start, and the developer's profile-default carries whatever state
@@ -110,7 +117,13 @@ export async function resolveRunProfile(request: RunProfileRequest): Promise<Run
 
   if (request.profile !== undefined) {
     const dir = resolve(request.profile);
-    return { args: ['-profile', dir], dir, temporary: false, dispose: NO_PROFILE.dispose };
+    const purge = request.purgeCaches === false ? [] : ['-purgecaches'];
+    return {
+      args: ['-profile', dir, ...purge],
+      dir,
+      temporary: false,
+      dispose: NO_PROFILE.dispose,
+    };
   }
 
   if (request.tempProfile !== true && !request.smoke) {

@@ -17,6 +17,7 @@ import {
   savePatchesManifest,
 } from './patch-manifest-io.js';
 import { inferPatchMetadataFromFilename } from './patch-manifest-validate.js';
+import { manifestWithRetiredSlots } from './patch-retired.js';
 
 /** Consistency issue codes for manifest validation. */
 export interface PatchManifestConsistencyIssue {
@@ -323,7 +324,11 @@ async function rebuildPatchesManifestUnderLock(
     };
     // Copy the arrays rather than aliasing the loaded manifest's, so a caller
     // mutating the rebuilt entry cannot reach back into `manifestState`.
-    if (existing?.lintIgnore !== undefined) rebuilt.lintIgnore = [...existing.lintIgnore];
+    if (existing?.lintIgnore !== undefined) {
+      rebuilt.lintIgnore = existing.lintIgnore.map((entry) =>
+        typeof entry === 'string' ? entry : { ...entry }
+      );
+    }
     rebuiltPatches.push(rebuilt);
     existingEntries.delete(patch.filename);
   }
@@ -332,10 +337,12 @@ async function rebuildPatchesManifestUnderLock(
     (left, right) => left.order - right.order || left.filename.localeCompare(right.filename)
   );
 
-  const rebuiltManifest: PatchesManifest = {
-    version: 1,
-    patches: rebuiltPatches,
-  };
+  // Retired slots have no patch file to recover them from, so they ride
+  // along from the loaded manifest like the per-row fields above.
+  const rebuiltManifest: PatchesManifest = manifestWithRetiredSlots(
+    manifestState.manifest,
+    rebuiltPatches
+  );
 
   // Whatever is left in the map had a manifest row but no patch file, so the
   // rebuild drops it. That is the correct outcome, since the file is the

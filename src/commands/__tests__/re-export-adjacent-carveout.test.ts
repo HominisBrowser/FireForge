@@ -56,6 +56,10 @@ function makeCtx(approved: string[]): AdjacentUnmanagedContext {
     refuseAdjacentUnmanaged: true,
     approvedUnmanaged: new Set(approved),
     approvedSeen: new Set(),
+    expectedNew: new Set(),
+    expectedNewSeen: new Set(),
+    adjacentIgnore: [],
+    adjacentIgnoreSeen: new Set(),
     refusals: [],
   };
 }
@@ -163,7 +167,7 @@ describe('--expect-unmanaged carve-out', () => {
     const warned = vi.mocked(warn).mock.calls.flat().join('\n');
     expect(warned).toContain('beside engine/browser/base/content/test/contextMenu');
     // The rule itself is stated, so a reader need not infer it from the example.
-    expect(warned).toContain('a directory this patch already owns a file in');
+    expect(warned).toContain('the same directory as a file this patch owns');
     // The anchor is the owning directory, never the unrelated sibling.
     expect(warned).not.toContain('beside engine/browser/base/content/test/about');
   });

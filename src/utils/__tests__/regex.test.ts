@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it } from 'vitest';
 
-import { countRawCssColors, escapeRegex, hasRawCssColors, stripJsComments } from '../regex.js';
+import {
+  countRawCssColors,
+  escapeRegex,
+  hasRawCssColors,
+  stripJsComments,
+  stripJsCommentsParsed,
+} from '../regex.js';
 
 describe('regex helpers', () => {
   it('escapes regex metacharacters', () => {
@@ -20,5 +26,19 @@ describe('regex helpers', () => {
     expect(stripped).toContain('"https://example.test"');
     expect(stripped).not.toContain('// comment');
     expect(stripped).not.toContain('/* block */');
+  });
+
+  it('tokenizes a script-only source as a script before falling back to the regex strip', () => {
+    // The legacy octal escape is a module-goal tokenizer error. The regex
+    // fallback would read the `//` inside the regex literal as a comment.
+    const source = 'var s = "\\07"; var re = /a\\/\\//; // gone\n';
+    const stripped = stripJsComments(source);
+    expect(stripped).toContain('var re = /a\\/\\//;');
+    expect(stripped).not.toContain('gone');
+  });
+
+  it('stripJsCommentsParsed returns null when neither goal tokenizes', () => {
+    expect(stripJsCommentsParsed('var a = 1; @@\n')).toBeNull();
+    expect(stripJsCommentsParsed('a(); // c\n')).toBe('a();     \n');
   });
 });

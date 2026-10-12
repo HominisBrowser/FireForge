@@ -33,8 +33,25 @@ export {
   validateCustomElementRegistration,
 } from './furnace-registration-ast.js';
 export { removeCustomElementRegistration } from './furnace-registration-remove.js';
+export { renameCustomElementRegistration } from './furnace-registration-rename.js';
 import { escapeRegex } from '../utils/regex.js';
 import { JAR_MN } from './furnace-constants.js';
+
+/**
+ * True when jar.mn already registers `file` of component `tagName` anywhere
+ * in the file: either a line targeting `content/global/elements/<file>` or a
+ * line sourcing `(widgets/<tagName>/<file>)`. The position of the existing
+ * line is irrelevant. A hand-written line below an unrelated entry counts
+ * exactly like one Furnace wrote itself, so apply never adds a second line
+ * and mach never fails with "Item already in manifest". Boundary-aware so
+ * `moz-card.css` does not match `moz-card-group.css`.
+ */
+function isJarMnFileRegistered(content: string, tagName: string, file: string): boolean {
+  const escapedFile = escapeRegex(file);
+  const target = new RegExp(`content/global/elements/${escapedFile}(?:\\s|$)`, 'm');
+  const source = new RegExp(`\\(widgets/${escapeRegex(tagName)}/${escapedFile}\\)`);
+  return target.test(content) || source.test(content);
+}
 
 /**
  * Adds jar.mn entries that map chrome:// URIs to on-disk paths for a
@@ -57,9 +74,9 @@ import { JAR_MN } from './furnace-constants.js';
  *   in alphabetical order relative to these.
  * - **Fallback**: if no `content/global/elements/` line exists (empty
  *   project), looks for any `content/global/` line and inserts after it.
- * - **Idempotency**: entries already present (checked by exact path match
- *   on `content/global/elements/{file}` with a trailing whitespace or
- *   end-of-line boundary) are skipped.
+ * - **Idempotency**: entries already present anywhere in the file (an exact
+ *   target match on `content/global/elements/{file}`, or a source match on
+ *   `(widgets/{tagName}/{file})`) are skipped, including hand-written ones.
  *
  * If Firefox upstream changes the jar.mn section ordering or switches to a
  * different resource registration mechanism, the preflight validation in
@@ -84,11 +101,8 @@ export async function addJarMnEntries(
   let content = await readText(filePath);
   const lines = content.split('\n');
 
-  // Filter to files not already registered. Use a word-boundary-aware
-  // check so that "moz-card.css" does not match "moz-card-group.css".
-  const newFiles = files.filter(
-    (f) => !new RegExp(`content/global/elements/${escapeRegex(f)}(?:\\s|$)`, 'm').test(content)
-  );
+  // Filter to files not already registered anywhere in the jar.
+  const newFiles = [...new Set(files)].filter((f) => !isJarMnFileRegistered(content, tagName, f));
 
   if (newFiles.length === 0) return 0;
 
@@ -233,32 +247,57 @@ function detectLocaleJarMnIndent(lines: string[], chromeSubPath: string): string
   return detectIndent(lines, exact) ?? detectIndent(lines, /^(\s+)locale\//) ?? '  ';
 }
 
+/** Matches a per-widget locale jar.mn line for `<chromeSubPath>/<tagName>.ftl`. */
+function localeFtlJarMnPattern(tagName: string, chromeSubPath: string): RegExp {
+  return new RegExp(
+    `locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapeRegex(chromeSubPath)}\\/${escapeRegex(tagName)}\\.ftl`
+  );
+}
+
+/**
+ * True when the locale jar.mn carries a per-widget line for `tagName`.
+ * False when the jar.mn is missing. Used by `furnace rename --dry-run` to
+ * say whether a rename would re-point a line or leave the jar alone.
+ */
+export async function hasLocaleFtlJarMnEntry(
+  engineDir: string,
+  jarMnRelPath: string,
+  tagName: string,
+  chromeSubPath: string
+): Promise<boolean> {
+  const filePath = join(engineDir, jarMnRelPath);
+  if (!(await pathExists(filePath))) return false;
+  return localeFtlJarMnPattern(tagName, chromeSubPath).test(await readText(filePath));
+}
+
 /**
  * Removes a locale jar.mn entry previously written by `addLocaleFtlJarMnEntry`.
  * Idempotent: if the entry is absent or the file is missing, nothing happens.
+ *
+ * @returns True when a line was removed, so a rename re-points only an
+ *   entry that existed instead of inventing one
  */
 export async function removeLocaleFtlJarMnEntry(
   engineDir: string,
   jarMnRelPath: string,
   tagName: string,
   chromeSubPath: string
-): Promise<void> {
+): Promise<boolean> {
   const filePath = join(engineDir, jarMnRelPath);
 
   if (!(await pathExists(filePath))) {
-    return;
+    return false;
   }
 
   const content = await readText(filePath);
   const lines = content.split('\n');
-  const pattern = new RegExp(
-    `locale\\/(?:@AB_CD@|[a-zA-Z-]+)\\/${escapeRegex(chromeSubPath)}\\/${escapeRegex(tagName)}\\.ftl`
-  );
+  const pattern = localeFtlJarMnPattern(tagName, chromeSubPath);
 
   const filtered = lines.filter((line) => !pattern.test(line));
-  if (filtered.length === lines.length) return;
+  if (filtered.length === lines.length) return false;
 
   await writeText(filePath, filtered.join('\n'));
+  return true;
 }
 
 /**
@@ -380,9 +419,7 @@ export async function validateJarMnInsertionForFiles(
   const content = await readText(filePath);
   const lines = content.split('\n');
 
-  const newFiles = files.filter(
-    (f) => !new RegExp(`content/global/elements/${escapeRegex(f)}(?:\\s|$)`, 'm').test(content)
-  );
+  const newFiles = files.filter((f) => !isJarMnFileRegistered(content, tagName, f));
   if (newFiles.length === 0) return;
 
   const elementLinePattern = /^\s+content\/global\/elements\/([^.]+)\./;

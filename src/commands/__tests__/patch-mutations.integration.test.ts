@@ -12,7 +12,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HISTORY_LOG_FILENAME } from '../../core/destructive.js';
+import { DEFAULT_HISTORY_LOG_PATH } from '../../core/history-log-file.js';
 import * as patchLint from '../../core/patch-lint.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import {
@@ -140,7 +140,7 @@ describe('patch delete', () => {
     expect(await readFile(join(patchesDir, original.metadata.filename), 'utf8')).toBe(
       original.body
     );
-    expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('refuses deletion when a dependent patch is exported during confirmation', async () => {
@@ -166,7 +166,7 @@ describe('patch delete', () => {
     expect(await readFile(join(patchesDir, original.metadata.filename), 'utf8')).toBe(
       original.body
     );
-    expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('refuses a body-only change during confirmation without altering the manifest or history', async () => {
@@ -187,7 +187,7 @@ describe('patch delete', () => {
     );
     expect(await readFile(join(patchesDir, metadata.filename), 'utf8')).toBe(changedBody);
     expect(await readFile(join(patchesDir, 'patches.json'), 'utf8')).toBe(manifestBefore);
-    expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('rejects non-TTY runs without --yes', async () => {
@@ -215,7 +215,7 @@ describe('patch delete', () => {
     ]);
     await patchDeleteCommand(projectRoot, '001-infra-a.patch', { dryRun: true });
     expect(await pathExists(join(patchesDir, '001-infra-a.patch'))).toBe(true);
-    expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('--yes deletes both file and manifest row and writes history', async () => {
@@ -236,7 +236,7 @@ describe('patch delete', () => {
       await readFile(join(patchesDir, 'patches.json'), 'utf-8')
     ) as PatchesManifest;
     expect(manifest.patches.map((p) => p.filename)).toEqual(['002-infra-b.patch']);
-    const history = await readFile(join(patchesDir, HISTORY_LOG_FILENAME), 'utf-8');
+    const history = await readFile(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH), 'utf-8');
     interface HistoryRecord {
       operation: string;
       args: { filename?: string };
@@ -589,7 +589,7 @@ describe('patch reorder', () => {
     // C should now be first. A and B shift down.
     expect(entries).toEqual(['001-infra-c.patch', '002-infra-a.patch', '003-infra-b.patch']);
 
-    const history = await readFile(join(patchesDir, HISTORY_LOG_FILENAME), 'utf-8');
+    const history = await readFile(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH), 'utf-8');
     expect(history).toContain('patch-reorder');
   });
 
@@ -750,7 +750,7 @@ describe('patch reorder', () => {
 
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
     expect(entries).toEqual(['001-infra-a.patch', '002-infra-b.patch']);
-    expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('rejects non-TTY runs without --yes', async () => {
@@ -837,7 +837,7 @@ describe('patch reorder', () => {
     interface HistoryRecord {
       args: { destinationOrder?: number };
     }
-    const history = await readFile(join(patchesDir, HISTORY_LOG_FILENAME), 'utf-8');
+    const history = await readFile(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH), 'utf-8');
     const entry = JSON.parse(history.trim()) as HistoryRecord;
     expect(entry.args.destinationOrder).toBe(3);
   });
@@ -909,7 +909,7 @@ describe('patch reorder', () => {
 
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
     expect(entries).toEqual(['001-infra-a.patch', '002-infra-c.patch', '003-infra-b.patch']);
-    expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('rejects conflicting --to/--before combos', async () => {
@@ -954,7 +954,7 @@ describe('patch reorder', () => {
 
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
     expect(entries).toEqual(['001-infra-a.patch', '002-infra-b.patch']);
-    expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('rejects --after referencing the target itself', async () => {
@@ -983,7 +983,7 @@ describe('patch reorder', () => {
     // target and everything after it by one.
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
     expect(entries).toEqual(['001-infra-a.patch', '002-infra-b.patch', '003-infra-c.patch']);
-    expect(await pathExists(join(patchesDir, HISTORY_LOG_FILENAME))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('rewrites staged-dependency owners when the owning patch is renumbered', async () => {

@@ -86,8 +86,19 @@ import {
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
 import type { ValidationIssue } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
-import { error, info, intro, note, outro, success, warn } from '../../utils/logger.js';
+import {
+  error,
+  info,
+  intro,
+  note,
+  outro,
+  setMachineOutputMode,
+  setStdoutSealed,
+  success,
+  warn,
+} from '../../utils/logger.js';
 import { furnaceValidateCommand } from '../furnace/validate.js';
+import { parseMaxWarnings } from '../furnace/validate-report.js';
 
 describe('furnaceValidateCommand', () => {
   beforeEach(() => {
@@ -423,21 +434,17 @@ describe('furnaceValidateCommand', () => {
 
     // A fixable issue whose component is not in `config.custom` (unknown to
     // furnace.json, or registered as an override instead) is skipped rather
-    // than crashing the fix pass. An unknown component is dropped from the
-    // issue list entirely (the run completes). An override-registered one
-    // stays an unfixed issue and still fails the run. Neither writes jar.mn.
-    it.each<[string, string, 'resolves' | 'rejects']>([
-      ['unknown to furnace.json', 'moz-ghost', 'resolves'],
-      ['registered as an override, not custom', 'moz-card', 'rejects'],
-    ])('skips the jar.mn fix for a component %s', async (_label, component, outcome) => {
+    // than crashing the fix pass. Auto-fix cannot touch it, so it stays an
+    // unfixed issue and still fails the run. Neither writes jar.mn.
+    it.each<[string, string]>([
+      ['unknown to furnace.json', 'moz-ghost'],
+      ['registered as an override, not custom', 'moz-card'],
+    ])('skips the jar.mn fix for a component %s', async (_label, component) => {
       vi.mocked(validateComponent).mockResolvedValue([mjsIssue(component)]);
 
-      const run = furnaceValidateCommand('/project', 'moz-sidebar', { fix: true });
-      if (outcome === 'resolves') {
-        await expect(run).resolves.toBeUndefined();
-      } else {
-        await expect(run).rejects.toThrow(/Validation failed/i);
-      }
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
+      ).rejects.toThrow(/Validation failed/i);
 
       expect(addJarMnEntries).not.toHaveBeenCalled();
     });
@@ -798,6 +805,212 @@ describe('furnaceValidateCommand', () => {
         'moz-sidebar.mjs',
       ]);
       expect(info).toHaveBeenCalledWith('\nAuto-fixed 1 issue(s).');
+    });
+  });
+
+  describe('--json, --max-warnings and validationExceptions', () => {
+    const warning = (component: string, check: string): ValidationIssue => ({
+      component,
+      check,
+      severity: 'warning',
+      message: `${check} on ${component}`,
+    });
+    const failure = (component: string, check: string): ValidationIssue => ({
+      component,
+      check,
+      severity: 'error',
+      message: `${check} on ${component}`,
+    });
+
+    function withExceptions(
+      validationExceptions: { component: string; check: string; reason: string }[]
+    ): void {
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-sidebar': {
+            description: 'Custom sidebar',
+            targetPath: 'browser/components/sidebar',
+            register: true,
+            localized: false,
+          },
+        },
+        validationExceptions,
+      });
+    }
+
+    function captureStdout(): { read: () => unknown; restore: () => void } {
+      const writes: string[] = [];
+      const spy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+      return {
+        read: () => JSON.parse(writes.join('')) as unknown,
+        restore: () => {
+          spy.mockRestore();
+        },
+      };
+    }
+
+    it('writes one JSON document, engages machine mode and seals stdout', async () => {
+      vi.mocked(validateAllComponents).mockResolvedValue(
+        new Map([
+          ['moz-card', []],
+          ['moz-sidebar', [warning('moz-sidebar', 'hardcoded-text')]],
+        ])
+      );
+      const out = captureStdout();
+      try {
+        await furnaceValidateCommand('/project', undefined, { json: true });
+      } finally {
+        out.restore();
+      }
+      expect(out.read()).toEqual({
+        schemaVersion: 1,
+        passed: true,
+        summary: { components: 2, errors: 0, warnings: 1, excepted: 0, staleExceptions: 0 },
+        components: [
+          { name: 'moz-card', errors: 0, warnings: 0 },
+          { name: 'moz-sidebar', errors: 0, warnings: 1 },
+        ],
+        issues: [warning('moz-sidebar', 'hardcoded-text')],
+        excepted: [],
+        staleExceptions: [],
+      });
+      expect(setMachineOutputMode).toHaveBeenCalledWith(true);
+      expect(setStdoutSealed).toHaveBeenCalledWith(true);
+    });
+
+    it('fails past --max-warnings, with the budget echoed in the JSON', async () => {
+      vi.mocked(validateAllComponents).mockResolvedValue(
+        new Map([['moz-sidebar', [warning('moz-sidebar', 'hardcoded-text')]]])
+      );
+      const out = captureStdout();
+      try {
+        await expect(
+          furnaceValidateCommand('/project', undefined, { json: true, maxWarnings: 0 })
+        ).rejects.toThrow('1 warning(s) exceed --max-warnings 0');
+      } finally {
+        out.restore();
+      }
+      expect(out.read()).toMatchObject({ passed: false, maxWarnings: 0 });
+    });
+
+    it('passes at the --max-warnings budget', async () => {
+      vi.mocked(validateAllComponents).mockResolvedValue(
+        new Map([['moz-sidebar', [warning('moz-sidebar', 'hardcoded-text')]]])
+      );
+      await expect(
+        furnaceValidateCommand('/project', undefined, { maxWarnings: 1 })
+      ).resolves.toBeUndefined();
+    });
+
+    it('suppresses an excepted finding (an error too) and reports it with its reason', async () => {
+      withExceptions([
+        { component: 'moz-sidebar', check: 'no-aria-role', reason: 'wraps a native button' },
+      ]);
+      vi.mocked(validateAllComponents).mockResolvedValue(
+        new Map([['moz-sidebar', [failure('moz-sidebar', 'no-aria-role')]]])
+      );
+      const out = captureStdout();
+      try {
+        await furnaceValidateCommand('/project', undefined, { json: true, maxWarnings: 0 });
+      } finally {
+        out.restore();
+      }
+      expect(out.read()).toMatchObject({
+        passed: true,
+        summary: { errors: 0, warnings: 0, excepted: 1, staleExceptions: 0 },
+        excepted: [{ ...failure('moz-sidebar', 'no-aria-role'), reason: 'wraps a native button' }],
+      });
+      expect(note).toHaveBeenCalledWith(
+        '0 error(s), 0 warning(s), 1 excepted across 1 component(s)',
+        'Validation Summary'
+      );
+    });
+
+    it('reports an exception that matches nothing as a stale warning', async () => {
+      withExceptions([
+        { component: 'moz-sidebar', check: 'hardcoded-text', reason: 'reviewed' },
+        { component: 'moz-gone', check: 'no-aria-role', reason: 'reviewed' },
+      ]);
+      vi.mocked(validateAllComponents).mockResolvedValue(new Map([['moz-sidebar', []]]));
+      const out = captureStdout();
+      try {
+        await expect(
+          furnaceValidateCommand('/project', undefined, { json: true, maxWarnings: 0 })
+        ).rejects.toThrow('2 warning(s) exceed --max-warnings 0');
+      } finally {
+        out.restore();
+      }
+      expect(out.read()).toMatchObject({
+        summary: { warnings: 2, staleExceptions: 2 },
+        staleExceptions: [
+          { component: 'moz-sidebar', check: 'hardcoded-text', reason: 'reviewed' },
+          { component: 'moz-gone', check: 'no-aria-role', reason: 'reviewed' },
+        ],
+      });
+    });
+
+    it('judges only the named component for staleness', async () => {
+      withExceptions([{ component: 'moz-gone', check: 'no-aria-role', reason: 'reviewed' }]);
+      vi.mocked(validateComponent).mockResolvedValue([]);
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { maxWarnings: 0 })
+      ).resolves.toBeUndefined();
+      expect(success).toHaveBeenCalledWith('moz-sidebar — all checks passed');
+    });
+
+    it('emits an empty passing document when nothing is validated locally', async () => {
+      const out = captureStdout();
+      try {
+        await furnaceValidateCommand('/project', 'moz-button', { json: true });
+      } finally {
+        out.restore();
+      }
+      expect(out.read()).toMatchObject({ passed: true, components: [], issues: [] });
+    });
+
+    it('keeps a non-fixable error on another component through --fix', async () => {
+      vi.mocked(validateAllComponents).mockResolvedValue(
+        new Map([
+          ['moz-card', [failure('moz-card', 'missing-mjs')]],
+          [
+            'moz-sidebar',
+            [
+              {
+                component: 'moz-sidebar',
+                check: 'missing-jar-mn-mjs',
+                severity: 'error',
+                message: 'missing',
+              },
+            ],
+          ],
+        ])
+      );
+      vi.mocked(validateComponent).mockResolvedValue([]);
+      await expect(furnaceValidateCommand('/project', undefined, { fix: true })).rejects.toThrow(
+        'Validation failed with 1 error(s).'
+      );
+    });
+
+    it('parseMaxWarnings accepts a non-negative integer and refuses anything else', () => {
+      expect(parseMaxWarnings(undefined)).toBeUndefined();
+      expect(parseMaxWarnings('0')).toBe(0);
+      expect(parseMaxWarnings('12')).toBe(12);
+      expect(() => parseMaxWarnings('-1')).toThrow(
+        '--max-warnings must be a non-negative integer.'
+      );
+      expect(() => parseMaxWarnings('1.5')).toThrow(
+        '--max-warnings must be a non-negative integer.'
+      );
+      expect(() => parseMaxWarnings('x')).toThrow('--max-warnings must be a non-negative integer.');
     });
   });
 });

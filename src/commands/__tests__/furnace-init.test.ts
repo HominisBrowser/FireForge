@@ -97,7 +97,19 @@ vi.mock('../../core/config.js', () => ({
       return clone;
     }
   ),
-  writeConfig: vi.fn(),
+  loadRawConfigDocument: vi.fn(() =>
+    Promise.resolve({
+      name: 'My Browser',
+      vendor: 'Acme',
+      appId: 'org.acme.browser',
+      binaryName: 'mybrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      customKey: 'kept',
+    })
+  ),
+  validateConfig: vi.fn((config: unknown) => config),
+  withConfigFileLock: vi.fn((_root: string, operation: () => Promise<unknown>) => operation()),
+  writeConfigDocument: vi.fn(),
 }));
 
 vi.mock('../../utils/fs.js', () => ({
@@ -123,7 +135,7 @@ vi.mock('../../core/license-headers.js', () => ({
 
 import { text } from '@clack/prompts';
 
-import { getProjectPaths } from '../../core/config.js';
+import { getProjectPaths, writeConfigDocument } from '../../core/config.js';
 import {
   createDefaultFurnaceConfig,
   furnaceConfigExists,
@@ -347,6 +359,32 @@ describe('furnaceInitCommand', () => {
     );
     expect(vi.mocked(info)).toHaveBeenCalledWith(
       expect.stringContaining('Registered mybrowser-tokens.css in browser/themes/shared/jar.inc.mn')
+    );
+  });
+
+  it('adds the tokens CSS to the allowlist from the raw document, keeping forced keys', async () => {
+    vi.mocked(pathExists).mockImplementation((path: string) =>
+      Promise.resolve(path === '/project/engine')
+    );
+    vi.mocked(registerSharedCSS).mockResolvedValue({
+      manifest: 'browser/themes/shared/jar.inc.mn',
+      entry: '',
+      skipped: true,
+    });
+
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    try {
+      await furnaceInitCommand('/project');
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    }
+
+    expect(vi.mocked(writeConfigDocument)).toHaveBeenCalledWith(
+      '/project',
+      expect.objectContaining({
+        customKey: 'kept',
+        patchLint: { rawColorAllowlist: ['browser/themes/shared/mybrowser-tokens.css'] },
+      })
     );
   });
 

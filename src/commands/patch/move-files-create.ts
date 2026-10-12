@@ -15,6 +15,7 @@ import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { assertConfirmationAvailable, confirmDestructive } from '../../core/destructive.js';
 import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import { buildPatchQueueContext } from '../../core/patch-lint.js';
+import { buildLintIgnoreChecks } from '../../core/patch-lint-ignore.js';
 import { loadPatchesManifest, resolvePatchIdentifier } from '../../core/patch-manifest.js';
 import { formatPatchOrder } from '../../core/patch-parse.js';
 import { enforcePatchPolicy } from '../../core/patch-policy.js';
@@ -25,17 +26,17 @@ import { normalizePatchDisplayName } from '../../utils/validation.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { resolvePlacementPlan } from '../export-flow.js';
 import { runPatchLint } from '../export-shared.js';
-import { commitPatchSplit } from './split.js';
+import { commitPatchSplit, reportSplitStagedChanges } from './split.js';
 import {
   assertSourceOwnsFiles,
   buildNewPatchMetadata,
   buildSplitDiff,
   buildSplitSummary,
-  findOwnerRewriteHolders,
   projectSplitManifest,
   runProjectedSplitLint,
   type SplitPlan,
 } from './split-plan.js';
+import { emptyStagedMaintenance, findOwnerRewriteHolders } from './split-staged.js';
 
 /**
  * Runs `patch move-files --create --order <n>`: plans the create+move as a
@@ -133,9 +134,29 @@ export async function patchMoveFilesCreateCommand(
     name: displayName,
     description: options.description ?? '',
     ownerRewrites: findOwnerRewriteHolders(manifest.patches, source.filename, movedSet),
-    // Populated by runProjectedSplitLint below (forward edges into the new patch).
+    // Populated by runProjectedSplitLint below (forward edges into the new
+    // patch, and the declarations the move re-homes or makes unused).
     stagedDependencyAdditions: new Map(),
+    stagedMaintenance: emptyStagedMaintenance(),
   };
+
+  // Policy first: the projected manifest (orders, ranges, the gap rule)
+  // does not depend on the lint below, so a refused --order fails before
+  // the per-patch and projected lint passes instead of after them.
+  enforcePatchPolicy({
+    config,
+    manifest: projectSplitManifest(manifest, plan, buildNewPatchMetadata(plan, config)),
+    command: 'patch move-files --create',
+    forceUnsafe: options.forceUnsafe === true,
+    hints: {
+      'description-required':
+        'Pass --description "<text>" (or -d) on this command to set the created patch\'s description.',
+      'numeric-gap':
+        'With patchPolicy.allowGaps: false, orders are contiguous within a range: --order must ' +
+        "fill an existing gap or a retired slot, or take the number right after the range's last " +
+        'patch. A number reserved past a gap cannot be used until the numbers before it exist.',
+    },
+  });
 
   // Per-patch lint both projected bodies, threading the source patch's
   // tier/lintIgnore so an intentional-advisory patch can still move files.
@@ -145,7 +166,7 @@ export async function patchMoveFilesCreateCommand(
   // resolve exactly as they will after the move lands. Without it the
   // projection lint is blind.
   const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
-  const ignoreChecks = source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined;
+  const ignoreChecks = buildLintIgnoreChecks(source.lintIgnore);
   await runPatchLint({
     engineDir: paths.engine,
     filesAffected: remainingFiles,
@@ -167,19 +188,13 @@ export async function patchMoveFilesCreateCommand(
     patchTier: source.tier,
   });
 
-  const { conflicts, stagedDependencyAdditions } = runProjectedSplitLint(plan, patchQueueCtx);
+  const { conflicts, stagedDependencyAdditions, stagedMaintenance } = runProjectedSplitLint(
+    plan,
+    patchQueueCtx
+  );
   plan.stagedDependencyAdditions = stagedDependencyAdditions;
+  plan.stagedMaintenance = stagedMaintenance;
   const newMetadata = buildNewPatchMetadata(plan, config);
-  enforcePatchPolicy({
-    config,
-    manifest: projectSplitManifest(manifest, plan, newMetadata),
-    command: 'patch move-files --create',
-    forceUnsafe: options.forceUnsafe === true,
-    hints: {
-      'description-required':
-        'Pass --description "<text>" (or -d) on this command to set the created patch\'s description.',
-    },
-  });
 
   const decision = await confirmDestructive({
     operation: 'patch-move-files-create',
@@ -198,8 +213,6 @@ export async function patchMoveFilesCreateCommand(
     `Created ${placement.newFilename} (order ${formatPatchOrder(placement.insertionOrder)}) ` +
       `and moved ${plan.movedFiles.length} file(s) out of ${source.filename}`
   );
-  if (plan.ownerRewrites.length > 0) {
-    info(`Re-pointed staged-dependency owners in: ${plan.ownerRewrites.join(', ')}`);
-  }
+  reportSplitStagedChanges(plan);
   outro('Move complete');
 }

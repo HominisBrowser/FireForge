@@ -109,6 +109,27 @@ export interface CustomComponentConfig {
   sharedFtl?: string;
 }
 
+/** A reviewed `furnace validate` finding (`furnace.json#validationExceptions[]`). */
+export interface FurnaceValidationException {
+  /** Component tag name the finding is reported on. */
+  component: string;
+  /** The finding's check name, as `furnace validate` prints it in brackets. */
+  check: string;
+  /** Why the finding is accepted. Required: the entry is the review record. */
+  reason: string;
+}
+
+/**
+ * `furnace validate` checks that run only when `furnace.json#optInChecks`
+ * names them. `icon-button-label`: an icon-only `<moz-button>` (an
+ * `iconsrc` or an `icon` type, no `label` and no text content) carries
+ * neither `data-l10n-id` nor `aria-label`.
+ */
+export const FURNACE_OPT_IN_CHECKS = ['icon-button-label'] as const;
+
+/** One opt-in check name. */
+export type FurnaceOptInCheck = (typeof FURNACE_OPT_IN_CHECKS)[number];
+
 /**
  * The furnace.json schema.
  */
@@ -167,6 +188,17 @@ export interface FurnaceConfig {
    * Unset disables jsconfig maintenance.
    */
   typecheckJsconfig?: string;
+  /**
+   * Reviewed `furnace validate` findings. Each entry suppresses every
+   * finding of `check` on `component`, and `furnace validate` reports an
+   * entry that no longer matches anything as a stale-exception warning.
+   */
+  validationExceptions?: FurnaceValidationException[];
+  /**
+   * Opt-in `furnace validate` checks (see {@link FURNACE_OPT_IN_CHECKS}).
+   * Unset runs only the default checks.
+   */
+  optInChecks?: FurnaceOptInCheck[];
   /** Stock components tracked for preview */
   stock: string[];
   /** Override components */
@@ -258,6 +290,16 @@ export interface StepError {
 }
 
 /**
+ * Why `applyAllComponents` skipped a component, so a summary can say more
+ * than "skipped". `already-current`: the source is unchanged since the last
+ * recorded apply and the engine copy still matches it (fragment expansions
+ * included), so there was nothing to write. The apply state is shared by
+ * every session on the checkout, so the recorded apply may be another
+ * session's, e.g. a peer's `test --build`.
+ */
+export type ApplySkipKind = 'already-current';
+
+/**
  * Result of applying all components to the engine source tree.
  */
 export interface ApplyResult {
@@ -269,8 +311,11 @@ export interface ApplyResult {
     /** Non-fatal registration step errors */
     stepErrors?: StepError[];
   }>;
-  /** Components that were skipped (e.g., no changes) */
-  skipped: Array<{ name: string; reason: string }>;
+  /**
+   * Components that were skipped (e.g., no changes). `kind` names the
+   * reason for summaries; `reason` is the stable free-text form.
+   */
+  skipped: Array<{ name: string; reason: string; kind?: ApplySkipKind }>;
   /** Components that failed to apply */
   errors: Array<{ name: string; error: string }>;
   /**

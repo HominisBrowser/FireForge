@@ -15,7 +15,7 @@ Inspired by [fern.js](https://github.com/ghostery/user-agent-desktop) and [Melon
 - **Firefox source and build helpers** Download, bootstrap, build, run, test, package, smoke-check, etc.
 - **Wiring and registration** Add chrome scripts, DOM fragments, modules, styles, tests and manifest entries through commands built by learning from existing Firefox conventions.
 - **Furnace components** Create or override `MozLitElement` widgets easily to add new or adapt existing UI components to your needs.
-- **Quality** `lint`, `typecheck`, `verify` and `doctor` catch common issues early.
+- **Quality** `lint`, `typecheck`, `verify` and `doctor` catch common issues early, and `check` runs the static gates together with one verdict.
 - **Tests** FireForge was built by taking apart and applying patches of all sorts to original Firefox source code across different versions and products, learning what works vs doesn't and creating some quite extensive tests based on that covering all manner of scenarios. Yes, we mock quite a bit, but when building a tool that modifies a separate code base, I think it's a solid compromise for the time being. Full end-to-end runs are currently run locally on my MacBook, as they require about 30 GB of disk and significant compute for multiple full builds. Full end-to-end via Actions will be added soonishlyTM but might need a different runner...
 
 ## Requirements

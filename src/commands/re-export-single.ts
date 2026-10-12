@@ -11,6 +11,12 @@ import { enforceFreshFurnaceSources } from '../core/furnace-stale-export.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { listTrackedInHead } from '../core/git-file-ops.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
+import {
+  buildLintIgnoreChecks,
+  type LintIgnoreChecks,
+  lintIgnoreRule,
+  mergeLintIgnoreIds,
+} from '../core/patch-lint-ignore.js';
 import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy.js';
 import { isGitIndexLockConflict } from '../errors/git.js';
 import type { PatchesManifest, PatchMetadata, ReExportOptions } from '../types/commands/index.js';
@@ -87,7 +93,9 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
   const { patch, paths, manifest, options, isDryRun, config, adjacentCtx, driftCtx, lintCtx } =
     args;
   const removed = new Set(options.expectRemoved ?? []);
-  let currentFilesAffected = patch.filesAffected.filter((file) => !removed.has(file));
+  const retainedFiles = patch.filesAffected.filter((file) => !removed.has(file));
+  let currentFilesAffected = retainedFiles;
+  let adoptedFiles: readonly string[] = [];
   for (const file of patch.filesAffected.filter((path) => removed.has(path)))
     info(`  - ${file} (--expect-removed)`);
 
@@ -112,6 +120,7 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
       engineDir: paths.engine,
       patchFilename: patch.filename,
       added: scanResult.added,
+      config,
     });
 
     if (options.scanFiles === undefined) {
@@ -128,6 +137,7 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
       }
     }
     currentFilesAffected = scanResult.updated;
+    adoptedFiles = scanResult.added;
   } else if (options.files === undefined) {
     // When neither `--scan` nor `--files` is set and some of the manifest's
     // claimed files no longer exist on disk, the re-export silently writes a
@@ -211,7 +221,9 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
   // payload lines are about to enter the body that the old body did not
   // carry, the case where a concurrent session's uncommitted edits in
   // owned files would be silently absorbed. Always previews (including
-  // dry-run and --scan). Refuses only under --refuse-foreign-drift.
+  // dry-run and --scan). Refuses only under --refuse-foreign-drift. Covers
+  // the files the patch already owned; adopted and retired files are the
+  // run's stated intent, not drift.
   if (
     await reportForeignDrift({
       patch,
@@ -219,6 +231,8 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
       engineDir: paths.engine,
       newDiffContent: diffContent,
       ctx: driftCtx,
+      ownedFiles: retainedFiles,
+      adoptedFiles,
     })
   ) {
     return false;
@@ -305,6 +319,14 @@ function enforceProjectedManifestPolicy(args: {
     ),
     command: 're-export',
     forceUnsafe: options.forceUnsafe === true,
+    // A re-export changes only this row's contents, so only its findings
+    // can be new; another patch's stale row must not fail this one.
+    scope: [patch.filename],
+    hints: {
+      'reserved-files':
+        'A path whose engine copy is back at HEAD can be dropped from the patch with ' +
+        '--expect-removed <path>; any other path needs its reserved allowlist entry.',
+    },
   });
 }
 
@@ -342,6 +364,7 @@ async function commitRefreshedPatch(args: {
       config,
       command: 're-export',
       forceUnsafe: options.forceUnsafe === true,
+      scope: [patch.filename],
     },
   });
 
@@ -380,7 +403,7 @@ async function commitRefreshedPatch(args: {
 /** The projected metadata + lint inputs for one patch's refresh. */
 interface ReExportUpdatePlan {
   updates: Partial<PatchMetadata>;
-  ignoreChecks: Set<string> | undefined;
+  ignoreChecks: LintIgnoreChecks | undefined;
   effectiveTier: 'branding' | undefined;
   existingIgnoreSet: Set<string>;
   flagIgnoreSet: Set<string>;
@@ -401,10 +424,9 @@ function computeReExportUpdates(
   options: ReExportOptions,
   currentFilesAffected: string[]
 ): ReExportUpdatePlan {
-  const existingIgnoreSet = new Set<string>(patch.lintIgnore ?? []);
+  const existingIgnoreSet = new Set<string>((patch.lintIgnore ?? []).map(lintIgnoreRule));
   const flagIgnoreSet = new Set<string>(options.lintIgnore ?? []);
-  const mergedIgnoreSet = new Set<string>([...existingIgnoreSet, ...flagIgnoreSet]);
-  const effectiveLintIgnore = mergedIgnoreSet.size > 0 ? [...mergedIgnoreSet] : undefined;
+  const effectiveLintIgnore = mergeLintIgnoreIds(patch.lintIgnore, [...flagIgnoreSet]);
   const updates: Partial<PatchMetadata> = {
     filesAffected: currentFilesAffected,
   };
@@ -416,7 +438,7 @@ function computeReExportUpdates(
   }
   return {
     updates,
-    ignoreChecks: effectiveLintIgnore ? new Set<string>(effectiveLintIgnore) : undefined,
+    ignoreChecks: buildLintIgnoreChecks(effectiveLintIgnore),
     effectiveTier: options.tier ?? patch.tier,
     existingIgnoreSet,
     flagIgnoreSet,

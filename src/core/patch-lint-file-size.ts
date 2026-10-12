@@ -14,7 +14,9 @@
  * lines failed a gate with a message calling 750 soft. The message below
  * says what the band is (a warning) and what a zero-warning gate does with
  * it, and the thresholds are now tunable, so a project whose file-size
- * policy differs has a dial instead of an argument.
+ * policy differs has a dial instead of an argument. The notice band is the
+ * design target: advisory, and its message says so rather than borrowing
+ * the warning band's gate sentence.
  */
 
 import type { PatchLintFileSizeThresholds, PatchLintFileSizeTier } from '../types/config.js';
@@ -54,26 +56,38 @@ export function resolveFileSizeThresholds(
 /**
  * Renders the `file-too-large` message for a given band.
  *
- * The `warning` and `notice` bands name the gate consequence explicitly:
- * the number is advisory to patch-lint and blocking to a `--max-warnings 0`
- * gate, and an operator deciding whether to decompose a file needs to know
- * which of those they are looking at.
+ * Each band says what it means for a gate. A notice is over the design
+ * target and advisory: it never fails `--max-warnings 0`, and saying it
+ * did once got a test suite split for nothing. A warning is what a
+ * zero-warning gate fails on, so it names that and the dial. Only the
+ * error band suggests splitting, because a test-file split pushes against
+ * one suite per subject and should not be the default advice below it.
+ * Every band names the unit, which matters once `fileSizeMetric` makes
+ * code lines a choice.
  */
 export function formatFileTooLargeMessage(args: {
   label: string;
   lineCount: number;
+  unit: 'lines' | 'code lines';
   thresholds: ResolvedFileSizeTier;
   band: 'notice' | 'warning' | 'error';
   verb: string;
 }): string {
-  const { label, lineCount, thresholds, band, verb } = args;
+  const { label, lineCount, unit, thresholds, band, verb } = args;
+  const measured = `${label} has ${lineCount} ${unit}`;
   if (band === 'error') {
-    return `${label} has ${lineCount} lines (error threshold: ${thresholds.error}). Consider ${verb}.`;
+    return `${measured} (error threshold: ${thresholds.error}). Consider ${verb}.`;
+  }
+  const limits = `(warning threshold: ${thresholds.warning}, error threshold: ${thresholds.error})`;
+  if (band === 'notice') {
+    return (
+      `${measured}, over the design target of ${thresholds.notice} ${limits}. ` +
+      'Advisory; does not fail --max-warnings 0.'
+    );
   }
   return (
-    `${label} has ${lineCount} lines (warning threshold: ${thresholds.warning}, ` +
-    `error threshold: ${thresholds.error}). Consider ${verb}. ` +
-    `Reported as a ${band}, which a gate running --max-warnings 0 treats as a failure; ` +
-    `tune "patchLint.fileSizeThresholds" if these limits are wrong for this project.`
+    `${measured} ${limits}. ` +
+    'Reported as a warning, which a gate running --max-warnings 0 treats as a failure; ' +
+    'tune "patchLint.fileSizeThresholds" if these limits are wrong for this project.'
   );
 }

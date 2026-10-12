@@ -248,7 +248,9 @@ export function registerPatchMoveFiles(parent: Command, context: CommandContext)
     .option('--create', 'Create <to> as a new patch and move the files into it (requires --order)')
     .option(
       '--order <n>',
-      'Exact sparse order for the created patch (only valid with --create)',
+      'Exact sparse order for the created patch (only valid with --create). With ' +
+        'patchPolicy.allowGaps: false, orders are contiguous within a range: pick a gap, a ' +
+        "retired slot, or the number after the range's last patch; checked before any lint runs",
       commanderArgParser((raw: string) => parsePositiveIntegerFlag('--order', raw))
     )
     .option('--category <category>', "Category for the created patch (default: the source patch's)")

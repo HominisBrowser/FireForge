@@ -16,7 +16,8 @@
  * - Two registration shapes are recognised:
  *     (A) Standalone statement:
  *           customElements.setElementCreationCallback("tag", ...);
- *     (B) Entry inside a `for (... of [ ... ])` registration array:
+ *     (B) Entry inside a `for (... of [ ... ])` registration array, or an
+ *         array declared by name and iterated with `for (... of NAME)`:
  *           ["tag", "chrome://..."]
  *   Both are deleted together with any trailing comma and newline so the
  *   resulting file is still valid JavaScript.
@@ -31,7 +32,8 @@ import { pathExists, readText, writeText } from '../utils/fs.js';
 import { type AcornESTreeNode, asEstree, parseScript, walkAST } from './ast-utils.js';
 import { CUSTOM_ELEMENTS_JS } from './furnace-constants.js';
 
-interface RemovalRange {
+/** A `[start, end)` source range in customElements.js. */
+export interface RemovalRange {
   start: number;
   end: number;
 }
@@ -143,35 +145,68 @@ function isStandaloneCallbackCallFor(
 }
 
 /**
- * Walks the AST and collects every removal range for `tagName`. Ancestor
- * tracking lets us tell an "entry" array from a random `["moz-foo", ...]`
- * literal (only direct children of the outer registration `ArrayExpression`
- * are entries) and lets us lift a `setElementCreationCallback` call up to
- * its enclosing statement.
+ * Names of the identifiers used as the right-hand side of a `for (... of X)`
+ * loop. A registration list declared as `const ELEMENTS = [...]` and
+ * iterated by name is a registration array just like an inline literal: the
+ * add path (`addCustomElementRegistration`) has always written into
+ * it, so the remove and rename paths must find entries there too or a
+ * rename leaves the old entry behind.
  */
-function collectRemovalRanges(
+function collectForOfIdentifiers(ast: AcornESTreeNode<estree.Program>): Set<string> {
+  const names = new Set<string>();
+  walkAST(ast, {
+    enter(node) {
+      if (node.type !== 'ForOfStatement') return;
+      const right = asEstree<estree.ForOfStatement>(node).right;
+      if (right.type === 'Identifier') names.add(right.name);
+    },
+  });
+  return names;
+}
+
+/** True when `parent`/`grandparent` make an array a registration list. */
+function isRegistrationList(
+  parent: estree.Node | undefined,
+  grandparent: estree.Node | undefined,
+  forOfIdentifiers: ReadonlySet<string>
+): boolean {
+  if (parent?.type !== 'ArrayExpression' || !grandparent) return false;
+  if (grandparent.type === 'ForOfStatement') return true;
+  if (grandparent.type !== 'VariableDeclarator') return false;
+  const id = asEstree<estree.VariableDeclarator>(grandparent).id;
+  return id.type === 'Identifier' && forOfIdentifiers.has(id.name);
+}
+
+/**
+ * Walks the AST and returns the source range of every registration of
+ * `tagName`: each `[tag, module]` entry of a registration list, and each
+ * statement enclosing a `setElementCreationCallback(tag, ...)` call.
+ * Ancestor tracking lets us tell an "entry" array from a random
+ * `["moz-foo", ...]` literal (only direct children of a registration list
+ * are entries). Shared by removal and the in-place rename.
+ *
+ * @param ast - Parsed customElements.js
+ * @param tagName - Tag whose registrations to find
+ * @returns Unexpanded `[start, end)` ranges, in source order
+ */
+export function findRegistrationRanges(
   ast: AcornESTreeNode<estree.Program>,
-  content: string,
   tagName: string
 ): RemovalRange[] {
   const ranges: RemovalRange[] = [];
   const ancestors: estree.Node[] = [];
+  const forOfIdentifiers = collectForOfIdentifiers(ast);
 
   walkAST(ast, {
     enter(node) {
-      // Entry array: [tag, module] inside the outer for-of array literal.
-      // The immediate parent must be an ArrayExpression (the registration
-      // list) whose own grandparent is the `for (...) of <array>` loop.
+      // Entry array: [tag, module] inside a registration list, either the
+      // for-of array literal itself or an array declared by name and
+      // iterated by a for-of loop.
       if (node.type === 'ArrayExpression' && isEntryArrayFor(node, tagName)) {
         const parent = ancestors[ancestors.length - 1];
         const grandparent = ancestors[ancestors.length - 2];
-        if (
-          parent &&
-          parent.type === 'ArrayExpression' &&
-          grandparent &&
-          grandparent.type === 'ForOfStatement'
-        ) {
-          ranges.push(expandRemovalRange(content, node.start, node.end));
+        if (isRegistrationList(parent, grandparent, forOfIdentifiers)) {
+          ranges.push({ start: node.start, end: node.end });
         }
       }
 
@@ -194,7 +229,7 @@ function collectRemovalRanges(
             }
           }
           const target = enclosing ?? call;
-          ranges.push(expandRemovalRange(content, target.start, target.end));
+          ranges.push({ start: target.start, end: target.end });
         }
       }
 
@@ -249,7 +284,9 @@ export async function removeCustomElementRegistration(
     return;
   }
 
-  const ranges = collectRemovalRanges(ast, content, tagName);
+  const ranges = findRegistrationRanges(ast, tagName).map((range) =>
+    expandRemovalRange(content, range.start, range.end)
+  );
   if (ranges.length === 0) {
     return;
   }

@@ -240,4 +240,22 @@ describe('runTestsWithRetries under a parent exit', () => {
       vi.mocked(runMachTestSuite).mock.invocationCallOrder[0] ?? 0
     );
   });
+
+  it('fails an exit-0 run that stopped before a requested file started (was PASS)', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | dir/browser_a.js\nTEST-OK | dir/browser_a.js\nUnexpected results: 0\n',
+      stderr: '',
+    });
+
+    const outcome = await runTestsWithRetries(makeCtx('mochitest'), [
+      'dir/browser_a.js',
+      'dir/browser_b.js',
+    ]);
+
+    expect(outcome.verdict).toMatchObject({
+      kind: 'test-failures',
+      incomplete: { started: 1, requested: 2, firstUnstarted: 'dir/browser_b.js' },
+    });
+  });
 });

@@ -23,12 +23,12 @@
 
 import {
   buildPatchQueueContext,
-  countNonBinaryDiffLines,
   detectNewFilesInDiff,
   formatPatchLintIssue,
   lintExportedPatch,
   type LintExportedPatchOptions,
   lintPatchQueue,
+  measurePatchSize,
   type PatchQueueContext,
   type PatchQueueEntry,
   resolvePatchSizeTier,
@@ -43,6 +43,7 @@ import {
   setCachedPerPatchLintIssues,
 } from '../core/patch-lint-cache.js';
 import { invalidateNewFileCreatorsCache } from '../core/patch-lint-cross.js';
+import { lintIgnoreCacheTokens, type LintIgnoreChecks } from '../core/patch-lint-ignore.js';
 import { resolvePatchOwnedSysMjs } from '../core/patch-lint-ownership.js';
 import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
 import { GeneralError } from '../errors/base.js';
@@ -51,9 +52,10 @@ import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { pathExists } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
 import { reportPatchLintOutcome } from './export-shared.js';
+import { formatForwardImportRemedy } from './forward-import-remedy.js';
 import { buildPerRunCheckJs, type PerRunCheckJs } from './lint-per-run-checkjs.js';
 import { projectEntryBody } from './patch/entry-projection.js';
-import { formatForwardImportRemedy } from './re-export-scan.js';
+import { categoryOf, manifestFromQueue } from './re-export-scan.js';
 
 /** Per-invocation lint context, built once and threaded through the loop. */
 export interface ReExportLintContext {
@@ -174,7 +176,7 @@ export async function lintReExportedPatch(args: {
   existingFiles: string[];
   diffContent: string;
   skipLint?: boolean;
-  ignoreChecks?: ReadonlySet<string>;
+  ignoreChecks?: LintIgnoreChecks;
   patchTier?: 'branding';
 }): Promise<ReExportLintResult | null> {
   const { lintCtx, patch, projectedMetadata, existingFiles, diffContent } = args;
@@ -211,7 +213,12 @@ export async function lintReExportedPatch(args: {
       queueContext: patchQueueCtx,
       ...(lintCtx.engineHeadSha === undefined ? {} : { engineHeadSha: lintCtx.engineHeadSha }),
     });
-    const cached = getCachedPerPatchLintIssues(cache, patch.filename, cacheKey, args.ignoreChecks);
+    const cached = getCachedPerPatchLintIssues(
+      cache,
+      patch.filename,
+      cacheKey,
+      lintIgnoreCacheTokens(args.ignoreChecks)
+    );
     if (cached) {
       lintCtx.reusedCacheEntries++;
       reportPatchLintOutcome([...globalIssues, ...cached.issues], args.skipLint);
@@ -248,8 +255,10 @@ export async function lintReExportedPatch(args: {
     lintOptions.checkJsReportScope = resolvePatchOwnedSysMjs(detectNewFilesInDiff(diffContent));
   }
 
+  const patchSize = await measurePatchSize(paths.engine, diffContent, existingFiles, config);
   const issues = await lintExportedPatch(paths.engine, existingFiles, diffContent, config, {
     ...lintOptions,
+    patchSizeMeasurement: patchSize,
     ...(patchQueueCtx ? { patchQueueCtx } : {}),
     ...(args.ignoreChecks ? { ignoreChecks: args.ignoreChecks } : {}),
     ...(args.patchTier ? { patchTier: args.patchTier } : {}),
@@ -259,8 +268,8 @@ export async function lintReExportedPatch(args: {
   return {
     issues,
     suppressed: suppressedIssues,
-    lineCount: countNonBinaryDiffLines(diffContent).textLines,
-    lintIgnore: [...(args.ignoreChecks ?? [])],
+    lineCount: patchSize.lines,
+    lintIgnore: lintIgnoreCacheTokens(args.ignoreChecks),
   };
 }
 
@@ -331,10 +340,11 @@ export function assertRefreshedBodyHasNoNewQueueErrors(args: {
   );
   const isError = (issue: PatchLintIssue): boolean => issue.severity === 'error';
   const baseline = lintPatchQueue(ctx).filter(isError);
-  const projected = lintPatchQueue({
-    entries: projectedEntries,
-    ...(ctx.patchPolicy ? { patchPolicy: ctx.patchPolicy } : {}),
-  }).filter(isError);
+  // The whole context carries over (patchPolicy and the
+  // `patchLint.forwardRegistration` scope): dropping the scope here let a
+  // forward jar.mn registration pass this gate and surface only in the
+  // later queue audit, separately from the forward import it packages.
+  const projected = lintPatchQueue({ ...ctx, entries: projectedEntries }).filter(isError);
   const regressions = computeProjectedLintRegressions(baseline, projected);
 
   if (regressions.length === 0) {
@@ -353,7 +363,15 @@ export function assertRefreshedBodyHasNoNewQueueErrors(args: {
   const message =
     `Refusing to re-export ${patchFilename} because the refreshed body introduces ` +
     `${regressions.length} new cross-patch lint error${regressions.length === 1 ? '' : 's'}:\n${details}` +
-    (hasForwardImport ? `\n${formatForwardImportRemedy('re-running the re-export')}` : '');
+    (hasForwardImport
+      ? `\n${formatForwardImportRemedy({
+          reRunHint: 're-running the re-export',
+          issues: regressions,
+          manifest: manifestFromQueue(ctx),
+          config: lintCtx.config,
+          ...categoryOf(ctx, patchFilename),
+        })}`
+      : '');
   if (forceUnsafe) {
     warn(message);
     warn('Proceeding because --force-unsafe was provided.');

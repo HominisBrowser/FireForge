@@ -101,6 +101,23 @@ describe('build-baseline', () => {
     expect(stored?.testPackagingCoverage).toEqual(scoped);
   });
 
+  it('round-trips per-path coverage records and a carried full anchor', async () => {
+    vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
+    const anchor = { engineHeadSha: 'deadbeef', mozconfigHash: 'a'.repeat(64), fingerprints: {} };
+    const records = { 'a/test': { ...anchor, inputs: ['a/test'] } };
+    await writeBuildBaseline({
+      projectRoot,
+      engineDir: '/engine',
+      binaryName: 'mybrowser',
+      testPackagingCoverage: ['a/test'],
+      testCoverageRecords: records,
+      fullCoverageAnchor: anchor,
+    });
+    const stored = await readBuildBaseline(projectRoot);
+    expect(stored?.testCoverageRecords).toEqual(records);
+    expect(stored?.fullCoverageAnchor).toEqual(anchor);
+  });
+
   it('omits testPackagingCoverage from the marker when not provided', async () => {
     // Callers that never pass a coverage claim must keep producing markers
     // without the field.

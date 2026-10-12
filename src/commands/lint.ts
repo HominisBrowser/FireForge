@@ -20,18 +20,25 @@ import {
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import {
   buildPatchQueueContext,
-  countNonBinaryDiffLines,
   formatPatchLintIssue,
   lintExportedPatch,
   lintPatchQueue,
   lintPatchSize,
+  measurePatchSize,
   type PatchQueueContext,
+  type PatchSizeMeasurement,
 } from '../core/patch-lint.js';
 import { clearPerPatchLintCache } from '../core/patch-lint-cache.js';
 import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
+import {
+  buildLintIgnoreChecks,
+  filterLintIgnoredByOwners,
+  partitionLintIgnoredIssues,
+} from '../core/patch-lint-ignore.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { LintCommandOptions, PatchLintIssue } from '../types/commands/index.js';
+import type { FireForgeConfig } from '../types/config.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
 import { addAcceptedWaitLockOption } from '../utils/options.js';
@@ -233,23 +240,10 @@ export function applyAggregateLintIgnoreSuppression(
   issues: PatchLintIssue[],
   ctx: PatchQueueContext
 ): AggregateLintIgnoreResult {
-  const suppressionsByFile = new Map<string, Set<string>>();
-  for (const entry of ctx.entries) {
-    const ignoreList = entry.metadata?.lintIgnore;
-    if (!ignoreList || ignoreList.length === 0) continue;
-    for (const f of entry.metadata?.filesAffected ?? []) {
-      let bucket = suppressionsByFile.get(f);
-      if (!bucket) {
-        bucket = new Set<string>();
-        suppressionsByFile.set(f, bucket);
-      }
-      for (const id of ignoreList) bucket.add(id);
-    }
-  }
-  if (suppressionsByFile.size === 0) {
-    return { issues, dropped: 0 };
-  }
-  const filtered = issues.filter((issue) => !suppressionsByFile.get(issue.file)?.has(issue.check));
+  const filtered = filterLintIgnoredByOwners(
+    issues,
+    ctx.entries.map((entry) => entry.metadata)
+  );
   return { issues: filtered, dropped: issues.length - filtered.length };
 }
 
@@ -355,7 +349,8 @@ function downgradeAggregateSizeRules(
 async function lintOwningPatchSizes(
   engineDir: string,
   filesAffected: string[],
-  ctx: PatchQueueContext
+  ctx: PatchQueueContext,
+  config: FireForgeConfig
 ): Promise<PatchLintIssue[]> {
   const listed = new Set(filesAffected);
   const owners = new Map<string, (typeof ctx.entries)[number]>();
@@ -375,23 +370,23 @@ async function lintOwningPatchSizes(
 
   const issues: PatchLintIssue[] = [];
 
-  const lineCountForFiles = async (relPaths: string[]): Promise<number> => {
+  const sizeForFiles = async (relPaths: string[]): Promise<PatchSizeMeasurement> => {
     const existing: string[] = [];
     for (const f of relPaths) {
       if (await pathExists(join(engineDir, f))) existing.push(f);
     }
-    if (existing.length === 0) return 0;
-    const diff = await getDiffForFilesAgainstHead(engineDir, existing);
-    return countNonBinaryDiffLines(diff).textLines;
+    const diff = existing.length > 0 ? await getDiffForFilesAgainstHead(engineDir, existing) : '';
+    // The file count stays the owner's whole `filesAffected`, as before.
+    return measurePatchSize(engineDir, diff, relPaths, config);
   };
 
   for (const entry of owners.values()) {
     const md = entry.metadata;
     if (!md) continue;
-    const lineCount = await lineCountForFiles(md.filesAffected);
-    const ignore = md.lintIgnore?.length ? new Set(md.lintIgnore) : undefined;
-    for (const issue of lintPatchSize(md.filesAffected, lineCount, md.tier)) {
-      if (ignore?.has(issue.check)) continue;
+    const size = await sizeForFiles(md.filesAffected);
+    const ignore = buildLintIgnoreChecks(md.lintIgnore);
+    const sized = lintPatchSize(md.filesAffected, size, md.tier, config);
+    for (const issue of partitionLintIgnoredIssues(sized, ignore).kept) {
       issues.push({ ...issue, message: `${entry.filename}: ${issue.message}` });
     }
   }
@@ -400,8 +395,8 @@ async function lintOwningPatchSizes(
   // unit so a genuinely oversized fresh change still surfaces.
   const unowned = filesAffected.filter((f) => !ownedListed.has(f));
   if (unowned.length > 0) {
-    const lineCount = await lineCountForFiles(unowned);
-    issues.push(...lintPatchSize(unowned, lineCount));
+    const size = await sizeForFiles(unowned);
+    issues.push(...lintPatchSize(unowned, size, undefined, config));
   }
 
   return issues;
@@ -564,7 +559,7 @@ export async function lintCommand(
   ];
 
   if (files.length > 0 && ctx) {
-    issues.push(...(await lintOwningPatchSizes(paths.engine, filesAffected, ctx)));
+    issues.push(...(await lintOwningPatchSizes(paths.engine, filesAffected, ctx, config)));
   }
 
   // Cross-patch rules operate over the whole queue, so run them whenever a

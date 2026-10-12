@@ -13,7 +13,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HISTORY_LOG_FILENAME } from '../../core/destructive.js';
+import { DEFAULT_HISTORY_LOG_PATH } from '../../core/history-log-file.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import {
   createTempProject,
@@ -453,7 +453,7 @@ describe('patch rename', () => {
       yes: true,
     });
 
-    const historyPath = join(patchesDir, HISTORY_LOG_FILENAME);
+    const historyPath = join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH);
     const history = await readFile(historyPath, 'utf-8');
     interface HistoryRecord {
       operation: string;

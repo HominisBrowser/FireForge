@@ -2,7 +2,7 @@
 /**
  * `fireforge patch <verb>` parent command. Groups single-patch mutations and
  * planners (`compact`, `delete`, `lint-ignore`, `move-files`, `rename`,
- * `reorder`, `staged-dependency`, `tier`) so they do not clutter the
+ * `reorder`, `retire`, `staged-dependency`, `tier`) so they do not clutter the
  * top-level command list. Queue-level verbs like `lint`, `export`, `verify`,
  * and `status` stay flat.
  */
@@ -16,6 +16,7 @@ import { registerPatchLintIgnore } from './lint-ignore.js';
 import { registerPatchMoveFiles } from './move-files.js';
 import { registerPatchRename } from './rename.js';
 import { registerPatchReorder } from './reorder.js';
+import { registerPatchRetire } from './retire.js';
 import { registerPatchSplit } from './split.js';
 import { registerPatchStagedDependency } from './staged-dependency.js';
 import { registerPatchTier } from './tier.js';
@@ -30,7 +31,7 @@ export function registerPatch(program: Command, context: CommandContext): void {
   const patch = program
     .command('patch')
     .description(
-      'Manage individual patches in the queue (compact, delete, lint-ignore, move-files, rename, reorder, staged-dependency, tier)'
+      'Manage individual patches in the queue (compact, delete, lint-ignore, move-files, rename, reorder, retire, staged-dependency, tier)'
     )
     // Match `fireforge furnace`'s no-args contract: print the group's help
     // and exit 0. Without this default action, commander routes
@@ -47,6 +48,7 @@ export function registerPatch(program: Command, context: CommandContext): void {
   registerPatchMoveFiles(patch, context);
   registerPatchRename(patch, context);
   registerPatchReorder(patch, context);
+  registerPatchRetire(patch, context);
   registerPatchSplit(patch, context);
   registerPatchStagedDependency(patch, context);
   registerPatchTier(patch, context);

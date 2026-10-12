@@ -122,6 +122,8 @@ export interface SourceSetOptions {
 export interface BuildOptions extends EngineLockWaitable {
   /** Wait for the objdir browser before deploying/building. */
   waitBrowser?: number | boolean;
+  /** Also write the run log here, outside `.fireforge/logs/` retention. */
+  keepLog?: string;
   /** Fast UI-only rebuild */
   ui?: boolean;
   /** Number of parallel jobs */
@@ -280,7 +282,9 @@ export interface ReExportOptions extends EngineLockWaitable {
   /**
    * Explicit engine-relative files to add while scanning. Unlike broad
    * `--scan`, this does not collect adjacent files from the same directory.
-   * Requires `--scan` and exactly one target patch.
+   * Requires `--scan`. A `<patch>:<path>` entry names its owning patch, which
+   * a call with several target patches requires; selected patches without
+   * an entry then refresh scan-less.
    */
   scanFiles?: string[];
   /**
@@ -360,11 +364,13 @@ export interface ReExportOptions extends EngineLockWaitable {
   noCache?: boolean;
   /**
    * Refuse (non-zero exit, patch not written) a re-export whose refreshed
-   * body would absorb engine lines not present in the old patch body.
+   * body would add or drop lines, in a file the patch already owns, that
+   * the old patch body did not carry.
    * This is the multi-session guard against silently capturing another
    * session's uncommitted edits in files the patch already owns. The drift preview
-   * always prints. This flag turns it into a hard stop. Mutually
-   * exclusive with `--scan` and `--files`.
+   * always prints. This flag turns it into a hard stop. Beside `--scan` it
+   * guards the files each patch already owns (adopted files count as
+   * expected). Mutually exclusive with `--files`.
    */
   refuseForeignDrift?: boolean;
   /**
@@ -387,7 +393,26 @@ export interface ReExportOptions extends EngineLockWaitable {
    * rather than hidden.
    */
   expectUnmanaged?: string[];
-  /** Explicitly retire named absent patch-created files in a scan-less export. */
+  /**
+   * Engine-relative files this session created and will adopt with its next
+   * export (`--expect-new`, repeatable). Requires
+   * `--refuse-adjacent-unmanaged`. Lets the owners of a new file's
+   * registration re-export first while a peer's unmanaged neighbour still
+   * refuses. The path must be changed in engine/ and owned by no patch.
+   */
+  expectNew?: string[];
+  /**
+   * Reviewed ignore list for `--refuse-adjacent-unmanaged`
+   * (`--adjacent-ignore`, repeatable): an engine-relative path, or a glob
+   * whose `*` stays within one segment (`**` is refused). Matches are
+   * reported, never refused.
+   */
+  adjacentIgnore?: string[];
+  /**
+   * Explicitly retire named files in a scan-less export: an absent file the
+   * patch created, or a patch-modified upstream file whose engine copy is
+   * back at HEAD.
+   */
   expectRemoved?: string[];
 }
 
@@ -415,6 +440,13 @@ export interface PatchLintIgnoreOptions extends Confirmable, DryRunnable, PatchL
   remove?: string[];
   /** Drop the `lintIgnore` field entirely. */
   clear?: boolean;
+  /**
+   * With `add`: write `{ rule, max, reason }` ceiling entries instead of
+   * bare IDs. Only the measured size rules accept one. Requires `reason`.
+   */
+  max?: number;
+  /** Why the ceiling exists. Required with `max`. */
+  reason?: string;
 }
 
 /**
@@ -450,6 +482,11 @@ export interface PatchStagedDependencyOptions extends Confirmable, DryRunnable, 
   owner?: string;
   /** Optional human-readable rationale stored with the declaration. */
   reason?: string;
+  /**
+   * JSON file of declarations to add in one call (`--add` only): a
+   * `lint --per-patch --report` document or a plain array of declarations.
+   */
+  from?: string;
 }
 
 /**
@@ -535,6 +572,16 @@ export interface RunOptions {
    */
   tempProfile?: boolean;
   /**
+   * Pass `-purgecaches` with a named `profile`, so Firefox discards the
+   * profile's startup cache (compiled chrome scripts) before it runs. A UI
+   * build keeps the build id the cache is keyed on, so a kept profile would
+   * otherwise run the chrome scripts an earlier build cached. Default
+   * `true`; `--no-purge-caches` sets `false`. Fresh temporary profiles and
+   * mach's own profile-default (cleaned before every run) have no cache to
+   * purge.
+   */
+  purgeCaches?: boolean;
+  /**
    * Enable smoke-run mode. Launches the browser, streams the console,
    * sends SIGTERM to the whole process group after `smokeExit` seconds,
    * and applies the smoke exit contract:
@@ -544,7 +591,9 @@ export interface RunOptions {
    *  - `ExitCode.SMOKE_LAUNCH_FAILURE` (13): the browser exited with a
    *    non-clean status before the smoke window elapsed (a launch-side
    *    failure we cannot observe as a console line, such as a crash
-   *    before console wiring, or a missing profile).
+   *    before console wiring, or a missing profile), or exited before the
+   *    window with no browser console output at all (a launch that never
+   *    reached a window, such as a profile in a startup-crash streak).
    *
    * POSIX only (process-group semantics do not map cleanly onto Windows).
    * `runSmokeExit` rejects the flag up front on `win32`.
@@ -584,6 +633,10 @@ export interface TestOptions extends EngineLockWaitable {
   waitBrowser?: number | boolean;
   /** Queue behind the mochitest/Marionette port holder. */
   waitPort?: number | boolean;
+  /** Also write the run log here, outside `.fireforge/logs/` retention. */
+  keepLog?: string;
+  /** Forward mochitest's `--restart-between-tests` (mochitest dispatch only). */
+  restartBetweenTests?: boolean;
   /** Copy a file into the profile at a relative destination (repeatable source=destination). */
   profileFile?: string[];
   /** Run tests in headless mode */
@@ -605,13 +658,11 @@ export interface TestOptions extends EngineLockWaitable {
    */
   buildOnly?: boolean;
   /**
-   * Union the paths this build packages onto the recorded coverage claim
-   * instead of REPLACING it, so successive scoped builds accumulate and an
-   * earlier slice's build-less runs stay covered. Valid only with
-   * `--build`/`--build-only` and explicit paths. Refused fail-closed unless
-   * the build anchor is unchanged: same engine HEAD, same `engine/mozconfig`,
-   * and every previously fingerprinted packageable file byte-identical. See
-   * `src/core/coverage-extend.ts`.
+   * Refuse, before the build, instead of dropping any earlier packaging
+   * claim. Scoped builds keep earlier paths by default while each path's own
+   * staging inputs and `engine/mozconfig` are unchanged; this flag makes a
+   * drop fail-closed. Valid only with `--build`/`--build-only` and explicit
+   * paths. See `src/core/coverage-extend.ts`.
    */
   extendCoverage?: boolean;
   /**
@@ -623,6 +674,12 @@ export interface TestOptions extends EngineLockWaitable {
    * that could not arm the refusal. Valid only with `--build`/`--build-only`.
    */
   refuseUnexportedDrift?: boolean;
+  /**
+   * `false` under `--no-furnace-apply`: the pre-test build skips the Furnace
+   * apply and packages engine/ as it stands. Valid only with
+   * `--build`/`--build-only`.
+   */
+  furnaceApply?: boolean;
   /** Forward mach's pathless auto-selection mode. Valid only with no explicit paths. */
   auto?: boolean;
   /**
@@ -716,6 +773,26 @@ export interface TestOptions extends EngineLockWaitable {
    * `FIREFORGE_SHUFFLE_SEED` for custom task code and recorded on the verdict.
    */
   shuffle?: number | boolean;
+  /**
+   * Run the same selection this many times under one engine-lock hold (the
+   * pre-test build, when requested, runs once). Each run prints a
+   * `FIREFORGE-RUN:` line; the verdict aggregates them with `runs=<p>/<n>`.
+   */
+  repeat?: number;
+  /**
+   * Project-relative path of a reviewed `git diff` against `engine/` or
+   * `components/` sources, applied after the pre-test build and before each
+   * dispatch, and restored byte-exact before the lock is released. The
+   * verdict carries `control=caught|missed|inconclusive`. See
+   * `src/core/negative-control.ts`.
+   */
+  negativeControl?: string;
+  /**
+   * Let a browser run proceed when the mochitest server or Marionette port
+   * is held by something that is not this checkout's own, relying on the
+   * engine harness's busy-port fallback. Same as `test.mochitestPorts: "auto"`.
+   */
+  autoPorts?: boolean;
 }
 
 /**
@@ -735,9 +812,24 @@ export interface FurnaceApplyOptions extends DryRunnable {
 }
 
 /**
+ * `--wait-lock` budget for a furnace command that takes only Furnace's own
+ * lock (`.fireforge/furnace.lock`, via `runFurnaceMutation`): `create`,
+ * `remove`, `rename`, `refresh`, `scan`, `override`, `preview` and the
+ * `chrome-doc` pair. Without it the flag was accepted and ignored on those
+ * commands, so their lock budget came only from `FIREFORGE_WAIT_LOCK`.
+ */
+export interface FurnaceLockWaitable {
+  /**
+   * Resolved `--wait-lock` budget in seconds, or undefined for the default
+   * (`FIREFORGE_WAIT_LOCK`, else the furnace lock's own 30 s).
+   */
+  waitLockSeconds?: number;
+}
+
+/**
  * Options for the furnace preview command.
  */
-export interface FurnacePreviewOptions {
+export interface FurnacePreviewOptions extends FurnaceLockWaitable {
   /** Force reinstall Storybook dependencies */
   install?: boolean;
 }
@@ -761,7 +853,7 @@ export interface FurnaceDeployOptions extends DryRunnable {
 /**
  * Options for the furnace refresh command.
  */
-export interface FurnaceRefreshOptions extends DryRunnable {
+export interface FurnaceRefreshOptions extends DryRunnable, FurnaceLockWaitable {
   /** Refresh all overrides in a single batch */
   all?: boolean;
   /** Conflict resolution strategy for automated use (ours = keep local, theirs = accept upstream) */
@@ -769,6 +861,11 @@ export interface FurnaceRefreshOptions extends DryRunnable {
   /** Reset the override's baseline to the current engine HEAD, skipping three-way merge */
   resetBase?: boolean;
 }
+
+/**
+ * Options for the furnace rename command.
+ */
+export interface FurnaceRenameOptions extends DryRunnable, FurnaceLockWaitable {}
 
 /**
  * Options for the furnace sync command.
@@ -790,12 +887,16 @@ export interface FurnaceSyncOptions extends DryRunnable {
 export interface FurnaceValidateOptions {
   /** Auto-fix registration issues (missing jar.mn entries, customElements.js registration) */
   fix?: boolean;
+  /** Write one schemaVersion-1 JSON document to stdout instead of the human report. */
+  json?: boolean;
+  /** Fail when more than this many warnings remain after `validationExceptions`. */
+  maxWarnings?: number;
 }
 
 /**
  * Options for the furnace override command.
  */
-export interface FurnaceOverrideOptions {
+export interface FurnaceOverrideOptions extends FurnaceLockWaitable {
   /** Override type: css-only or full */
   type?: 'css-only' | 'full';
   /** Description of the override */
@@ -803,15 +904,15 @@ export interface FurnaceOverrideOptions {
 }
 
 /**
- * Options for the furnace remove command. `--yes` is the only flag it takes,
- * so the type is the confirmation mixin under a command-specific name.
+ * Options for the furnace remove command: the confirmation mixin plus the
+ * furnace lock budget.
  */
-export type FurnaceRemoveOptions = Confirmable;
+export interface FurnaceRemoveOptions extends Confirmable, FurnaceLockWaitable {}
 
 /**
  * Options for the furnace create command.
  */
-export interface FurnaceCreateOptions {
+export interface FurnaceCreateOptions extends FurnaceLockWaitable {
   /** Component description */
   description?: string;
   /**
@@ -920,6 +1021,15 @@ export interface RegisterOptions {
 export interface PatchDeleteOptions extends Confirmable, DryRunnable, PatchLockWaitable {
   /** Bypass the hard refusal when later patches depend on the target. */
   forceUnsafe?: boolean;
+}
+
+/**
+ * Options for the `fireforge patch retire` subcommand: `patch delete` that
+ * keeps the removed patch's order as a retired slot in `patches.json`.
+ */
+export interface PatchRetireOptions extends PatchDeleteOptions {
+  /** Optional human-readable rationale stored on the retired slot. */
+  reason?: string;
 }
 
 /**
@@ -1033,9 +1143,27 @@ export interface StatusOptions {
   /**
    * Comma-separated classification list replacing the default `--check`
    * policy. Implies `--check`. Unknown values refuse, naming the valid
-   * classification set.
+   * classification set. `ownership-conflict` (a path claimed by more than
+   * one patch) is accepted beside the file classifications.
    */
   failOn?: string;
+  /**
+   * Comma-separated classification list that never fails `--check`,
+   * removed from the fail set. Implies `--check`. Naming a class in both
+   * `failOn` and `allow` refuses.
+   */
+  allow?: string;
+  /**
+   * With `allow`: fail on every present classification that neither
+   * `failOn` nor `allow` names, so a classification added by a later
+   * FireForge fails closed. Implies `--check`.
+   */
+  failOnUnknown?: boolean;
+  /**
+   * Judge only these patches (`--patches`, each value may be a comma
+   * list): files they own or claim and ownership rows naming them.
+   */
+  patches?: string[];
 }
 
 /**

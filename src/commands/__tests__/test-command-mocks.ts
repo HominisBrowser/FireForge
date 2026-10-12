@@ -87,8 +87,21 @@ export const coverageExtendMock = async (
   const actual = await importOriginal<typeof import('../../core/coverage-extend.js')>();
   return {
     ...actual,
-    checkExtendCoverageAnchor: vi.fn(() => Promise.resolve({ ok: true as const })),
-    checkExtendMozconfigAnchor: vi.fn(() => Promise.resolve({ ok: true as const })),
+    // Nothing recorded, nothing kept: the per-path probes read real git and
+    // file state and are covered in src/core/__tests__/coverage-extend.test.ts.
+    planCoverageRetention: vi.fn(() =>
+      Promise.resolve({
+        keepFull: false,
+        retained: {},
+        fullAnchor: undefined,
+        narrowedBy: [],
+        dropped: [],
+      })
+    ),
+    applyMozconfigAnchor: vi.fn(
+      (_engineDir: string, plan: import('../../core/coverage-extend.js').CoverageRetentionPlan) =>
+        Promise.resolve(plan)
+    ),
   };
 };
 

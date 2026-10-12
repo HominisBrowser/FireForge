@@ -4,8 +4,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   addWaitLockOption,
+  commanderArgParser,
   ensureWaitLockOptionEverywhere,
+  isPathShapedArgument,
   pickDefined,
+  releasePathShapedValues,
   resolveWaitLockSeconds,
   WAIT_LOCK_ENV_VAR,
 } from '../options.js';
@@ -129,5 +132,115 @@ describe('nested wait-lock routing', () => {
     ensureWaitLockOptionEverywhere(program);
     await program.parseAsync(['node', 'fireforge', 'furnace', 'deploy', '--wait-lock']);
     expect(resolveWaitLockSeconds(received as boolean)).toBe(60);
+  });
+});
+
+describe('path-shaped values after numeric optional-value flags', () => {
+  it.each([
+    ['browser_x.js', true],
+    ['browser/base/content/test/tiles', true],
+    ['dir/', true],
+    ['.', true],
+    ['browser.toml', true],
+    ['1800', false],
+    ['1.5', false],
+    ['nonsense', false],
+  ])('isPathShapedArgument(%s) is %s', (token, expected) => {
+    expect(isPathShapedArgument(token)).toBe(expected);
+  });
+
+  it('moves a released flag after the operands and before "--", keeping operand order', () => {
+    expect(
+      releasePathShapedValues(
+        ['--wait-lock', 'a/browser_a.js', 'b.js', '--shuffle', 'c/', '--', '--x'],
+        new Set()
+      )
+    ).toEqual(['a/browser_a.js', 'b.js', 'c/', '--wait-lock', '--shuffle', '--', '--x']);
+  });
+
+  it('keeps numeric values, bare words and required-option values in place', () => {
+    const argv = [
+      '--wait-port',
+      '300',
+      '--wait-browser',
+      'soon',
+      '--mach-arg',
+      '--wait-lock',
+      'x.js',
+    ];
+    expect(releasePathShapedValues(argv, new Set(['--mach-arg']))).toEqual(argv);
+  });
+
+  function makeProgram(seen: { paths?: string[]; options?: Record<string, unknown> }): Command {
+    const program = new Command();
+    program.exitOverride();
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    const test = program
+      .command('test [paths...]')
+      .option(
+        '--wait-browser [seconds]',
+        'wait',
+        commanderArgParser((raw) => resolveWaitLockSeconds(raw))
+      )
+      .option(
+        '--shuffle [seed]',
+        'seed',
+        commanderArgParser((raw) => Number.parseInt(raw, 10))
+      )
+      .option('--canary [path]', 'canary path')
+      .option('--mach-arg <arg>', 'forward')
+      .action((paths: string[], options: Record<string, unknown>) => {
+        seen.paths = paths;
+        seen.options = options;
+      });
+    addWaitLockOption(test);
+    ensureWaitLockOptionEverywhere(program);
+    return program;
+  }
+
+  it('reads a path after --wait-lock as a positional and the flag as bare (was a usage error)', async () => {
+    const seen: { paths?: string[]; options?: Record<string, unknown> } = {};
+    await makeProgram(seen).parseAsync([
+      'node',
+      'fireforge',
+      'test',
+      '--wait-lock',
+      'browser/base/browser_a.js',
+      'browser/base/browser_b.js',
+    ]);
+    expect(seen.paths).toEqual(['browser/base/browser_a.js', 'browser/base/browser_b.js']);
+    expect(seen.options).toMatchObject({ waitLock: true });
+  });
+
+  it('applies to --wait-browser and --shuffle but never to --canary, whose value is a path', async () => {
+    const seen: { paths?: string[]; options?: Record<string, unknown> } = {};
+    await makeProgram(seen).parseAsync([
+      'node',
+      'fireforge',
+      'test',
+      'a/browser_a.js',
+      '--wait-browser',
+      'b/browser_b.js',
+      '--shuffle',
+      'c/browser_c.js',
+      '--canary',
+      'd/browser_d.js',
+    ]);
+    expect(seen.paths).toEqual(['a/browser_a.js', 'b/browser_b.js', 'c/browser_c.js']);
+    expect(seen.options).toMatchObject({
+      waitBrowser: true,
+      shuffle: true,
+      canary: 'd/browser_d.js',
+    });
+  });
+
+  it('still binds a numeric value and still refuses a bare-word one', async () => {
+    const seen: { paths?: string[]; options?: Record<string, unknown> } = {};
+    await makeProgram(seen).parseAsync(['node', 'fireforge', 'test', '--wait-lock', '120', 'x.js']);
+    expect(seen.options).toMatchObject({ waitLock: 120 });
+    expect(seen.paths).toEqual(['x.js']);
+    await expect(
+      makeProgram({}).parseAsync(['node', 'fireforge', 'test', '--wait-lock', 'nonsense'])
+    ).rejects.toMatchObject({ code: 'commander.invalidArgument' });
   });
 });

@@ -32,6 +32,7 @@ vi.mock('../../core/furnace-config.js', () => ({
     componentsDir: nativePath('/project/components'),
     overridesDir: nativePath('/project/components/overrides'),
     customDir: nativePath('/project/components/custom'),
+    sharedDir: nativePath('/project/components/shared'),
     furnaceState: nativePath('/project/.fireforge/furnace-state.json'),
   })),
   loadFurnaceConfig: vi.fn(() =>
@@ -399,5 +400,75 @@ describe('furnaceDiffCommand', () => {
     // With workspace and deployed contents equal, the command must not
     // report "not yet deployed to engine".
     expect(info).not.toHaveBeenCalledWith(expect.stringContaining('not yet deployed to engine'));
+  });
+
+  describe('custom components with shared CSS fragments', () => {
+    const SOURCE = ':host {}\n/* @fireforge-include anims.css */\n.x {}\n';
+    const FRAGMENT = '@keyframes a {}\n';
+    const COMPOSED =
+      ':host {}\n/* @fireforge-include anims.css */\n@keyframes a {}\n' +
+      '/* @fireforge-end-include anims.css */\n.x {}\n';
+
+    function setup(deployed: string, fragmentExists = true): void {
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-fancy': {
+            description: 'fragment includer',
+            register: true,
+            localized: false,
+            targetPath: 'toolkit/content/widgets/moz-fancy',
+          },
+        },
+      });
+      vi.mocked(readdir).mockResolvedValue([
+        { name: 'moz-fancy.css', isFile: () => true },
+      ] as unknown as Awaited<ReturnType<typeof readdir>>);
+      vi.mocked(pathExists).mockImplementation((path: string) =>
+        Promise.resolve(fragmentExists || !path.endsWith('anims.css'))
+      );
+      vi.mocked(readText).mockImplementation((path: string) => {
+        if (path.endsWith('anims.css')) return Promise.resolve(FRAGMENT);
+        if (path.startsWith(nativePath('/project/engine'))) return Promise.resolve(deployed);
+        return Promise.resolve(SOURCE);
+      });
+    }
+
+    it('reports no difference when the engine holds the composed source', async () => {
+      // A raw-source comparison reported every fragment body and end
+      // marker as a difference on a freshly deployed widget.
+      setup(COMPOSED.replace(/\n/g, '\r\n'));
+
+      await furnaceDiffCommand('/project', 'moz-fancy');
+
+      expect(info).toHaveBeenCalledWith('No differences between workspace and engine');
+    });
+
+    it('diffs against the composed source and labels it', async () => {
+      setup(COMPOSED.replace('.x {}', '.x { color: red; }'));
+
+      await furnaceDiffCommand('/project', 'moz-fancy');
+
+      expect(info).toHaveBeenCalledWith(
+        '+++ components/custom/moz-fancy/moz-fancy.css (composed: fragments expanded)'
+      );
+      const lines = vi.mocked(info).mock.calls.map((call) => call[0]);
+      // Only the real edit differs; the inlined fragment body does not.
+      const changed = lines.filter((line) => /^[-+] /.test(line));
+      expect(changed.sort()).toEqual(['+ .x {}', '- .x { color: red; }']);
+    });
+
+    it('falls back to the raw source, saying why, when a fragment is missing', async () => {
+      setup(COMPOSED, false);
+
+      await furnaceDiffCommand('/project', 'moz-fancy');
+
+      expect(info).toHaveBeenCalledWith(
+        expect.stringMatching(/^\+\+\+ components\/custom\/moz-fancy\/moz-fancy\.css \(raw: /)
+      );
+    });
   });
 });

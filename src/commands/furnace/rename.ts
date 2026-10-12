@@ -11,20 +11,15 @@ import {
 } from '../../core/furnace-config.js';
 import {
   isComponentSourceFile,
-  resolveFtlChromeSubPath,
   resolveFtlDir,
-  resolveFtlLocaleJarMnPath,
   tagNameToClassName,
 } from '../../core/furnace-constants.js';
-import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-operation.js';
 import {
-  addCustomElementRegistration,
-  addJarMnEntries,
-  addLocaleFtlJarMnEntry,
-  removeCustomElementRegistration,
-  removeJarMnEntries,
-  removeLocaleFtlJarMnEntry,
-} from '../../core/furnace-registration.js';
+  completeJournalRollback,
+  type FurnaceOperationContext,
+  runFurnaceMutation,
+  waitLockMutationOptions,
+} from '../../core/furnace-operation.js';
 import {
   CUSTOM_ELEMENT_TAG_PATTERN,
   CUSTOM_ELEMENT_TAG_RULES,
@@ -39,6 +34,7 @@ import {
 import { getStoriesDir } from '../../core/furnace-stories.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
+import type { FurnaceRenameOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
 import {
   copyFile,
@@ -52,12 +48,14 @@ import {
 import { info, intro, note, outro, warn } from '../../utils/logger.js';
 import { escapeRegex } from '../../utils/regex.js';
 import { updateBrowserChromeTestContent } from './rename-browser-test.js';
+import { renderRenamePlan } from './rename-dry-run.js';
 import {
   rekeyStateChecksums,
   renameComponentFileName,
   updateConfigForCustomRename,
   updateConfigForOverrideRename,
 } from './rename-helpers.js';
+import { loadMarkerComment, updateEngineRegistrations } from './rename-registrations.js';
 import { renameXpcshellTestFiles } from './rename-xpcshell.js';
 import { browserTestFileName } from './test-file-name.js';
 
@@ -254,12 +252,13 @@ async function performRenameMutations(args: {
   furnaceConfigPath: string;
   furnacePaths: FurnacePaths;
   engineDir: string;
+  waitLockSeconds?: number | undefined;
 }): Promise<void> {
   const { projectRoot, oldName, newName } = args;
   const oldClassName = tagNameToClassName(oldName);
   const newClassName = tagNameToClassName(newName);
 
-  await runFurnaceMutation(projectRoot, 'rename-rollback', async (ctx) => {
+  const mutate = async (ctx: FurnaceOperationContext): Promise<void> => {
     const journal = createRollbackJournal();
     ctx.registerJournal(journal);
 
@@ -360,16 +359,16 @@ async function performRenameMutations(args: {
       await writeFurnaceConfig(projectRoot, config);
 
       // 3. Update engine registrations (custom components only)
-      if (isCustom && config.custom[newName]?.register && (await pathExists(args.engineDir))) {
-        const ftlDir = resolveFtlDir(config.ftlBasePath);
-        const isLocalized = config.custom[newName].localized;
+      const newConfig = config.custom[newName];
+      if (isCustom && newConfig?.register && (await pathExists(args.engineDir))) {
         await updateEngineRegistrations({
           engineDir: args.engineDir,
           oldName,
           newName,
           newDir,
-          ftlDir,
-          isLocalized,
+          ftlDir: resolveFtlDir(config.ftlBasePath),
+          componentConfig: newConfig,
+          markerComment: await loadMarkerComment(projectRoot),
           journal,
         });
       }
@@ -436,87 +435,13 @@ async function performRenameMutations(args: {
         subject: `rename "${oldName}" → "${newName}"`,
       });
     }
-  });
-}
-
-interface UpdateEngineRegistrationsOptions {
-  /** Absolute path to the engine checkout. */
-  engineDir: string;
-  /** Tag name being renamed away from. */
-  oldName: string;
-  /** Tag name being renamed to. */
-  newName: string;
-  /** Workspace directory holding the renamed component's files. */
-  newDir: string;
-  /** Engine-relative directory localized components deploy their `.ftl` into. */
-  ftlDir: string;
-  /** Whether the component ships a localized `.ftl` file. */
-  isLocalized: boolean;
-  /** Rollback journal every write is recorded in. */
-  journal: RollbackJournal;
-}
-
-/**
- * Re-points the engine-side registrations (customElements.js, jar.mn, and
- * the localized `.ftl` entries) from the old tag name to the new one.
- *
- * @param options - See {@link UpdateEngineRegistrationsOptions}
- */
-async function updateEngineRegistrations(options: UpdateEngineRegistrationsOptions): Promise<void> {
-  const { engineDir, oldName, newName, newDir, ftlDir, isLocalized, journal } = options;
-  const customElementsPath = join(engineDir, 'toolkit/content/customElements.js');
-  const jarMnPath = join(engineDir, 'toolkit/content/jar.mn');
-
-  if (await pathExists(customElementsPath)) {
-    await snapshotFile(journal, customElementsPath);
-    await removeCustomElementRegistration(engineDir, oldName);
-    await addCustomElementRegistration(
-      engineDir,
-      newName,
-      `chrome://global/content/elements/${newName}.mjs`
-    );
-  }
-
-  if (await pathExists(jarMnPath)) {
-    await snapshotFile(journal, jarMnPath);
-    await removeJarMnEntries(engineDir, oldName);
-    const files = (await readdir(newDir, { withFileTypes: true }))
-      .filter((e) => e.isFile() && (e.name.endsWith('.mjs') || e.name.endsWith('.css')))
-      .map((e) => e.name);
-    if (files.length > 0) {
-      await addJarMnEntries(engineDir, newName, files);
-    }
-  }
-
-  // Rename FTL localization files in the engine locale directory
-  const ftlDirPath = join(engineDir, ftlDir);
-  const oldFtlPath = join(ftlDirPath, `${oldName}.ftl`);
-  const newFtlPath = join(ftlDirPath, `${newName}.ftl`);
-  if (await pathExists(oldFtlPath)) {
-    await snapshotFile(journal, oldFtlPath);
-    await snapshotFile(journal, newFtlPath);
-    const ftlContent = await readText(oldFtlPath);
-    await writeText(newFtlPath, ftlContent);
-    await removeFile(oldFtlPath);
-  }
-
-  // Re-wire the locale jar.mn chrome registration when the component is
-  // localized. `updateEngineRegistrations` renames the .ftl file on disk but
-  // leaves the locale jar.mn pointing at `locale/.../${oldName}.ftl`, so
-  // `furnace validate` passes while the engine still carries a stale
-  // registration for the now-missing file.
-  if (isLocalized) {
-    const chromeSubPath = resolveFtlChromeSubPath(ftlDir);
-    const localeJarRel = resolveFtlLocaleJarMnPath(ftlDir);
-    if (chromeSubPath !== undefined && localeJarRel !== undefined) {
-      const localeJarAbs = join(engineDir, localeJarRel);
-      if (await pathExists(localeJarAbs)) {
-        await snapshotFile(journal, localeJarAbs);
-        await removeLocaleFtlJarMnEntry(engineDir, localeJarRel, oldName, chromeSubPath);
-        await addLocaleFtlJarMnEntry(engineDir, localeJarRel, newName, chromeSubPath);
-      }
-    }
-  }
+  };
+  await runFurnaceMutation(
+    projectRoot,
+    'rename-rollback',
+    mutate,
+    waitLockMutationOptions(args.waitLockSeconds)
+  );
 }
 
 /**
@@ -526,9 +451,10 @@ async function updateEngineRegistrations(options: UpdateEngineRegistrationsOptio
 export async function furnaceRenameCommand(
   projectRoot: string,
   oldName: string,
-  newName: string
+  newName: string,
+  options: FurnaceRenameOptions = {}
 ): Promise<void> {
-  intro('Furnace Rename');
+  intro(options.dryRun ? 'Furnace Rename (dry run)' : 'Furnace Rename');
 
   if (!CUSTOM_ELEMENT_TAG_PATTERN.test(oldName)) {
     throw new InvalidArgumentError(
@@ -592,6 +518,23 @@ export async function furnaceRenameCommand(
     );
   }
 
+  if (options.dryRun) {
+    note(
+      await renderRenamePlan({
+        config,
+        oldName,
+        newName,
+        oldDir,
+        componentDirLabel,
+        engineDir: paths.engine,
+        markerComment: await loadMarkerComment(projectRoot),
+      }),
+      `${oldName} → ${newName}`
+    );
+    outro('Dry run complete (no files modified)');
+    return;
+  }
+
   await performRenameMutations({
     projectRoot,
     oldName,
@@ -600,6 +543,7 @@ export async function furnaceRenameCommand(
     furnaceConfigPath: furnacePaths.furnaceConfig,
     furnacePaths,
     engineDir: paths.engine,
+    waitLockSeconds: options.waitLockSeconds,
   });
 
   note(

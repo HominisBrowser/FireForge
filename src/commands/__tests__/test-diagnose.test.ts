@@ -302,3 +302,45 @@ describe('diagnoseShardOutcome', () => {
     expect(diagnoseShardOutcome(passing, 'a/browser_x.js', 'mybrowser', undefined)).toBeUndefined();
   });
 });
+
+describe('incomplete exit-0 runs', () => {
+  const incomplete = {
+    started: 1,
+    requested: 2,
+    firstUnstarted: 'browser/base/content/test/hominis/browser_hominis_second.js',
+  };
+
+  it('finalizeSingleRunOutcome throws a test failure naming the first unstarted file and emits FAIL', () => {
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      expect(() => {
+        finalizeSingleRunOutcome(
+          makeOutcome({ exitCode: 0, verdict: { kind: 'test-failures', incomplete } }),
+          PATHS,
+          'firefox',
+          undefined
+        );
+      }).toThrow(/first that never started is .*browser_hominis_second\.js/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(writes.at(-1)).toMatch(
+      /^FIREFORGE-VERDICT: FAIL reason=test-failures started=1\/2 first-unstarted=\S+browser_hominis_second\.js/
+    );
+  });
+
+  it('diagnoseShardOutcome returns the same explanation for a shard', () => {
+    expect(
+      diagnoseShardOutcome(
+        makeOutcome({ exitCode: 0, verdict: { kind: 'test-failures', incomplete } }),
+        PATHS[0] ?? '',
+        'firefox',
+        undefined
+      )
+    ).toContain('mach exited 0, but FireForge did NOT treat the run as passed');
+  });
+});

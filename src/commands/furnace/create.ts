@@ -15,6 +15,7 @@ import {
   completeJournalRollback,
   type FurnaceOperationContext,
   runFurnaceMutation,
+  waitLockMutationOptions,
 } from '../../core/furnace-operation.js';
 import {
   CUSTOM_ELEMENT_TAG_PATTERN,
@@ -539,26 +540,30 @@ export async function furnaceCreateCommand(
   // state via the shared rollback journal. The mutation runs under the
   // furnace-wide lock and is registered with the global SIGINT/SIGTERM
   // rollback pathway.
-  const { files, testFiles } = await runFurnaceMutation(projectRoot, 'create-rollback', (ctx) =>
-    performCreateMutations({
-      projectRoot,
-      componentName,
-      className,
-      description,
-      localized,
-      register,
-      composes,
-      sharedFtl,
-      componentDir,
-      furnacePaths,
-      allowPrefixMismatch: options.allowPrefixMismatch,
-      forgeConfig,
-      paths,
-      license,
-      testStyle,
-      testDir,
-      operationContext: ctx,
-    })
+  const { files, testFiles } = await runFurnaceMutation(
+    projectRoot,
+    'create-rollback',
+    (ctx) =>
+      performCreateMutations({
+        projectRoot,
+        componentName,
+        className,
+        description,
+        localized,
+        register,
+        composes,
+        sharedFtl,
+        componentDir,
+        furnacePaths,
+        allowPrefixMismatch: options.allowPrefixMismatch,
+        forgeConfig,
+        paths,
+        license,
+        testStyle,
+        testDir,
+        operationContext: ctx,
+      }),
+    waitLockMutationOptions(options.waitLockSeconds)
   );
 
   note(

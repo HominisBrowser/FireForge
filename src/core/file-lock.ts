@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, rename, rm, stat } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 import { LockContentionError } from '../errors/base.js';
-import { getNodeErrorCode, isProcessAlive, toError } from '../utils/errors.js';
+import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { ensureDir } from '../utils/fs.js';
 import { verbose, warn } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
@@ -14,8 +14,16 @@ import {
   readLockOwner,
   writeLockOwner,
 } from './file-lock-owner.js';
+import {
+  type LockQueueState,
+  type QueueSelf,
+  readLockQueue,
+  registerWaiter,
+  type WaiterRegistration,
+} from './file-lock-queue.js';
 
 export { LOCK_PID_FILE };
+export { formatLockQueuePosition, type LockQueueState } from './file-lock-queue.js';
 
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 const DEFAULT_LOCK_POLL_MS = 50;
@@ -49,21 +57,6 @@ export interface LockHolder {
   metadata: string[];
 }
 
-/**
- * Live queue state around a contended lock.
- *
- * The lock itself behaves correctly under several concurrent sessions. The
- * gap this closes is visibility. Waiters advertise themselves in a sibling
- * directory so both the wait output and `fireforge status --lock` can say
- * how many are queued and how many are ahead of you.
- */
-export interface LockQueueState {
-  /** Live waiters currently queued for the lock, including this process. */
-  depth: number;
-  /** Live waiters that started waiting before this process. */
-  ahead: number;
-}
-
 export interface FileLockOptions {
   timeoutMs?: number;
   pollMs?: number;
@@ -71,6 +64,8 @@ export interface FileLockOptions {
    * When set, the poll interval doubles after every contended poll (starting
    * from `pollMs`) up to this cap. When absent, polling stays at the fixed
    * `pollMs` interval, with zero behavior change for existing callers.
+   * Keep it far below `WAITER_STALE_MS` (30 s): a waiter refreshes its queue
+   * ticket between polls, and a ticket left unrefreshed that long is skipped.
    */
   pollMaxMs?: number;
   staleMs?: number;
@@ -135,51 +130,6 @@ export function createSiblingLockPath(filePath: string, suffix = '.fireforge.loc
   return `${filePath}${suffix}`;
 }
 
-/** Sibling directory in which waiters advertise themselves. */
-function lockWaitersDir(lockPath: string): string {
-  return `${lockPath}.waiters`;
-}
-
-/** Parsed waiter-file name: `<startedAtMs>-<pid>-<uuid>`. */
-function parseWaiterFileName(name: string): { startedAt: number; pid: number } | undefined {
-  const match = /^(\d+)-(\d+)-/.exec(name);
-  const startedAt = match?.[1];
-  const pid = match?.[2];
-  if (startedAt === undefined || pid === undefined) return undefined;
-  return { startedAt: Number.parseInt(startedAt, 10), pid: Number.parseInt(pid, 10) };
-}
-
-/**
- * Reads the live waiter queue around `lockPath`, dropping entries whose
- * process is gone (a killed waiter must not inflate the depth forever).
- *
- * Advisory and fail-open: an unreadable registry reports an empty queue
- * rather than failing whatever asked.
- *
- * @param lockPath - The lock directory whose queue to inspect
- * @param selfStartedAt - This process's wait start, to compute `ahead`
- */
-export async function readLockQueue(
-  lockPath: string,
-  selfStartedAt?: number
-): Promise<LockQueueState> {
-  let names: string[];
-  try {
-    names = await readdir(lockWaitersDir(lockPath));
-  } catch {
-    return { depth: 0, ahead: 0 };
-  }
-  const live = names
-    .map(parseWaiterFileName)
-    .filter((entry): entry is { startedAt: number; pid: number } => entry !== undefined)
-    .filter((entry) => isProcessAlive(entry.pid));
-  const ahead =
-    selfStartedAt === undefined
-      ? 0
-      : live.filter((entry) => entry.startedAt < selfStartedAt).length;
-  return { depth: live.length, ahead };
-}
-
 /**
  * Snapshot of a lock for `fireforge status --lock`: who holds
  * it, for how long, and how deep the queue behind it is.
@@ -215,29 +165,6 @@ export async function readLockStatus(lockPath: string): Promise<LockStatusSnapsh
 }
 
 /**
- * Registers this process in the lock's waiter queue. Returns a
- * deregistration function that is always safe to call (including when
- * registration itself failed).
- */
-async function registerWaiter(lockPath: string, startedAt: number): Promise<() => Promise<void>> {
-  const dir = lockWaitersDir(lockPath);
-  const file = join(dir, `${startedAt}-${process.pid}-${randomUUID()}`);
-  try {
-    await ensureDir(dir);
-    await writeFile(file, `${process.pid}\n`, 'utf-8');
-  } catch (error: unknown) {
-    // Advisory only. Never fail a lock acquisition over the queue display.
-    verbose(`Could not register lock waiter for ${lockPath}: ${toError(error).message}`);
-    return async (): Promise<void> => {
-      /* nothing to remove */
-    };
-  }
-  return async (): Promise<void> => {
-    await rm(file, { force: true });
-  };
-}
-
-/**
  * Reads the contended lock's owner and queue in one go. One probe per cycle
  * serves both the progress line and the deadline extension, so the two can
  * never disagree about the position they saw. Failure to read the owner
@@ -246,13 +173,13 @@ async function registerWaiter(lockPath: string, startedAt: number): Promise<() =
  */
 async function probeWaitState(
   lockPath: string,
-  startedAt: number
+  self: QueueSelf
 ): Promise<{ holder: LockHolder | undefined; queue: LockQueueState }> {
   const owner = await readLockOwner(lockPath);
   const holder: LockHolder | undefined = owner.present
     ? { pid: owner.pid, alive: isLockOwnerAlive(owner), metadata: owner.metadata }
     : undefined;
-  return { holder, queue: await readLockQueue(lockPath, startedAt) };
+  return { holder, queue: await readLockQueue(lockPath, self) };
 }
 
 /**
@@ -508,18 +435,31 @@ function formatQueuePositionReached(queue: LockQueueState): string {
  */
 async function runWaitProbe(
   lockPath: string,
-  startedAt: number,
+  self: QueueSelf,
   timeoutMs: number,
   options: FileLockOptions
 ): Promise<{ queue: LockQueueState }> {
-  const { holder, queue } = await probeWaitState(lockPath, startedAt);
+  const { holder, queue } = await probeWaitState(lockPath, self);
   options.onWaitProgress?.({
-    waitedMs: Date.now() - startedAt,
+    waitedMs: Date.now() - self.startedAt,
     timeoutMs,
     holder,
     queue,
   });
   return { queue };
+}
+
+/**
+ * Whether it is this waiter's turn to contend for the lock: no live waiter
+ * arrived before it. Ties and dead or stalled tickets are settled by
+ * {@link readLockQueue}, so every waiter agrees on who is at the head.
+ */
+async function isWaiterTurn(
+  lockPath: string,
+  startedAt: number,
+  waiter: WaiterRegistration
+): Promise<boolean> {
+  return (await readLockQueue(lockPath, { startedAt, ticket: waiter.ticket })).ahead === 0;
 }
 
 /**
@@ -577,8 +517,14 @@ export async function withFileLock<T>(
   let lastProbeAt = startedAt;
   /** Best (lowest) queue position seen so far. Used to detect an advance. */
   let bestAhead: number | undefined;
-  /** Set on first contention so an uncontended acquire costs nothing. */
-  let deregisterWaiter: (() => Promise<void>) | undefined;
+  /**
+   * This waiter's ticket in the queue. Taken on first contention, or up
+   * front when others are already queued, so an uncontended acquire never
+   * writes one.
+   */
+  let waiter: WaiterRegistration | undefined;
+  /** The last `EEXIST`, carried as the cause of a timeout refusal. */
+  let contention: unknown;
 
   // One cadence drives both the progress line and the deadline extension.
   // Either feature alone is enough to want the probe. Neither is worth a
@@ -591,90 +537,105 @@ export async function withFileLock<T>(
   await ensureDir(dirname(lockPath));
 
   try {
+    // Arrival order: a newcomer that finds others already queued takes a
+    // ticket behind them instead of racing them for the next free moment.
+    // Without this a fresh command could take the lock in the gap between
+    // the holder's release and the head waiter's next poll.
+    if ((await readLockQueue(lockPath)).depth > 0) {
+      waiter = await registerWaiter(lockPath, startedAt);
+    }
+
     for (;;) {
-      try {
-        await mkdir(lockPath);
-        break;
-      } catch (error: unknown) {
-        if (getNodeErrorCode(error) !== 'EEXIST') {
-          throw error;
+      // Only the head of the queue contends for the lock. A waiter without
+      // a ticket (no contention seen yet, or a registry that could not be
+      // written) contends as every waiter did before tickets existed.
+      if (waiter?.ticket === undefined || (await isWaiterTurn(lockPath, startedAt, waiter))) {
+        try {
+          await mkdir(lockPath);
+          break;
+        } catch (error: unknown) {
+          if (getNodeErrorCode(error) !== 'EEXIST') {
+            throw error;
+          }
+          contention = error;
         }
+      }
 
-        // Advertise this waiter so the queue is visible to the wait output
-        // and to `fireforge status --lock`. Registered lazily:
-        // an uncontended acquisition never touches the registry.
-        deregisterWaiter ??= await registerWaiter(lockPath, startedAt);
+      // Take a ticket so the queue is visible to the wait output and to
+      // `fireforge status --lock`, and so the grant follows arrival order.
+      waiter ??= await registerWaiter(lockPath, startedAt);
+      await waiter.heartbeat();
+      const self: QueueSelf = { startedAt, ticket: waiter.ticket };
 
-        if (lastStaleProbeAt === undefined || Date.now() - lastStaleProbeAt >= staleReprobeMs) {
-          lastStaleProbeAt = Date.now();
-          if (await removeIfStaleLock(lockPath, staleMs, options.onStaleLockMessage)) {
-            continue;
+      if (lastStaleProbeAt === undefined || Date.now() - lastStaleProbeAt >= staleReprobeMs) {
+        lastStaleProbeAt = Date.now();
+        if (await removeIfStaleLock(lockPath, staleMs, options.onStaleLockMessage)) {
+          continue;
+        }
+      }
+
+      // The probe runs before the deadline check, so a due progress line is
+      // written before the refusal that follows it, never lost to it. On a
+      // slow host (a cold Windows CI runner) the first iteration alone, with
+      // its waiter registration and stale probe, can outlast a short budget;
+      // checked the other way round, the wait timed out having reported
+      // nothing, and an advance that probe would have seen could not extend
+      // the deadline it was about to miss.
+      if (probeWanted && Date.now() - lastProbeAt >= probeIntervalMs) {
+        lastProbeAt = Date.now();
+        // Report the budget that is currently in force, not the one
+        // originally requested: once an extension has been granted, the
+        // requested figure is stale, and a progress line that keeps
+        // quoting it reads as a timeout that does not fire.
+        const probe = await runWaitProbe(lockPath, self, deadline - startedAt, options);
+        // An advance (someone ahead of us took their turn and finished)
+        // buys a fresh budget, because the wait is working. Only a queue
+        // that stops moving starves, which is the case the timeout is for.
+        //
+        // The first observation is a seed, never an advance. `bestAhead`
+        // used to start `undefined`, so the opening probe always satisfied
+        // this test and handed out a free full budget: a `--wait-lock 300`
+        // run outlived its 300 s even against a queue that never moved
+        // once, which is the "it does not reliably give up after N
+        // seconds" behaviour a downstream fork reported.
+        if (hardDeadline !== undefined) {
+          if (bestAhead === undefined) {
+            bestAhead = probe.queue.ahead;
+          } else if (probe.queue.ahead < bestAhead) {
+            bestAhead = probe.queue.ahead;
+            deadline = Math.min(Date.now() + timeoutMs, hardDeadline);
+            options.onWaitExtended?.({
+              ahead: probe.queue.ahead,
+              budgetMs: deadline - startedAt,
+            });
           }
         }
+      }
 
-        // The probe runs before the deadline check, so a due progress line is
-        // written before the refusal that follows it, never lost to it. On a
-        // slow host (a cold Windows CI runner) the first iteration alone, with
-        // its waiter registration and stale probe, can outlast a short budget;
-        // checked the other way round, the wait timed out having reported
-        // nothing, and an advance that probe would have seen could not extend
-        // the deadline it was about to miss.
-        if (probeWanted && Date.now() - lastProbeAt >= probeIntervalMs) {
-          lastProbeAt = Date.now();
-          // Report the budget that is currently in force, not the one
-          // originally requested: once an extension has been granted, the
-          // requested figure is stale, and a progress line that keeps
-          // quoting it reads as a timeout that does not fire.
-          const probe = await runWaitProbe(lockPath, startedAt, deadline - startedAt, options);
-          // An advance (someone ahead of us took their turn and finished)
-          // buys a fresh budget, because the wait is working. Only a queue
-          // that stops moving starves, which is the case the timeout is for.
-          //
-          // The first observation is a seed, never an advance. `bestAhead`
-          // used to start `undefined`, so the opening probe always satisfied
-          // this test and handed out a free full budget: a `--wait-lock 300`
-          // run outlived its 300 s even against a queue that never moved
-          // once, which is the "it does not reliably give up after N
-          // seconds" behaviour a downstream fork reported.
-          if (hardDeadline !== undefined) {
-            if (bestAhead === undefined) {
-              bestAhead = probe.queue.ahead;
-            } else if (probe.queue.ahead < bestAhead) {
-              bestAhead = probe.queue.ahead;
-              deadline = Math.min(Date.now() + timeoutMs, hardDeadline);
-              options.onWaitExtended?.({
-                ahead: probe.queue.ahead,
-                budgetMs: deadline - startedAt,
-              });
-            }
-          }
-        }
+      if (Date.now() >= deadline) {
+        // The queue is read here, not carried over from the last progress
+        // probe: the position the wait reached is the one number that says
+        // whether a larger budget would have helped, and it must not depend
+        // on a probe having happened to land inside the budget. We are still
+        // registered at this point. The ticket is returned in the `finally`
+        // below, which is only entered once this refusal has been built.
+        throw await buildLockTimeoutError(
+          lockPath,
+          options.onTimeoutMessage,
+          contention,
+          await readLockQueue(lockPath, self)
+        );
+      }
 
-        if (Date.now() >= deadline) {
-          // The queue is read here, not carried over from the last progress
-          // probe: the position the wait reached is the one number that says
-          // whether a larger budget would have helped, and it must not depend
-          // on a probe having happened to land inside the budget. We are still
-          // registered at this point. `deregisterWaiter` runs in the `finally`
-          // below, which is only entered once this refusal has been built.
-          throw await buildLockTimeoutError(
-            lockPath,
-            options.onTimeoutMessage,
-            error,
-            await readLockQueue(lockPath, startedAt)
-          );
-        }
-
-        await sleep(currentPollMs);
-        if (options.pollMaxMs !== undefined) {
-          currentPollMs = Math.min(currentPollMs * 2, options.pollMaxMs);
-        }
+      await sleep(currentPollMs);
+      if (options.pollMaxMs !== undefined) {
+        currentPollMs = Math.min(currentPollMs * 2, options.pollMaxMs);
       }
     }
   } finally {
     // Leaving the queue happens the moment we stop waiting, whether we
     // acquired the lock or timed out.
-    await deregisterWaiter?.();
+    await waiter?.deregister();
   }
 
   // Stamp ownership (PID + per-acquisition token + acquisition time) into

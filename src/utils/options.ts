@@ -19,17 +19,18 @@ import { toError } from './errors.js';
  * @param obj - Object to filter
  * @returns The same object with every `undefined`-valued key removed
  */
-export function pickDefined<T extends object>(
-  obj: T
-): { [K in keyof T]+?: Exclude<T[K], undefined> } {
+export function pickDefined<T extends object>(obj: T): DefinedProps<T> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj)) {
     if (value !== undefined) {
       result[key] = value;
     }
   }
-  return result as { [K in keyof T]+?: Exclude<T[K], undefined> };
+  return result as DefinedProps<T>;
 }
+
+/** `T` with every property optional and `undefined` removed: what {@link pickDefined} returns. */
+export type DefinedProps<T> = { [K in keyof T]+?: Exclude<T[K], undefined> };
 
 /**
  * Wraps an option-argument parser so its failures surface through
@@ -172,11 +173,11 @@ export function resolveWaitLockSeconds(
  * `--wait-lock` flag was threaded to. A furnace mutation takes the engine
  * session lock and then `.fireforge/furnace.lock`. Only the first had a
  * budget, so a contended deploy died on the file lock's fixed 30 s while
- * its operator believed a much larger budget was in force. Threading the
- * flag reaches the three furnace commands that declare it. This reaches
- * the twelve that do not (`create`, `remove`, `rename`, `refresh`, `scan`,
- * `override`, `chrome-doc`, …), which have no flag to thread but are just
- * as contended.
+ * its operator believed a much larger budget was in force. Every furnace
+ * leaf that takes the furnace lock threads its own `--wait-lock` into it;
+ * this is the fallback when the flag is absent, and the only budget for
+ * callers that do not thread one (doctor's furnace repair, the
+ * pre-build apply).
  *
  * Env-only: a flag belongs to one invocation and is passed
  * explicitly where it applies, while the environment is exactly the place a
@@ -231,8 +232,100 @@ export function ensureWaitLockOptionEverywhere(command: Command): void {
     // Commander groups otherwise capture a trailing leaf option before the
     // action can see it. Register the uniform flag only on actionable leaves.
     if (sub.commands.length === 0 && !hasWaitLockOption(sub)) addAcceptedWaitLockOption(sub);
+    releasePathShapedOptionalValues(sub);
     ensureWaitLockOptionEverywhere(sub);
   }
+}
+
+/**
+ * Optional-value flags whose value is a number and therefore never a path.
+ * `--canary [path]` is the counter-example that must stay out: its value IS
+ * a path.
+ */
+const NUMERIC_OPTIONAL_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  '--wait-lock',
+  '--wait-browser',
+  '--wait-port',
+  '--shuffle',
+]);
+
+/**
+ * True for a token that reads as a path rather than a number: it has a
+ * path separator or a file extension, or is `.`/`..`. A bare word such as
+ * `nonsense` is not path-shaped, so `--wait-lock nonsense` stays the usage
+ * error it always was.
+ */
+export function isPathShapedArgument(token: string): boolean {
+  if (/^\d+(?:\.\d+)?$/.test(token)) return false;
+  return token === '.' || token === '..' || /[\\/]/.test(token) || /\.[A-Za-z][\w-]*$/.test(token);
+}
+
+/**
+ * Rewrites a command's option tokens so a path-shaped argument after a
+ * numeric optional-value flag is an operand, and the flag takes its
+ * default.
+ *
+ * Commander binds the next non-dash token to an optional value, so
+ * `fireforge test --build --wait-lock browser_x.js` failed with
+ * "--wait-lock must be an integer in 1..3600 (got "browser_x.js")": the
+ * help says the value is optional, and the obvious spelling refused. The
+ * released flag moves to the end of the option section (before any `--`),
+ * where nothing follows it, so commander reads it bare. Operands keep their
+ * relative order. The value of a required-value option (`--mach-arg
+ * --wait-lock`) is never mistaken for a flag.
+ *
+ * @param argv - The tokens commander passes to `parseOptions`
+ * @param requiredValueFlags - This command's flags that always take a value
+ * @returns The rewritten tokens
+ */
+export function releasePathShapedValues(
+  argv: readonly string[],
+  requiredValueFlags: ReadonlySet<string>
+): string[] {
+  const kept: string[] = [];
+  const released: string[] = [];
+  let index = 0;
+  for (; index < argv.length; index += 1) {
+    const token = argv[index] ?? '';
+    if (token === '--') break;
+    const next = argv[index + 1];
+    if (requiredValueFlags.has(token) && next !== undefined) {
+      kept.push(token, next);
+      index += 1;
+      continue;
+    }
+    if (
+      NUMERIC_OPTIONAL_VALUE_FLAGS.has(token) &&
+      next !== undefined &&
+      !next.startsWith('-') &&
+      isPathShapedArgument(next)
+    ) {
+      released.push(token);
+      continue;
+    }
+    kept.push(token);
+  }
+  return [...kept, ...released, ...argv.slice(index)];
+}
+
+/**
+ * Installs {@link releasePathShapedValues} on `command` when it registers
+ * any numeric optional-value flag.
+ */
+function releasePathShapedOptionalValues(command: Command): void {
+  const flags = command.options.filter(
+    (option) => option.long !== undefined && NUMERIC_OPTIONAL_VALUE_FLAGS.has(option.long)
+  );
+  if (flags.length === 0) return;
+  const requiredValueFlags = new Set(
+    command.options
+      .filter((option) => option.required)
+      .flatMap((option) => [option.long, option.short])
+      .filter((flag): flag is string => flag !== undefined)
+  );
+  const parseOptions = command.parseOptions.bind(command);
+  command.parseOptions = (argv: string[]) =>
+    parseOptions(releasePathShapedValues(argv, requiredValueFlags));
 }
 
 /**

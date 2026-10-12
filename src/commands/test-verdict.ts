@@ -49,7 +49,9 @@ export type VerdictRunAttributeKey =
   | 'host-load'
   | 'host-cpu-warning'
   | 'power-source'
-  | 'power-changed';
+  | 'power-changed'
+  | 'furnace-applied'
+  | 'furnace-apply';
 
 /** Records an additive attribute for this run's verdict line. */
 export function setVerdictRunAttribute(key: VerdictRunAttributeKey, value: string): void {
@@ -88,12 +90,35 @@ export function resetVerdictEmission(): void {
   emitted = false;
   armed = true;
   runAttributes.clear();
+  capture = undefined;
   setStdoutSealed(false);
 }
 
+/**
+ * The sub-run capture slot of a multi-run invocation (`--repeat`, mixed
+ * harnesses, `--negative-control`; see `test-orchestrate.ts`). While one is
+ * installed, a sub-run's verdict line is recorded here, first write wins as
+ * on stdout, and nothing is printed or sealed, so the invocation can still
+ * end with its own single aggregate line.
+ */
+let capture: { line?: string } | undefined;
+
 /** True once this run has written its `FIREFORGE-VERDICT:` line. */
 export function verdictEmitted(): boolean {
-  return emitted;
+  return capture === undefined ? emitted : capture.line !== undefined;
+}
+
+/** Installs (or, with `undefined`, removes) the sub-run capture slot. */
+export function setVerdictCapture(slot: { line?: string } | undefined): void {
+  capture = slot;
+}
+
+/**
+ * Emits a multi-run aggregate verdict. `body` is everything after the
+ * `FIREFORGE-VERDICT: ` prefix.
+ */
+export function emitAggregateVerdict(body: string): void {
+  writeVerdictLine(`FIREFORGE-VERDICT: ${body}`);
 }
 
 /**
@@ -107,6 +132,10 @@ export function verdictEmitted(): boolean {
  * rendering after an emit-then-throw path, routes to stderr.
  */
 function writeVerdictLine(line: string): void {
+  if (capture !== undefined) {
+    capture.line ??= line;
+    return;
+  }
   if (emitted) return;
   emitted = true;
   // The run log's path rides the verdict line because the verdict must stay
@@ -181,6 +210,9 @@ export type KilledVerdictCause = NodeJS.Signals | 'parent-exit';
  */
 export function emitKilledVerdict(signal: KilledVerdictCause): boolean {
   if (!armed || emitted) return false;
+  // A kill ends the whole invocation, so a sub-run capture must not
+  // swallow the one line that says so.
+  capture = undefined;
   writeVerdictLine(`FIREFORGE-VERDICT: FAIL reason=killed signal=${signal}`);
   return true;
 }

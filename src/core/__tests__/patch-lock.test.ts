@@ -137,5 +137,14 @@ describe('withPatchDirectoryLock', () => {
           line.includes('Waiting for the FireForge patch directory lock')
         )
     ).toBe(true);
+    // The patch lock shares the engine lock's queue, so its wait line states
+    // the same position and ordering rule.
+    expect(
+      vi
+        .mocked(info)
+        .mock.calls.some(([line]) =>
+          line.endsWith('You are next in a queue of 1 (granted in arrival order).')
+        )
+    ).toBe(true);
   }, 15_000);
 });

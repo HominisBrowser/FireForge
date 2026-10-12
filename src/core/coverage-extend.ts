@@ -1,232 +1,318 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Retains prior test staging only when HEAD, mozconfig and every recorded
- * dirty input outside the newly rebuilt scope are unchanged. Complete
- * input fingerprints are required: packageable-only legacy records cannot
+ * Decides which earlier packaging claims a scoped `fireforge test --build`
+ * keeps. Retention is per staged path (see `coverage-records.ts`): an
+ * earlier path stays covered while its own staging inputs are unchanged,
+ * whatever moved elsewhere in the engine, and a full claim narrows to
+ * per-path checks once something outside the new scope changed instead of
+ * collapsing to this build's paths. `--extend-coverage` turns any drop into
+ * a refusal before the build.
+ *
+ * Fingerprints must be complete: a legacy packageable-only record cannot
  * prove that a test fixture or manifest still matches its staged copy.
  */
 
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-
-import { getNodeErrorCode, toError } from '../utils/errors.js';
-import { sha256Hex } from '../utils/hash.js';
+import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
-import {
-  type BuildBaseline,
-  DELETED_FILE_FINGERPRINT,
-  type TestPackagingCoverage,
+import type {
+  BuildBaseline,
+  CoverageAnchor,
+  CoverageRecord,
+  TestPackagingCoverage,
 } from './build-baseline-types.js';
-import { getHead, isMissingHeadError } from './git.js';
-import { git } from './git-base.js';
-import { getUntrackedFiles } from './git-status.js';
+import {
+  collectStagingInputs,
+  createCoverageRecord,
+  type EngineContentState,
+  findChangedInputs,
+  hashEngineFile,
+  isUnderPath,
+  narrowAnchor,
+  normalizeRequestPath,
+  readEngineContentState,
+  refreshAnchor,
+} from './coverage-records.js';
+
+export { hashEngineFile } from './coverage-records.js';
 
 /** Filename of the generated mozconfig, relative to the engine directory. */
 const MOZCONFIG_FILENAME = 'mozconfig';
 
-/** How many diverged paths a refusal names before truncating. */
-const MAX_DIVERGED_REPORTED = 5;
-/** Why `--extend-coverage` could not union onto the recorded claim. */
-export type ExtendAnchorReason =
-  | 'no-baseline'
-  | 'no-fingerprints'
-  | 'no-mozconfig-hash'
-  | 'head-moved'
-  | 'fingerprint-diverged'
-  | 'mozconfig-changed';
+/** How many paths a notice or refusal names before truncating. */
+const MAX_PATHS_REPORTED = 5;
 
-/** Outcome of an anchor check: either extend is sound, or it is refused. */
-export type ExtendAnchorResult =
-  { ok: true } | { ok: false; reason: ExtendAnchorReason; detail: string[] };
+/** What a dropped full claim is called in notices and refusals. */
+export const FULL_CLAIM_LABEL = 'full coverage';
+
+/** An earlier claim this build cannot keep, and why. */
+export interface DroppedClaim {
+  /** Request path, or {@link FULL_CLAIM_LABEL}. */
+  path: string;
+  /** Staging inputs whose content changed since the claim was staged. */
+  changed: string[];
+  /** Why the claim cannot be verified at all, when no input list explains it. */
+  reason?: string;
+}
+
+/** What a scoped build keeps of the recorded coverage. */
+export interface CoverageRetentionPlan {
+  /** The previous claim was full and nothing outside this build's scope moved. */
+  keepFull: boolean;
+  /** Earlier per-path records kept, refreshed for this build's paths. */
+  retained: Record<string, CoverageRecord>;
+  /** Full-build anchor carried for dispatch-time per-path checks. */
+  fullAnchor: CoverageAnchor | undefined;
+  /** Changed inputs that narrowed a full claim to per-path checks. */
+  narrowedBy: string[];
+  /** Earlier claims this build cannot keep. */
+  dropped: DroppedClaim[];
+}
+
+const UNVERIFIABLE = 'engine HEAD or the recorded anchor cannot be compared';
+const NO_FINGERPRINTS = 'the record has no complete staging-input fingerprints';
+
+/** The baseline-wide anchor a baseline's own fields describe, when complete. */
+export function baselineAnchor(baseline: BuildBaseline): CoverageAnchor | undefined {
+  if (baseline.testInputFingerprints === undefined || baseline.mozconfigHash === undefined) {
+    return undefined;
+  }
+  return {
+    engineHeadSha: baseline.engineHeadSha,
+    mozconfigHash: baseline.mozconfigHash,
+    fingerprints: baseline.testInputFingerprints,
+  };
+}
+
+function emptyPlan(): CoverageRetentionPlan {
+  return { keepFull: false, retained: {}, fullAnchor: undefined, narrowedBy: [], dropped: [] };
+}
+
+/** True when a request path in `requested` stages `path` afresh. */
+function rebuiltBy(path: string, rebuilt: readonly string[]): boolean {
+  const normalized = normalizeRequestPath(path);
+  return rebuilt.some((request) => isUnderPath(normalized, request));
+}
+
+async function planFullClaim(
+  state: EngineContentState,
+  previous: BuildBaseline,
+  requested: string[]
+): Promise<CoverageRetentionPlan> {
+  const plan = emptyPlan();
+  const anchor = previous.fullCoverageAnchor ?? baselineAnchor(previous);
+  if (anchor === undefined) {
+    plan.dropped.push({ path: FULL_CLAIM_LABEL, changed: [], reason: NO_FINGERPRINTS });
+    return plan;
+  }
+  const changed = await findChangedInputs(state, anchor, undefined, requested);
+  const refreshed =
+    changed === undefined ? undefined : await refreshAnchor(state, anchor, requested);
+  if (changed === undefined || refreshed === undefined) {
+    plan.dropped.push({ path: FULL_CLAIM_LABEL, changed: [], reason: UNVERIFIABLE });
+    return plan;
+  }
+  plan.keepFull = changed.length === 0;
+  plan.fullAnchor = refreshed;
+  plan.narrowedBy = changed;
+  return plan;
+}
+
+async function retainRecord(
+  state: EngineContentState,
+  previous: BuildBaseline,
+  path: string,
+  requested: string[]
+): Promise<{ record: CoverageRecord } | DroppedClaim> {
+  let record = previous.testCoverageRecords?.[path];
+  if (record === undefined) {
+    // A path recorded before per-path anchors existed: the baseline-wide
+    // anchor, restricted to the path's own inputs, says the same thing.
+    const anchor = baselineAnchor(previous);
+    if (anchor === undefined) return { path, changed: [], reason: NO_FINGERPRINTS };
+    const inputs = await collectStagingInputs(state.engineDir, path);
+    record = await narrowAnchor(state, anchor, inputs);
+    if (record === undefined) return { path, changed: [], reason: UNVERIFIABLE };
+  }
+  const changed = await findChangedInputs(state, record, record.inputs, requested);
+  if (changed === undefined) return { path, changed: [], reason: UNVERIFIABLE };
+  if (changed.length > 0) return { path, changed };
+  const refreshed = await refreshAnchor(state, record, requested);
+  return refreshed === undefined
+    ? { path, changed: [], reason: UNVERIFIABLE }
+    : { record: refreshed };
+}
 
 /**
- * Verifies the parts of the anchor knowable before the build runs: a usable
- * previous baseline, an unchanged engine HEAD, and byte-identical content
- * for every path that baseline fingerprinted.
+ * Plans which earlier claims a scoped build over `requested` keeps. Runs
+ * before the build lock, so a refusal costs neither build time nor the
+ * lock. The mozconfig half runs later, via {@link applyMozconfigAnchor}.
+ *
  * @param engineDir - Path to the engine directory
- * @param previousBaseline - Baseline recorded by the previous build
+ * @param previous - Baseline recorded by the previous build
+ * @param requested - Normalized request paths this build packages
  */
-export async function checkExtendCoverageAnchor(
+export async function planCoverageRetention(
   engineDir: string,
-  previousBaseline: BuildBaseline | undefined,
-  rebuiltPaths: readonly string[] = []
-): Promise<ExtendAnchorResult> {
-  if (previousBaseline === undefined) {
-    return { ok: false, reason: 'no-baseline', detail: [] };
-  }
-  if (previousBaseline.mozconfigHash === undefined) {
-    return { ok: false, reason: 'no-mozconfig-hash', detail: [] };
-  }
-  const recordedFingerprints = previousBaseline.testInputFingerprints;
-  const rebuilt = (file: string): boolean =>
-    rebuiltPaths.some((path) => file === path || file.startsWith(path.replace(/\/$/, '') + '/'));
-  if (recordedFingerprints === undefined) {
-    return { ok: false, reason: 'no-fingerprints', detail: [] };
-  }
-
-  const currentHead = await readEngineHead(engineDir);
-  if (currentHead === undefined || previousBaseline.engineHeadSha === '') {
-    // An unborn or unreadable HEAD gives nothing to anchor to.
-    return { ok: false, reason: 'head-moved', detail: [] };
-  }
-  if (currentHead !== previousBaseline.engineHeadSha) {
+  previous: BuildBaseline | undefined,
+  requested: string[]
+): Promise<CoverageRetentionPlan> {
+  if (previous === undefined) return emptyPlan();
+  const coverage = previous.testPackagingCoverage ?? 'full';
+  const rebuilt = requested.map(normalizeRequestPath).filter((path) => path !== '');
+  let state: EngineContentState;
+  try {
+    state = await readEngineContentState(engineDir);
+  } catch (error: unknown) {
+    verbose(`Coverage retention: engine state unreadable — ${toError(error).message}`);
+    const paths = coverage === 'full' ? [FULL_CLAIM_LABEL] : coverage;
     return {
-      ok: false,
-      reason: 'head-moved',
-      detail: [`recorded ${previousBaseline.engineHeadSha}`, `current ${currentHead}`],
+      ...emptyPlan(),
+      dropped: paths.map((path) => ({ path, changed: [], reason: UNVERIFIABLE })),
     };
   }
+  if (coverage === 'full') return planFullClaim(state, previous, rebuilt);
 
-  const diverged: string[] = [];
-  for (const [relPath, recordedHash] of Object.entries(recordedFingerprints)) {
-    if (rebuilt(relPath)) continue;
-    const liveHash = await hashEngineFile(engineDir, relPath);
-    if (liveHash !== recordedHash) diverged.push(relPath);
-  }
-  // New dirty test inputs are absent from the previous fingerprint map.
-  // They invalidate retained staging too; explicitly rebuilt inputs are safe.
-  if (previousBaseline.testInputFingerprints !== undefined) {
-    const changed = (await git(['diff', '--name-only', 'HEAD'], engineDir)).split('\n');
-    changed.push(...(await getUntrackedFiles(engineDir)));
-    for (const file of changed.filter(Boolean)) {
-      if (file === MOZCONFIG_FILENAME || rebuilt(file) || Object.hasOwn(recordedFingerprints, file))
-        continue;
-      // A retained manifest may stage a shared fixture outside test-named
-      // directories. Without its full dependency graph, refuse conservatively.
-      diverged.push(file);
+  const plan = emptyPlan();
+  if (previous.fullCoverageAnchor !== undefined) {
+    plan.fullAnchor = await refreshAnchor(state, previous.fullCoverageAnchor, rebuilt);
+    if (plan.fullAnchor === undefined) {
+      plan.dropped.push({ path: FULL_CLAIM_LABEL, changed: [], reason: UNVERIFIABLE });
     }
   }
-  if (diverged.length > 0) {
-    return { ok: false, reason: 'fingerprint-diverged', detail: diverged.sort() };
+  for (const path of coverage) {
+    if (rebuiltBy(path, rebuilt)) continue;
+    const outcome = await retainRecord(state, previous, path, rebuilt);
+    if ('record' in outcome) plan.retained[path] = outcome.record;
+    else plan.dropped.push(outcome);
   }
-
-  return { ok: true };
+  return plan;
 }
 
 /**
- * Verifies the mozconfig half of the anchor. Split from
- * {@link checkExtendCoverageAnchor} because it can only run after
- * `prepareBuildEnvironment` regenerates `engine/mozconfig` (the file this
- * build will configure with), and must still run before mach, so a refusal
- * costs no build time.
- * @param engineDir - Path to the engine directory
- * @param previousBaseline - Baseline recorded by the previous build
- */
-export async function checkExtendMozconfigAnchor(
-  engineDir: string,
-  previousBaseline: BuildBaseline | undefined
-): Promise<ExtendAnchorResult> {
-  const recorded = previousBaseline?.mozconfigHash;
-  if (recorded === undefined) {
-    return { ok: false, reason: 'no-mozconfig-hash', detail: [] };
-  }
-  const live = await hashEngineFile(engineDir, MOZCONFIG_FILENAME);
-  if (live === undefined || live !== recorded) {
-    return { ok: false, reason: 'mozconfig-changed', detail: [] };
-  }
-  return { ok: true };
-}
-
-/**
- * Unions the newly built paths onto the recorded claim. A `'full'` claim, or
- * an absent one (which means full), stays `'full'`, since it already covers
- * everything.
+ * Applies the mozconfig half of the anchor: a claim staged under a different
+ * `engine/mozconfig` is dropped. Runs after `prepareBuildEnvironment`
+ * regenerated the file this build configures with, and before mach.
  *
- * @param previous - Coverage recorded by the previous build
+ * @param engineDir - Path to the engine directory
+ * @param plan - Plan from {@link planCoverageRetention}
+ */
+export async function applyMozconfigAnchor(
+  engineDir: string,
+  plan: CoverageRetentionPlan
+): Promise<CoverageRetentionPlan> {
+  const live = await hashEngineFile(engineDir, MOZCONFIG_FILENAME);
+  const reason = 'engine/mozconfig differs from the build that staged it';
+  const next: CoverageRetentionPlan = { ...plan, retained: {}, dropped: [...plan.dropped] };
+  for (const [path, record] of Object.entries(plan.retained)) {
+    if (live !== undefined && record.mozconfigHash === live) next.retained[path] = record;
+    else next.dropped.push({ path, changed: [], reason });
+  }
+  if (
+    plan.fullAnchor !== undefined &&
+    (live === undefined || plan.fullAnchor.mozconfigHash !== live)
+  ) {
+    next.fullAnchor = undefined;
+    next.keepFull = false;
+    next.narrowedBy = [];
+    next.dropped.push({ path: FULL_CLAIM_LABEL, changed: [], reason });
+  }
+  return next;
+}
+
+/** Fields a scoped build writes onto its baseline. */
+export interface RecordedCoverage {
+  testPackagingCoverage: TestPackagingCoverage;
+  testCoverageRecords?: Record<string, CoverageRecord>;
+  fullCoverageAnchor?: CoverageAnchor;
+}
+
+/**
+ * The coverage a green scoped build records: `'full'` when the plan kept a
+ * full claim, otherwise this build's paths with fresh records plus every
+ * retained earlier path, and the carried full anchor.
+ *
+ * @param engineDir - Path to the engine directory
+ * @param plan - Plan after {@link applyMozconfigAnchor}
  * @param requested - Normalized request paths this build packaged
  */
-export function unionTestPackagingCoverage(
-  previous: TestPackagingCoverage | undefined,
-  requested: readonly string[]
-): TestPackagingCoverage {
-  if (previous === undefined || previous === 'full') {
-    return 'full';
+export async function recordScopedCoverage(
+  engineDir: string,
+  plan: CoverageRetentionPlan,
+  requested: string[]
+): Promise<RecordedCoverage> {
+  if (plan.keepFull) return { testPackagingCoverage: 'full' };
+  const records: Record<string, CoverageRecord> = { ...plan.retained };
+  try {
+    const state = await readEngineContentState(engineDir);
+    const mozconfigHash = await hashEngineFile(engineDir, MOZCONFIG_FILENAME);
+    for (const path of requested) {
+      const record =
+        mozconfigHash === undefined
+          ? undefined
+          : await createCoverageRecord(state, path, mozconfigHash);
+      if (record !== undefined) records[path] = record;
+    }
+  } catch (error: unknown) {
+    verbose(`Coverage records: could not anchor this build's paths — ${toError(error).message}`);
   }
-  return [...new Set([...previous, ...requested])].sort();
+  const kept = Object.keys(plan.retained);
+  const coverage =
+    kept.length === 0 ? [...requested] : [...new Set([...kept, ...requested])].sort();
+  return {
+    testPackagingCoverage: coverage,
+    ...(Object.keys(records).length > 0 ? { testCoverageRecords: records } : {}),
+    ...(plan.fullAnchor !== undefined ? { fullCoverageAnchor: plan.fullAnchor } : {}),
+  };
 }
 
-/**
- * Renders the fail-closed refusal for an anchor check that did not pass.
- * Kept separate from the probes so tests can assert the structured result
- * without matching copy.
- * @param result - Failing result from an anchor check
- */
-export function formatExtendCoverageRefusal(result: {
-  reason: ExtendAnchorReason;
-  detail: string[];
-}): string {
-  const remedy =
-    'Re-run without --extend-coverage: a plain scoped build REPLACES the coverage claim ' +
-    'with the paths it actually vouches for.';
-  switch (result.reason) {
-    case 'no-baseline':
-      return `--extend-coverage has nothing to extend: no previous build baseline is recorded. ${remedy}`;
-    case 'no-mozconfig-hash':
-      return (
-        '--extend-coverage refused: the recorded baseline predates the mozconfig anchor, so it ' +
-        `cannot be proven that this build configures identically. ${remedy}`
-      );
-    case 'no-fingerprints':
-      return (
-        '--extend-coverage refused: the recorded baseline carries no complete test-input fingerprints, so ' +
-        `the earlier scope's staging inputs cannot be verified unchanged. ${remedy}`
-      );
-    case 'head-moved':
-      return (
-        '--extend-coverage refused: engine HEAD moved since the recorded build ' +
-        `(${result.detail.join(', ') || 'no usable HEAD'}), so the earlier scope's packaging is no ` +
-        `longer anchored. ${remedy}`
-      );
-    case 'fingerprint-diverged':
-      return (
-        '--extend-coverage refused: ' +
-        `${result.detail.length} staging input(s) the recorded build staged have changed ` +
-        `since (${formatDivergedPaths(result.detail)}). Extending would vouch for the earlier scope ` +
-        `while obj-*/_tests/ still holds its stale staging. ${remedy}`
-      );
-    case 'mozconfig-changed':
-      return (
-        '--extend-coverage refused: engine/mozconfig differs from the recorded build (it is ' +
-        'regenerated from configs/*.mozconfig and fireforge.json on every build, so engine HEAD ' +
-        `does not cover it). ${remedy}`
-      );
-  }
-}
-
-function formatDivergedPaths(paths: readonly string[]): string {
-  const head = paths.slice(0, MAX_DIVERGED_REPORTED).join(', ');
-  const extra = paths.length - Math.min(paths.length, MAX_DIVERGED_REPORTED);
+function capList(paths: readonly string[]): string {
+  const head = paths.slice(0, MAX_PATHS_REPORTED).join(', ');
+  const extra = paths.length - Math.min(paths.length, MAX_PATHS_REPORTED);
   return extra > 0 ? `${head}, … (+${extra} more)` : head;
 }
 
-/**
- * Hex-encoded SHA-256 of an engine-relative file, matching the digest the
- * baseline writer produces. `undefined` on any IO error, which every caller
- * treats as "cannot prove unchanged", i.e. a refusal.
- * @param engineDir - Path to the engine directory
- * @param relPath - Engine-relative POSIX path
- */
-export async function hashEngineFile(
-  engineDir: string,
-  relPath: string
-): Promise<string | undefined> {
-  try {
-    const buffer = await readFile(join(engineDir, relPath));
-    return sha256Hex(buffer);
-  } catch (error: unknown) {
-    if (getNodeErrorCode(error) === 'ENOENT') {
-      return DELETED_FILE_FINGERPRINT;
-    }
-    verbose(`Extend-coverage anchor: could not hash ${relPath} — ${toError(error).message}`);
-    return undefined;
-  }
+/** Renders one dropped claim with its cause. */
+export function describeDroppedClaim(claim: DroppedClaim): string {
+  const cause =
+    claim.changed.length > 0
+      ? `staging inputs changed: ${capList(claim.changed)}`
+      : (claim.reason ?? UNVERIFIABLE);
+  return `${claim.path} (${cause})`;
 }
 
-async function readEngineHead(engineDir: string): Promise<string | undefined> {
-  try {
-    return await getHead(engineDir);
-  } catch (error: unknown) {
-    if (isMissingHeadError(error)) return undefined;
-    throw error;
+/**
+ * The notice a scoped build prints about earlier coverage, or undefined
+ * when nothing was dropped or narrowed.
+ */
+export function formatCoverageRetentionNotice(plan: CoverageRetentionPlan): string | undefined {
+  const lines: string[] = [];
+  if (plan.dropped.length > 0) {
+    const kept = Object.keys(plan.retained);
+    lines.push(
+      `Scoped build drops previous packaging coverage for ${plan.dropped.map(describeDroppedClaim).join('; ')}.` +
+        (kept.length > 0 ? ` Kept: ${capList(kept)}.` : '') +
+        ' Rebuild a dropped path (alone or with this one) before running it without --build.'
+    );
   }
+  if (!plan.keepFull && plan.fullAnchor !== undefined && plan.narrowedBy.length > 0) {
+    lines.push(
+      `Full packaging coverage is now checked per path: ${capList(plan.narrowedBy)} changed outside ` +
+        "this build's scope, so a later run is refused only for paths whose own staging inputs include a changed file."
+    );
+  }
+  return lines.length > 0 ? lines.join('\n') : undefined;
+}
+
+/**
+ * The `--extend-coverage` refusal: the flag asks that no earlier claim be
+ * dropped, and the plan would drop some.
+ */
+export function formatExtendCoverageRefusal(dropped: readonly DroppedClaim[]): string {
+  return (
+    `--extend-coverage refused: this build would drop earlier packaging coverage for ` +
+    `${dropped.length} claim(s): ${dropped.map(describeDroppedClaim).join('; ')}. ` +
+    'Extending would vouch for staging that obj-*/_tests/ no longer matches. Rebuild those paths ' +
+    'together with this one, or drop the flag: without it the dropped claims are named and the ' +
+    'rest of the coverage is kept.'
+  );
 }

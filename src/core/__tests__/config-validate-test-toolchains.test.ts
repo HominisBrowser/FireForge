@@ -129,6 +129,27 @@ describe('parseTestBlock', () => {
     });
   });
 
+  describe('mochitestPorts', () => {
+    it('accepts fixed and auto and leaves the field unset when absent', () => {
+      for (const posture of ['fixed', 'auto'] as const) {
+        const config = makeConfig();
+        parseTestBlock(rec({ test: { mochitestPorts: posture } }), config);
+        expect(config.test?.mochitestPorts).toBe(posture);
+      }
+      const config = makeConfig();
+      parseTestBlock(rec({ test: {} }), config);
+      expect(config.test?.mochitestPorts).toBeUndefined();
+    });
+
+    it('rejects anything else', () => {
+      for (const bad of [true, 'Auto', 8888, null]) {
+        expect(() => {
+          parseTestBlock(rec({ test: { mochitestPorts: bad } }), makeConfig());
+        }).toThrow(/"test\.mochitestPorts" must be "fixed" or "auto"/);
+      }
+    });
+  });
+
   it('carries both fields together', () => {
     const config = makeConfig();
     parseTestBlock(rec({ test: { canaryPath: 'a/b.js', canaryTimeoutSeconds: 90 } }), config);

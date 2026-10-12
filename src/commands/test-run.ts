@@ -27,6 +27,7 @@ import {
   headedNoOutputTimeoutHint,
 } from '../core/test-harness-crash.js';
 import { reportTestHost, sampleTestHost, stampPerfHost } from '../core/test-host-state.js';
+import { vetoIncompletePass } from '../core/test-run-completeness.js';
 import { retryAfterXpcshellSymlinkRepair } from '../core/test-xpcshell-retry.js';
 import { withXpcshellProfileDir } from '../core/xpcshell-profile-dir.js';
 import { TestFailureError } from '../errors/build.js';
@@ -164,7 +165,13 @@ async function runTestsWithRetriesInner(
       fullOutput: ctx.fullOutput,
     });
     const combined = `${result.stdout}\n${result.stderr}`;
-    verdict = classifyHarnessRun(result.exitCode, combined, paths);
+    // An exit-0 run is still not a pass when it stopped partway or
+    // reported unexpected results (see test-run-completeness.ts).
+    verdict = vetoIncompletePass(
+      classifyHarnessRun(result.exitCode, combined, paths),
+      combined,
+      paths
+    );
     if (verdict.kind !== 'harness-crash' || attempts >= maxAttempts) break;
     warn(
       `Harness crash detected (${verdict.signature?.reason ?? 'unknown shape'}): ` +

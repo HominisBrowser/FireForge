@@ -39,16 +39,50 @@ export function hasRawCssColors(content: string): boolean {
  * implementation does not model them, so two adjacent slashes inside a regex
  * (the tail of `/https?:\/\//`) read as a `//` line comment and the rest of
  * the line is blanked, corrupting whatever lint pass consumes the stripped
- * text. Firefox chrome sources contain preprocessor directives (`#ifdef`)
- * and other constructs acorn cannot tokenize. Those fall back to the legacy
- * regex strip, which handles strings but not regex literals.
+ * text. The source is tokenized as a module, then as a script. Firefox
+ * chrome sources can contain constructs acorn tokenizes under neither goal.
+ * Those fall back to the legacy regex strip, which handles strings but not
+ * regex literals.
  */
 export function stripJsComments(source: string): string {
+  return stripJsCommentsParsed(source) ?? stripJsCommentsLegacy(source);
+}
+
+/**
+ * The tokenizer half of {@link stripJsComments}: the stripped source, or
+ * `null` when acorn can tokenize it neither as a module nor as a script.
+ *
+ * Module first, then script, because chrome subscripts are scripts: a
+ * legacy octal escape is a tokenizer error only under the module goal.
+ * Callers that must not under-count when tokenizing fails (the code-line
+ * size metric) read the `null` and pick their own fallback rather than the
+ * legacy regex strip, which can blank code.
+ */
+export function stripJsCommentsParsed(source: string): string | null {
+  const comments = collectJsComments(source, 'module') ?? collectJsComments(source, 'script');
+  if (comments === null) return null;
+  if (comments.length === 0) return source;
+  const chars = source.split('');
+  for (const { start, end } of comments) {
+    for (let i = start; i < end; i++) {
+      if (chars[i] !== '\n' && chars[i] !== '\r') {
+        chars[i] = ' ';
+      }
+    }
+  }
+  return chars.join('');
+}
+
+/** Comment ranges of `source` under one parse goal, or `null` on a tokenizer error. */
+function collectJsComments(
+  source: string,
+  sourceType: 'module' | 'script'
+): Array<{ start: number; end: number }> | null {
   const comments: Array<{ start: number; end: number }> = [];
   try {
     const t = acornTokenizer(source, {
       ecmaVersion: 'latest',
-      sourceType: 'module',
+      sourceType,
       allowHashBang: true,
       onComment: (_isBlock, _text, start, end) => {
         comments.push({ start, end });
@@ -60,19 +94,9 @@ export function stripJsComments(source: string): string {
       if (token.type === acornTokTypes.eof) break;
     }
   } catch {
-    return stripJsCommentsLegacy(source);
+    return null;
   }
-
-  if (comments.length === 0) return source;
-  const chars = source.split('');
-  for (const { start, end } of comments) {
-    for (let i = start; i < end; i++) {
-      if (chars[i] !== '\n' && chars[i] !== '\r') {
-        chars[i] = ' ';
-      }
-    }
-  }
-  return chars.join('');
+  return comments;
 }
 
 /**

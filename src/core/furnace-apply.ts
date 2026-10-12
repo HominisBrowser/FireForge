@@ -99,6 +99,17 @@ function addMissingComponentError(
   });
 }
 
+/**
+ * The skip both batch loops record when a component's source is unchanged
+ * since the last recorded apply and its engine copy still matches. `reason`
+ * keeps its long-standing text for API consumers; `kind` lets summaries
+ * name it.
+ */
+const ALREADY_CURRENT_SKIP = {
+  reason: 'No changes since last apply',
+  kind: 'already-current',
+} as const;
+
 async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
   const { config, furnacePaths, state, engineDir, ftlDir, dryRun } = ctx;
   const { result, allActions, newChecksums, rollbackJournal, componentName } = ctx;
@@ -136,7 +147,7 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
           cachedEngine
         );
         if (!drifted) {
-          result.skipped.push({ name, reason: 'No changes since last apply' });
+          result.skipped.push({ name, ...ALREADY_CURRENT_SKIP });
           recordComponentChecksums(newChecksums, previous, 'override', name);
           continue;
         }
@@ -357,7 +368,7 @@ async function applyCustomBatch(
           customConfig
         );
         if (!drifted) {
-          result.skipped.push({ name, reason: 'No changes since last apply' });
+          result.skipped.push({ name, ...ALREADY_CURRENT_SKIP });
           recordComponentChecksums(newChecksums, previous, 'custom', name);
           continue;
         }

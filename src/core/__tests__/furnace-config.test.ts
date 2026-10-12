@@ -112,6 +112,22 @@ describe('furnace-config helpers', () => {
     expect(result.custom['mybrowser-dock-button']?.sharedFtl).toBe('browser/mybrowser-dock.ftl');
   });
 
+  it('round-trips validationExceptions and optInChecks through validation', () => {
+    const result = validateFurnaceConfig({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {},
+      validationExceptions: [{ component: 'moz-a', check: 'no-aria-role', reason: 'native' }],
+      optInChecks: ['icon-button-label'],
+    });
+    expect(result.validationExceptions).toEqual([
+      { component: 'moz-a', check: 'no-aria-role', reason: 'native' },
+    ]);
+    expect(result.optInChecks).toEqual(['icon-button-label']);
+  });
+
   it('rejects sharedFtl when localized is false', () => {
     expect(() =>
       validateFurnaceConfig({

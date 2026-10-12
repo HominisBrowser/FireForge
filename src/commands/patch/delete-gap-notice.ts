@@ -58,6 +58,8 @@ function formatGapNotice(targetFilename: string, message: string): string {
   return (
     `deleting ${targetFilename} leaves ${range} with ${where}; the queue will fail ` +
     'numeric-gap (patchPolicy.allowGaps is false) until ' +
-    `"fireforge export --order ${fill}" fills it or "fireforge patch compact" renumbers.`
+    `"fireforge export --order ${fill}" fills it or "fireforge patch compact" renumbers. ` +
+    `"fireforge patch retire ${targetFilename}" removes the patch and keeps its order as a ` +
+    'retired slot instead, so no gap opens.'
   );
 }

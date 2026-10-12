@@ -59,6 +59,23 @@ export interface TestConfig {
    * verdict line. `--reap-orphans` is the per-invocation equivalent.
    */
   reapOrphans?: 'report' | 'reap';
+  /**
+   * `fixed` (the default) refuses a browser run while the mochitest server
+   * or Marionette port is held. `auto` lets a run proceed when the holder is
+   * not this checkout's own and the engine's mochitest harness can fall back
+   * to a free port itself, so sibling checkouts can run browser suites at
+   * once. `--auto-ports` is the per-invocation equivalent.
+   */
+  mochitestPorts?: 'fixed' | 'auto';
+}
+
+/** Patch history log settings stored in fireforge.json. */
+export interface HistoryConfig {
+  /**
+   * Project-relative path of the append-only patch history log. Defaults to
+   * `.fireforge/history.jsonl`, outside the tracked patch queue.
+   */
+  path?: string;
 }
 
 /** A single external executable required by a project-specific toolchain. */
@@ -117,6 +134,37 @@ export interface PatchPolicyReservedRange {
 }
 
 /**
+ * One `patchPolicy.upstreamAllowlist` entry in object form. The string form
+ * is shorthand for `{ path }`.
+ */
+export interface PatchPolicyUpstreamAllowEntry {
+  /** Engine-relative path glob (`*` within a segment, `**` across segments). */
+  path: string;
+  /**
+   * Registration-only mode: a patch may only add lines to a matching file
+   * (no removals, no deletion), and every non-blank added line must carry
+   * `marker` (or `patchPolicy.addOnlyMarker`), case-insensitively.
+   */
+  addOnly?: boolean;
+  /** Marker an added line must contain. Overrides `patchPolicy.addOnlyMarker`. */
+  marker?: string;
+}
+
+/**
+ * Limits the files a class of patch may touch, e.g. a `-tests` patch to test
+ * directories and test manifests. A rule applies to a patch when every
+ * selector it sets matches. At least one selector is required.
+ */
+export interface PatchPolicyScopeRule {
+  /** Applies to patches in this category. */
+  category?: string;
+  /** Applies to patches whose filename matches this regular expression. */
+  filenamePattern?: string;
+  /** Engine-relative path globs every file the patch touches must match. */
+  files: string[];
+}
+
+/**
  * Optional project-specific patch queue policy. When absent, FireForge keeps
  * its historical broad category + numeric ordering behaviour.
  */
@@ -133,6 +181,21 @@ export interface PatchPolicyConfig {
   ranges: PatchPolicyRange[];
   /** Reserved exception ranges. */
   reservedRanges?: PatchPolicyReservedRange[];
+  /**
+   * Globs naming the upstream files a non-reserved patch may modify. A file
+   * counts as upstream when no patch in the queue creates it. Unset: no
+   * restriction.
+   */
+  upstreamAllowlist?: Array<string | PatchPolicyUpstreamAllowEntry>;
+  /** Default marker for `addOnly` allowlist entries that set none. */
+  addOnlyMarker?: string;
+  /** File-scope rules per patch class (category and/or filename pattern). */
+  scopeRules?: PatchPolicyScopeRule[];
+  /**
+   * Require every reserved allowlist entry's `adr` and `documentation` path
+   * to exist under the project root. Default false.
+   */
+  verifyDocumentPaths?: boolean;
 }
 
 /**
@@ -155,6 +218,8 @@ export interface FireForgeConfig {
   buildAudit?: BuildAuditConfig;
   /** Test command defaults */
   test?: TestConfig;
+  /** Patch history log settings */
+  history?: HistoryConfig;
   /** Optional project-specific external toolchains checked by doctor. */
   externalToolchains?: ExternalToolchainConfig[];
   /** Project license SPDX identifier */
@@ -167,6 +232,8 @@ export interface FireForgeConfig {
   patchPolicy?: PatchPolicyConfig;
   /** Typecheck command configuration (CI-grade, whole-project) */
   typecheck?: TypecheckConfig;
+  /** `fireforge check`: the composed static gate's policy and project steps */
+  check?: CheckConfig;
   /**
    * Project marker prefix appended to lines FireForge writes into
    * upstream Firefox source files (e.g. the `customElements.js` tag list).
@@ -174,6 +241,56 @@ export interface FireForgeConfig {
    * Keeps modifications discoverable and re-applies idempotent.
    */
   markerComment?: string;
+}
+
+/** The built-in steps of `fireforge check`, in table order. */
+export const CHECK_BUILTIN_STEPS = [
+  'status',
+  'verify',
+  'lint',
+  'typecheck',
+  'furnace-validate',
+  'token-coverage',
+] as const;
+
+/** One built-in `fireforge check` step name. */
+export type CheckBuiltinStep = (typeof CHECK_BUILTIN_STEPS)[number];
+
+/**
+ * A project command `fireforge check` runs beside its built-in steps
+ * (`check.extraSteps[]`): an audit FireForge does not ship.
+ */
+export interface CheckExtraStep {
+  /** Unique step name shown in the table (lowercase, digits and dashes). */
+  name: string;
+  /** Shell command line, run with `/bin/sh -c` (`cmd.exe /c` on Windows). */
+  command: string;
+  /** Project-relative working directory. Defaults to the project root. */
+  cwd?: string;
+  /** Seconds before the step is killed and fails. Unbounded when unset. */
+  timeout?: number;
+}
+
+/** Configuration for `fireforge check`. Every field is optional. */
+export interface CheckConfig {
+  /** Built-in steps this project never runs. */
+  skip?: CheckBuiltinStep[];
+  /**
+   * The status step's `--check` policy: `--fail-on`, `--allow` and
+   * `--fail-on-unknown`. Unset runs the default `status --check` policy.
+   */
+  status?: {
+    failOn?: string[];
+    allow?: string[];
+    failOnUnknown?: boolean;
+  };
+  /** `--max-warnings` for the lint and furnace-validate steps. */
+  maxWarnings?: {
+    lint?: number;
+    furnace?: number;
+  };
+  /** Project commands run as further steps. */
+  extraSteps?: CheckExtraStep[];
 }
 
 /**
@@ -319,6 +436,41 @@ export interface PatchLintFileSizeThresholds {
   test?: PatchLintFileSizeTier;
 }
 
+/** What `file-too-large` counts: every line, or only lines that carry code. */
+export type PatchLintFileSizeMetric = 'raw' | 'code';
+
+/**
+ * What `large-patch-lines` counts: every non-binary line of the unified
+ * diff, or only the added lines that carry code.
+ */
+export type PatchLintPatchSizeMetric = 'diff' | 'addedCode';
+
+/**
+ * Overrides for one patch-size tier. `lines` drives `large-patch-lines`,
+ * `files` drives `large-patch-files`. Each is a `notice`/`warning`/`error`
+ * triple shaped like {@link PatchLintFileSizeTier}, merged over the
+ * defaults and validated `notice <= warning <= error`.
+ */
+export interface PatchLintPatchSizeTier {
+  lines?: PatchLintFileSizeTier;
+  files?: PatchLintFileSizeTier;
+}
+
+/**
+ * Overrides for the patch-size thresholds, per tier.
+ *
+ * Module constants until 0.50.0. The defaults are the old constants: lines
+ * general 800/1500/3000, test 1500/3000/6000, branding 8000/18000/30000;
+ * files warn above 5 (general, test) or 60 (branding). The files triple has
+ * no notice or error band by default: an unset `files.notice` follows the
+ * effective `files.warning`, and an unset `files.error` never fires.
+ */
+export interface PatchLintPatchSizeThresholds {
+  general?: PatchLintPatchSizeTier;
+  test?: PatchLintPatchSizeTier;
+  branding?: PatchLintPatchSizeTier;
+}
+
 /**
  * Configuration for patch lint rules.
  */
@@ -371,6 +523,34 @@ export interface PatchLintConfig {
    */
   fileSizeThresholds?: PatchLintFileSizeThresholds;
   /**
+   * What `file-too-large` counts. `'raw'` (the default) counts every line
+   * the way `wc -l` does. `'code'` counts the lines left non-blank once
+   * comments are blanked, so JSDoc and blank lines stop counting.
+   */
+  fileSizeMetric?: PatchLintFileSizeMetric;
+  /**
+   * Per-tier overrides for `large-patch-lines` and `large-patch-files`.
+   * Unset fields keep the built-in defaults.
+   */
+  patchSizeThresholds?: PatchLintPatchSizeThresholds;
+  /**
+   * What `large-patch-lines` counts. `'diff'` (the default) counts every
+   * non-binary line of the unified diff. `'addedCode'` counts added lines
+   * that are neither blank nor comment, judged on each file's post-image,
+   * skips lines inside Furnace `@fireforge-include` spans, and counts test
+   * files against the test tier and everything else against the general
+   * tier inside a mixed patch.
+   */
+  patchSizeMetric?: PatchLintPatchSizeMetric;
+  /**
+   * Globs naming registration files (`jar.mn`, `moz.build`, manifests)
+   * that count toward neither `large-patch-lines` nor `large-patch-files`.
+   * A glob without a `/` matches the basename, one with a `/` matches the
+   * engine-relative path. `*` stays within a path segment, `**` crosses
+   * segments. Default: none.
+   */
+  patchSizeRegistrationFiles?: string[];
+  /**
    * Run the project's Prettier over patch-owned `.sys.mjs` modules, from
    * inside `engine/` so the engine's own `.prettierrc*`/`.prettierignore`
    * decide. Default `'off'`: when off, formatting is explicitly out of
@@ -409,6 +589,37 @@ export interface PatchLintConfig {
    * and fail the other. Default: 'warning'.
    */
   undefinedIdentifiers?: PatchLintSeverityGate;
+  /**
+   * Token scales enforced over CSS files a patch creates (`token-scale`).
+   * Each scale names properties whose values must resolve to its tokens.
+   * Default unset: no scale is enforced.
+   */
+  tokenScales?: PatchLintTokenScale[];
+}
+
+/**
+ * One `patchLint.tokenScales[]` entry: a property family (spacing, type,
+ * radius, opacity, z-index, …) whose declared values must be tokens on one
+ * scale.
+ */
+export interface PatchLintTokenScale {
+  /** CSS properties governed (exact names, or a `*`-suffixed prefix such as `padding*`). */
+  properties: string[];
+  /** Custom-property prefix of the scale's tokens, e.g. `--mybrowser-space-`. */
+  prefix: string;
+  /**
+   * Literal value atoms accepted without a token (`0`, `auto`, `1px`).
+   * `*` is a wildcard, so `*%` accepts any percentage. CSS-wide keywords
+   * (`inherit`, `initial`, `unset`, `revert`, `revert-layer`) are always
+   * accepted.
+   */
+  allowLiterals?: string[];
+  /**
+   * Further custom properties accepted besides `prefix` (exact names, or a
+   * `*`-suffixed prefix such as `--moz-*`), for reviewed upstream or recipe
+   * tokens.
+   */
+  allow?: string[];
 }
 
 /**

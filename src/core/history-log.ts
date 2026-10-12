@@ -15,7 +15,8 @@ import { appendHistory } from './destructive.js';
  * reject would report a completed, irreversible mutation as a failure and send
  * the operator looking for damage that is not there. Because that reasoning is
  * easy to lose in a copy, it now lives in one place.
- * @param patchesDir - The `patches/` directory holding the history log.
+ * @param patchesDir - The project's `patches/` directory (the log itself lives
+ *   under `.fireforge/` or `history.path`; see `history-log-file.ts`).
  * @param entry - The entry to append.
  * @param context - What just committed, rendered into
  *   `History log append failed after <context>: <reason>`, e.g.

@@ -25,6 +25,7 @@ import {
 } from './patch-manifest.js';
 import { formatPatchOrder, requirePatchOrder } from './patch-parse.js';
 import { allocatePolicyOrder, enforcePatchPolicy } from './patch-policy.js';
+import { manifestWithRetiredSlots } from './patch-retired.js';
 
 export {
   findAllPatchesForFiles,
@@ -440,10 +441,8 @@ async function computeExportPlanUnderLock(input: PlanExportInput): Promise<Compu
     supersededDetails,
     supersededPatches,
     manifestBefore: manifestBefore ?? null,
-    manifestAfter: {
-      version: 1,
-      patches: afterPatches,
-    },
+    // A patch landing on a retired order fills that slot.
+    manifestAfter: manifestWithRetiredSlots(manifestBefore, afterPatches),
   };
 }
 

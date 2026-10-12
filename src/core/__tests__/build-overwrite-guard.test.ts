@@ -17,6 +17,11 @@ vi.mock('../git-status.js', () => ({
   ),
 }));
 vi.mock('../furnace-config.js', () => ({ collectFurnaceManagedPrefixes: vi.fn() }));
+// The composed-source comparison has its own real-fs suite
+// (furnace-composed-source.integration.test.ts); here it is a seam.
+vi.mock('../furnace-composed-source.js', () => ({
+  matchDeployedComponentFiles: vi.fn(() => Promise.resolve(new Map())),
+}));
 vi.mock('../status-classify.js', () => ({ classifyFiles: vi.fn() }));
 vi.mock('../config.js', () => ({
   getProjectPaths: vi.fn(() => ({
@@ -27,9 +32,12 @@ vi.mock('../config.js', () => ({
 
 import type { FireForgeConfig } from '../../types/config.js';
 import {
+  assessUnexportedDrift,
   findUnexportedDriftAtRisk,
+  formatDeployedUnexportedNote,
   formatUnexportedDriftWarning,
 } from '../build-overwrite-guard.js';
+import { matchDeployedComponentFiles } from '../furnace-composed-source.js';
 import { collectFurnaceManagedPrefixes } from '../furnace-config.js';
 import type { GitStatusEntry } from '../git-base.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../git-status.js';
@@ -71,6 +79,7 @@ describe('findUnexportedDriftAtRisk', () => {
     vi.mocked(expandUntrackedDirectoryEntries).mockImplementation((_repoDir, entries) =>
       Promise.resolve(entries)
     );
+    vi.mocked(matchDeployedComponentFiles).mockResolvedValue(new Map());
   });
 
   it('reports drift under a path build-prepare rewrites', async () => {
@@ -163,5 +172,73 @@ describe('findUnexportedDriftAtRisk', () => {
   it('fails open: a probe failure never blocks a build', async () => {
     vi.mocked(getWorkingTreeStatus).mockRejectedValue(new Error('not a git checkout'));
     await expect(findUnexportedDriftAtRisk('/project', config)).resolves.toEqual([]);
+  });
+});
+
+describe('assessUnexportedDrift — deployed-unexported Furnace files', () => {
+  const WIDGET = 'toolkit/content/widgets/moz-x/moz-x.css';
+  const EDITED = 'toolkit/content/widgets/moz-x/moz-x.mjs';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(expandUntrackedDirectoryEntries).mockImplementation((_repoDir, entries) =>
+      Promise.resolve(entries)
+    );
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([statusEntry(WIDGET), statusEntry(EDITED)]);
+    vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(
+      new Set(['toolkit/content/widgets/moz-x/'])
+    );
+    vi.mocked(classifyFiles).mockResolvedValue([
+      { ...statusEntry(WIDGET), classification: 'patch-owned-drift', owner: '010-ui-x.patch' },
+      { ...statusEntry(EDITED), classification: 'patch-owned-drift', owner: '010-ui-x.patch' },
+    ] as Awaited<ReturnType<typeof classifyFiles>>);
+  });
+
+  it('allows the overwrite of a file equal to its composed source and refuses the rest', async () => {
+    vi.mocked(matchDeployedComponentFiles).mockResolvedValue(
+      new Map([[WIDGET, 'composed-source']])
+    );
+
+    const assessment = await assessUnexportedDrift('/project', config);
+
+    expect(matchDeployedComponentFiles).toHaveBeenCalledWith('/project', '/project/engine', [
+      WIDGET,
+      EDITED,
+    ]);
+    expect(assessment.atRisk.map((entry) => entry.file)).toEqual([EDITED]);
+    expect(assessment.deployedUnexported).toEqual([
+      {
+        file: WIDGET,
+        classification: 'deployed-unexported',
+        match: 'composed-source',
+        owner: '010-ui-x.patch',
+      },
+    ]);
+    await expect(findUnexportedDriftAtRisk('/project', config)).resolves.toEqual(assessment.atRisk);
+    const note = formatDeployedUnexportedNote(assessment.deployedUnexported);
+    expect(note).toContain(`${WIDGET} [deployed-unexported: composed-source]`);
+    expect(note).toContain('owned by 010-ui-x.patch');
+  });
+
+  it('fails closed: when the source comparison cannot run, every file stays at risk', async () => {
+    vi.mocked(matchDeployedComponentFiles).mockRejectedValue(new Error('furnace.json unreadable'));
+
+    const assessment = await assessUnexportedDrift('/project', config);
+
+    expect(assessment.atRisk.map((entry) => entry.file)).toEqual([WIDGET, EDITED]);
+    expect(assessment.deployedUnexported).toEqual([]);
+  });
+
+  it('skips the comparison when no Furnace prefix is managed', async () => {
+    vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(new Set());
+    vi.mocked(getWorkingTreeStatus).mockResolvedValue([statusEntry('mozconfig')]);
+    vi.mocked(classifyFiles).mockResolvedValue([
+      { ...statusEntry('mozconfig'), classification: 'unmanaged' },
+    ] as Awaited<ReturnType<typeof classifyFiles>>);
+
+    const assessment = await assessUnexportedDrift('/project', config);
+
+    expect(assessment.atRisk.map((entry) => entry.file)).toEqual(['mozconfig']);
+    expect(matchDeployedComponentFiles).not.toHaveBeenCalled();
   });
 });

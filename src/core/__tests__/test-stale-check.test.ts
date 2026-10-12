@@ -366,17 +366,45 @@ describe('formatTestCoverageRefusal', () => {
     expect(message).toContain('not missing coverage');
   });
 
-  it('names --extend-coverage, so the union is discoverable at the moment it is needed', () => {
-    // A scoped build replaces the claim, so under concurrent sessions a
-    // peer's build erases coverage you still hold. The flag that fixes that
-    // is useless if the refusal never mentions it.
+  it('says a scoped rebuild of the uncovered paths keeps every other unchanged claim', () => {
+    // Per-path retention is the default since 0.50.0: rebuilding only the
+    // uncovered paths costs nobody else's coverage, and the refusal says so
+    // (and how to package without running).
     const message = formatTestCoverageRefusal(
       ['browser/components/history/test/browser/browser_hist.js'],
       ['browser/components/tiles/test/browser/browser_a.js']
     );
-    expect(message).toContain('--extend-coverage');
-    expect(message).toContain('engine HEAD');
+    expect(message).toContain(
+      'fireforge test --build browser/components/history/test/browser/browser_hist.js'
+    );
+    expect(message).toContain('fireforge test --build-only');
+    expect(message).toContain('keeps every other recorded path whose own staging inputs');
     expect(message).toContain('engine/mozconfig');
+    expect(message).not.toContain('--extend-coverage');
+  });
+
+  it('names the staging inputs that changed since a carried full build', () => {
+    const message = formatTestCoverageRefusal(
+      ['browser/base/content/test/perf/browser_startup.js'],
+      ['browser/components/tiles/test/browser/browser_a.js'],
+      [],
+      {
+        changedInputs: {
+          'browser/base/content/test/perf/browser_startup.js': [
+            'browser/base/content/test/perf/head.js',
+          ],
+          'other/path.js': [],
+        },
+        carriesFullAnchor: true,
+      }
+    );
+    expect(message).toContain(
+      'plus earlier full coverage for paths whose own staging inputs are unchanged'
+    );
+    expect(message).toContain(
+      'Staging inputs changed since the full build this record carries forward: browser/base/content/test/perf/browser_startup.js (browser/base/content/test/perf/head.js).'
+    );
+    expect(message).not.toContain('other/path.js');
   });
 
   // The refusal was already correct. What it left to the reader was why

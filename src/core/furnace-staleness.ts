@@ -21,6 +21,37 @@ import {
 } from './furnace-config.js';
 
 /**
+ * Names of the tracked override and custom components whose source changed
+ * on disk since the last apply, i.e. edits engine/ does not hold yet.
+ * Throws on a broken config or state; {@link warnIfFurnaceStale} downgrades
+ * that.
+ */
+export async function listStaleFurnaceComponents(projectRoot: string): Promise<string[]> {
+  if (!(await furnaceConfigExists(projectRoot))) return [];
+
+  const config = await loadFurnaceConfig(projectRoot);
+  const state = await loadFurnaceState(projectRoot);
+  const furnacePaths = getFurnacePaths(projectRoot);
+
+  if (!state.appliedChecksums) return [];
+
+  const stale: string[] = [];
+  for (const name of Object.keys(config.overrides)) {
+    const dir = `${furnacePaths.overridesDir}/${name}`;
+    if (!(await pathExists(dir))) continue;
+    const prev = extractComponentChecksums(state.appliedChecksums, 'override', name);
+    if (await hasComponentChanged(dir, prev)) stale.push(name);
+  }
+  for (const name of Object.keys(config.custom)) {
+    const dir = `${furnacePaths.customDir}/${name}`;
+    if (!(await pathExists(dir))) continue;
+    const prev = extractComponentChecksums(state.appliedChecksums, 'custom', name);
+    if (await hasComponentChanged(dir, prev)) stale.push(name);
+  }
+  return stale;
+}
+
+/**
  * Emits a warning when any tracked override or custom component has
  * changed on disk since the last apply. Safe to call from any build-time
  * command that does not auto-apply. A failure inside the probe is
@@ -28,28 +59,7 @@ import {
  */
 export async function warnIfFurnaceStale(projectRoot: string): Promise<void> {
   try {
-    if (!(await furnaceConfigExists(projectRoot))) return;
-
-    const config = await loadFurnaceConfig(projectRoot);
-    const state = await loadFurnaceState(projectRoot);
-    const furnacePaths = getFurnacePaths(projectRoot);
-
-    if (!state.appliedChecksums) return;
-
-    const stale: string[] = [];
-    for (const name of Object.keys(config.overrides)) {
-      const dir = `${furnacePaths.overridesDir}/${name}`;
-      if (!(await pathExists(dir))) continue;
-      const prev = extractComponentChecksums(state.appliedChecksums, 'override', name);
-      if (await hasComponentChanged(dir, prev)) stale.push(name);
-    }
-    for (const name of Object.keys(config.custom)) {
-      const dir = `${furnacePaths.customDir}/${name}`;
-      if (!(await pathExists(dir))) continue;
-      const prev = extractComponentChecksums(state.appliedChecksums, 'custom', name);
-      if (await hasComponentChanged(dir, prev)) stale.push(name);
-    }
-
+    const stale = await listStaleFurnaceComponents(projectRoot);
     if (stale.length > 0) {
       warn(
         `Furnace component${stale.length === 1 ? '' : 's'} modified since last apply: ${stale.join(', ')}. ` +

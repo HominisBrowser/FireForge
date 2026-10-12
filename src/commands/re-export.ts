@@ -29,6 +29,11 @@ import {
 } from '../utils/logger.js';
 import type { AdjacentUnmanagedContext } from './re-export-adjacent.js';
 import {
+  ADJACENT_MEANS,
+  buildAdjacentUnmanagedContext,
+  reportAdjacentCarveOutUsage,
+} from './re-export-adjacent.js';
+import {
   loadScanFilesAssignments,
   withDryRunPurityGuard,
   withDryRunReExportLock,
@@ -43,7 +48,9 @@ import {
 } from './re-export-options.js';
 import { validateExpectedRemovals } from './re-export-removed.js';
 import { normalizeEngineRelativeInput, normalizeScanFiles } from './re-export-scan.js';
+import { assignScanFileOwners, scanOptionsForPatch } from './re-export-scan-owner.js';
 import { reExportSinglePatchWithIndexLockRetry } from './re-export-single.js';
+import { formatReExportRunSummary } from './re-export-summary.js';
 
 async function resolveSelectedPatches(
   patches: string[],
@@ -121,7 +128,9 @@ export async function reExportCommand(
   }
 
   const isDryRun = options.dryRun === true;
-  intro(isDryRun ? 'FireForge Re-export (dry run)' : 'FireForge Re-export');
+  // The banner says which mode is in force: a path flag that swallowed
+  // `--dry-run` as its value once turned a preview into a write unnoticed.
+  intro(isDryRun ? 'FireForge Re-export (DRY RUN)' : 'FireForge Re-export (WRITING)');
 
   // Accept export-style space-separated paths after --files by folding
   // path-shaped extra positionals into the file list.
@@ -152,6 +161,8 @@ export async function reExportCommand(
       ? manifest.patches.filter((patch) => scanFilesByPatch.has(patch.filename))
       : await resolveSelectedPatches(patches, options, manifest);
   if (!selectedPatches) return;
+  const scanAssignments =
+    scanFilesByPatch ?? assignScanFileOwners(options.scanFiles, selectedPatches, manifest);
 
   if (selectedPatches.length === 0) {
     warn('No patches selected');
@@ -191,18 +202,11 @@ export async function reExportCommand(
 
   // Classification inputs for the scan-less adjacency advisory, computed
   // once for the whole run.
-  const adjacentCtx: AdjacentUnmanagedContext = {
-    binaryName: config.binaryName,
-    furnacePrefixes: await collectFurnaceManagedPrefixes(paths.root),
-    refuseAdjacentUnmanaged: options.refuseAdjacentUnmanaged === true,
-    approvedUnmanaged: new Set(
-      (options.expectUnmanaged ?? []).map((file) =>
-        normalizeEngineRelativeInput(file, '--expect-unmanaged')
-      )
-    ),
-    approvedSeen: new Set(),
-    refusals: [],
-  };
+  const adjacentCtx = buildAdjacentUnmanagedContext(
+    options,
+    config.binaryName,
+    await collectFurnaceManagedPrefixes(paths.root)
+  );
 
   const driftCtx = buildForeignDriftContext(options);
 
@@ -227,9 +231,7 @@ export async function reExportCommand(
   await withDryRunReExportLock(paths.fireforgeDir, isDryRun, async () =>
     withDryRunPurityGuard(paths.engine, paths.patches, isDryRun, async () => {
       for (const [index, patch] of selectedPatches.entries()) {
-        const assignedScanFiles = scanFilesByPatch?.get(patch.filename);
-        const patchOptions =
-          assignedScanFiles !== undefined ? { ...options, scanFiles: assignedScanFiles } : options;
+        const patchOptions = scanOptionsForPatch(options, patch.filename, scanAssignments);
         progress.message(
           `Re-exporting ${index + 1}/${selectedPatches.length}: ${patch.filename} (${patch.filesAffected.length} file(s), ${elapsedSince(startedAt)} elapsed)...`
         );
@@ -261,6 +263,15 @@ export async function reExportCommand(
   await finishReExportLint(lintCtx);
   warnUnseenExpectedDrift(driftCtx);
   warnUnseenApprovedUnmanaged(adjacentCtx);
+  const summary = formatReExportRunSummary({
+    selected: selectedPatches.map((patch) => patch.filename),
+    written: reExportedFilenames,
+    failed: failedFilenames,
+    refusedAdjacent: adjacentCtx.refusals.map((r) => r.patchFilename),
+    refusedDrift: driftCtx.refusals.map((r) => r.patchFilename),
+    isDryRun,
+  });
+  if (summary !== undefined) info(summary);
   throwRunLevelRefusals(adjacentCtx, driftCtx, progress);
 
   if (reExported === 0 && selectedPatches.length > 0) {
@@ -293,6 +304,7 @@ export async function reExportCommand(
     selectedCount: selectedPatches.length,
     reExportedFilenames,
     failedFilenames,
+    selectedFilenames: selectedPatches.map((patch) => patch.filename),
     shouldStamp,
     stampRequested: options.stamp === true,
     config,
@@ -323,9 +335,11 @@ function buildForeignDriftContext(options: ReExportOptions): ForeignDriftContext
  * admit, and reads as an approval that is in force when it is not.
  * A warning rather than a refusal: an approved path legitimately goes unmet
  * when the reviewed file has since been adopted into a patch, which is the
- * outcome the carve-out exists to be retired by.
+ * outcome the carve-out exists to be retired by. The `--expect-new` and
+ * `--adjacent-ignore` accounting is reported first, alongside.
  */
 function warnUnseenApprovedUnmanaged(adjacentCtx: AdjacentUnmanagedContext): void {
+  reportAdjacentCarveOutUsage(adjacentCtx);
   const unseen = [...adjacentCtx.approvedUnmanaged].filter(
     (file) => !adjacentCtx.approvedSeen.has(file)
   );
@@ -351,18 +365,19 @@ function throwRunLevelRefusals(
 ): void {
   if (adjacentCtx.refusals.length > 0) {
     progress.error('Re-export refused');
-    // Each offender is named with the owned directory that made it
-    // adjacent: an unattended run reads only this line, and without the
-    // anchor it cannot tell which of a multi-directory patch's locations
-    // the file sits beside.
+    // Each offender is named with the owned directory (or registering
+    // carrier) that made it adjacent: an unattended run reads only this
+    // line, and without the anchor it cannot tell which of a
+    // multi-directory patch's locations the file belongs to.
     const offenders = adjacentCtx.refusals
       .map((r) => `${r.patchFilename} (${r.anchored.join(', ')})`)
       .join('; ');
     throw new GeneralError(
       `Refused ${adjacentCtx.refusals.length} patch(es) with adjacent unmanaged files ` +
-        `(--refuse-adjacent-unmanaged): ${offenders}. Adjacent means the file sits in a ` +
-        `directory the patch already owns a file in. Adopt reviewed files with ` +
-        `--scan --scan-file, or export them as a new patch.`
+        `(--refuse-adjacent-unmanaged): ${offenders}. ${ADJACENT_MEANS} ` +
+        `Adopt reviewed files with --scan --scan-file, or export them as a new patch ` +
+        `(name a file your next export adopts with --expect-new, and a reviewed, deliberately ` +
+        `unmanaged file with --expect-unmanaged or --adjacent-ignore).`
     );
   }
 
@@ -375,11 +390,11 @@ function throwRunLevelRefusals(
         ? ` ${unreadable.length} of these refused because the old patch body was missing or unreadable, so the drift comparison could not run (fail-closed).`
         : '';
     throw new GeneralError(
-      `Refused ${driftCtx.refusals.length} patch(es) whose refreshed body would absorb ` +
-        `engine edits not present in the old patch body (--refuse-foreign-drift): ${names}.${unreadablePart}\n\n` +
+      `Refused ${driftCtx.refusals.length} patch(es) whose refreshed body would add or drop ` +
+        `lines relative to the old patch body (--refuse-foreign-drift): ${names}.${unreadablePart}\n\n` +
         'The flag cannot tell WHO wrote those lines, and the two populations have opposite ' +
         'remedies:\n' +
-        '  - Lines you added yourself since the last export (the per-file report tags these ' +
+        '  - Lines you changed yourself since the last export (the per-file report tags these ' +
         '"edited since your last export"): name them with --expect <path> so this run captures ' +
         'them, or re-run without the flag to capture every drifting file.\n' +
         "  - Lines another session owns: do NOT proceed — commit or stash that session's work " +
@@ -403,6 +418,7 @@ function reportReExportOutcome(args: {
   selectedCount: number;
   reExportedFilenames: string[];
   failedFilenames: string[];
+  selectedFilenames: string[];
   shouldStamp: boolean;
   stampRequested: boolean;
   config: FireForgeConfig;
@@ -434,11 +450,12 @@ function reportReExportOutcome(args: {
   }
 
   if (reExported < selectedCount) {
-    const skippedCount = selectedCount - reExported - args.failedFilenames.length;
     const failedPart =
       args.failedFilenames.length > 0 ? ` Failed: ${args.failedFilenames.join(', ')}.` : '';
+    const accounted = new Set([...args.reExportedFilenames, ...args.failedFilenames]);
+    const skipped = args.selectedFilenames.filter((name) => !accounted.has(name));
     const skippedPart =
-      skippedCount > 0 ? ` Skipped: ${skippedCount} patch(es) (see warnings above).` : '';
+      skipped.length > 0 ? ` Skipped: ${skipped.join(', ')} (see warnings above).` : '';
     throw new GeneralError(
       `${isDryRun ? '[dry-run] Would re-export' : 'Re-exported'} only ${reExported} of ` +
         `${selectedCount} selected patch(es).${failedPart}${skippedPart} ` +

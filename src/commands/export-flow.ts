@@ -8,13 +8,9 @@
  * testable without dragging the whole command harness along for the ride.
  */
 
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { type ConflictReport } from '../core/destructive.js';
-import {
-  detectMovedCodeOverlaps,
-  formatAdoptThenSplitRemedy,
-} from '../core/export-moved-code-shape.js';
 import {
   buildPlanExportInput,
   findAllPatchesForFilesWithDetails,
@@ -22,6 +18,7 @@ import {
   planExport,
 } from '../core/patch-export.js';
 import { buildPatchQueueContext, lintPatchQueue } from '../core/patch-lint.js';
+import { formatLintIgnoreList } from '../core/patch-lint-ignore.js';
 import { withPatchDirectoryLock } from '../core/patch-lock.js';
 import {
   addPatchToManifest,
@@ -44,9 +41,11 @@ import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
+import { describePlacementAdvice } from './export-adopt-check.js';
 import { groupProjectedPlacementErrors } from './export-placement-conflicts.js';
 import { assertPlacementAvoidsReservedRanges } from './export-placement-policy.js';
 import { findPartialOwnershipOverlap } from './export-shared.js';
+import { acceptTreeRegisteredModules } from './export-staged-registration.js';
 import { projectEntryBody } from './patch/entry-projection.js';
 import { getSortedRenameEntries, renameMapsEqual } from './patch-rename-map.js';
 
@@ -267,18 +266,30 @@ export async function projectPlacementForLint(
   // whether they live in a brand-new file or are added to an existing one.
   // Leaving either map empty lets a patch land before one of its own
   // dependencies and still pass the gate.
+  const pendingBody = projectEntryBody(diff);
   projectedEntries.push({
     filename: plan.newFilename,
     order: plan.insertionOrder,
     metadata: null,
-    ...projectEntryBody(diff),
+    ...pendingBody,
   });
   projectedEntries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
   const policyRest = baseCtx.patchPolicy ? { patchPolicy: baseCtx.patchPolicy } : {};
-  const projectedIssues = lintPatchQueue({
-    entries: projectedEntries,
-    ...policyRest,
-  }).filter((i) => i.severity === 'error');
+  // A new module whose moz.build line is declared (staged registration)
+  // and present in the working tree, but not yet exported by its owner, is
+  // accepted with a "re-export the owner next" note instead of refused.
+  const registration = await acceptTreeRegisteredModules({
+    engineDir: join(dirname(patchesDir), 'engine'),
+    baseCtx,
+    newFilename: plan.newFilename,
+    pendingNewFiles: new Set(pendingBody.newFiles.keys()),
+    projectedIssues: lintPatchQueue({
+      entries: projectedEntries,
+      ...policyRest,
+    }).filter((i) => i.severity === 'error'),
+  });
+  for (const note of registration.accepted) warn(note);
+  const projectedIssues = registration.remaining;
   if (projectedIssues.length === 0) return null;
   // Baseline lint over the un-renumbered queue: an error present here is
   // pre-existing breakage rather than a consequence of this placement, and
@@ -288,16 +299,16 @@ export async function projectPlacementForLint(
     entries: baseCtx.entries,
     ...policyRest,
   }).filter((i) => i.severity === 'error');
-  // New-file + moved-code slice: when the refusal is caused by
-  // the source patch still carrying lines the new patch would gain, name
-  // the adopt-then-split sequence instead of leaving the operator to
-  // derive it from two individually-correct guards that together dead-end.
-  const movedCode = detectMovedCodeOverlaps(diff, baseCtx.entries);
+  // Register-first and new-file + moved-code advice: name the working
+  // sequence instead of leaving the operator to derive it from two
+  // individually-correct guards that together dead-end, but only offer
+  // adopt-then-split for a real moved block whose adopt would itself pass.
   return {
     reason: `placement would introduce ${projectedIssues.length} cross-patch lint error(s)`,
     details: [
       ...groupProjectedPlacementErrors(projectedIssues, baselineIssues, plan),
-      ...formatAdoptThenSplitRemedy(movedCode, plan.newFilename, plan.insertionOrder),
+      ...registration.advice,
+      ...describePlacementAdvice(baseCtx, diff, projectedIssues, plan),
     ],
   };
 }
@@ -569,7 +580,7 @@ export async function renderDryRunPreview(input: DryRunPreviewInput): Promise<vo
     info(`  tier: ${plan.metadata.tier}`);
   }
   if (plan.metadata.lintIgnore !== undefined && plan.metadata.lintIgnore.length > 0) {
-    info(`  lintIgnore: ${plan.metadata.lintIgnore.join(', ')}`);
+    info(`  lintIgnore: ${formatLintIgnoreList(plan.metadata.lintIgnore)}`);
   }
 
   if (supersedeDetails.length > 0) {

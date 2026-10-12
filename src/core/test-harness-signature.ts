@@ -9,6 +9,10 @@
  * graph rather than the emitted code, and a shared leaf is a truer
  * description of the relationship than either direction of the cycle was:
  * neither module owns this type more than the other.
+ *
+ * {@link IncompleteRunEvidence} lives here for the same reason:
+ * `test-run-completeness.ts` produces it from helpers in
+ * `test-harness-crash.ts`, whose verdict type carries it.
  */
 
 /** A recognized harness-crash shape with its evidence line. */
@@ -17,4 +21,18 @@ export interface HarnessCrashSignature {
   reason: string;
   /** The concrete output line the recognition was based on. */
   line: string;
+}
+
+/** Why an exit-0 run that would have read as a pass was failed instead. */
+export interface IncompleteRunEvidence {
+  /** Requested test files that produced a start (or skip) marker. */
+  started: number;
+  /** Requested test files the run could account for (test-file-shaped paths). */
+  requested: number;
+  /** First requested file, in dispatch order, that never started. */
+  firstUnstarted?: string;
+  /** The harness's "shut down in the middle of a test" line, when present. */
+  shutdownLine?: string;
+  /** The summary's non-zero `Unexpected results:` count, when it printed one. */
+  unexpected?: number;
 }

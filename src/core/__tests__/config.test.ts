@@ -15,7 +15,14 @@ vi.mock('../state-file.js', () => ({
 import { ConfigError, ConfigNotFoundError } from '../../errors/config.js';
 import { nativePath } from '../../test-utils/index.js';
 import type { FireForgeConfig, FireForgeState } from '../../types/config.js';
-import { pathExists, pathExistsStrict, readJson, writeJson } from '../../utils/fs.js';
+import {
+  pathExists,
+  pathExistsStrict,
+  readJson,
+  readText,
+  writeJson,
+  writeText,
+} from '../../utils/fs.js';
 import { verbose, warn } from '../../utils/logger.js';
 import {
   configExists,
@@ -190,6 +197,85 @@ describe('validateConfig', () => {
         },
       })
     ).toThrow('patchPolicy.filenamePattern');
+  });
+
+  it('accepts the registration-only patchPolicy rules', () => {
+    const config = validateConfig({
+      ...makeValidConfig(),
+      patchPolicy: {
+        ranges: [{ from: 1, to: 99, category: 'ui' }],
+        addOnlyMarker: 'hominis',
+        upstreamAllowlist: [
+          'browser/base/content/browser.js',
+          { path: '**/jar.mn', addOnly: true },
+          { path: '**/moz.build', addOnly: true, marker: 'HOMINIS' },
+        ],
+        scopeRules: [{ filenamePattern: '-tests\\.patch$', files: ['**/test/**'] }],
+        verifyDocumentPaths: true,
+      },
+    });
+
+    expect(config.patchPolicy?.upstreamAllowlist).toEqual([
+      'browser/base/content/browser.js',
+      { path: '**/jar.mn', addOnly: true },
+      { path: '**/moz.build', addOnly: true, marker: 'HOMINIS' },
+    ]);
+    expect(config.patchPolicy?.scopeRules?.[0]?.files).toEqual(['**/test/**']);
+    expect(config.patchPolicy?.verifyDocumentPaths).toBe(true);
+  });
+
+  it.each([
+    [{ upstreamAllowlist: 'x' }, 'patchPolicy.upstreamAllowlist" must be an array'],
+    [{ upstreamAllowlist: [''] }, 'patchPolicy.upstreamAllowlist[0]" must be a non-empty string'],
+    [{ upstreamAllowlist: [7] }, 'must be a path glob or an object'],
+    [{ upstreamAllowlist: [{ path: 'a', addOnly: 'yes' }] }, '.addOnly" must be a boolean'],
+    [{ upstreamAllowlist: [{ path: 'a', addOnly: true }] }, 'sets addOnly but no marker'],
+    [{ upstreamAllowlist: [{ path: 'a', marker: '' }] }, '.marker" must be a non-empty string'],
+    [{ addOnlyMarker: 3 }, 'patchPolicy.addOnlyMarker" must be a non-empty string'],
+    [{ scopeRules: {} }, 'patchPolicy.scopeRules" must be an array'],
+    [{ scopeRules: ['x'] }, 'patchPolicy.scopeRules[0]" must be an object'],
+    [{ scopeRules: [{ files: ['a'] }] }, 'must set "category" or "filenamePattern"'],
+    [{ scopeRules: [{ category: 'ui', files: [] }] }, 'must be a non-empty array of path globs'],
+    [{ scopeRules: [{ filenamePattern: '(', files: ['a'] }] }, 'valid regular expression'],
+    [{ scopeRules: [{ category: 'UI', files: ['a'] }] }, 'lowercase category identifier'],
+    [{ verifyDocumentPaths: 'yes' }, 'patchPolicy.verifyDocumentPaths" must be a boolean'],
+  ])('rejects a malformed registration-only rule %j', (extra, message) => {
+    expect(() =>
+      validateConfig({
+        ...makeValidConfig(),
+        patchPolicy: { ranges: [{ from: 1, to: 99, category: 'ui' }], ...extra },
+      })
+    ).toThrow(message);
+  });
+
+  it('accepts patchLint.tokenScales', () => {
+    const scale = {
+      properties: ['gap', 'padding*'],
+      prefix: '--mybrowser-space-',
+      allowLiterals: ['0', '*%'],
+      allow: ['--moz-*'],
+    };
+    const config = validateConfig({ ...makeValidConfig(), patchLint: { tokenScales: [scale] } });
+    expect(config.patchLint?.tokenScales).toEqual([scale]);
+    expect(
+      validateConfig({
+        ...makeValidConfig(),
+        patchLint: { tokenScales: [{ properties: ['z-index'], prefix: '--mybrowser-z-' }] },
+      }).patchLint?.tokenScales
+    ).toEqual([{ properties: ['z-index'], prefix: '--mybrowser-z-' }]);
+  });
+
+  it.each([
+    [{}, 'patchLint.tokenScales" must be an array'],
+    [[7], 'patchLint.tokenScales[0]" must be an object'],
+    [[{ properties: [], prefix: '--a-' }], '.properties" must be a non-empty array'],
+    [[{ properties: ['gap'], prefix: 'a-' }], '.prefix" must be a custom-property prefix'],
+    [[{ properties: ['gap'], prefix: '--a-', allowLiterals: [''] }], '.allowLiterals" must be an'],
+    [[{ properties: ['gap'], prefix: '--a-', allow: ['moz-x'] }], 'must be custom-property names'],
+  ])('rejects malformed patchLint.tokenScales %j', (tokenScales, message) => {
+    expect(() => validateConfig({ ...makeValidConfig(), patchLint: { tokenScales } })).toThrow(
+      message
+    );
   });
 
   it('rejects overlapping patchPolicy ranges', () => {
@@ -760,6 +846,30 @@ describe('config persistence', () => {
     expect(mockWriteJson).toHaveBeenNthCalledWith(2, nativePath('/project/fireforge.json'), {
       custom: { enabled: true },
     });
+  });
+
+  it('edits an existing config in place and skips an identical write', async () => {
+    mockPathExists.mockResolvedValue(true);
+    vi.mocked(readText).mockResolvedValue('{\n  "a": { "b": 1 }, "keep": [1, 2]\n}\n');
+
+    await writeConfigDocument('/project', { a: { b: 2 }, keep: [1, 2] });
+    await writeConfigDocument('/project', { a: { b: 1 }, keep: [1, 2] });
+
+    expect(vi.mocked(writeText)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(writeText)).toHaveBeenCalledWith(
+      nativePath('/project/fireforge.json'),
+      '{\n  "a": { "b": 2 }, "keep": [1, 2]\n}\n'
+    );
+    expect(mockWriteJson).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a full write when the existing config is not JSON', async () => {
+    mockPathExists.mockResolvedValue(true);
+    vi.mocked(readText).mockResolvedValue('{ broken');
+
+    await writeConfigDocument('/project', { a: 1 });
+
+    expect(mockWriteJson).toHaveBeenCalledWith(nativePath('/project/fireforge.json'), { a: 1 });
   });
 
   it('mutates a valid config path and revalidates it by default', () => {

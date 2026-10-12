@@ -216,4 +216,31 @@ describe('patch policy evaluation', () => {
       }).toThrow(/\[description-required\][^\n]*empty description[^→]*$/);
     });
   });
+
+  describe('enforcePatchPolicy scope', () => {
+    const stale = patch({ description: '' });
+    const fresh = patch({ filename: '201-ui-fresh.patch', order: 201, name: 'fresh' });
+
+    it("ignores another row's findings when scoped to the mutated patch", () => {
+      expect(() => {
+        enforcePatchPolicy({
+          config: policyConfig(),
+          manifest: manifest([stale, fresh]),
+          command: 're-export',
+          scope: [fresh.filename],
+        });
+      }).not.toThrow();
+    });
+
+    it("still enforces the scoped row's own findings", () => {
+      expect(() => {
+        enforcePatchPolicy({
+          config: policyConfig(),
+          manifest: manifest([stale, fresh]),
+          command: 're-export',
+          scope: [stale.filename],
+        });
+      }).toThrow(/\[description-required\]/);
+    });
+  });
 });

@@ -86,6 +86,31 @@ export function stripExpandedFragments(css: string): string {
 }
 
 /**
+ * Marks the lines of a stylesheet that belong to a fenced fragment
+ * expansion: the directive, the inlined body and the end marker. Index `i`
+ * is line `i + 1` of `css`. Fences are found exactly as
+ * {@link stripExpandedFragments} finds them, so a bare directive or an
+ * unterminated fence marks nothing. The patch-size metric reads this
+ * off a file's post-image, because a hunk can start inside a span and
+ * carry no directive of its own.
+ */
+export function expandedFragmentLineMask(css: string): boolean[] {
+  const lines = css.split('\n');
+  const mask = lines.map(() => false);
+  for (let i = 0; i < lines.length; i++) {
+    const inc = INCLUDE_PATTERN.exec(lines[i] ?? '');
+    if (!inc?.[1]) continue;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (END_INCLUDE_PATTERN.exec(lines[j] ?? '')?.[1] !== inc[1]) continue;
+      mask.fill(true, i, j + 1);
+      i = j;
+      break;
+    }
+  }
+  return mask;
+}
+
+/**
  * Expands every `@fireforge-include` directive in `css` with the current
  * content of its fragment file from `sharedDir`, fencing each expansion
  * with an end marker. Existing expansions are stripped first, so the

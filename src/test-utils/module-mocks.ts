@@ -143,6 +143,9 @@ export function createRunLogMock(): RunLogModule {
   return {
     getRunLogDir: vi.fn((projectRoot: string) => `${projectRoot}/.fireforge/logs`),
     openRunLog: vi.fn(() => Promise.resolve(undefined)),
+    keepRunLogCopy: vi.fn((log: Awaited<ReturnType<RunLogModule['openRunLog']>>) =>
+      Promise.resolve(log)
+    ),
     setActiveRunLog: vi.fn(),
     getActiveRunLogPath: vi.fn(() => undefined),
     writeToActiveRunLog: vi.fn(),

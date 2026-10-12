@@ -1,8 +1,41 @@
 // SPDX-License-Identifier: EUPL-1.2
-import type { ApplyResult, DryRunAction } from '../types/furnace.js';
+import type { ApplyResult, ApplySkipKind, DryRunAction } from '../types/furnace.js';
 import { error, info, success, warn } from '../utils/logger.js';
 
 type ApplyResultWithActions = ApplyResult & { actions?: DryRunAction[] };
+
+/** Summary label and per-component explanation for each skip kind. */
+const SKIP_KIND_TEXT: Record<ApplySkipKind, { label: string; detail: string }> = {
+  'already-current': {
+    label: 'already current',
+    detail:
+      'already current: source unchanged since the last recorded apply (from any session) and the engine copy matches it',
+  },
+};
+
+/** The per-component line text for one skip. */
+function describeSkip(skipped: ApplyResult['skipped'][number]): string {
+  return skipped.kind !== undefined ? SKIP_KIND_TEXT[skipped.kind].detail : skipped.reason;
+}
+
+/**
+ * The reason breakdown appended to a "skipped N" summary, e.g.
+ * ` (2 already current)`, so `Applied 0, skipped 1` says whether the
+ * component was already current or skipped for another reason without
+ * diffing the deployed files by hand. Empty when nothing was skipped.
+ *
+ * @param skipped - `result.skipped` from applyAllComponents
+ * @returns The parenthesised breakdown with a leading space, or ''
+ */
+export function formatSkipBreakdown(skipped: ApplyResult['skipped']): string {
+  if (skipped.length === 0) return '';
+  const counts = new Map<string, number>();
+  for (const entry of skipped) {
+    const label = entry.kind !== undefined ? SKIP_KIND_TEXT[entry.kind].label : entry.reason;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return ` (${[...counts].map(([label, count]) => `${count} ${label}`).join(', ')})`;
+}
 
 /**
  * Prints a standard summary of an apply result for both normal and dry-run flows.
@@ -43,7 +76,7 @@ export function logApplyResult(result: ApplyResultWithActions, isDryRun: boolean
     }
 
     for (const skipped of result.skipped) {
-      info(`${skipped.name} — ${skipped.reason}`);
+      info(`${skipped.name} — ${describeSkip(skipped)}`);
     }
 
     for (const applied of result.applied) {

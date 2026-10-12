@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { ClassifiedFile } from '../../core/status-classify.js';
 import {
   collectStatusCheckOffenders,
+  policyNeedsOwnership,
   resolveStatusCheckPolicy,
   runStatusCheck,
 } from '../status-check.js';
@@ -33,7 +34,7 @@ describe('resolveStatusCheckPolicy', () => {
 
   it('refuses an unknown classification naming the valid set', () => {
     expect(() => resolveStatusCheckPolicy({ failOn: 'bogus' })).toThrow(
-      /Unknown --fail-on classification "bogus"\. Valid: patch-backed, patch-owned-drift, unmanaged, branding, furnace, conflict, binary-unsupported\./
+      /Unknown --fail-on classification "bogus"\. Valid: patch-backed, patch-owned-drift, unmanaged, branding, furnace, conflict, binary-unsupported, ownership-conflict\./
     );
   });
 
@@ -110,5 +111,118 @@ describe('collectStatusCheckOffenders', () => {
         failOn: ['unmanaged'],
       })
     ).toEqual([]);
+  });
+});
+
+describe('--allow, --fail-on-unknown and ownership-conflict', () => {
+  it('--allow implies --check and subtracts from the default set', () => {
+    expect(resolveStatusCheckPolicy({ allow: 'conflict' })).toEqual({
+      checkEnabled: true,
+      failOn: ['unmanaged', 'patch-owned-drift'],
+      allow: ['conflict'],
+    });
+  });
+
+  it('accepts ownership-conflict in --fail-on', () => {
+    expect(resolveStatusCheckPolicy({ failOn: 'unmanaged,ownership-conflict' })).toEqual({
+      checkEnabled: true,
+      failOn: ['unmanaged', 'ownership-conflict'],
+    });
+  });
+
+  it('refuses a class named in both --fail-on and --allow', () => {
+    expect(() => resolveStatusCheckPolicy({ failOn: 'unmanaged', allow: 'unmanaged' })).toThrow(
+      '--fail-on and --allow both name unmanaged'
+    );
+  });
+
+  it('refuses an unknown --allow class and an empty --allow', () => {
+    expect(() => resolveStatusCheckPolicy({ allow: 'bogus' })).toThrow(
+      'Unknown --allow classification "bogus"'
+    );
+    expect(() => resolveStatusCheckPolicy({ allow: ',' })).toThrow(
+      '--allow requires at least one classification'
+    );
+  });
+
+  it('refuses --fail-on-unknown without --allow', () => {
+    expect(() => resolveStatusCheckPolicy({ failOn: 'unmanaged', failOnUnknown: true })).toThrow(
+      '--fail-on-unknown requires --allow'
+    );
+  });
+
+  it('records --fail-on-unknown on the policy and implies --check', () => {
+    expect(
+      resolveStatusCheckPolicy({ allow: 'patch-backed', failOnUnknown: true, failOn: 'unmanaged' })
+    ).toEqual({
+      checkEnabled: true,
+      failOn: ['unmanaged'],
+      allow: ['patch-backed'],
+      failOnUnknown: true,
+    });
+  });
+
+  it('refuses --allow alongside a classification-skipping mode', () => {
+    expect(() => resolveStatusCheckPolicy({ allow: 'unmanaged', raw: true })).toThrow(
+      '--check cannot be combined with'
+    );
+  });
+
+  it('fails every present class neither list names, marked unnamed', () => {
+    const policy = resolveStatusCheckPolicy({
+      failOn: 'unmanaged',
+      allow: 'patch-backed',
+      failOnUnknown: true,
+    });
+    const files = [
+      entry('a.js', 'patch-backed'),
+      entry('b.css', 'branding'),
+      entry('c.js', 'unmanaged'),
+      entry('d.css', 'branding'),
+    ];
+    expect(collectStatusCheckOffenders(files, policy, ['x.js'])).toEqual([
+      { classification: 'unmanaged', count: 1, files: ['c.js'] },
+      { classification: 'branding', count: 2, files: ['b.css', 'd.css'], unnamed: true },
+      { classification: 'ownership-conflict', count: 1, files: ['x.js'], unnamed: true },
+    ]);
+    expect(() => {
+      runStatusCheck(files, policy, ['x.js']);
+    }).toThrow('2 branding [named by neither --fail-on nor --allow] (b.css, d.css)');
+  });
+
+  it('passes under --fail-on-unknown when every present class is allowed', () => {
+    const policy = resolveStatusCheckPolicy({
+      allow: 'patch-backed,ownership-conflict',
+      failOnUnknown: true,
+    });
+    expect(collectStatusCheckOffenders([entry('a.js', 'patch-backed')], policy, ['x.js'])).toEqual(
+      []
+    );
+  });
+
+  it('fails ownership-conflict from the conflict paths when it is in the fail set', () => {
+    const policy = resolveStatusCheckPolicy({ failOn: 'ownership-conflict' });
+    expect(() => {
+      runStatusCheck([], policy, ['a.js', 'b.js']);
+    }).toThrow('status --check failed: 2 ownership-conflict (a.js, b.js)');
+    expect(() => {
+      runStatusCheck([], policy, []);
+    }).not.toThrow();
+  });
+
+  it('policyNeedsOwnership is true only when ownership-conflict can fail', () => {
+    expect(policyNeedsOwnership(resolveStatusCheckPolicy({}))).toBe(false);
+    expect(policyNeedsOwnership(resolveStatusCheckPolicy({ check: true }))).toBe(false);
+    expect(policyNeedsOwnership(resolveStatusCheckPolicy({ failOn: 'ownership-conflict' }))).toBe(
+      true
+    );
+    expect(
+      policyNeedsOwnership(resolveStatusCheckPolicy({ allow: 'unmanaged', failOnUnknown: true }))
+    ).toBe(true);
+    expect(
+      policyNeedsOwnership(
+        resolveStatusCheckPolicy({ allow: 'ownership-conflict', failOnUnknown: true })
+      )
+    ).toBe(false);
   });
 });

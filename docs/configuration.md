@@ -20,6 +20,19 @@ which is worth knowing when you revert that file. Running
 uncommitted pin, and the tree is then building a different version than the
 config claims.
 
+`fireforge source set`, `fireforge config <key> <value>` and `furnace init`
+edit `fireforge.json` in place (since 0.50.0). Only the values that change
+are rewritten. Indentation, key order, and objects or arrays kept on one
+line stay as they are, so a pin move is a diff of the `firefox` block alone.
+New keys follow the layout of the object they land in. Before 0.50.0 every
+write re-serialized the whole file and expanded every compact section.
+
+`fireforge doctor`'s "Source pin matches engine" check compares the pin with
+the engine's committed `browser/config/version.txt`. That file never carries
+the `esr` suffix, so a trailing `esr` is dropped from the pin for this
+comparison (a `153.4.0esr` pin matches `153.4.0`). The comparison with the
+version the last download recorded keeps the full pin.
+
 ### Archive integrity: `firefox.sha256` and `firefox.allowUnverifiedDownload`
 
 Every fresh download is checked against Mozilla's published `SHA256SUMS` for
@@ -76,6 +89,12 @@ been bootstrapped.
 
 Per-patch lint type-checks plain Firefox JS against a built-in
 Firefox-globals shim that tracks upstream WebIDL additions per release.
+Most globals in it are `any`. `Cu` is typed as `CuShim`, the members of
+`nsIXPCComponents_Utils` (`js/xpconnect/idl/xpccomponents.idl`) with loose
+parameter and result types, so a call to a member `Cu` does not have (such
+as `Cu.now()`, which is `ChromeUtils.now()`) fails `typecheck` and per-patch
+lint instead of throwing at runtime (since 0.50.0). The same shim backs
+`fireforge typecheck`.
 
 - `patchLint.checkJsExtraShim` adds members to the structured shim globals
   via TypeScript interface merging, for example
@@ -113,7 +132,11 @@ Firefox-globals shim that tracks upstream WebIDL additions per release.
   alone: a `%` or `@AB_CD@` substitution, `**`, `!`, a path that leaves the
   tree, or a chrome URL no queue jar.mn line packages. Each finding prints
   the same paste-and-run `patch staged-dependency --add --kind registration`
-  command as the `support-files` arm. The setting is opt-in because a queue
+  command as the `support-files` arm, ending in a `--reason '<why …>'`
+  placeholder to fill in. Each finding also carries the declaration as
+  structured `stagedDeclarations`, so a `lint --per-patch --report` file
+  can be applied with one `patch staged-dependency <patch> --add --from
+<report>` per patch instead of one call per edge. The setting is opt-in because a queue
   that predates it can carry many such edges, and a new error would red a
   `--max-warnings 0` gate on install. The same census is on the public API as
   `findForwardRegistrations(patchesDir, { scope })`, which defaults to
@@ -138,7 +161,102 @@ Firefox-globals shim that tracks upstream WebIDL additions per release.
   `notice <= warning <= error`, which is validated at config load. Under
   the recommended gate posture `--max-warnings 0`, the `warning` band
   is a hard failure rather than a soft limit, which is what these thresholds
-  exist to let you move.
+  exist to let you move. A notice is the design target: advisory, and it
+  never fails `--max-warnings 0`. Only the error band suggests splitting.
+
+- `patchLint.fileSizeMetric` (`'raw'` or `'code'`, default `'raw'`) picks
+  what `file-too-large` counts. `'raw'` counts every line, the way `wc -l`
+  does. `'code'` blanks comments with acorn's tokenizer (module first, then
+  script, since chrome subscripts are scripts) and counts the lines left
+  non-blank, so JSDoc and blank lines stop counting. A file acorn cannot
+  tokenize is counted in raw lines, the upper bound, and a
+  `file-size-unparsed` notice names it. Every message says which unit it
+  counted ("lines" or "code lines"). The counter is on the public API as
+  `countCodeLines(content)`, next to `resolveFileSizeThresholds` and
+  `isTestFile`.
+
+- `patchLint.patchSizeThresholds` tunes `large-patch-lines` and
+  `large-patch-files` per tier (`general`, `test`, `branding`), each with a
+  `lines` and a `files` triple:
+
+  ```json
+  {
+    "patchLint": {
+      "patchSizeThresholds": {
+        "general": {
+          "lines": { "notice": 1000, "warning": 2000, "error": 4000 },
+          "files": { "notice": 8, "warning": 12, "error": 24 }
+        },
+        "branding": { "files": { "error": 90 } }
+      }
+    }
+  }
+  ```
+
+  Every field is optional and merges over the defaults, and each merged
+  triple has to satisfy `notice <= warning <= error`. The line defaults are
+  general `800/1500/3000`, test `1500/3000/6000` and branding
+  `8000/18000/30000`. Files warn above 5 (general, test) or 60 (branding).
+  The files triple has no notice or error band unless you set one: an unset
+  `files.notice` follows `files.warning`, and an unset `files.error` never
+  fires. The `branding` tier applies to a patch whose files all sit under
+  `browser/branding/` (plus `browser/moz.configure` and
+  `browser/confvars.sh`), or one marked `"tier": "branding"` in
+  `patches.json` (`re-export --tier branding`). A patch whose files are all
+  tests takes the `test` tier, and wins over branding.
+  `getPatchSizeThresholds(tier, config)` returns the configured values.
+
+- `patchLint.patchSizeMetric` (`'diff'` or `'addedCode'`, default `'diff'`)
+  picks what `large-patch-lines` counts. `'diff'` counts every non-binary
+  line of the unified diff, headers and context included. `'addedCode'`
+  counts only added lines that are neither blank nor comment, judged on
+  each file's post-image in `engine/` (a hunk can start inside a block
+  comment). Comments are recognised per file kind: JS through acorn, CSS
+  block comments, `<!-- -->` in markup, and whole-line `#` comments in
+  manifests, `moz.build`, Fluent and similar. In CSS it also skips lines
+  inside a Furnace `@fireforge-include` … `@fireforge-end-include`
+  expansion: they are a copy of a shared fragment. Under `'addedCode'`, a
+  general-tier patch that carries tests counts per class: lines in test
+  files against the test tier's `lines`, everything else against the
+  general tier's, each with its own finding.
+
+- `patchLint.patchSizeRegistrationFiles` lists globs whose files count
+  toward neither `large-patch-lines` nor `large-patch-files`, for example
+  `["jar.mn", "moz.build", "components.conf", "*.toml", "jsconfig*.json"]`.
+  A glob without a `/` matches the basename, one with a `/` the
+  engine-relative path; `*` stays within a path segment and `**` crosses
+  segments. Default: none.
+
+- `patchLint.tokenScales` (default unset) puts property families on a token
+  scale. In every CSS file a patch creates, a declaration of a governed
+  property must resolve to the scale (`token-scale`, an error):
+
+  ```json
+  {
+    "patchLint": {
+      "tokenScales": [
+        {
+          "properties": ["gap", "row-gap", "column-gap", "padding*", "margin*"],
+          "prefix": "--mybrowser-space-",
+          "allowLiterals": ["0", "auto", "*%", "1px"],
+          "allow": ["--mybrowser-page-padding"]
+        },
+        { "properties": ["z-index"], "prefix": "--mybrowser-z-" }
+      ]
+    }
+  }
+  ```
+
+  `properties` takes exact names or a `*`-suffixed prefix. Each value atom
+  must be a `var()` of a `prefix` token or of an `allow` name (exact, or
+  `*`-suffixed such as `--moz-*`), a literal matching `allowLiterals` (`*`
+  is a wildcard), or a CSS-wide keyword (`inherit`, `initial`, `unset`,
+  `revert`, `revert-layer`). A `var()` fallback is held to the same scale,
+  so `var(--mybrowser-gap, 7px)` fails on `7px`. `calc()`, `min()`, `max()`
+  and `clamp()` are transparent, so a unitless multiplier inside one needs
+  an `allowLiterals` entry. Files the patch modifies rather than creates are
+  not checked, and a line carrying `fireforge-ignore: token-scale` is
+  skipped.
 
 ## `typecheck`
 
@@ -167,6 +285,59 @@ checking; they do not turn constructors or instances into `any`.
 `patchPolicy.ranges` makes `patch compact` range-aware, so closing ordinal
 gaps does not move a patch out of the band its category owns.
 
+With `patchPolicy.allowGaps: false`, orders are contiguous within a range:
+a new patch must fill an existing gap or take the number right after the
+range's last patch. A patch that has to leave the queue without opening a
+gap is removed with `patch retire`, which keeps its order as a retired slot
+(see [`patch-workflow.md`](patch-workflow.md#queue-maintenance)).
+
+### Registration-only rules
+
+Four opt-in rules read the patch bodies rather than `patches.json` alone.
+`verify` and `lint --per-patch` report them (as `patch-policy/<code>` in
+lint), at the severity `mutationMode` implies. Mutating commands do not
+evaluate them, because those commands check a projected manifest before
+any body exists.
+
+```json
+{
+  "patchPolicy": {
+    "ranges": [{ "from": 100, "to": 899, "category": "ui" }],
+    "addOnlyMarker": "hominis",
+    "upstreamAllowlist": [
+      "browser/moz.configure",
+      { "path": "**/jar.mn", "addOnly": true },
+      { "path": "**/moz.build", "addOnly": true }
+    ],
+    "scopeRules": [
+      { "filenamePattern": "-tests\\.patch$", "files": ["**/test/**", "**/tests/**", "**/*.toml"] }
+    ],
+    "verifyDocumentPaths": true
+  }
+}
+```
+
+- `upstreamAllowlist` names, as path globs, the upstream files a
+  non-reserved patch may modify (`upstream-allowlist`). A file is upstream
+  when no patch in the queue creates it, so fork-owned files never need an
+  entry. A patch in a `reservedRanges` band is exempt: its allowlist entry's
+  `files` already governs it. Globs are anchored engine-relative paths: `*`
+  stays within a segment, `**` spans segments, so `*.toml` matches only a
+  top-level file and `**/*.toml` matches one anywhere.
+- An object entry with `addOnly: true` puts matching files in
+  registration-only mode (`add-only`): the patch may only add lines, every
+  non-blank added line must contain the marker (the entry's `marker`, else
+  `addOnlyMarker`, matched case-insensitively), and deleting the file or
+  changing it as binary is refused. When several entries match a file, any
+  add-only one makes it add-only.
+- `scopeRules` limits a class of patch to the files its globs name
+  (`scope`). A rule selects patches by `category`, `filenamePattern` (a
+  regular expression over the patch filename), or both. The example keeps a
+  `-tests` patch to test directories and test manifests.
+- `verifyDocumentPaths: true` requires each reserved allowlist entry's `adr`
+  and `documentation` path to exist under the project root
+  (`reserved-document-missing`).
+
 ## `test`
 
 `test.canaryPath` and `test.canaryTimeoutSeconds` supply the defaults for
@@ -177,6 +348,30 @@ census does with a harness helper that survived an earlier run in this
 objdir. `"reap"` terminates it and stamps `orphans-reaped=<n>` on the verdict
 line; `--reap-orphans` does the same for one invocation. The objdir anchor
 rule is the same under both. See [`testing.md`](testing.md).
+
+`test.mochitestPorts` is `"fixed"` (default) or `"auto"`. `"auto"` lets a
+browser run proceed while the mochitest server or Marionette port is held by
+something that is not this checkout's own, relying on the engine
+harness's own busy-port fallback, so sibling checkouts can run browser suites
+at once. `--auto-ports` does the same for one invocation. See
+[`testing.md`](testing.md#shared-browsers-ports-and-host-state).
+
+## `history`
+
+`history.path` is where FireForge appends its patch history log, relative to
+the project root (default `.fireforge/history.jsonl`). The log records
+structural patch operations (staged dependencies, splits, renames, export
+orders, re-exports that change a patch's file list) as one JSON object per
+line. FireForge never reads it back; it is an audit trail only. Each record
+carries `invocationId` (shared by every record one command writes), `pid`,
+`ppid`, and `sessionId` when the environment sets `FIREFORGE_SESSION_ID`, so
+a session sharing the checkout can select its own lines.
+
+Before 0.50.0 the log was `patches/.fireforge-history.jsonl`, inside the
+tracked queue. The first append after upgrading moves it to `history.path`;
+when both files exist, the old records are appended to the new file rather
+than either being overwritten. Setting `history.path` to
+`patches/.fireforge-history.jsonl` keeps the old location.
 
 ## `buildAudit`
 
@@ -223,6 +418,45 @@ is never loaded. Declare those:
 The `Packaged:` summary line names each non-zero skip class with its count,
 so a run that dismissed four unselected-branding files reads differently from
 one that dismissed four unregistered sources.
+
+## `check`
+
+`fireforge check` is the composed static gate. It runs six built-in steps,
+`status`, `verify`, `lint`, `typecheck`, `furnace-validate` and
+`token-coverage`, and then the project's own commands. Every field of the
+`check` block is optional:
+
+```json
+{
+  "check": {
+    "skip": ["token-coverage"],
+    "status": {
+      "failOn": ["unmanaged", "patch-owned-drift", "conflict", "ownership-conflict"],
+      "allow": ["patch-backed", "branding", "furnace", "binary-unsupported"],
+      "failOnUnknown": true
+    },
+    "maxWarnings": { "lint": 0, "furnace": 0 },
+    "extraSteps": [
+      { "name": "policy-audit", "command": "npm run audit:policy", "timeout": 600 },
+      { "name": "invariants", "command": "node check-invariants.mjs", "cwd": "tools" }
+    ]
+  }
+}
+```
+
+- `skip` lists the built-in steps this project never runs. `typecheck` is
+  also skipped when there is no `typecheck` block, and `furnace-validate`
+  when there is no `furnace.json`.
+- `status` is the status step's `--check` policy: `--fail-on`, `--allow` and
+  `--fail-on-unknown` (see [`patch-workflow.md`](patch-workflow.md#ci-enforcement)).
+  An invalid policy is refused as a config error before any step runs.
+- `maxWarnings` passes `--max-warnings` to `lint --per-patch` and
+  `furnace validate`.
+- `extraSteps[]` adds project commands. `name` is lowercase letters, digits
+  and dashes and must not repeat a built-in name. `command` runs with
+  `/bin/sh -c` (`cmd.exe /c` on Windows) from the project root, or from the
+  project-relative `cwd`. `timeout` is in seconds: past it the step's whole
+  process tree is killed and the step fails. A step passes when it exits 0.
 
 ## Design tokens
 
@@ -273,6 +507,22 @@ hand-parsing a `= Category =` banner out of the file.
 Only the base `:root` block owns a token, so `token list` reports it once.
 The dark and variant blocks mirror it and appear in `token show`.
 
+### Checking the token file
+
+`fireforge token lint [--json]` exits non-zero on either of two findings:
+
+- `token-lockstep`: a themed override block (the dark `@media` mirror, a
+  `:root[variant]` block) declares a token with the project's token prefix
+  that the base `:root` does not declare. Every other theme would resolve
+  it to nothing. Overrides of non-prefixed properties (a `--moz-*` platform
+  variable) are left alone.
+- `token-undeclared`: a `var(--<prefix>…)` in the tokens CSS, or in any CSS
+  file a patch in the queue touches, names a token no block of the tokens
+  CSS declares. A property declared in the same file, and the `furnace.json`
+  `tokenAllowlist` and `runtimeVariables` names, are exempt.
+
+The prefix is `furnace.json` `tokenPrefix`, else `--<binaryName>-`.
+
 ## Smoke runs
 
 For unattended smoke checks, `fireforge run --smoke-exit <s> --headless`
@@ -297,9 +547,23 @@ up after itself, so the next `run` removes any temporary profile whose
 owning process is gone.
 
 - `--profile <path>` launches with a named profile directory and leaves it
-  in place. Under `--smoke-exit` it replaces the fresh default.
+  in place. Under `--smoke-exit` it replaces the fresh default. Firefox also
+  gets `-purgecaches` (since 0.50.0), which discards the profile's startup
+  cache of compiled chrome scripts. That cache is keyed on the build id, and
+  a `build --ui` does not change it, so without the purge a kept profile runs
+  the chrome scripts an earlier build cached. `--no-purge-caches` keeps the
+  cache. mach's `profile-default` has its `startupCache/` removed before
+  every run, and a temporary profile starts without one.
 - `--temp-profile` gives a plain `run` the same fresh, removed-afterwards
   profile.
+
+A smoke run whose browser exits with a clean status before the window
+elapses, without printing any console output, fails with exit 13 (since
+0.50.0). Lines from mach's own log (the timestamped command echo) do not
+count as output. A launch that exits silently never reached a window: a
+stale `.parentlock`, or a profile whose run of SIGTERM-ended smoke runs
+counts as a startup-crash streak (`toolkit.startup.recent_crashes`). Before
+0.50.0 such a run passed as a clean exit.
 
 A plain `run` without either flag keeps mach's `profile-default`. `mach run`'s
 desktop parser has no `--profile` option (its `--profile/-P` belongs to the
@@ -324,18 +588,25 @@ after about a second by default.
 `--wait-lock [seconds]` (bare flag means 60, valid range 1 to 3600) replaces
 that with a bounded wait, and the budget covers every lock the command takes.
 For `furnace apply`, `deploy` and `sync` that means the furnace lock as well
-as the engine-session lock. While waiting, a progress line roughly every 5
-seconds identifies the holder by PID, command and start time.
+as the engine-session lock. The furnace leaves that take only the furnace lock
+(`create`, `remove`, `rename`, `refresh`, `scan`, `override`, `preview`, and
+`chrome-doc create`/`remove`) apply the flag to that lock. While waiting, a
+progress line roughly every 5 seconds identifies the holder by PID, command
+and start time.
 
 Commands that take no lock accept `--wait-lock` and ignore it, so a scripted
 sequence can append the flag everywhere without a usage error killing the
 run.
 
 `FIREFORGE_WAIT_LOCK=<seconds>` applies the same budget to every command in a
-session, using the same bounds as the flag. It is the only way to give a
-budget to the furnace mutators that declare no flag (`create`, `remove`,
-`rename`, `refresh`, `scan`, `override`, `chrome-doc`, and the rest). An
-explicit `--wait-lock` always wins.
+session, using the same bounds as the flag. It is the fallback whenever the
+flag is absent, including for the furnace lock a build's pre-build apply and
+`doctor --repair-furnace` take. An explicit `--wait-lock` always wins.
+
+Waiters are granted a lock in arrival order: the progress line's "You are
+next" or "N ahead of you" is the order the lock will actually be handed out.
+A waiter that crashed, was killed, or is stopped drops out of the queue
+instead of blocking it.
 
 `fireforge status --lock` reports the current holder and queue depth.
 
@@ -344,6 +615,8 @@ explicit `--wait-lock` always wins.
 | Variable                             | Effect                                                                                                                                  |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `FIREFORGE_WAIT_LOCK`                | Session-wide lock wait budget in seconds (1 to 3600). See above.                                                                        |
+| `FIREFORGE_SESSION_ID`               | Recorded as `sessionId` on every patch history log record this process writes. See `history` above.                                     |
+| `FIREFORGE_LOG_KEEP`                 | Also write every `test`/`build` run log here, outside retention (a directory collects one file per run). See `run-logs.md`.             |
 | `FIREFORGE_MAX_UNTRACKED_FILES`      | Per-directory cap when expanding collapsed untracked directories in `status` (default 5000). A non-positive value warns and is ignored. |
 | `FIREFORGE_GIT_ADD_TIMEOUT_MS`       | Timeout for the monolithic `git add -A` baseline pass (default 10 min). For slow or loaded filesystems.                                 |
 | `FIREFORGE_GIT_ADD_CHUNK_TIMEOUT_MS` | Timeout for the chunked `git add -- <dir>` fallback (default 30 min). Paired with the above.                                            |

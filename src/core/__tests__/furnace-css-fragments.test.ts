@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createTempProject, removeTempProject } from '../../test-utils/index.js';
 import {
   expandCssFragments,
+  expandedFragmentLineMask,
   extractExpandedFragmentBodies,
   listFragmentIncludes,
   stripExpandedFragments,
@@ -154,5 +155,28 @@ describe('furnace-css-fragments', () => {
       engineTargetDir
     );
     expect(unexpanded.some((i) => i.check === 'stale-fragment-expansion')).toBe(true);
+  });
+});
+
+describe('expandedFragmentLineMask', () => {
+  it('marks a fenced expansion from directive to end marker', () => {
+    const css = [
+      ':host {}',
+      '/* @fireforge-include a.css */',
+      '@keyframes x {}',
+      '/* @fireforge-end-include a.css */',
+      '.local {}',
+    ].join('\n');
+    expect(expandedFragmentLineMask(css)).toEqual([false, true, true, true, false]);
+  });
+
+  it('marks nothing for a bare directive or an unterminated fence', () => {
+    expect(expandedFragmentLineMask(WIDGET_CSS).every((inSpan) => !inSpan)).toBe(true);
+    const unterminated = [
+      '/* @fireforge-include a.css */',
+      'x {}',
+      '/* @fireforge-end-include b.css */',
+    ];
+    expect(expandedFragmentLineMask(unterminated.join('\n'))).toEqual([false, false, false]);
   });
 });

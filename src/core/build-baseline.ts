@@ -34,6 +34,8 @@ import {
 } from './build-audit.js';
 import {
   type BuildBaseline,
+  type CoverageAnchor,
+  type CoverageRecord,
   DELETED_FILE_FINGERPRINT,
   type StaticComponentsBaseline,
   type TestPackagingCoverage,
@@ -115,6 +117,10 @@ export interface WriteBuildBaselineOptions {
    * Omitted → field left off the marker.
    */
   testPackagingCoverage?: TestPackagingCoverage | undefined;
+  /** Per-path anchors of a scoped claim. Omitted → field left off the marker. */
+  testCoverageRecords?: Record<string, CoverageRecord> | undefined;
+  /** Carried full-build anchor of a narrowed claim. Omitted → field left off. */
+  fullCoverageAnchor?: CoverageAnchor | undefined;
   /**
    * The baseline this write replaces, when the caller has it. A scoped
    * (non-`'full'`) write carries its `staticComponentsBaseline` forward
@@ -160,6 +166,8 @@ export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Pr
     engineDir,
     binaryName,
     testPackagingCoverage,
+    testCoverageRecords,
+    fullCoverageAnchor,
     previousBaseline,
     recordedBy,
     staticComponentsHandling = 'auto',
@@ -211,6 +219,8 @@ export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Pr
     ...(testInputFingerprints !== undefined ? { testInputFingerprints } : {}),
     ...(buildInputFingerprints !== undefined ? { buildInputFingerprints } : {}),
     ...(testPackagingCoverage !== undefined ? { testPackagingCoverage } : {}),
+    ...(testCoverageRecords !== undefined ? { testCoverageRecords } : {}),
+    ...(fullCoverageAnchor !== undefined ? { fullCoverageAnchor } : {}),
     ...(mozconfigHash !== undefined ? { mozconfigHash } : {}),
     ...(staticComponentsBaseline !== undefined ? { staticComponentsBaseline } : {}),
     ...(recordedBy !== undefined ? { recordedBy } : {}),

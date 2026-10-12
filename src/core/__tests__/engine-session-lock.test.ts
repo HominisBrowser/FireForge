@@ -126,8 +126,9 @@ describe('withEngineSessionLock', () => {
       const waitLinePattern = new RegExp(
         `^Waiting for the FireForge engine lock held by PID ${String(process.pid)} ` +
           `\\(command=build, started=\\d{4}-\\d{2}-\\d{2}T[0-9:.]+Z\\) — \\d+s of up to 12s\\.` +
-          // The line also states this waiter's queue position.
-          ` You are next in a queue of 1\\.$`
+          // The line also states this waiter's queue position and the rule
+          // that makes the position a promise.
+          ` You are next in a queue of 1 \\(granted in arrival order\\)\\.$`
       );
       expect(lines.some((line) => waitLinePattern.test(line))).toBe(true);
     }
@@ -233,6 +234,26 @@ describe('engine generation guard', () => {
     expect(inconclusive.message).toContain('What moved:');
     expect(inconclusive.message).toContain('b.txt');
     expect(inconclusive.code).toBe(ExitCode.INCONCLUSIVE);
+  });
+
+  it('lets a caller tolerate a delta it proves never reached the runtime', async () => {
+    const { runGit } = await import('../../test-utils/index.js');
+    await runGit(dir, ['init']);
+    await runGit(dir, ['config', 'user.email', 't@e.st']);
+    await runGit(dir, ['config', 'user.name', 'T']);
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(dir, 'a.txt'), 'x');
+    await runGit(dir, ['add', '-A']);
+    await runGit(dir, ['commit', '-m', 'init']);
+    const before = await snapshotEngineGeneration(dir);
+    await writeFile(join(dir, 'b.txt'), 'y');
+
+    const tolerate = vi.fn(() => Promise.resolve(true));
+    await expect(assertEngineGenerationUnchanged(dir, before, tolerate)).resolves.toBeUndefined();
+    expect(tolerate).toHaveBeenCalledWith(before, expect.stringContaining('b.txt'));
+    await expect(
+      assertEngineGenerationUnchanged(dir, before, () => Promise.resolve(false))
+    ).rejects.toThrow(/engine\/ changed while/);
   });
 
   it('throws when a measurable engine becomes unmeasurable mid-run', async () => {

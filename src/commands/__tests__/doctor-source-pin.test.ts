@@ -92,6 +92,22 @@ describe('source pin doctor check', () => {
     expect(JSON.stringify(check)).toContain('140.9.0esr');
   });
 
+  it('accepts an ESR pin against a version.txt without the esr suffix', async () => {
+    vi.mocked(exec).mockResolvedValue({ exitCode: 0, stdout: '153.4.0\n', stderr: '' });
+    const check = await run(makeCtx({ version: '153.4.0esr', downloadedVersion: '153.4.0esr' }));
+
+    expect(check).toMatchObject({ severity: 'ok' });
+  });
+
+  it('keeps the full pin for the last-download comparison and real engine mismatches', async () => {
+    vi.mocked(exec).mockResolvedValue({ exitCode: 0, stdout: '153.3.0\n', stderr: '' });
+    const check = await run(makeCtx({ version: '153.4.0esr', downloadedVersion: '153.4.0' }));
+
+    expect(check).toMatchObject({ severity: 'warning' });
+    expect(JSON.stringify(check)).toContain('version.txt reads 153.3.0');
+    expect(JSON.stringify(check)).toContain('the last download recorded 153.4.0');
+  });
+
   it('warns when the recorded download disagrees with the pin', async () => {
     const check = await run(makeCtx({ version: '140.9.0esr', downloadedVersion: '153.2.0esr' }));
 

@@ -6,6 +6,7 @@ import {
   createTempProject,
   readProjectText,
   removeTempProject,
+  writeFiles,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
 import { success } from '../../utils/logger.js';
@@ -48,6 +49,32 @@ describe('sourceSetCommand', () => {
     });
     expect(success).toHaveBeenCalledWith(
       'Resolved source URL: https://archive.mozilla.org/pub/devedition/releases/152.0b6/source/firefox-152.0b6.source.tar.xz'
+    );
+  });
+
+  it('edits the firefox keys in place and keeps the rest of the file byte for byte', async () => {
+    const compact = [
+      '{',
+      '  "name": "Test Browser", "vendor": "Test", "appId": "org.test.browser",',
+      '  "binaryName": "testbrowser",',
+      '  "firefox": { "version": "140.0esr", "product": "firefox-esr" },',
+      '  "patchLint": { "rawColorAllowlist": ["a.css", "b.css"] }',
+      '}',
+      '',
+    ].join('\n');
+    await writeFiles(projectRoot, { 'fireforge.json': compact });
+
+    await sourceSetCommand(projectRoot, {
+      version: '140.1.0esr',
+      product: 'firefox-esr',
+      sha256: 'c'.repeat(64),
+    });
+
+    expect(await readProjectText(projectRoot, 'fireforge.json')).toBe(
+      compact.replace(
+        '{ "version": "140.0esr", "product": "firefox-esr" }',
+        `{ "version": "140.1.0esr", "product": "firefox-esr", "sha256": "${'c'.repeat(64)}" }`
+      )
     );
   });
 

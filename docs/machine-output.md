@@ -53,22 +53,28 @@ if (options.json === true) {
 
 ## Current surfaces
 
-| Surface                            | Shape                                                                                 | Notes                                                                                                                                                                                                                              |
-| ---------------------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status --json`                    | `{ schemaVersion: 1, … }`                                                             | Error envelope on three engine preconditions                                                                                                                                                                                       |
-| `tree list --json`                 | `{ schemaVersion: 1, trees }`                                                         | Error envelope added in 0.44.0                                                                                                                                                                                                     |
-| `token list --json`                | `{ schemaVersion: 1, tokensCssPath, categories }`                                     | Categories in file order, each with its tokens (`name`, `line`, `value`)                                                                                                                                                           |
-| `token show --json`                | `{ schemaVersion: 1, name, category, declarations }`                                  | One entry per declaring block, with its selector trail and line                                                                                                                                                                    |
-| `test` verdict line                | `FIREFORGE-VERDICT: PASS\|FAIL reason=… [note=<class>] [shuffle=<seed>] [log=<path>]` | Not JSON. A single final stdout line, sealed by `setStdoutSealed` so nothing can displace it. `log=` names the run's own complete output under `.fireforge/logs/`, so a piped or truncated run still leaves a re-readable artifact |
-| `lint --per-patch --report <path>` | `{ schemaVersion: 1, … }`                                                             | Written to a file, never read back by FireForge                                                                                                                                                                                    |
-| `status --raw`                     | `git status --porcelain` lines                                                        | Not JSON, but still a machine surface: it engages the same stdout discipline, so rules 3 and 4 apply and rules 1 and 2 do not. A clean tree prints nothing                                                                         |
-| `build` log announcement           | `Full build output: <path>`                                                           | Not JSON. `build` prints no verdict line, so it names its run log directly on the way out                                                                                                                                          |
+| Surface                            | Shape                                                                                                                                                                                                              | Notes                                                                                                                                                                                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status --json`                    | `{ schemaVersion: 1, … }`                                                                                                                                                                                          | Error envelope on three engine preconditions                                                                                                                                                                                       |
+| `status --json` under `--check`    | adds `check: { enabled, failOn, allow?, failOnUnknown?, failed, offenders }`                                                                                                                                       | Since 0.50.0 on the full payload too, not only `--summary`. `allow` and `failOnUnknown` appear only when set. An offender failing only through `--fail-on-unknown` carries `unnamed: true`. `--patches` adds `scope: { patches }`  |
+| `furnace validate --json`          | `{ schemaVersion: 1, passed, summary, maxWarnings?, components, issues, excepted, staleExceptions }`                                                                                                               | `issues` counts after `validationExceptions`, stale-exception warnings included. `excepted` carries each suppressed finding with its `reason`                                                                                      |
+| `check --json`                     | `{ schemaVersion: 1, verdict, reason?, summary, steps }`                                                                                                                                                           | One entry per step: `name`, `kind`, `command`, `status` (`pass`/`fail`/`skipped`), `exitCode`, `durationMs`, `detail`, and on failure `outputTail` (`timedOut` when killed at its budget). No verdict line under `--json`          |
+| `check` verdict line               | `FIREFORGE-VERDICT: PASS\|FAIL [reason=step-failures\|lock-timeout failed=<steps>] steps=<n> skipped=<n>`                                                                                                          | Not JSON. The last stdout line, after the step table, sealed like `test`'s. Its `reason=` set is its own, not `test`'s                                                                                                             |
+| `tree list --json`                 | `{ schemaVersion: 1, trees }`                                                                                                                                                                                      | Error envelope added in 0.44.0                                                                                                                                                                                                     |
+| `token list --json`                | `{ schemaVersion: 1, tokensCssPath, categories }`                                                                                                                                                                  | Categories in file order, each with its tokens (`name`, `line`, `value`)                                                                                                                                                           |
+| `token show --json`                | `{ schemaVersion: 1, name, category, declarations }`                                                                                                                                                               | One entry per declaring block, with its selector trail and line                                                                                                                                                                    |
+| `token lint --json`                | `{ schemaVersion: 1, tokensCssPath, tokenPrefix, filesScanned, findings }`                                                                                                                                         | Each finding has `check`, `file`, `line`, `token`, `message`. The document is written even when findings exist; the exit is then non-zero, as with `status --check --json`                                                         |
+| `test` verdict line                | `FIREFORGE-VERDICT: PASS\|FAIL reason=… [note=<class>] [started=<n>/<m> first-unstarted=<path>] [runs=<p>/<n>] [control=<outcome>] [shuffle=<seed>] [furnace-applied=<names>\|furnace-apply=skipped] [log=<path>]` | Not JSON. A single final stdout line, sealed by `setStdoutSealed` so nothing can displace it. `log=` names the run's own complete output under `.fireforge/logs/`, so a piped or truncated run still leaves a re-readable artifact |
+| `lint --per-patch --report <path>` | `{ schemaVersion: 1, patches, queueIssues, totals, … }`                                                                                                                                                            | Written to a file. `queueIssues` holds the cross-patch findings; `patch staged-dependency --add --from` reads back their `stagedDeclarations`                                                                                      |
+| `status --raw`                     | `git status --porcelain` lines                                                                                                                                                                                     | Not JSON, but still a machine surface: it engages the same stdout discipline, so rules 3 and 4 apply and rules 1 and 2 do not. A clean tree prints nothing                                                                         |
+| `build` log announcement           | `Full build output: <path>`                                                                                                                                                                                        | Not JSON. `build` prints no verdict line, so it names its run log directly on the way out                                                                                                                                          |
 
 `--raw` is why `cli.ts` reads `process.argv` for `--json` or `--raw` before
 dispatching. Rule 3 is about who owns stdout, and that question is settled
 the same way for a porcelain stream as for a JSON document.
 
-`doctor` and `verify` have no `--json` mode. `doctor` already computes a
+`doctor` and `verify` have no `--json` mode (`fireforge check` reports
+`verify` as a step with its exit code and output tail). `doctor` already computes a
 serializable `DoctorCheck[]`, so adding one is cheap if a consumer asks for
 it. Follow the rules above rather than inventing a shape.
 
@@ -111,7 +117,47 @@ tokenises `key=value` pairs is unaffected, and a gate that names no class
 emits no `note=` at all. The classes are not a closed set and may grow, so
 consumers should treat an unrecognised one as opaque. Current values:
 `browser-busy`, `stale-browser`, `stale-browser-kill-failed`, `marionette-port-busy`, `mochitest-port-busy`,
-`coverage-replaced`, `stale-build`, `stale-components`.
+`coverage-replaced`, `stale-build`, `stale-components`, `no-launchable-binary`, `negative-control` (the
+control diff was refused), `negative-control-pending` (an interrupted run's
+control could not be undone safely). `note=negative-control-restore` rides a
+`reason=inconclusive` line whose control could not be restored byte-exact.
+
+### Multi-run invocations: `FIREFORGE-RUN:`, `runs=` and `control=`
+
+A mixed-harness request, `--repeat <n>` and `--negative-control <diff>` run
+several mach invocations under one lock hold (see
+[`testing.md`](testing.md#several-runs-under-one-lock-hold)). Each sub-run
+writes one raw stdout line before the verdict:
+
+```
+FIREFORGE-RUN: PASS|FAIL [reason=…] [note=…] [checks=<n>] [unexpected=<n>] [shards=<p>/<t>] run=<i>/<n> [harness=xpcshell|mochitest]
+```
+
+Its keys are the ones that sub-run's verdict line would have carried alone.
+A `FIREFORGE-RUN:` line is never a verdict: the invocation still ends with
+exactly one `FIREFORGE-VERDICT:` line. With more than one planned run it
+carries `runs=<passed>/<planned>` and no count keys; a failed aggregate takes
+the most structural reason among its runs (`inconclusive`, `preflight`,
+`crash`, `harness-arguments`, `no-tests`, `test-failures`) and that run's
+`note=`. A run that never started (the invocation stopped at a refusal)
+counts toward `<planned>` but not `<passed>`.
+
+`control=caught|missed|inconclusive` is present only for a negative control.
+`caught` means every repetition went red with `reason=test-failures`, and
+the process exits 0 even though the status is `FAIL`; `missed` means a
+repetition stayed green (exit 5); `inconclusive` covers every other outcome.
+A one-run control keeps its run's full line, counts included, and appends
+the key.
+
+### The additive `started=` and `first-unstarted=` keys
+
+Written together on a `FAIL reason=test-failures` line when a run that mach
+exited 0 on was refused its pass because requested test files never started:
+`started=<n>/<m>` counts the requested test files with a start (or skip)
+marker, and `first-unstarted=<path>` names the first, in dispatch order,
+that has none. A run refused only for a non-zero `unexpected=` count or a
+mid-test shutdown carries neither. Absent on every other line. See
+[`testing.md`](testing.md#the-verdict-line).
 
 ### The additive `shuffle=` key
 
@@ -158,3 +204,19 @@ gains `fireforgeHost: { start, end, powerSourceChanged }`, where each host
 state includes `load`, `power` and an optional `topProcess` with CPU and
 command. Consumers should tolerate this additive object. Unknown power
 state is visible but never treated as a proven transition.
+
+On a perf run (`--perf-samples`), an `engine/` change during the run makes
+the verdict `reason=inconclusive` only when HEAD moved or a changed path is
+packaged by the running build: a source an objdir install manifest names, a
+directory one installs from, or a test file. Edits that no manifest installs
+(compiled sources, build files, docs) leave the sample standing with a
+warning naming them. Other runs keep the strict rule: any change is
+inconclusive.
+
+### Additive Furnace keys
+
+A `fireforge test --build` or `--build-only` run whose pre-test Furnace apply
+deployed components appends `furnace-applied=<name>,<name>…`: the components
+whose `components/` source changed since their last deploy, which the
+runtime under test therefore includes. `--no-furnace-apply` skips that apply
+and appends `furnace-apply=skipped`. Both are absent otherwise.

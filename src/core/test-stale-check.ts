@@ -30,7 +30,13 @@ import { isPackageablePath, isXpcomManifestPath } from './build-audit.js';
 import { readBuildBaseline } from './build-baseline.js';
 import type { BuildBaseline, TestPackagingCoverage } from './build-baseline-types.js';
 import { hashEngineFile } from './coverage-extend.js';
+import { isTestManifestPath } from './coverage-records.js';
 import { collectChangedEnginePaths, dropPathsMatchingFingerprints } from './engine-changes.js';
+import {
+  formatStaleExemptions,
+  partitionStaleCandidates,
+  type StaleExemption,
+} from './test-stale-exempt.js';
 
 /** Result of the stale-build preflight probe. */
 export interface StaleBuildResult {
@@ -55,6 +61,13 @@ export interface StaleBuildResult {
    * we have nothing to compare against and a warning would mislead.
    */
   baseline: BuildBaseline | undefined;
+  /**
+   * Changed packageable paths the packaged runtime already serves (objdir
+   * symlinks to the edited source, test files restaged at dispatch), which
+   * therefore do not make the build stale. Named in the refusal and in a
+   * notice so the exemption is visible.
+   */
+  exempt?: StaleExemption[];
 }
 
 /** Cap on the number of changed paths rendered inline. */
@@ -100,13 +113,16 @@ export async function checkStaleBuildForTest(
     baseline.packageableFingerprints
   );
 
-  if (packageable.length === 0) {
-    return { stale: false, changedPaths: [], truncated: 0, baseline };
+  // Edits the runtime already serves (symlinked into the objdir, or test
+  // files `mach test` restages at dispatch) cannot make the packaging stale.
+  const { stale, exempt } = await partitionStaleCandidates(engineDir, packageable);
+  if (stale.length === 0) {
+    return { stale: false, changedPaths: [], truncated: 0, baseline, exempt };
   }
 
-  const head = packageable.slice(0, STALE_PATHS_LIMIT);
-  const truncated = Math.max(0, packageable.length - head.length);
-  return { stale: true, changedPaths: head, truncated, baseline };
+  const head = stale.slice(0, STALE_PATHS_LIMIT);
+  const truncated = Math.max(0, stale.length - head.length);
+  return { stale: true, changedPaths: head, truncated, baseline, exempt };
 }
 
 /**
@@ -117,11 +133,17 @@ export async function checkStaleBuildForTest(
 export function formatStaleBuildWarning(result: StaleBuildResult): string {
   const tail = result.truncated > 0 ? `, … (+${result.truncated} more)` : '';
   const list = result.changedPaths.join(', ') + tail;
+  const exempt = result.exempt ?? [];
+  const exemptLine =
+    exempt.length > 0
+      ? `\nNot counted as stale, because the runtime already serves them: ${formatStaleExemptions(exempt)}.`
+      : '';
   return (
     `Engine tree has changed since the last successful fireforge build (${list}).\n` +
     'The current obj-*/dist/ bundle may not reflect those edits. If your test reads ' +
     'packaged chrome / jar.mn resources, rerun with "fireforge test --build" (or ' +
-    '"fireforge build --ui") first. Passing --build skips this check.'
+    '"fireforge build --ui") first. Passing --build skips this check.' +
+    exemptLine
   );
 }
 
@@ -171,39 +193,6 @@ function normalizeCoveragePath(path: string): string {
 }
 
 /**
- * Formats the refusal shown when a non-`--build` run requests paths the
- * packaged runtime's scoped `test --build` coverage does not include. It is
- * enforced on every such run, with or without `--allow-stale-build`. Kept
- * separate from the matcher so tests can pin structure and copy
- * independently (same split as {@link formatStaleBuildWarning}).
- */
-/**
- * Basenames of the test manifests whose entries decide what a packaged test
- * runtime stages. A manifest that gained an entry is the single most common
- * reason a run needs coverage the last build never claimed, and it is a
- * fact FireForge already holds but never said, leaving the operator to
- * rediscover it after a correct refusal.
- */
-const TEST_MANIFEST_BASENAMES = new Set([
-  'xpcshell.toml',
-  'xpcshell.ini',
-  'browser.toml',
-  'browser.ini',
-  'mochitest.toml',
-  'mochitest.ini',
-  'chrome.toml',
-  'chrome.ini',
-  'a11y.toml',
-  'a11y.ini',
-]);
-
-/** True for a test manifest path (by basename). */
-function isTestManifestPath(path: string): boolean {
-  const base = path.slice(path.lastIndexOf('/') + 1);
-  return TEST_MANIFEST_BASENAMES.has(base);
-}
-
-/**
  * Test manifests changed since the recorded build that sit in (or above)
  * the directory of an uncovered request path, i.e. the manifests that
  * explain why this run needs coverage the build never claimed.
@@ -239,38 +228,55 @@ export async function findChangedTestManifestsForPaths(
   return hits.slice(0, STALE_PATHS_LIMIT);
 }
 
+/** Extra evidence for {@link formatTestCoverageRefusal}. */
+export interface CoverageRefusalDetail {
+  /**
+   * Per uncovered path, the staging inputs that changed since the full
+   * build the recorded claim carries forward (what the replaced coverage
+   * affects).
+   */
+  changedInputs?: Readonly<Record<string, readonly string[]>>;
+  /** The record carries a full build's anchor forward for unchanged paths. */
+  carriesFullAnchor?: boolean;
+}
+
 /**
+ * Formats the refusal shown when a non-`--build` run requests paths the
+ * packaged runtime's scoped `test --build` coverage does not include. It is
+ * enforced on every such run, with or without `--allow-stale-build`. Kept
+ * separate from the matcher so tests can pin structure and copy
+ * independently (same split as {@link formatStaleBuildWarning}).
+ *
  * @param uncovered - Request paths the recorded packaging does not cover
  * @param coverage - The recorded scoped coverage claim
  * @param changedManifests - Test manifests changed since the recorded
  *   build that explain an uncovered path (from
  *   {@link findChangedTestManifestsForPaths}). Omitted or empty renders
  *   nothing
+ * @param detail - See {@link CoverageRefusalDetail}
  */
 export function formatTestCoverageRefusal(
   uncovered: string[],
   coverage: string[],
-  changedManifests: readonly string[] = []
+  changedManifests: readonly string[] = [],
+  detail: CoverageRefusalDetail = {}
 ): string {
-  const cap = (paths: string[]): string => {
+  const cap = (paths: readonly string[]): string => {
     const head = paths.slice(0, STALE_PATHS_LIMIT);
     const truncated = paths.length - head.length;
     return head.join(', ') + (truncated > 0 ? `, … (+${truncated} more)` : '');
   };
   const rebuildTargets = uncovered.filter((p) => p !== FULL_SUITE_REQUEST);
-  // Name --extend-coverage here or it is undiscoverable: a scoped build
-  // replaces the claim, so under several concurrent sessions a peer's build
-  // for an unrelated path erases coverage you legitimately still hold, and
-  // the union that fixes it is a flag the operator has no reason to know
-  // exists at the moment they need it. The anchor conditions are stated
-  // because they are what decides whether it will work.
-  const extendHint =
+  // Per-path retention is the default, so rebuilding only the uncovered
+  // paths no longer costs anyone else's claim. Saying so is what keeps a
+  // peer from rebuilding everything "to be safe".
+  const keepHint =
     rebuildTargets.length > 0
-      ? ` Add --extend-coverage to that rebuild to UNION the new paths onto the recorded claim instead of replacing it — it holds while engine HEAD and engine/mozconfig are unchanged since the recorded build.`
+      ? ' That scoped build keeps every other recorded path whose own staging inputs (manifest directory and the fixtures its manifest names) and engine/mozconfig are unchanged.'
       : '';
   const rebuildHint =
     rebuildTargets.length > 0
-      ? `Rerun "fireforge test --build ${rebuildTargets.slice(0, STALE_PATHS_LIMIT).join(' ')}" to package them, or run "fireforge build" for full coverage.${extendHint}`
+      ? `Rerun "fireforge test --build ${rebuildTargets.slice(0, STALE_PATHS_LIMIT).join(' ')}" to package them (or "fireforge test --build-only ..." to package without running), or run "fireforge build" for full coverage.${keepHint}`
       : 'Run "fireforge build" (or a path-less "fireforge test --build") for full coverage first.';
   // Why this run needs new coverage, when a changed manifest explains it: a
   // manifest that gained an entry is not covered by a build claim recorded
@@ -279,11 +285,21 @@ export function formatTestCoverageRefusal(
     changedManifests.length > 0
       ? ` This run needs coverage the recorded build never claimed because a test manifest changed since it: ${changedManifests.map((m) => `engine/${m}`).join(', ')} — a manifest that gained an entry stages new support fixtures, and a claim recorded for other paths (or another harness) does not cover them.`
       : '';
+  const affected = Object.entries(detail.changedInputs ?? {}).filter(
+    ([, files]) => files.length > 0
+  );
+  const affectedLine =
+    affected.length > 0
+      ? ` Staging inputs changed since the full build this record carries forward: ${affected.map(([path, files]) => `${path} (${cap(files)})`).join('; ')}.`
+      : '';
+  const scope = detail.carriesFullAnchor
+    ? `${cap(coverage)}, plus earlier full coverage for paths whose own staging inputs are unchanged`
+    : cap(coverage);
   return (
-    `The packaged test runtime was produced by a scoped "fireforge test --build" covering only: ${cap(coverage)}.\n` +
+    `The packaged test runtime was produced by a scoped "fireforge test --build" covering only: ${scope}.\n` +
     `The requested run needs ${cap(uncovered)}, which that packaging does not cover — support ` +
     'fixtures for those manifests may be missing from obj-*/_tests/, and the run can hang ' +
-    `rather than fail.${manifestLine} ${rebuildHint} ` +
+    `rather than fail.${affectedLine}${manifestLine} ${rebuildHint} ` +
     '(--allow-stale-build does not bypass this check — it accepts stale content, not missing coverage.)'
   );
 }

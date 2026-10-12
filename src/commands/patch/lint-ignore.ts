@@ -12,27 +12,42 @@
  *   re-export's engine read + diff regeneration roundtrip is wasted.
  *
  * Modes are mutually exclusive: exactly one of `--add`, `--remove`, or
- * `--clear` must be supplied per invocation. The read-modify-write
+ * `--clear` must be supplied per invocation. `--add <rule> --max <n>
+ * --reason <text>` writes a size waiver with a ceiling (see
+ * `core/patch-lint-ignore.ts`) instead of a bare check ID; an `--add` for a
+ * rule that already has an entry replaces it, so the same command moves a
+ * ceiling or widens it back to a bare waiver. The read-modify-write
  * happens inside the patch directory lock via {@link mutatePatchMetadata}
  * so a concurrent writer cannot interleave between the read and the
  * write, which matters when an operator scripts repeated invocations or
  * runs `--add` and `--remove` back-to-back.
  */
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 
 import { confirmDestructive } from '../../core/destructive.js';
 import { appendHistoryBestEffort } from '../../core/history-log.js';
 import { mutatePatchMetadata } from '../../core/patch-export.js';
+import {
+  addedLintIgnoreEntries,
+  formatLintIgnoreEntry,
+  formatLintIgnoreList,
+  LINT_IGNORE_CEILING_RULES,
+  lintIgnoreRule,
+  removeLintIgnoreRules,
+  upsertLintIgnoreEntries,
+} from '../../core/patch-lint-ignore.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
-import type { PatchLintIgnoreOptions } from '../../types/commands/index.js';
+import type { LintIgnoreEntry, PatchLintIgnoreOptions } from '../../types/commands/index.js';
 import { info, intro, outro, warn } from '../../utils/logger.js';
 import {
   addWaitLockOption,
+  commanderArgParser,
   resolveWaitLockSeconds,
   stringListOption,
 } from '../../utils/options.js';
+import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 
@@ -57,24 +72,12 @@ const LINT_IGNORE_REVIEW_WARNING =
  * present" contract).
  */
 function applyMode(
-  existing: ReadonlyArray<string>,
+  existing: ReadonlyArray<LintIgnoreEntry>,
   mode: LintIgnoreMode,
-  values: ReadonlyArray<string>
-): string[] | undefined {
-  const existingSet = new Set<string>(existing);
-
-  if (mode === 'add') {
-    for (const v of values) existingSet.add(v);
-    const merged = [...existingSet];
-    return merged.length > 0 ? merged : undefined;
-  }
-
-  if (mode === 'remove') {
-    for (const v of values) existingSet.delete(v);
-    const remaining = [...existingSet];
-    return remaining.length > 0 ? remaining : undefined;
-  }
-
+  values: ReadonlyArray<LintIgnoreEntry>
+): LintIgnoreEntry[] | undefined {
+  if (mode === 'add') return upsertLintIgnoreEntries(existing, values);
+  if (mode === 'remove') return removeLintIgnoreRules(existing, values.map(lintIgnoreRule));
   // mode === 'clear'
   return undefined;
 }
@@ -85,34 +88,77 @@ function applyMode(
  * message format directly without mocking the logger transport.
  */
 function describeChange(
-  before: ReadonlyArray<string>,
-  after: ReadonlyArray<string>,
+  before: ReadonlyArray<LintIgnoreEntry>,
+  after: ReadonlyArray<LintIgnoreEntry>,
   mode: LintIgnoreMode,
-  values: ReadonlyArray<string>
+  values: ReadonlyArray<LintIgnoreEntry>
 ): string {
-  const beforeSet = new Set<string>(before);
-  const afterSet = new Set<string>(after);
   if (mode === 'clear') {
     return before.length === 0
       ? 'lintIgnore was already empty — no change'
-      : `lintIgnore cleared (was ${before.join(', ')})`;
+      : `lintIgnore cleared (was ${formatLintIgnoreList(before)})`;
   }
-  const currentLabel = before.length > 0 ? `[${before.join(', ')}]` : '(empty)';
+  const currentLabel = before.length > 0 ? `[${formatLintIgnoreList(before)}]` : '(empty)';
   if (mode === 'add') {
-    const added = values.filter((v) => !beforeSet.has(v));
+    const added = addedLintIgnoreEntries(before, after);
     if (added.length === 0) {
       // Surface the existing list so a no-op `--add` does not require a
       // follow-up `patches.json` read to confirm what was already present.
       return `lintIgnore unchanged (current: ${currentLabel}; all requested IDs already present)`;
     }
-    return `lintIgnore += ${added.join(', ')} → ${[...afterSet].join(', ') || '(empty)'}`;
+    return `lintIgnore += ${formatLintIgnoreList(added)} → ${formatLintIgnoreList(after)}`;
   }
   // mode === 'remove'
-  const removed = values.filter((v) => beforeSet.has(v));
+  const requested = new Set(values.map(lintIgnoreRule));
+  const removed = before.filter((entry) => requested.has(lintIgnoreRule(entry)));
   if (removed.length === 0) {
     return `lintIgnore unchanged (current: ${currentLabel}; none of the requested IDs were present)`;
   }
-  return `lintIgnore −= ${removed.join(', ')} → ${[...afterSet].join(', ') || '(empty)'}`;
+  return `lintIgnore −= ${formatLintIgnoreList(removed)} → ${formatLintIgnoreList(after)}`;
+}
+
+/**
+ * Turns the mode's IDs into manifest entries, applying `--max`/`--reason`
+ * to `--add`. Refuses a ceiling flag without `--add`, a `--max` without a
+ * `--reason` (and the reverse), and a ceiling on a rule that carries no
+ * measurement, so a waiver that could never suppress anything is not
+ * written.
+ */
+function resolveRequestedEntries(
+  mode: LintIgnoreMode,
+  options: PatchLintIgnoreOptions
+): LintIgnoreEntry[] {
+  const hasMax = options.max !== undefined;
+  const hasReason = options.reason !== undefined;
+  if ((hasMax || hasReason) && mode !== 'add') {
+    throw new InvalidArgumentError(
+      '--max and --reason only apply to --add.',
+      hasMax ? '--max' : '--reason'
+    );
+  }
+  if (hasMax !== hasReason) {
+    throw new InvalidArgumentError(
+      'A lintIgnore ceiling needs both --max <n> and --reason <text>.',
+      hasMax ? '--reason' : '--max'
+    );
+  }
+  if (mode === 'remove') return [...(options.remove ?? [])];
+  if (mode !== 'add') return [];
+  const ids = options.add ?? [];
+  if (options.max === undefined || options.reason === undefined) return [...ids];
+  if (options.reason.trim() === '') {
+    throw new InvalidArgumentError('--reason must not be empty.', '--reason');
+  }
+  const unmeasured = ids.filter((id) => !LINT_IGNORE_CEILING_RULES.includes(id));
+  if (unmeasured.length > 0) {
+    throw new InvalidArgumentError(
+      `--max only applies to the measured size rules (${LINT_IGNORE_CEILING_RULES.join(', ')}); ` +
+        `got ${unmeasured.join(', ')}.`,
+      '--max'
+    );
+  }
+  const { max, reason } = options;
+  return ids.map((rule) => ({ rule, max, reason }));
 }
 
 /**
@@ -153,8 +199,7 @@ export async function patchLintIgnoreCommand(
   }
 
   const mode: LintIgnoreMode = adding ? 'add' : removing ? 'remove' : 'clear';
-  const values: ReadonlyArray<string> =
-    mode === 'add' ? (options.add ?? []) : mode === 'remove' ? (options.remove ?? []) : [];
+  const values = resolveRequestedEntries(mode, options);
 
   const { paths, manifest } = await requirePatchQueue(projectRoot);
   const target = requirePatchTarget(identifier, manifest.patches);
@@ -166,7 +211,8 @@ export async function patchLintIgnoreCommand(
   // of mutation an operator should approve consciously.
   const currentList = target.lintIgnore ?? [];
   const projectedList = applyMode(currentList, mode, values) ?? [];
-  const addsNewIds = mode === 'add' && projectedList.length > currentList.length;
+  const addsNewIds =
+    mode === 'add' && addedLintIgnoreEntries(currentList, projectedList).length > 0;
   const projectedSummary = describeChange(currentList, projectedList, mode, values);
   const decision = await confirmDestructive({
     operation: 'patch-lint-ignore',
@@ -207,7 +253,7 @@ export async function patchLintIgnoreCommand(
   const existing = result.before.lintIgnore ?? [];
   const projected = result.after.lintIgnore ?? [];
   info(`${target.filename}: ${describeChange(existing, projected, mode, values)}.`);
-  if (mode === 'add' && projected.length > existing.length) {
+  if (mode === 'add' && addedLintIgnoreEntries(existing, projected).length > 0) {
     warn(LINT_IGNORE_REVIEW_WARNING);
   }
 
@@ -218,7 +264,7 @@ export async function patchLintIgnoreCommand(
       args: {
         filename: target.filename,
         mode,
-        values: [...values],
+        values: values.map(formatLintIgnoreEntry),
         before: existing,
         after: projected,
       },
@@ -255,6 +301,14 @@ export function registerPatchLintIgnore(parent: Command, context: CommandContext
       ...stringListOption()
     )
     .option('--clear', 'Drop the lintIgnore field entirely')
+    .addOption(
+      new Option(
+        '--max <n>',
+        'With --add: write a size waiver with a ceiling, suppressing the rule only while its ' +
+          'measurement is at most <n> (file-too-large, large-patch-lines, large-patch-files)'
+      ).argParser(commanderArgParser((v) => parsePositiveIntegerFlag('--max', v)))
+    )
+    .option('--reason <text>', 'With --add --max: why the ceiling exists (required with --max)')
     .option('--dry-run', 'Show what would change without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)');
   addWaitLockOption(command).action(
@@ -265,6 +319,8 @@ export function registerPatchLintIgnore(parent: Command, context: CommandContext
           add?: string[];
           remove?: string[];
           clear?: boolean;
+          max?: number;
+          reason?: string;
           dryRun?: boolean;
           yes?: boolean;
           waitLock?: boolean | number;
@@ -279,6 +335,8 @@ export function registerPatchLintIgnore(parent: Command, context: CommandContext
         if (options.remove !== undefined && options.remove.length > 0)
           normalized.remove = options.remove;
         if (options.clear === true) normalized.clear = true;
+        if (options.max !== undefined) normalized.max = options.max;
+        if (options.reason !== undefined) normalized.reason = options.reason;
         if (options.dryRun === true) normalized.dryRun = true;
         if (options.yes === true) normalized.yes = true;
         if (options.waitLock !== undefined) normalized.waitLock = options.waitLock;

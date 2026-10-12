@@ -967,8 +967,15 @@ describe('lintPatchedJs', () => {
     );
     expect(issue?.severity).toBe('warning');
     expect(issue?.message).toContain('Test file');
-    expect(issue?.message).toContain('splitting');
+    // The split hint belongs to the error band only: below it, splitting a
+    // test suite pushes against one suite per subject.
+    expect(issue?.message).not.toContain('splitting');
     expect(await fileSizeSeverityAt(1700, file)).toBe('error');
+    mockReadText.mockResolvedValue(makeJsFile(1700));
+    const errorIssue = (await lintPatchedJs('/engine', [file], new Set([file]), mockConfig)).find(
+      (i) => i.check === 'file-too-large'
+    );
+    expect(errorIssue?.message).toContain('Consider splitting');
   });
 
   it('counts lines like wc -l — a trailing newline adds no phantom line', async () => {
@@ -1626,7 +1633,7 @@ describe('lintPatchSize', () => {
     // Message must reference the branding tier's threshold (60), not the
     // general default of 5. Operators reading the warning need to see the
     // limit the rule actually applied.
-    expect(fileIssue?.message).toContain('≤60');
+    expect(fileIssue?.message).toContain('warning threshold: 60');
   });
 
   it('applies the branding file-count tier on explicit patchTier opt-in', () => {
@@ -1649,7 +1656,7 @@ describe('lintPatchSize', () => {
     const files = ['a.js', 'b.js', 'c.js', 'd.js', 'e.js', 'f.js'];
     const issues = lintPatchSize(files, 10);
     const fileIssue = issues.find((i) => i.check === 'large-patch-files');
-    expect(fileIssue?.message).toContain('≤5');
+    expect(fileIssue?.message).toContain('warning threshold: 5)');
   });
 
   it('keeps the general 5-file threshold for test patches', () => {

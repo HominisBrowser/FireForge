@@ -12,7 +12,6 @@ import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository, isMissingHeadError } from '../core/git.js';
 import { listUntrackedFilesInDirs, resolveMaxUntrackedFilesPerDir } from '../core/git-status.js';
 import { renderOwnershipTable } from '../core/ownership-table.js';
-import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { readProcessCpuSeconds } from '../core/process-cpu-time.js';
 import { type ClassifiedFile, classifyFiles, type StatusFile } from '../core/status-classify.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -30,6 +29,7 @@ import {
 } from '../utils/logger.js';
 import { emitMachineError } from '../utils/machine-output.js';
 import {
+  policyNeedsOwnership,
   resolveStatusCheckPolicy,
   runStatusCheck,
   type StatusCheckPolicy,
@@ -41,11 +41,14 @@ import {
   renderTestCoverageStatus,
   renderUnmanagedOnly,
 } from './status-output.js';
+import { buildOwnershipJsonBlock, summarizeOwnership } from './status-ownership.js';
 import {
-  buildOwnershipJsonBlock,
-  collectOwnershipRows,
-  summarizeOwnership,
-} from './status-ownership.js';
+  collectScopedOwnershipRows,
+  ownershipConflictPaths,
+  resolveStatusScope,
+  scopeClassified,
+  type StatusScope,
+} from './status-scope.js';
 
 /**
  * Renders raw worktree status as machine-parseable porcelain-style output.
@@ -192,39 +195,63 @@ async function scanEngineStatusFiles(
  * policy, which stays the only exit driver on this path.
  *
  * `--include-ownership` is a modifier rather than a mode: it appends an
- * ownership block without touching exit semantics, so an ownership
- * conflict still fails only the human `--ownership` mode.
+ * ownership block without touching exit semantics. Ownership conflicts
+ * fail this path only when the policy names `ownership-conflict` (or
+ * leaves it unnamed under `--fail-on-unknown`).
  *
- * @param classified - Classified worktree entries
+ * @param classified - Classified worktree entries, unscoped
  * @param files - The same entries pre-classification, for ownership rows
  * @param paths - Resolved project paths
  * @param options - Status display options
  * @param checkPolicy - Resolved `--check`/`--fail-on` policy
+ * @param scope - The `--patches` scope, when given
  */
 async function renderJsonMode(
   classified: ClassifiedFile[],
   files: StatusFile[],
   paths: ProjectPaths,
   options: StatusOptions,
-  checkPolicy: StatusCheckPolicy
+  checkPolicy: StatusCheckPolicy,
+  scope: StatusScope | undefined
 ): Promise<void> {
-  const ownership =
-    options.includeOwnership === true
-      ? buildOwnershipJsonBlock(
-          await collectOwnershipRows(
-            paths.patches,
-            (await loadPatchesManifest(paths.patches))?.patches ?? [],
-            files,
-            classified
-          )
-        )
-      : undefined;
+  const rows =
+    options.includeOwnership === true || policyNeedsOwnership(checkPolicy)
+      ? await collectScopedOwnershipRows(paths.patches, files, classified, scope)
+      : [];
+  const context = {
+    policy: checkPolicy,
+    ownershipConflicts: ownershipConflictPaths(rows),
+    ownership: options.includeOwnership === true ? buildOwnershipJsonBlock(rows) : undefined,
+    scope,
+  };
+  const scoped = scopeClassified(classified, scope);
   if (options.summary === true) {
-    renderJsonSummaryStatus(classified, checkPolicy, ownership);
+    renderJsonSummaryStatus(scoped, context);
   } else {
-    renderJsonStatus(classified, ownership);
+    renderJsonStatus(scoped, context);
   }
-  runStatusCheck(classified, checkPolicy);
+  runStatusCheck(scoped, checkPolicy, context.ownershipConflicts);
+}
+
+/**
+ * Applies the `--check` policy to the human default view. Builds the
+ * ownership rows only when the policy can fail on `ownership-conflict`,
+ * which it can on a clean tree too (two patches claiming one path need no
+ * worktree change).
+ */
+async function runHumanStatusCheck(
+  classified: ClassifiedFile[],
+  files: StatusFile[],
+  paths: ProjectPaths,
+  checkPolicy: StatusCheckPolicy,
+  scope: StatusScope | undefined
+): Promise<void> {
+  const conflicts = policyNeedsOwnership(checkPolicy)
+    ? ownershipConflictPaths(
+        await collectScopedOwnershipRows(paths.patches, files, classified, scope)
+      )
+    : [];
+  runStatusCheck(scopeClassified(classified, scope), checkPolicy, conflicts);
 }
 
 /**
@@ -296,8 +323,12 @@ export async function statusCommand(
   }
 }
 
-/** The status body proper. The machine-mode lifecycle lives in {@link statusCommand}. */
-async function runStatusCommandBody(projectRoot: string, options: StatusOptions): Promise<void> {
+/**
+ * Refuses flag combinations no view can honour, before any output: one
+ * mode at most, and the JSON-only and scope modifiers only where they mean
+ * something.
+ */
+function assertStatusFlagCombination(options: StatusOptions): void {
   const modeCount = [
     options.raw,
     options.unmanaged,
@@ -327,6 +358,25 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
       '--include-ownership'
     );
   }
+
+  // --patches scopes the classifying views and the ownership table only.
+  if (
+    options.patches !== undefined &&
+    (options.raw === true ||
+      options.unmanaged === true ||
+      options.testCoverage === true ||
+      options.lock === true)
+  ) {
+    throw new InvalidArgumentError(
+      '--patches cannot be combined with --raw, --unmanaged, --test-coverage, or --lock.',
+      '--patches'
+    );
+  }
+}
+
+/** The status body proper. The machine-mode lifecycle lives in {@link statusCommand}. */
+async function runStatusCommandBody(projectRoot: string, options: StatusOptions): Promise<void> {
+  assertStatusFlagCombination(options);
 
   // --check / --fail-on enforcement policy. Applies only
   // where classification runs (the default view and --json).
@@ -362,6 +412,7 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
 
   const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
+  const scope = await resolveStatusScope(paths.patches, options.patches);
 
   // Shared envelope: see src/utils/machine-output.ts and
   // docs/machine-output.md. `status` was the only command that had one.
@@ -376,17 +427,16 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
     // Rung 1 only. See the note below on why this branch does not take the
     // full assertEngineGitReady ladder.
     await assertEngineExists(paths.engine);
-    const manifest = await loadPatchesManifest(paths.patches);
     // The same scan and the same classification pass as every other mode.
     // This branch keeps its historical guard shape on purpose:
     // no baseline-commit assertion, and a non-git engine degrades to an
     // empty table rather than the recovery banner.
     const rawFilesOwnership = await scanEngineStatusFiles(paths.engine, false);
-    const rows = await collectOwnershipRows(
+    const rows = await collectScopedOwnershipRows(
       paths.patches,
-      manifest?.patches ?? [],
       rawFilesOwnership,
-      await classifyStatusFiles(rawFilesOwnership, paths, projectRoot, config.binaryName)
+      await classifyStatusFiles(rawFilesOwnership, paths, projectRoot, config.binaryName),
+      scope
     );
     renderOwnershipTable(rows);
 
@@ -444,7 +494,7 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
   // `[]` here and return before the human fallback.
   if (options.json) {
     const classified = await classifyStatusFiles(files, paths, projectRoot, config.binaryName);
-    await renderJsonMode(classified, files, paths, options, checkPolicy);
+    await renderJsonMode(classified, files, paths, options, checkPolicy, scope);
     return;
   }
 
@@ -459,6 +509,7 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
   if (files.length === 0) {
     info('No modified files');
     outro('Working tree clean');
+    await runHumanStatusCheck([], files, paths, checkPolicy, scope);
     return;
   }
 
@@ -468,8 +519,10 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
     return;
   }
 
-  // Patch-aware classification
-  const classified = await classifyStatusFiles(files, paths, projectRoot, config.binaryName);
+  // Patch-aware classification. The full scan is classified (claims need
+  // every file) and the buckets show only what the scope covers.
+  const allClassified = await classifyStatusFiles(files, paths, projectRoot, config.binaryName);
+  const classified = scopeClassified(allClassified, scope);
 
   const buckets: ClassifiedBuckets = {
     conflict: classified.filter((f) => f.classification === 'conflict'),
@@ -487,8 +540,13 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
     return;
   }
 
-  await renderDefaultStatus(files.length, buckets, projectRoot, config.binaryName);
-  runStatusCheck(classified, checkPolicy);
+  await renderDefaultStatus(
+    scope ? classified.length : files.length,
+    buckets,
+    projectRoot,
+    config.binaryName
+  );
+  await runHumanStatusCheck(allClassified, files, paths, checkPolicy, scope);
 }
 
 /** Registers the status command on the CLI program. */
@@ -528,7 +586,19 @@ export function registerStatus(
     )
     .option(
       '--fail-on <classifications>',
-      'Comma-separated classification list that fails --check, replacing the default set (implies --check). Valid: patch-backed, patch-owned-drift, unmanaged, branding, furnace, conflict, binary-unsupported'
+      'Comma-separated classification list that fails --check, replacing the default set (implies --check). Valid: patch-backed, patch-owned-drift, unmanaged, branding, furnace, conflict, binary-unsupported, ownership-conflict (a path claimed by more than one patch)'
+    )
+    .option(
+      '--allow <classifications>',
+      'Comma-separated classification list that never fails --check, removed from the fail set (implies --check; same values as --fail-on)'
+    )
+    .option(
+      '--fail-on-unknown',
+      'With --allow: also fail on every present classification that neither --fail-on nor --allow names, so a classification added in a later FireForge fails closed (implies --check)'
+    )
+    .option(
+      '--patches <names...>',
+      'Judge only the named patches: keeps the files each owns or claims and the ownership rows naming it (filename, stem, order number, manifest name, or slug; repeat or comma-separate). Unmanaged files belong to no patch and drop out. Default view, --json and --ownership only'
     )
     .action(
       withErrorHandling(async (options: StatusOptions) => {

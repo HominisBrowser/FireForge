@@ -19,10 +19,19 @@ import type {
 import { info, intro, outro } from '../../utils/logger.js';
 import { addWaitLockOption, resolveWaitLockSeconds } from '../../utils/options.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
+import { stagedDependencyDelta } from './staged-dependency-batch.js';
+import {
+  applyMode,
+  countStagedEntries,
+  dependencyLabel,
+  importView,
+  registrationView,
+  type StagedDependencyKind,
+  type StagedDependencyMode,
+  type StagedEntryView,
+} from './staged-dependency-entries.js';
+import { runBatchAdd } from './staged-dependency-from.js';
 import { validateStagedDependencyAdd } from './staged-dependency-validate.js';
-
-type StagedDependencyMode = 'add' | 'remove' | 'clear';
-type StagedDependencyKind = 'import' | 'registration';
 
 /** Joins the names of the missing flags for error attribution. */
 function missingFlagList(pairs: readonly (readonly [string, unknown])[]): string {
@@ -210,66 +219,6 @@ function resolveRegistrationRemovalTarget(
 }
 
 /**
- * One staged-dependency entry of either kind. The `matcher` field is the
- * kind-specific middle term: the import specifier for import entries, the
- * registration line for registration entries. Key/removal/label logic is
- * shared across kinds through this shape.
- */
-interface StagedEntryView {
-  file: string;
-  matcher: string;
-  creates: string;
-  owner?: string;
-  reason?: string;
-}
-
-function importView(dependency: PatchStagedForwardImport): StagedEntryView {
-  return { ...dependency, matcher: dependency.specifier };
-}
-
-function registrationView(dependency: PatchStagedRegistration): StagedEntryView {
-  return { ...dependency, matcher: dependency.line };
-}
-
-function dependencyKey(view: StagedEntryView): string {
-  return [view.file, view.matcher, view.creates, view.owner ?? ''].join('\0');
-}
-
-function dependencyLabel(kind: StagedDependencyKind, view: StagedEntryView): string {
-  const owner = view.owner ? ` owner=${view.owner}` : '';
-  const reason = view.reason ? ` reason="${view.reason}"` : '';
-  if (kind === 'import') {
-    return `${view.file} imports "${view.matcher}" from ${view.creates}${owner}${reason}`;
-  }
-  return `${view.file} registers "${view.matcher}" for ${view.creates}${owner}${reason}`;
-}
-
-function matchesTarget(view: StagedEntryView, target: StagedEntryView): boolean {
-  return (
-    view.file === target.file &&
-    view.matcher === target.matcher &&
-    view.creates === target.creates &&
-    (target.owner === undefined || view.owner === target.owner)
-  );
-}
-
-function applyMode<T>(
-  existing: readonly T[],
-  mode: StagedDependencyMode,
-  target: StagedEntryView | undefined,
-  toView: (entry: T) => StagedEntryView,
-  addition: T | undefined
-): T[] {
-  if (mode === 'clear') return [];
-  if (!target) return [...existing];
-  if (mode === 'remove') return existing.filter((entry) => !matchesTarget(toView(entry), target));
-
-  const seen = new Set(existing.map((entry) => dependencyKey(toView(entry))));
-  if (seen.has(dependencyKey(target)) || addition === undefined) return [...existing];
-  return [...existing, addition];
-}
-
-/**
  * Renders a one-line summary of a staged-dependency metadata change.
  */
 function describeStagedDependencyChange(
@@ -296,10 +245,6 @@ function describeStagedDependencyChange(
     : `removed ${beforeCount - afterCount} ${noun} declaration(s): ${dependencyLabel(kind, target)}`;
 }
 
-function countStagedEntries(staged: PatchStagedDependencies | undefined): number {
-  return (staged?.forwardImports?.length ?? 0) + (staged?.registrations?.length ?? 0);
-}
-
 /**
  * Runs the metadata-only staged-dependency mutation command.
  *
@@ -318,6 +263,10 @@ export async function patchStagedDependencyCommand(
   );
 
   const mode = modeFromOptions(options);
+  if (options.from !== undefined) {
+    await runBatchAdd(projectRoot, identifier, mode, options);
+    return;
+  }
   const kind = kindFromOptions(options);
 
   // The patch queue loads before the declaration fields resolve so
@@ -428,12 +377,13 @@ export async function patchStagedDependencyCommand(
     paths.patches,
     {
       operation: 'patch-staged-dependency',
+      // Only the delta: the whole list on both sides grew the log
+      // quadratically with the list (see staged-dependency-batch.ts).
       args: {
         filename: targetPatch.filename,
         mode,
         kind,
-        before: before ?? {},
-        after: after ?? {},
+        ...stagedDependencyDelta(before, after),
       },
       ...(options.yes === true ? { yes: true } : {}),
       result: 'ok',
@@ -475,7 +425,16 @@ export function registerPatchStagedDependency(parent: Command, context: CommandC
     )
     .option('--creates <path>', 'Later-created file path relative to engine/')
     .option('--owner <patch>', 'Exact later patch filename expected to create --creates')
-    .option('--reason <text>', 'Human-readable rationale stored with the declaration')
+    .option(
+      '--reason <text>',
+      'Human-readable rationale stored with the declaration (with --from: the default for entries without one)'
+    )
+    .option(
+      '--from <json-file>',
+      'Add every declaration in a JSON file under one lock hold (--add only): a "lint --per-patch --report" ' +
+        "document (its findings' stagedDeclarations for this patch) or an array of " +
+        '{ file, specifier | line, creates, owner?, reason?, patch? } entries'
+    )
     .option('--dry-run', 'Show what would change without writing')
     .option(
       '-y, --yes',

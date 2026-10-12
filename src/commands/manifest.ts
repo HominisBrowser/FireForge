@@ -15,6 +15,7 @@
 import type { CommandRegistrar } from '../types/cli.js';
 import { registerBootstrap } from './bootstrap.js';
 import { registerBuild } from './build.js';
+import { registerCheck } from './check.js';
 import { registerConfig } from './config.js';
 import { registerDiscard } from './discard.js';
 import { registerDoctor } from './doctor.js';
@@ -96,5 +97,6 @@ export const COMMAND_MANIFEST: readonly CommandManifestEntry[] = [
   { name: 'lint', group: 'diagnostics', register: registerLint },
   { name: 'typecheck', group: 'diagnostics', register: registerTypecheck },
   { name: 'verify', group: 'diagnostics', register: registerVerify },
+  { name: 'check', group: 'diagnostics', register: registerCheck },
   { name: 'furnace', group: 'components', register: registerFurnace },
 ];

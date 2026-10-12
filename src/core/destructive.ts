@@ -13,17 +13,11 @@
  * helper, every new destructive command would re-implement this and drift.
  */
 
-import { appendFile } from 'node:fs/promises';
-import { join } from 'node:path';
-
 import { confirm } from '@clack/prompts';
 
 import { CancellationError, InvalidArgumentError } from '../errors/base.js';
-import { ensureDir } from '../utils/fs.js';
 import { info, isCancel, warn } from '../utils/logger.js';
-
-/** Filename of the audit log, relative to the patches directory. */
-export const HISTORY_LOG_FILENAME = '.fireforge-history.jsonl';
+import { appendHistoryLine, historyRecordIdentity } from './history-log-file.js';
 
 /**
  * A structural conflict that must block the operation even under `--force`.
@@ -257,22 +251,26 @@ export async function confirmDestructive(input: DestructiveOpInput): Promise<Des
 }
 
 /**
- * Appends a single JSONL record to `patches/.fireforge-history.jsonl`.
+ * Appends a single JSONL record to the project's patch history log
+ * (`.fireforge/history.jsonl` unless `fireforge.json#history.path` says
+ * otherwise; a log at the pre-0.50 `patches/.fireforge-history.jsonl` is
+ * moved there first).
  *
  * Call order matters: append only after the mutation succeeds, never
  * pre-emptively, so rolled-back failures do not leave ghost entries. The log
  * is append-only and advisory: no code path reads it back. It exists so
- * operators have a post-hoc audit trail when something goes wrong.
+ * operators have a post-hoc audit trail when something goes wrong. Every
+ * record carries the writing invocation's id (and `FIREFORGE_SESSION_ID`
+ * when set), so a session sharing the checkout can pick out its own lines.
  *
  * @param patchesDir - Path to the patches directory
  * @param entry - Serializable history record
  */
 export async function appendHistory(patchesDir: string, entry: HistoryEntry): Promise<void> {
-  await ensureDir(patchesDir);
   const record = {
     ts: new Date().toISOString(),
+    ...historyRecordIdentity(),
     ...entry,
   };
-  const line = `${JSON.stringify(record)}\n`;
-  await appendFile(join(patchesDir, HISTORY_LOG_FILENAME), line, 'utf-8');
+  await appendHistoryLine(patchesDir, JSON.stringify(record));
 }

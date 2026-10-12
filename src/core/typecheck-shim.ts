@@ -47,7 +47,9 @@ export const SHIM_FILENAME = '__fireforge_firefox_globals.d.ts';
  * - `const lazy = {};` + `ChromeUtils.defineESModuleGetters(lazy, { ... })`
  *   populates `lazy` at runtime, so we declare it as `Record<string, any>`.
  * - `Services.obs`, `Services.prefs`, etc. are XPCOM service accessors.
- * - `Ci`, `Cc`, `Cr`, `Cu` are XPCOM component shortcuts.
+ * - `Ci`, `Cc`, `Cr`, `Cu` are XPCOM component shortcuts. `Cu` alone is
+ *   typed (`CuShim`, the members of `nsIXPCComponents_Utils`), so an
+ *   unknown `Cu.*` member is an error rather than a runtime TypeError.
  * - Browser chrome globals like `gBrowser`, `gURLBar` are common in
  *   content scripts wired via `browser.js`.
  * - Dynamic `import("resource:-…")` / `import("chrome:-…")` under patch
@@ -76,7 +78,92 @@ interface ChromeUtilsShim {
   predictRemoteTypeForURI(uri: string | object | null, options?: object): string | null;
 }
 declare var ChromeUtils: ChromeUtilsShim;
-declare var Cu: any;
+// Components.utils (js/xpconnect/idl/xpccomponents.idl, nsIXPCComponents_Utils,
+// Firefox 153). Every member is listed with loose (any) jsval parameters and
+// results, so Xray-waived and cloned objects keep their expandos, but the
+// member set is closed: a call to a member Cu does not have (Cu.now() is
+// ChromeUtils.now()) is a typecheck error instead of a runtime TypeError.
+// Extensible via interface merging, same as ChromeUtilsShim.
+interface CuShim {
+  QueryInterface(iid: any): any;
+  printStderr(message: string): void;
+  reportError(error: any, stack?: any): void;
+  readonly Sandbox: { new (principal: any, options?: any): any; (principal: any, options?: any): any };
+  evalInSandbox(
+    source: string,
+    sandbox: any,
+    version?: any,
+    filename?: string,
+    lineNo?: number,
+    enforceFilenameRestrictions?: boolean
+  ): any;
+  getUAWidgetScope(principal: any): any;
+  getSandboxMetadata(sandbox: any): any;
+  setSandboxMetadata(sandbox: any, metadata: any): void;
+  setSandboxLocaleOverride(sandbox: any, locale: string): void;
+  setSandboxTimezoneOverride(sandbox: any, timezone: string): void;
+  isESModuleLoaded(resourceURI: string): boolean;
+  importGlobalProperties(propertyList: any): void;
+  getWeakReference(obj: any): { get(): any };
+  forceGC(): void;
+  forceCC(listener?: any): void;
+  createCCLogger(): any;
+  finishCC(): void;
+  ccSlice(budget: number): void;
+  getMaxCCSliceTimeSinceClear(): number;
+  clearMaxCCTime(): void;
+  forceShrinkingGC(): void;
+  schedulePreciseGC(callback: any): void;
+  schedulePreciseShrinkingGC(callback: any): void;
+  unlinkGhostWindows(): void;
+  intentionallyLeak(): void;
+  getJSTestingFunctions(): any;
+  getFunctionSourceLocation(func: any): any;
+  callFunctionWithAsyncStack(func: any, stack: any, asyncCause: string): any;
+  getGlobalForObject(obj: any): any;
+  isProxy(obj: any): boolean;
+  exportFunction(func: any, scope: any, options?: any): any;
+  createObjectIn(scope: any, options?: any): any;
+  makeObjectPropsNormal(obj: any): void;
+  isDeadWrapper(obj: any): boolean;
+  isRemoteProxy(val: any): boolean;
+  recomputeWrappers(obj?: any): void;
+  setWantXrays(scope: any): void;
+  dispatch(runnable: any, scope?: any): void;
+  readonly isInAutomation: boolean;
+  exitIfInAutomation(): void;
+  crashIfNotInAutomation(): void;
+  setGCZeal(zeal: number): void;
+  nukeSandbox(obj: any): void;
+  blockScriptForGlobal(global: any): void;
+  unblockScriptForGlobal(global: any): void;
+  isOpaqueWrapper(obj: any): boolean;
+  isXrayWrapper(obj: any): boolean;
+  waiveXrays(val: any): any;
+  unwaiveXrays(val: any): any;
+  getClassName(obj: any, unwrap: boolean): string;
+  getIncumbentGlobal(callback?: any): any;
+  getDebugName(obj: any): string;
+  getWatchdogTimestamp(category: string): number;
+  getJSEngineTelemetryValue(): any;
+  cloneInto(value: any, scope: any, options?: any): any;
+  getWebIDLCallerPrincipal(): any;
+  getObjectPrincipal(obj: any): any;
+  getRealmLocation(obj: any): string;
+  readUTF8File(file: any): string;
+  readUTF8URI(url: any): string;
+  createSpellChecker(): any;
+  createCommandLine(args: string[], workingDir: any, state: number): any;
+  createCommandParams(): any;
+  createLoadContext(): any;
+  createPrivateLoadContext(): any;
+  createPersistentProperties(): any;
+  createDocumentEncoder(contentType: string): any;
+  createHTMLCopyEncoder(): any;
+  readonly loadedESModules: string[];
+  getModuleImportStack(location: string): string;
+}
+declare var Cu: CuShim;
 declare var Ci: any;
 declare var Cc: any;
 declare var Cr: any;
@@ -164,6 +251,7 @@ declare function is(actual: any, expected: any, message?: string): void;
 declare function isnot(actual: any, expected: any, message?: string): void;
 declare function todo(condition: any, message?: string): void;
 declare function todo_is(actual: any, expected: any, message?: string): void;
+declare function todo_isnot(actual: any, expected: any, message?: string): void;
 declare function info(message: string): void;
 declare function registerCleanupFunction(callback: (...args: any[]) => any): void;
 declare function waitForExplicitFinish(): void;

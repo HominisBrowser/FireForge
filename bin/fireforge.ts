@@ -17,6 +17,7 @@ import {
   isSignalRollbackInFlight,
   rollbackActiveOperationsForSignal,
 } from '../src/core/furnace-operation.js';
+import { restoreActiveNegativeControlsForSignal } from '../src/core/negative-control.js';
 import { closeActiveRunLog } from '../src/core/run-log.js';
 import { removeActiveRunProfiles } from '../src/core/run-profile.js';
 import { waitForActiveCriticalSections } from '../src/core/signal-critical.js';
@@ -114,6 +115,11 @@ function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: num
       waitForActiveCriticalSections(SIGNAL_CRITICAL_SECTION_TIMEOUT_MS),
       waitForActiveChildShutdown(CHILD_SHUTDOWN_TIMEOUT_MS),
     ])
+      // A `test --negative-control` mutation must be undone while this
+      // process still holds the engine lock, or the next lock holder builds
+      // and tests the neuter. Runs after child shutdown, so the dying
+      // harness no longer reads the files. Never throws.
+      .then(() => restoreActiveNegativeControlsForSignal())
       // `withFileLock`'s `finally { rm }` never runs across `process.exit`,
       // so both sweeps exist for the same reason. The generic one covers
       // every lock this process holds (engine session, patch directory,

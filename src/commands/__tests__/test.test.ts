@@ -478,17 +478,19 @@ describe('testCommand', () => {
   });
 
   it('reports a green canary verdict for the configured canary path', async () => {
-    vi.mocked(loadConfig).mockResolvedValueOnce({
+    const config = {
       name: 'MyBrowser',
       vendor: 'My Company',
       appId: 'org.example.mybrowser',
       binaryName: 'mybrowser',
-      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' as const },
       test: {
         canaryPath: 'browser/base/content/test/foo/browser_canary.js',
         canaryTimeoutSeconds: 12,
       },
-    });
+    };
+    // Loaded twice: by the lock-free preflight and again under the lock.
+    vi.mocked(loadConfig).mockResolvedValueOnce(config).mockResolvedValueOnce(config);
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | browser_canary.js\nTEST-OK | browser_canary.js',
@@ -876,6 +878,26 @@ describe('testCommand', () => {
     });
   });
 
+  it('forwards --restart-between-tests to a mochitest dispatch (was an unknown option)', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | browser_a.js\nTEST-OK | browser_a.js',
+      stderr: '',
+    });
+
+    await testCommand('/project', ['browser/base/content/test/foo/browser_a.js'], {
+      restartBetweenTests: true,
+      machArg: ['--verbose'],
+    });
+
+    expect(runMachTestSuite).toHaveBeenCalledWith('mochitest', {
+      teardown: TEARDOWN_HOOKS,
+      engineDir: '/project/engine',
+      testPaths: ['browser/base/content/test/foo/browser_a.js'],
+      args: ['--verbose', '--restart-between-tests'],
+    });
+  });
+
   // The census is report-only unless the invocation (--reap-orphans) or the
   // repo (test.reapOrphans: "reap") opts in, and a reap must show on the
   // verdict line so a green after one is not read as a green on a quiet
@@ -891,14 +913,16 @@ describe('testCommand', () => {
   });
 
   it('reaps at preflight under test.reapOrphans: "reap" and stamps the count on the verdict', async () => {
-    vi.mocked(loadConfig).mockResolvedValueOnce({
+    const config = {
       name: 'MyBrowser',
       vendor: 'My Company',
       appId: 'org.example.mybrowser',
       binaryName: 'mybrowser',
-      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
-      test: { reapOrphans: 'reap' },
-    });
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' as const },
+      test: { reapOrphans: 'reap' as const },
+    };
+    // Loaded twice: by the lock-free preflight and again under the lock.
+    vi.mocked(loadConfig).mockResolvedValueOnce(config).mockResolvedValueOnce(config);
     vi.mocked(reportOrphanedHarnessProcesses).mockResolvedValueOnce({
       orphans: [
         { pid: 19141, ppid: 1, elapsed: '01:00:00', elapsedSeconds: 3600, command: 'xpcshell' },

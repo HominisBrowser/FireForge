@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.50.0
+
+### Size budget
+
+- New `patchLint.fileSizeMetric` (`raw` or `code`), `patchSizeMetric` (`diff` or `addedCode`), per-tier `patchSizeThresholds` and `patchSizeRegistrationFiles`. Added code skips comments, blank lines and Furnace fragment copies. Defaults are unchanged. Size messages name their unit, and a notice no longer claims to fail `--max-warnings 0`.
+- `lintIgnore` entries can carry a size ceiling (`{ rule, max, reason }`). Size helpers are exported, and `lint --report` rows carry the metric.
+
+### Gates and policy
+
+- Added `fireforge check`, which runs status, verify, per-patch lint, typecheck, Furnace validation, token coverage and `check.extraSteps` with one verdict. `status` gains `--fail-on ownership-conflict`, `--allow`, `--fail-on-unknown` and `--patches`; `verify` gains `--patches`.
+- Opt-in `patchPolicy` rules (`upstreamAllowlist`, add-only marker mode, `scopeRules`, `verifyDocumentPaths`), `patchLint.tokenScales` and `fireforge token lint`. `furnace validate` gains `--json`, `--max-warnings` and `validationExceptions`.
+
+### Test harness
+
+- Packaging coverage is kept per staged path, so a peer's scoped build no longer replaces it. The stale-build check ignores edits the packaged runtime already serves.
+- Mixed xpcshell and browser paths, `--repeat <n>` and `--negative-control <diff>` run under one lock hold. A truncated exit-0 run is `FAIL`. The binary, checkJs and browser/port waits run before the engine lock.
+- Added `--keep-log`, `--auto-ports`, `--no-furnace-apply` and `--restart-between-tests`. A path after an optional-value flag such as `--wait-lock` is read as a test path.
+
+### Locks and history
+
+- File locks are granted in arrival order, and crashed or stopped waiters are skipped.
+- The patch history log moves to `.fireforge/history.jsonl` (configurable as `history.path`) and is migrated on first write. Records carry an invocation id, and staged-dependency records log only the delta.
+
+### Patch queue
+
+- `--refuse-foreign-drift` counts removed lines and combines with `--scan`. `--scan-file` accepts `<patch>:<path>`. `--refuse-adjacent-unmanaged` judges only files a re-export would capture, and gains `--expect-new` and `--adjacent-ignore`. Arguments are checked before the lock, and `--expect-from` is new.
+- Added `patch retire`, which keeps the retired patch's order as a slot. `staged-dependency --add --from` takes a lint report. `move-files --create` and `split` keep staged declarations in step. Refusals name the earliest legal order and the exact commands.
+
+### Furnace
+
+- `--wait-lock` works on every leaf. `deploy` takes several names, and `rename` rewrites registrations in place and gains `--dry-run`. `apply` no longer duplicates jar lines and says why it skipped. The unexported-drift belt and `furnace diff` compare against the fragment-expanded source.
+
+### Other
+
+- Config writes keep `fireforge.json`'s formatting. `rebase` labels the move from the committed pin. `doctor` tolerates the `esr` suffix and names `./mach npm ci`. `Cu` is typed in the shim. `run --profile` purges caches, and `--smoke-exit` fails a silent early exit.
+- Dev tooling: `eslint` 10.12.0 and `eslint-plugin-jsdoc` 65.0.2.
+
 ## 0.49.0
 
 ### Furnace and builds
@@ -7,6 +44,7 @@
 - Safer Furnace deployment and objdir cloning protect component sources and peer checkouts from shared files and directory aliases. Failed copies finish before rollback; cloned build metadata is relocated and verified.
 - `furnace create --localized` no longer scaffolds a `connectedCallback`/`disconnectedCallback` pair that calls `l10n.connectRoot(shadowRoot)` and `disconnectRoot`. `MozLitElement` already registers its shadow render root with `document.l10n`, so the generated pair registered the same root twice, which `DOMLocalization::ConnectRoot` asserts against in debug builds. The scaffold keeps the module-level `window.MozXULElement?.insertFTLIfNeeded(...)` call.
 - Build and test preflight detect broken partial configuration, stale artifacts and invalid build baselines. Scoped builds retain coverage only while their inputs remain unchanged, and builds remove dangling test links.
+- Objdir relocation on Windows rewrites both the backslash and the forward-slash spelling of the old root in dependency metadata (mozbuild writes both), and replaces a directory link that `rename` refuses with `EPERM` in two steps.
 
 ### Test harness
 
@@ -25,11 +63,12 @@
 ### Command reliability
 
 - Fixed leaf-command `--wait-lock` handling, JSON error reporting and watch retries. Process tracking and independent cleanup preserve the original run outcome through cancellation and cleanup failures.
+- Diff header parsing splits a rename/copy header with `indexOf` instead of a lazy regex, and token-category parsing strips CSS strings in one pass, so both run in linear time on pathological input.
 
 ### Tooling
 
 - Full-Firefox integration preserves existing workspace files and Git index state, and fails on incomplete recovery. Build identity includes untracked contents and binary changes. Release checks enforce the pinned toolchain and additional module coverage floors.
-- Dev tooling: `eslint-plugin-jsdoc` 65.0.1 and `@types/node` 26.6.4. Transitive `source-map-js` 1.2.2 (GHSA-68fv-2mgg-jv7q) and `smol-toml` 1.9.0 (GHSA-r4xh-jqrq-34v2) clear `npm audit`.
+- Dev tooling: `eslint-plugin-jsdoc` 65.0.1, `@types/node` 26.6.4, `knip` 6.39.0 and `prettier` 3.9.9. Transitive `source-map-js` 1.2.2 (GHSA-68fv-2mgg-jv7q) and `smol-toml` 1.9.0 (GHSA-r4xh-jqrq-34v2) clear `npm audit`.
 
 ## 0.48.0
 

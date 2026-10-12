@@ -7,12 +7,13 @@ import {
   assertEngineGenerationUnchanged,
   snapshotEngineGeneration,
 } from '../core/engine-session-lock.js';
-import { hasBuildArtifacts, hasRunnableBundle } from '../core/mach.js';
+import { hasBuildArtifacts } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import { ensureLaunchableBrowserNotRunning } from '../core/marionette-port.js';
 import { waitForPreflight } from '../core/preflight-wait.js';
 import {
   closeActiveRunLog,
+  keepRunLogCopy,
   openRunLog,
   setActiveRunLog,
   writeToActiveRunLog,
@@ -29,7 +30,12 @@ import {
   stageProfileFiles,
 } from '../core/test-profile-files.js';
 import { assertObjdirMatchesTreeMarker } from '../core/tree-store.js';
-import { FireForgeError, GeneralError, PreflightRefusalError } from '../errors/base.js';
+import {
+  FireForgeError,
+  GeneralError,
+  LockContentionError,
+  PreflightRefusalError,
+} from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
@@ -60,7 +66,15 @@ import {
   type HarnessClassification,
   reportCanaryOutcome,
   resolveCanaryPath,
+  restartBetweenTestsArgs,
 } from './test-modes.js';
+import { orchestrateTestRuns, type TestRunHooks } from './test-orchestrate.js';
+import { perfGenerationTolerance } from './test-perf-scope.js';
+import {
+  resolveLaunchablePathForTests,
+  runTestPreLockPreflight,
+  TEST_BUILD_PREFLIGHT,
+} from './test-prelock.js';
 import {
   DEFAULT_HARNESS_RETRIES,
   finalizeShardedOutcome,
@@ -135,26 +149,6 @@ function filterRedundantXpcshellFlavorArgs(
   return filtered;
 }
 
-async function resolveLaunchablePathForTests(
-  engineDir: string,
-  binaryName: string,
-  objDir: string | undefined
-): Promise<string | undefined> {
-  if (!objDir) return undefined;
-  const bundleCheck = await hasRunnableBundle(engineDir, binaryName, objDir);
-  if (!bundleCheck.runnable) {
-    const expectedSuffix = bundleCheck.expectedPath
-      ? ` (expected at engine/${bundleCheck.expectedPath})`
-      : '';
-    throw new GeneralError(
-      `Tests require a complete launchable build${expectedSuffix}. ` +
-        'The obj-*/dist/ tree exists but the launchable binary is missing — typically the result of an interrupted or partially failed `fireforge build`.\n\n' +
-        'Run "fireforge build" again and let it finish before retrying "fireforge test".'
-    );
-  }
-  return bundleCheck.expectedPath;
-}
-
 function logTestSelection(scopes: readonly TestPathScope[]): void {
   if (scopes.length > 0) {
     const labels = scopes.map((scope) =>
@@ -169,14 +163,6 @@ function logTestSelection(scopes: readonly TestPathScope[]): void {
   info('');
 }
 
-/** Build-artifact preflight wording for `fireforge test`. */
-const TEST_BUILD_PREFLIGHT = {
-  label: 'Tests',
-  requirement: 'Tests require a completed build.',
-  remediation: "Run 'fireforge build' first, then run 'fireforge test'.",
-  requireExisting: true,
-} as const;
-
 /**
  * Runs the test command to execute mach tests.
  *
@@ -188,21 +174,29 @@ const TEST_BUILD_PREFLIGHT = {
  * since no harness classification exists for such a run. Writers closer to
  * the harness (doctor, canary, single, sharded, the engine-generation
  * guard) emit first and win.
+ * The lock-free checks (launchable binary, named-file checkJs, the
+ * `--wait-browser`/`--wait-port` budgets) run first, outside `underLock`,
+ * so a run that would be refused or would only wait never holds a place in
+ * the engine lock queue. See `test-prelock.ts`.
  * @param projectRoot - Root directory of the project
  * @param testPaths - Test file or directory paths
  * @param options - Test options
+ * @param underLock - Runs the rest of the command under the engine session lock
  */
 export async function testCommand(
   projectRoot: string,
   testPaths: string[],
-  options: TestOptions = {}
+  options: TestOptions = {},
+  underLock: (body: () => Promise<void>) => Promise<void> = (body) => body()
 ): Promise<void> {
   intro('FireForge Test');
   resetVerdictEmission();
   // Opened before any work so a preflight refusal is logged too. Those are
   // exactly the runs whose only output a `tail` throws away. Closed in
   // `finally`, after the verdict line has already read the path.
-  setActiveRunLog(await openRunLog(projectRoot, 'test'));
+  setActiveRunLog(
+    await keepRunLogCopy(await openRunLog(projectRoot, 'test'), options.keepLog, 'test')
+  );
   setActivePgidFile(options.pgidFile);
   let staged: StagedProfileFiles | undefined;
   try {
@@ -210,11 +204,29 @@ export async function testCommand(
       staged = await stageProfileFiles(projectRoot, options.profileFile);
       options = { ...options, machArg: [...(options.machArg ?? []), ...staged.args] };
     }
-    await runTestCommandBody(projectRoot, testPaths, options, staged?.env);
+    const lockedOptions = await runTestPreLockPreflight(projectRoot, testPaths, options);
+    const profileEnv = staged?.env;
+    await underLock(() =>
+      orchestrateTestRuns(
+        projectRoot,
+        testPaths,
+        lockedOptions,
+        (paths, runOptions, hooks) =>
+          runTestCommandBody(projectRoot, paths, runOptions, profileEnv, hooks),
+        (error) => {
+          renderPreflightRefusal(error);
+          emitFailVerdict('preflight', refusalNote(error));
+        }
+      )
+    );
   } catch (error: unknown) {
     if (!verdictEmitted()) {
-      renderPreflightRefusal(error);
-      emitFailVerdict('preflight', refusalNote(error));
+      if (error instanceof LockContentionError) {
+        emitFailVerdict('lock-timeout');
+      } else {
+        renderPreflightRefusal(error);
+        emitFailVerdict('preflight', refusalNote(error));
+      }
     }
     throw error;
   } finally {
@@ -282,10 +294,13 @@ function renderPreflightRefusal(error: unknown): void {
 async function verifyEngineGenerationOrEmitInconclusive(
   engineDir: string,
   before: string,
-  powerChanged = false
+  powerChanged = false,
+  perfSamples?: string
 ): Promise<void> {
   try {
-    await assertEngineGenerationUnchanged(engineDir, before);
+    await (perfSamples === undefined
+      ? assertEngineGenerationUnchanged(engineDir, before)
+      : assertEngineGenerationUnchanged(engineDir, before, perfGenerationTolerance(engineDir)));
     if (powerChanged)
       throw new GeneralError(
         'Perf power source changed during the run; repeat this sitting on a stable power source.'
@@ -362,15 +377,45 @@ function prepareDispatchArguments(
     projectConfig,
     forwardedMachArgs
   );
+  extraArgs.push(...restartBetweenTestsArgs(options, suite, forwardedMachArgs));
 
   return { suite, shuffleSeed, extraArgs };
+}
+
+/**
+ * Directory arguments mean exactly that directory: mozbuild's test resolver
+ * matches paths by string prefix, so a bare directory arg silently sweeps in
+ * prefix-named siblings, with `…/test/hominis` also running
+ * `…/test/hominis-tiles`, with no indication the scope widened. Each
+ * directory argument therefore dispatches as its enumerated explicit
+ * test-file list, which cannot prefix-match a sibling. A trailing-`/`
+ * normalization does not work, as mach still sweeps the sibling in. Any
+ * prefix-siblings are echoed so the narrowed scope is visible.
+ *
+ * xpcshell appdir auto-injection happens per harness invocation inside
+ * `runTestsWithRetries` (src/commands/test-run.ts) so sharded runs probe the
+ * manifest for each file individually. See src/core/xpcshell-appdir.ts for
+ * the full motivation.
+ */
+async function resolveDispatchGroups(
+  engineDir: string,
+  normalizedPaths: string[]
+): Promise<ShardGroup[]> {
+  const scopes = await analyzeTestPathScopes(engineDir, normalizedPaths);
+  for (const scope of scopes) {
+    const notice = formatScopeNotice(scope);
+    if (notice) info(notice);
+  }
+  logTestSelection(scopes);
+  return scopes.map((scope) => ({ label: scope.requestedPath, paths: scope.dispatchPaths }));
 }
 
 async function runTestCommandBody(
   projectRoot: string,
   testPaths: string[],
   options: TestOptions = {},
-  profileEnv?: Record<string, string>
+  profileEnv?: Record<string, string>,
+  hooks: TestRunHooks = {}
 ): Promise<void> {
   const paths = getProjectPaths(projectRoot);
 
@@ -400,6 +445,7 @@ async function runTestCommandBody(
   // cryptic `Browser process exited during spawn (exit code 1, signal none).
   // stderr tail: (empty)`.
   const launchablePath = await resolveLaunchablePathForTests(
+    projectRoot,
     paths.engine,
     projectConfig.binaryName,
     buildCheck.objDir
@@ -435,7 +481,7 @@ async function runTestCommandBody(
   if (
     await runTestBuildPhase(projectRoot, paths, projectConfig, harnessRetries, options, {
       classification,
-      normalizedPaths,
+      normalizedPaths: hooks.coveragePaths ?? normalizedPaths,
     })
   ) {
     return;
@@ -471,31 +517,9 @@ async function runTestCommandBody(
   );
   appendMarionetteForwardingArgs(extraArgs, options, forwardedPort, xpcshellOnly);
 
-  // Directory arguments mean exactly that directory: mozbuild's test
-  // resolver matches paths by string prefix, so a bare directory arg
-  // silently sweeps in prefix-named siblings, with `…/test/hominis` also
-  // running `…/test/hominis-tiles`, with no indication the scope widened. Each
-  // directory argument therefore dispatches as its enumerated explicit
-  // test-file list, which cannot prefix-match a sibling. A trailing-`/`
-  // normalization does not work, as mach still sweeps the sibling in. Any
-  // prefix-siblings are echoed so the narrowed scope is visible.
   // Classification above intentionally used the raw argument forms. Only the
   // mach dispatch needs the exact-match shape.
-  const scopes = await analyzeTestPathScopes(paths.engine, normalizedPaths);
-  const dispatchGroups: ShardGroup[] = scopes.map((scope) => ({
-    label: scope.requestedPath,
-    paths: scope.dispatchPaths,
-  }));
-  for (const scope of scopes) {
-    const notice = formatScopeNotice(scope);
-    if (notice) info(notice);
-  }
-
-  // xpcshell appdir auto-injection happens per harness invocation inside
-  // `runTestsWithRetries` (src/commands/test-run.ts) so sharded runs probe
-  // the manifest for each file individually. See src/core/xpcshell-appdir.ts
-  // for the full motivation.
-  logTestSelection(scopes);
+  const dispatchGroups = await resolveDispatchGroups(paths.engine, normalizedPaths);
 
   const harnessEnv = mergeHarnessEnv(
     buildPerfSampleEnv(projectRoot, projectConfig.binaryName, options.perfSamples),
@@ -518,6 +542,10 @@ async function runTestCommandBody(
   const postRebuildContext = options.build
     ? createPostRebuildFailureContext('fireforge test --build', normalizedPaths)
     : undefined;
+
+  // A negative control goes in here: after every gate and the build, so
+  // packaging cannot overwrite it and stale-build cannot refuse it.
+  await hooks.beforeDispatch?.();
 
   // Multi-argument requests shard into sequential harness runs by default:
   // one shared mochitest profile across files bleeds pref/media-query state
@@ -551,7 +579,8 @@ async function runTestCommandBody(
       await verifyEngineGenerationOrEmitInconclusive(
         paths.engine,
         generationBefore,
-        runCtx.powerChanged
+        runCtx.powerChanged,
+        options.perfSamples
       );
     }
     finalizeShardedOutcome(summary);
@@ -573,7 +602,8 @@ async function runTestCommandBody(
     await verifyEngineGenerationOrEmitInconclusive(
       paths.engine,
       generationBefore,
-      runCtx.powerChanged
+      runCtx.powerChanged,
+      options.perfSamples
     );
   }
 

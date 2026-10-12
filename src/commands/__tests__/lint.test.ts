@@ -84,6 +84,9 @@ vi.mock('../../core/patch-lint.js', () => ({
   lintPatchQueue: vi.fn(() => []),
   resolvePatchSizeTier: vi.fn(() => ({ tier: 'general' })),
   countNonBinaryDiffLines: vi.fn(() => ({ total: 42, textLines: 42 })),
+  measurePatchSize: vi.fn(() =>
+    Promise.resolve({ metric: 'diff', lines: 42, testLines: 0, files: 1, registrationFiles: 0 })
+  ),
   getPatchSizeThresholds: vi.fn(() => ({
     lines: { notice: 800, warning: 1500, error: 3000 },
     maxFiles: 5,
@@ -1169,7 +1172,11 @@ describe('applyAggregateLintIgnoreSuppression', () => {
   // `entries[*].metadata.{lintIgnore, filesAffected}` for this code
   // path, so we don't need the full PatchQueueEntry construction.
   function ctx(
-    entries: Array<{ filename: string; lintIgnore?: string[]; filesAffected: string[] }>
+    entries: Array<{
+      filename: string;
+      lintIgnore?: import('../../types/commands/index.js').LintIgnoreEntry[];
+      filesAffected: string[];
+    }>
   ): import('../../core/patch-lint.js').PatchQueueContext {
     return {
       entries: entries.map((e, i) => ({
@@ -1215,6 +1222,30 @@ describe('applyAggregateLintIgnoreSuppression', () => {
 
     expect(result.dropped).toBe(1);
     expect(result.issues).toEqual([]);
+  });
+
+  it('honours an owning patch ceiling: drops at or below max, keeps past it', () => {
+    const issue = (
+      measurement: number
+    ): import('../../types/commands/index.js').PatchLintIssue => ({
+      file: 'browser/big.sys.mjs',
+      check: 'file-too-large',
+      message: 'big',
+      severity: 'warning' as const,
+      measurement,
+    });
+    const queue = ctx([
+      {
+        filename: '0001-ui-big.patch',
+        lintIgnore: [{ rule: 'file-too-large', max: 1000, reason: 'reviewed' }],
+        filesAffected: ['browser/big.sys.mjs'],
+      },
+    ]);
+
+    expect(applyAggregateLintIgnoreSuppression([issue(1000)], queue).dropped).toBe(1);
+    const past = applyAggregateLintIgnoreSuppression([issue(1001)], queue);
+    expect(past.dropped).toBe(0);
+    expect(past.issues).toHaveLength(1);
   });
 
   it('preserves issues whose check is not in the owning patch lintIgnore', () => {

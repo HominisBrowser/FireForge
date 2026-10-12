@@ -143,6 +143,7 @@ import {
   updateFurnaceState,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
+import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import { getComponentDetails, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
 import { nativePath } from '../../test-utils/index.js';
 import { copyFile, ensureDir, pathExists, writeJson } from '../../utils/fs.js';
@@ -191,6 +192,29 @@ describe('furnaceOverrideCommand', () => {
     expect(vi.mocked(ensureDir)).not.toHaveBeenCalled();
     expect(vi.mocked(writeJson)).not.toHaveBeenCalled();
     expect(vi.mocked(writeFurnaceConfig)).not.toHaveBeenCalled();
+  });
+
+  it('threads --wait-lock into the furnace lock', async () => {
+    vi.mocked(getComponentDetails).mockResolvedValue({
+      tagName: 'moz-button',
+      sourcePath: 'toolkit/content/widgets/moz-button',
+      hasCSS: true,
+      hasFTL: false,
+      isRegistered: true,
+    });
+
+    await furnaceOverrideCommand('/project', 'moz-button', {
+      type: 'full',
+      description: 'Full restyle of button',
+      waitLockSeconds: 75,
+    });
+
+    expect(runFurnaceMutation).toHaveBeenCalledWith(
+      '/project',
+      'override-rollback',
+      expect.any(Function),
+      { lockTimeoutMs: 75_000 }
+    );
   });
 
   it('creates a full override successfully', async () => {

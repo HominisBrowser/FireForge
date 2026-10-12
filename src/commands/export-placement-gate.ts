@@ -15,7 +15,7 @@ import {
 } from '../core/patch-policy.js';
 import { buildPatchSourceMetadata } from '../core/patch-source-metadata.js';
 import { InvalidArgumentError } from '../errors/base.js';
-import type { ExportOptions, PatchMetadata } from '../types/commands/index.js';
+import type { ExportOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import type { SpinnerHandle } from '../utils/logger.js';
 import { proceedAfterDecision } from './destructive-decision.js';
@@ -32,9 +32,11 @@ import {
  * shares this shape. With exactOptionalPropertyTypes the keys must be
  * omitted entirely (not set to undefined) when the flags are absent.
  */
-export function patchMetadataExtras(
-  options: ExportOptions
-): Partial<Pick<PatchMetadata, 'tier' | 'lintIgnore'>> {
+export function patchMetadataExtras(options: ExportOptions): {
+  tier?: 'branding';
+  /** CLI flags only ever carry bare check IDs. */
+  lintIgnore?: string[];
+} {
   return {
     ...(options.tier !== undefined ? { tier: options.tier } : {}),
     ...(options.lintIgnore !== undefined && options.lintIgnore.length > 0

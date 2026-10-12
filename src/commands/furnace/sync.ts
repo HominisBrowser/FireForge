@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { loadConfig } from '../../core/config.js';
 import { applyAllComponents } from '../../core/furnace-apply.js';
-import { logApplyResult } from '../../core/furnace-apply-output.js';
+import { formatSkipBreakdown, logApplyResult } from '../../core/furnace-apply-output.js';
 import type { FurnacePaths } from '../../core/furnace-config.js';
 import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
@@ -180,7 +180,10 @@ export async function furnaceSyncCommand(
 
     await reportJsconfigPathsSync(projectRoot, config, false);
 
-    outro(`Sync complete — ${result.applied.length} applied, ${result.skipped.length} skipped`);
+    outro(
+      `Sync complete — ${result.applied.length} applied, ${result.skipped.length} skipped` +
+        formatSkipBreakdown(result.skipped)
+    );
   } else {
     outro('Dry run complete');
   }

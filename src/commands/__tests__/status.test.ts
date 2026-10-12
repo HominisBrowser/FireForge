@@ -11,6 +11,7 @@ import { buildPatchQueueContext, collectNewFileCreatorsByPath } from '../../core
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { GeneralError } from '../../errors/base.js';
 import { DEFAULT_CONFIG } from '../../test-utils/index.js';
+import type { PatchMetadata } from '../../types/commands/index.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import {
   info,
@@ -931,6 +932,26 @@ describe('statusCommand', () => {
       expect(messages.some((m) => m.includes('test_reg.js'))).toBe(true);
       expect(messages.some((m) => m.includes('refused as uncovered'))).toBe(true);
       expect(outro).toHaveBeenCalledWith('Coverage: scoped (1 paths)');
+    });
+
+    it('says when a carried full build still covers paths outside the scoped list', async () => {
+      vi.mocked(readBuildBaseline).mockResolvedValue({
+        engineHeadSha: 'abc123',
+        builtAt: '2026-07-29T10:00:00.000Z',
+        binaryName: 'mybrowser',
+        testPackagingCoverage: ['browser/components/tests/unit/test_reg.js'],
+        fullCoverageAnchor: {
+          engineHeadSha: 'abc123',
+          mozconfigHash: 'a'.repeat(64),
+          fingerprints: {},
+        },
+      });
+
+      await expect(statusCommand(projectRoot, { testCoverage: true })).resolves.toBeUndefined();
+
+      expect(
+        infoMessages().some((m) => m.includes('stays covered by the earlier full build'))
+      ).toBe(true);
     });
 
     it('renders legacy baselines without coverage or recordedBy fields', async () => {
@@ -1997,6 +2018,186 @@ describe('statusCommand', () => {
       expect(parsed.error).toMatch(/Firefox source not found/);
       // Human banner must not appear on stdout.
       expect(combined).not.toContain('■');
+    });
+  });
+
+  describe('--patches scope and the ownership-conflict class', () => {
+    function patchRow(filename: string, order: number, filesAffected: string[]): PatchMetadata {
+      return {
+        filename,
+        order,
+        category: 'ui',
+        name: filename.replace(/^\d+-ui-|\.patch$/g, ''),
+        description: '',
+        createdAt: '2026-04-21T00:00:00.000Z',
+        sourceEsrVersion: '140.9.0esr',
+        filesAffected,
+      };
+    }
+
+    function seedTwoPatchQueue(): void {
+      vi.mocked(loadPatchesManifest).mockResolvedValue({
+        version: 1,
+        patches: [
+          patchRow('201-ui-tiles.patch', 201, ['browser/base/tiles.js', 'browser/base/shared.js']),
+          patchRow('246-ui-tests.patch', 246, ['browser/base/tests.js', 'browser/base/shared.js']),
+          patchRow('402-ui-peer.patch', 402, ['browser/base/peer.js']),
+        ],
+      });
+      // Every patch-owned file drifts from its patch output.
+      computePatchedContentMock.mockResolvedValue('expected');
+      vi.mocked(readText).mockResolvedValue('actual');
+    }
+
+    function captureJson(): { read: () => unknown; restore: () => void } {
+      const writes: string[] = [];
+      const spy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+      return {
+        read: () => JSON.parse(writes.join('')) as unknown,
+        restore: () => {
+          spy.mockRestore();
+        },
+      };
+    }
+
+    it('judges only the named patches: a peer drift and unmanaged files drop out', async () => {
+      seedTwoPatchQueue();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: ' M', file: 'browser/base/tiles.js' },
+        { status: ' M', file: 'browser/base/peer.js' },
+        { status: '??', file: 'browser/base/unexported.js' },
+      ]);
+      const out = captureJson();
+      try {
+        await expect(
+          statusCommand(projectRoot, { json: true, check: true, patches: ['201'] })
+        ).rejects.toThrow('status --check failed: 1 patch-owned-drift (browser/base/tiles.js)');
+      } finally {
+        out.restore();
+      }
+      const payload = out.read() as {
+        summary: { total: number };
+        files: { file: string; patch: string | null }[];
+        scope: { patches: string[] };
+        check: { failed: boolean; offenders: { files: string[] }[] };
+      };
+      expect(payload.scope).toEqual({ patches: ['201-ui-tiles.patch'] });
+      expect(payload.summary.total).toBe(1);
+      expect(payload.files.map((f) => f.file)).toEqual(['browser/base/tiles.js']);
+      expect(payload.check.offenders).toEqual([
+        {
+          classification: 'patch-owned-drift',
+          count: 1,
+          files: ['browser/base/tiles.js'],
+        },
+      ]);
+    });
+
+    it('passes a scoped human check when only peers are red', async () => {
+      seedTwoPatchQueue();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: ' M', file: 'browser/base/peer.js' },
+        { status: '??', file: 'browser/base/unexported.js' },
+      ]);
+      await expect(
+        statusCommand(projectRoot, { check: true, patches: ['tiles,tests'] })
+      ).resolves.toBeUndefined();
+    });
+
+    it('refuses a --patches name that matches no patch', async () => {
+      seedTwoPatchQueue();
+      await expect(statusCommand(projectRoot, { patches: ['999'] })).rejects.toThrow(
+        'No patch in the queue matches "999"'
+      );
+    });
+
+    it('refuses --patches without a patch queue', async () => {
+      await expect(statusCommand(projectRoot, { patches: ['201'] })).rejects.toThrow(
+        '--patches needs a patch queue'
+      );
+    });
+
+    it('refuses --patches alongside a mode it cannot scope', async () => {
+      await expect(statusCommand(projectRoot, { raw: true, patches: ['201'] })).rejects.toThrow(
+        '--patches cannot be combined with --raw'
+      );
+    });
+
+    it('fails ownership-conflict on a clean tree in the human view', async () => {
+      seedTwoPatchQueue();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+      await expect(statusCommand(projectRoot, { failOn: 'ownership-conflict' })).rejects.toThrow(
+        'status --check failed: 1 ownership-conflict (browser/base/shared.js)'
+      );
+      // The default policy never builds ownership rows, so stays green.
+      await expect(statusCommand(projectRoot, { check: true })).resolves.toBeUndefined();
+    });
+
+    it('echoes allow and failOnUnknown in the full JSON payload check block', async () => {
+      seedTwoPatchQueue();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: ' M', file: 'browser/base/peer.js' },
+      ]);
+      const out = captureJson();
+      try {
+        await expect(
+          statusCommand(projectRoot, {
+            json: true,
+            failOn: 'unmanaged',
+            allow: 'patch-backed',
+            failOnUnknown: true,
+          })
+        ).rejects.toThrow('status --check failed');
+      } finally {
+        out.restore();
+      }
+      const payload = out.read() as {
+        files: unknown[];
+        ownership?: unknown;
+        check: {
+          failOn: string[];
+          allow: string[];
+          failOnUnknown: boolean;
+          failed: boolean;
+          offenders: { classification: string; unnamed?: boolean }[];
+        };
+      };
+      expect(payload.files).toHaveLength(1);
+      expect(payload.ownership).toBeUndefined();
+      expect(payload.check.failOn).toEqual(['unmanaged']);
+      expect(payload.check.allow).toEqual(['patch-backed']);
+      expect(payload.check.failOnUnknown).toBe(true);
+      expect(payload.check.offenders).toEqual([
+        {
+          classification: 'patch-owned-drift',
+          count: 1,
+          files: ['browser/base/peer.js'],
+          unnamed: true,
+        },
+        {
+          classification: 'ownership-conflict',
+          count: 1,
+          files: ['browser/base/shared.js'],
+          unnamed: true,
+        },
+      ]);
+    });
+
+    it('scopes the --ownership table to rows naming the patches', async () => {
+      seedTwoPatchQueue();
+      vi.mocked(getStatusWithCodes).mockResolvedValue([]);
+      // 402 owns no shared path, so its scoped table has no conflict.
+      await expect(
+        statusCommand(projectRoot, { ownership: true, patches: ['402'] })
+      ).resolves.toBeUndefined();
+      await expect(
+        statusCommand(projectRoot, { ownership: true, patches: ['246'] })
+      ).rejects.toThrow('1 path(s) are claimed by more than one patch');
     });
   });
 });

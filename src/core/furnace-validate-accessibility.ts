@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join } from 'node:path';
 
-import type { CustomComponentConfig, ValidationIssue } from '../types/furnace.js';
+import type {
+  CustomComponentConfig,
+  FurnaceOptInCheck,
+  ValidationIssue,
+} from '../types/furnace.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { createIssue } from './furnace-validate-helpers.js';
+import { countUnlabelledIconButtons } from './furnace-validate-icon-button.js';
 import { collectLitTemplateRegions, parseTemplateAttributes } from './lit-template-regions.js';
 
 /**
@@ -18,11 +23,14 @@ import { collectLitTemplateRegions, parseTemplateAttributes } from './lit-templa
  *   (`keyboardCovered: true`) or via `composes` naming a native-interactive
  *   inner element. Optional so stock/override callers and test fixtures
  *   without config in scope can continue to call without changes.
+ * @param optInChecks - `furnace.json#optInChecks`. `icon-button-label`
+ *   adds the icon-only `<moz-button>` naming check.
  */
 export async function validateAccessibility(
   componentDir: string,
   tagName: string,
-  customConfig?: CustomComponentConfig
+  customConfig?: CustomComponentConfig,
+  optInChecks: readonly FurnaceOptInCheck[] = []
 ): Promise<ValidationIssue[]> {
   const mjsPath = join(componentDir, `${tagName}.mjs`);
   if (!(await pathExists(mjsPath))) return [];
@@ -110,6 +118,20 @@ export async function validateAccessibility(
         'Form input without an accessible label. Add aria-label, aria-labelledby, or an associated <label> element.'
       )
     );
+  }
+
+  if (optInChecks.includes('icon-button-label')) {
+    const unlabelled = countUnlabelledIconButtons(content);
+    if (unlabelled > 0) {
+      issues.push(
+        createIssue(
+          tagName,
+          'warning',
+          'icon-button-label',
+          `${unlabelled} icon-only <moz-button> without an accessible name. Add data-l10n-id (with the label in its Fluent message) or aria-label.`
+        )
+      );
+    }
   }
 
   return issues;

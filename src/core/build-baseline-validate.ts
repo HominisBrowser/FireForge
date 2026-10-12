@@ -30,6 +30,29 @@ function isFingerprintMap(value: unknown): value is Record<string, string> {
   );
 }
 
+function isCoverageAnchor(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    typeof value['engineHeadSha'] === 'string' &&
+    isFingerprint(value['mozconfigHash']) &&
+    isFingerprintMap(value['fingerprints'])
+  );
+}
+
+function isCoverageRecordMap(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    Object.entries(value).every(
+      ([path, record]) =>
+        isBaselinePath(path) &&
+        isCoverageAnchor(record) &&
+        isObject(record) &&
+        Array.isArray(record['inputs']) &&
+        record['inputs'].every(isBaselinePath)
+    )
+  );
+}
+
 /** Validates persisted fields without converting malformed coverage into a full claim. */
 export function isBuildBaseline(value: unknown): value is BuildBaseline {
   if (!isObject(value)) return false;
@@ -58,6 +81,13 @@ export function isBuildBaseline(value: unknown): value is BuildBaseline {
     return false;
   if (value['mozconfigHash'] !== undefined && !isFingerprint(value['mozconfigHash'])) return false;
   if (value['recordedBy'] !== undefined && typeof value['recordedBy'] !== 'string') return false;
+  if (
+    value['testCoverageRecords'] !== undefined &&
+    !isCoverageRecordMap(value['testCoverageRecords'])
+  )
+    return false;
+  if (value['fullCoverageAnchor'] !== undefined && !isCoverageAnchor(value['fullCoverageAnchor']))
+    return false;
   const components = value['staticComponentsBaseline'];
   return (
     components === undefined ||

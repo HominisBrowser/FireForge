@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { FireForgeError } from '../errors/base.js';
 import { ExitCode } from '../errors/codes.js';
 import { PatchError, PatchManifestCorruptError } from '../errors/patch.js';
-import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
+import type { PatchesManifest, PatchMetadata, PatchRetiredSlot } from '../types/commands/index.js';
 import type { JsonObject } from '../types/json.js';
 import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
@@ -24,6 +24,7 @@ import { warn } from '../utils/logger.js';
 import { isArray, isObject } from '../utils/validation.js';
 import { assertPatchDirectoryLockHeld } from './patch-lock.js';
 import { validatePatchesManifest } from './patch-manifest-validate.js';
+import { manifestWithRetiredSlots } from './patch-retired.js';
 
 /** Filename for the patches manifest */
 export const PATCHES_MANIFEST = 'patches.json';
@@ -232,7 +233,8 @@ export async function addPatchToManifest(
   manifest.patches.push(metadata);
   manifest.patches.sort((a, b) => a.order - b.order);
 
-  await savePatchesManifest(patchesDir, manifest);
+  // A patch landing on a retired order fills that slot.
+  await savePatchesManifest(patchesDir, manifestWithRetiredSlots(manifest, manifest.patches));
 }
 
 /**
@@ -246,12 +248,14 @@ export async function addPatchToManifest(
  *
  * @param patchesDir - Path to the patches directory
  * @param filename - Filename of the patch to remove from the manifest
+ * @param retiredSlot - Optional placeholder to record for the removed order
  * @returns True when the manifest was written (i.e. an entry was removed),
  *   false when no matching entry existed
  */
 export async function removePatchFromManifest(
   patchesDir: string,
-  filename: string
+  filename: string,
+  retiredSlot?: PatchRetiredSlot
 ): Promise<boolean> {
   const manifest = await loadPatchesManifestForWrite(patchesDir);
   if (!manifest) return false;
@@ -261,6 +265,15 @@ export async function removePatchFromManifest(
 
   if (manifest.patches.length === originalLength) {
     return false;
+  }
+
+  if (retiredSlot !== undefined) {
+    // `patch retire`: the row leaves and its order stays spent, in the
+    // same write, so no reader ever sees the gap in between.
+    manifest.retired = [
+      ...(manifest.retired ?? []).filter((slot) => slot.order !== retiredSlot.order),
+      retiredSlot,
+    ].sort((a, b) => a.order - b.order);
   }
 
   await savePatchesManifest(patchesDir, manifest);
@@ -561,10 +574,8 @@ export async function renumberPatchesInManifest(
     // filenames back.
     assertRenumberedOrderIsWellFormed(updatedPatches);
 
-    await savePatchesManifest(patchesDir, {
-      ...manifest,
-      patches: updatedPatches,
-    });
+    // A patch renumbered onto a retired order fills that slot.
+    await savePatchesManifest(patchesDir, manifestWithRetiredSlots(manifest, updatedPatches));
   } catch (error: unknown) {
     // Phase 3 rollback: reverse every completed rename. The manifest
     // save failed before it could be persisted, so the on-disk state
@@ -635,10 +646,13 @@ export class PatchDeleteRollbackError extends FireForgeError {
  *
  * @param patchesDir - Path to the patches directory
  * @param filename - Patch filename to delete
+ * @param retiredSlot - When set (`patch retire`), the placeholder written in
+ *   the same manifest update that removes the row
  */
 export async function removePatchFileAndManifest(
   patchesDir: string,
-  filename: string
+  filename: string,
+  retiredSlot?: PatchRetiredSlot
 ): Promise<void> {
   await assertPatchDirectoryLockHeld(patchesDir, 'deleting a patch and its manifest row');
 
@@ -646,7 +660,7 @@ export async function removePatchFileAndManifest(
   // ForWrite: deleting the patch file while a corrupt manifest still
   // references it would strand the queue. Abort on corruption instead.
   const originalManifest = await loadPatchesManifestForWrite(patchesDir);
-  const removedFromManifest = await removePatchFromManifest(patchesDir, filename);
+  const removedFromManifest = await removePatchFromManifest(patchesDir, filename, retiredSlot);
 
   try {
     if (await pathExistsStrict(patchPath)) {

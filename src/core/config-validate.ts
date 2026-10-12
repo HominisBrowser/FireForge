@@ -26,9 +26,12 @@ import {
 } from '../utils/validation.js';
 import { SUPPORTED_CONFIG_ROOT_KEYS } from './config-paths.js';
 import { parseBuildAuditConfig } from './config-validate-build-audit.js';
-import { parsePatchLintFileSizeThresholds } from './config-validate-file-size.js';
+import { parseCheckConfig } from './config-validate-check.js';
+import { parsePatchLintSizeFields } from './config-validate-file-size.js';
+import { parseHistoryBlock } from './config-validate-history.js';
 import { parsePatchPolicyBlock } from './config-validate-patch-policy.js';
 import { parseExternalToolchainsBlock, parseTestBlock } from './config-validate-test-toolchains.js';
+import { parsePatchLintTokenScales } from './config-validate-token-scales.js';
 
 /**
  * Parses and validates the four required identity fields (`name`,
@@ -221,6 +224,7 @@ export function validateConfig(data: unknown): FireForgeConfig {
     config.buildAudit = parseBuildAuditConfig(buildAuditRaw);
   }
   parseTestBlock(rec, config);
+  parseHistoryBlock(rec, config);
   parseExternalToolchainsBlock(rec, config);
   parseWireBlock(rec, config);
   parseLicenseField(rec, config);
@@ -247,6 +251,12 @@ export function validateConfig(data: unknown): FireForgeConfig {
   const typecheckRec = optionalConfigObject(rec, 'typecheck');
   if (typecheckRec) {
     config.typecheck = parseTypecheckBlock(typecheckRec);
+  }
+
+  // `fireforge check` policy and project steps.
+  const checkRaw = rec.raw('check');
+  if (checkRaw !== undefined) {
+    config.check = parseCheckConfig(checkRaw);
   }
 
   // Warn on unknown root keys
@@ -462,10 +472,10 @@ function parsePatchLintBlock(rec: ParsedRecord): NonNullable<FireForgeConfig['pa
     out.rawColorAllowlist = rawColorAllowlist as string[];
   }
 
-  const fileSizeThresholds = rec.raw('fileSizeThresholds');
-  if (fileSizeThresholds !== undefined) {
-    out.fileSizeThresholds = parsePatchLintFileSizeThresholds(fileSizeThresholds);
-  }
+  Object.assign(
+    out,
+    parsePatchLintSizeFields((key) => rec.raw(key))
+  );
 
   const forwardRegistration = rec.raw('forwardRegistration');
   if (forwardRegistration !== undefined) {
@@ -476,6 +486,9 @@ function parsePatchLintBlock(rec: ParsedRecord): NonNullable<FireForgeConfig['pa
     }
     out.forwardRegistration = forwardRegistration;
   }
+
+  const tokenScales = rec.raw('tokenScales');
+  if (tokenScales !== undefined) out.tokenScales = parsePatchLintTokenScales(tokenScales);
 
   for (const key of PATCH_LINT_SEVERITY_GATE_KEYS) {
     const gate = parseSeverityGate(rec.raw(key), `patchLint.${key}`);

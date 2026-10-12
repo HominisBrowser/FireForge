@@ -98,8 +98,28 @@ export interface BuildBaseline {
    * replaces coverage with a dropped-path notice, or refuses when the caller
    * required --extend-coverage. Legacy packageable-only anchors cannot retain
    * coverage because they cannot prove test scripts and fixtures unchanged.
+   *
+   * Since 0.50.0 retention is decided per staged path: see
+   * {@link BuildBaseline.testCoverageRecords} and
+   * {@link BuildBaseline.fullCoverageAnchor}.
    */
   testPackagingCoverage?: TestPackagingCoverage;
+  /**
+   * Per-path anchors of a scoped claim, keyed by the request path in
+   * {@link BuildBaseline.testPackagingCoverage}. Each record holds that
+   * path's own staging inputs and their content at the build that staged
+   * it, so a later scoped build keeps the path while those inputs are
+   * unchanged, whatever moved elsewhere in the engine. A listed path without
+   * a record falls back to the baseline-wide anchor. Absent on full claims.
+   */
+  testCoverageRecords?: Record<string, CoverageRecord>;
+  /**
+   * The anchor of the last full-coverage build, carried forward by scoped
+   * builds once something outside their scope moved. A request path outside
+   * the scoped list stays covered while its own staging inputs are unchanged
+   * against this anchor. The check runs at dispatch, per requested path.
+   */
+  fullCoverageAnchor?: CoverageAnchor;
   /**
    * Hex-encoded SHA-256 of `engine/mozconfig` as it stood for this build.
    * Recorded because the mozconfig is regenerated from project-side
@@ -144,6 +164,34 @@ export interface StaticComponentsBaseline {
    * engine-relative POSIX paths.
    */
   fingerprints: Record<string, string>;
+}
+
+/**
+ * Content anchor of one packaging claim. A path's staged content is
+ * `fingerprints[path]` when recorded, otherwise its content at
+ * `engineHeadSha`.
+ */
+export interface CoverageAnchor {
+  /** Engine HEAD the staged content is relative to. */
+  engineHeadSha: string;
+  /** Hex SHA-256 of `engine/mozconfig` the claim was configured with. */
+  mozconfigHash: string;
+  /**
+   * Hex SHA-256 (or {@link DELETED_FILE_FINGERPRINT}) per engine-relative
+   * path whose staged content differs from `engineHeadSha`.
+   */
+  fingerprints: Record<string, string>;
+}
+
+/** Anchor of one staged request path. See {@link BuildBaseline.testCoverageRecords}. */
+export interface CoverageRecord extends CoverageAnchor {
+  /**
+   * Engine-relative paths (files or directories) whose content decides what
+   * the harness stages for the request path: its manifest directory plus
+   * whatever a manifest there names outside it. `fingerprints` is
+   * restricted to these.
+   */
+  inputs: string[];
 }
 
 /** Coverage claim of the packaged test runtime. See {@link BuildBaseline.testPackagingCoverage}. */

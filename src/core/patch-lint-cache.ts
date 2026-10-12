@@ -108,7 +108,7 @@ async function fileHash(path: string): Promise<{ exists: boolean; sha256?: strin
 function normalizePatchMetadata(patch: PatchMetadata): JsonValue {
   return {
     filesAffected: patch.filesAffected,
-    lintIgnore: patch.lintIgnore,
+    lintIgnore: patch.lintIgnore as JsonValue | undefined,
     stagedDependencies: patch.stagedDependencies as JsonValue | undefined,
     tier: patch.tier,
   };

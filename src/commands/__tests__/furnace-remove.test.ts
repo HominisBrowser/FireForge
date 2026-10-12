@@ -151,7 +151,7 @@ import {
   updateFurnaceState,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { recordFurnaceRollbackFailure } from '../../core/furnace-operation.js';
+import { recordFurnaceRollbackFailure, runFurnaceMutation } from '../../core/furnace-operation.js';
 import {
   removeCustomElementRegistration,
   removeJarMnEntries,
@@ -254,6 +254,25 @@ describe('furnaceRemoveCommand', () => {
     );
     await expect(furnaceRemoveCommand('/project', 'moz-audit-widget')).rejects.toThrow(
       'without --yes'
+    );
+  });
+
+  it('threads --wait-lock into the furnace lock, the only lock remove takes', async () => {
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: ['moz-button'],
+      overrides: {},
+      custom: {},
+    });
+
+    await furnaceRemoveCommand('/project', 'moz-button', { yes: true, waitLockSeconds: 45 });
+
+    expect(runFurnaceMutation).toHaveBeenCalledWith(
+      '/project',
+      'remove-rollback',
+      expect.any(Function),
+      { lockTimeoutMs: 45_000 }
     );
   });
 

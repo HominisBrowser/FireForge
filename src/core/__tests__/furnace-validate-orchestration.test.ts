@@ -110,7 +110,12 @@ describe('validateComponent', () => {
       'custom',
       undefined
     );
-    expect(mockValidateAccessibility).toHaveBeenCalledWith('/comp/my-btn', 'my-btn', undefined);
+    expect(mockValidateAccessibility).toHaveBeenCalledWith(
+      '/comp/my-btn',
+      'my-btn',
+      undefined,
+      undefined
+    );
     expect(mockValidateCompatibility).toHaveBeenCalledWith(
       '/comp/my-btn',
       'my-btn',
@@ -192,14 +197,20 @@ describe('validateComponent', () => {
     expect(mockValidateAccessibility).toHaveBeenCalledWith(
       '/comp/mybrowser-dock-button',
       'mybrowser-dock-button',
-      expect.objectContaining({ composes: ['moz-button'] })
+      expect.objectContaining({ composes: ['moz-button'] }),
+      undefined
     );
   });
 
   it('forwards undefined to accessibility validation for override components', async () => {
     await validateComponent('/comp/moz-card', 'moz-card', 'override', baseConfig, '/project');
 
-    expect(mockValidateAccessibility).toHaveBeenCalledWith('/comp/moz-card', 'moz-card', undefined);
+    expect(mockValidateAccessibility).toHaveBeenCalledWith(
+      '/comp/moz-card',
+      'moz-card',
+      undefined,
+      undefined
+    );
   });
 
   it('reports override baseVersion drift as a validation error', async () => {

@@ -219,6 +219,18 @@ const replayQueueIndexOnlyMock = vi.hoisted(() =>
 );
 vi.mock('../../core/rebase-dry-run.js', () => ({ replayQueueIndexOnly: replayQueueIndexOnlyMock }));
 
+const readCommittedFirefoxPinMock = vi.hoisted(() =>
+  vi.fn<
+    (
+      projectRoot: string
+    ) => Promise<import('../../core/rebase-from-version.js').FirefoxPin | undefined>
+  >(() => Promise.resolve(undefined))
+);
+vi.mock('../../core/rebase-from-version.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/rebase-from-version.js')>()),
+  readCommittedFirefoxPin: readCommittedFirefoxPinMock,
+}));
+
 import { Command } from 'commander';
 
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
@@ -251,6 +263,7 @@ function setupDefaults(): void {
   hasChangesMock.mockResolvedValue(false);
   getHeadMock.mockResolvedValue('abc123');
   loadStateMock.mockResolvedValue({});
+  readCommittedFirefoxPinMock.mockResolvedValue(undefined);
   // The legacy per-test mocks keep their implementations across describes
   // (clearAllMocks clears calls, not impls), so pin their no-session defaults
   // here rather than inheriting whatever the previous describe left behind.
@@ -368,6 +381,39 @@ describe('fireforge rebase', () => {
       ['001-branding.patch'],
       '140.9.0esr',
       'firefox-esr'
+    );
+  });
+
+  it('records the committed pin as the session from-version', async () => {
+    readCommittedFirefoxPinMock.mockResolvedValue({
+      version: '140.8.0esr',
+      product: 'firefox-esr',
+    });
+    loadPatchesManifestMock.mockResolvedValue({
+      version: 1,
+      patches: [
+        {
+          filename: '001-branding.patch',
+          order: 1,
+          category: 'branding',
+          name: 'branding',
+          description: 'test',
+          createdAt: '2025-01-01',
+          sourceEsrVersion: '128.0esr',
+          filesAffected: ['file.txt'],
+        },
+      ],
+    });
+    discoverPatchesMock.mockResolvedValue([
+      { path: '/project/patches/001-branding.patch', filename: '001-branding.patch', order: 1 },
+    ] as never);
+    applyPatchWithFuzzMock.mockResolvedValue({ success: true, fuzzFactor: 0 });
+
+    await rebaseCommand('/project');
+
+    expect(saveRebaseSessionMock).toHaveBeenCalledWith(
+      '/project',
+      expect.objectContaining({ fromVersion: '140.8.0esr', toVersion: '140.9.0esr' })
     );
   });
 
@@ -1127,6 +1173,38 @@ describe('fireforge rebase --dry-run replay', () => {
     // A lexical sort took 153.10.0esr as the oldest.
     expect(info).toHaveBeenCalledWith('Rebasing patches: 153.2.0esr → 153.10.0esr');
     expect(info).toHaveBeenCalledWith('Patch stamps: 1 at 153.2.0esr, 2 at 153.10.0esr');
+  });
+
+  it('labels the move from the committed pin and prints the stamp spread separately', async () => {
+    readCommittedFirefoxPinMock.mockResolvedValue({
+      version: '153.3.0esr',
+      product: 'firefox-esr',
+    });
+    loadPatchesManifestMock.mockResolvedValue(
+      manifestWith([
+        ['001-a.patch', '153.0esr', 'firefox-esr'],
+        ['002-b.patch', '153.0esr', 'firefox-esr'],
+        ['003-c.patch', '153.3.0esr', 'firefox-esr'],
+      ])
+    );
+
+    await rebaseCommand('/project', { dryRun: true });
+
+    expect(readCommittedFirefoxPinMock).toHaveBeenCalledWith('/project');
+    expect(info).toHaveBeenCalledWith('Rebasing patches: 153.3.0esr → 153.10.0esr');
+    expect(info).toHaveBeenCalledWith('Patch stamps: 2 at 153.0esr, 1 at 153.3.0esr');
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('oldest patch stamp'));
+  });
+
+  it('falls back to the oldest stamp when the committed pin is already the target', async () => {
+    readCommittedFirefoxPinMock.mockResolvedValue({ version: '153.10.0esr' });
+    loadPatchesManifestMock.mockResolvedValue(manifestWith([['001-a.patch', '153.2.0esr']]));
+
+    await rebaseCommand('/project', { dryRun: true });
+
+    expect(info).toHaveBeenCalledWith('Rebasing patches: 153.2.0esr → 153.10.0esr');
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('oldest patch stamp'));
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Patch stamps:'));
   });
 
   it('warns when engine/ is not on the pinned target yet', async () => {

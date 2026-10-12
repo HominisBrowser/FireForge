@@ -13,6 +13,7 @@ import {
   lintExportedPatch,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
+import type { LintIgnoreChecks } from '../core/patch-lint-ignore.js';
 import { resolvePatchOwnedSysMjs } from '../core/patch-lint-ownership.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { getPatchPolicyCategories, isCategoryAllowedByConfig } from '../core/patch-policy.js';
@@ -49,7 +50,7 @@ export interface RunPatchLintOptions {
    * `large-patch-lines` on a cohesive branding bundle that genuinely cannot
    * be split.
    */
-  ignoreChecks?: ReadonlySet<string> | undefined;
+  ignoreChecks?: LintIgnoreChecks | undefined;
   /**
    * Optional explicit tier override (threaded from `PatchMetadata.tier`).
    * Forces the branding-tier thresholds when set, independent of the

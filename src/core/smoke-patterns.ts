@@ -61,6 +61,21 @@ export function matchesSmokeError(line: string): boolean {
 }
 
 /**
+ * Mach's own log lines carry an elapsed-time prefix (` 0:00.42 <message>`),
+ * the first of which echoes the browser command line. They prove mach ran,
+ * not that the browser printed anything.
+ */
+const MACH_LOG_LINE = /^\s*\d+:\d{2}\.\d{2} /;
+
+/**
+ * Returns `true` when `line` is console output from the browser rather than
+ * mach's own timestamped log. A blank line is neither.
+ */
+export function isBrowserConsoleLine(line: string): boolean {
+  return line.trim() !== '' && !MACH_LOG_LINE.test(line);
+}
+
+/**
  * One compiled allowlist entry with its provenance retained so the smoke
  * summary can attribute hits per entry. An entry that silently
  * stops matching (its suppressed shape changed upstream) is only

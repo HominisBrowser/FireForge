@@ -11,6 +11,7 @@ import {
   buildModifiedFileAdditionsFromDiff,
   buildPatchQueueContext,
   lintPatchQueue,
+  type PatchQueueContext,
 } from '../core/patch-lint.js';
 import { detectNewFilesInDiff } from '../core/patch-lint-diff.js';
 import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
@@ -18,6 +19,7 @@ import { getClaimedFiles } from '../core/patch-manifest.js';
 import { buildNewFileTextProjection } from '../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { PatchesManifest } from '../types/commands/index.js';
+import type { FireForgeConfig } from '../types/config.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { pathExists } from '../utils/fs.js';
 import { cancel, info, isCancel, warn } from '../utils/logger.js';
@@ -26,6 +28,8 @@ import {
   normalizePathSlashes,
   stripEnginePrefix,
 } from '../utils/paths.js';
+import { formatForwardImportRemedy } from './forward-import-remedy.js';
+import { joinScanFileOwner, splitScanFileOwner } from './re-export-scan-owner.js';
 
 const SCAN_ADD_COUNT_THRESHOLD = 3;
 
@@ -39,11 +43,22 @@ export interface ScanResult {
   removed: string[];
 }
 
-/** Normalizes repeatable `--scan-file` inputs into safe engine-relative paths. */
+/**
+ * Normalizes repeatable `--scan-file` inputs into safe engine-relative
+ * paths, keeping an optional `<patch>:` owner prefix intact.
+ */
 export function normalizeScanFiles(scanFiles: readonly string[] | undefined): string[] | undefined {
-  const normalized = [...new Set(scanFiles ?? [])]
-    .map((file) => normalizeEngineRelativeInput(file, '--scan-file'))
-    .sort();
+  const normalized = [
+    ...new Set(
+      (scanFiles ?? []).map((file) => {
+        const spec = splitScanFileOwner(file);
+        return joinScanFileOwner({
+          owner: spec.owner,
+          path: normalizeEngineRelativeInput(spec.path, '--scan-file'),
+        });
+      })
+    ),
+  ].sort();
   return normalized.length > 0 ? normalized : undefined;
 }
 
@@ -261,8 +276,13 @@ export async function assertScanAdoptionsHaveNoForwardImports(args: {
   engineDir: string;
   patchFilename: string;
   added: readonly string[];
+  /**
+   * Threads `patchLint.forwardRegistration` so jar.mn registrations are judged
+   * too, and `patchPolicy`, so the remedy names a legal order.
+   */
+  config?: FireForgeConfig;
 }): Promise<void> {
-  const { patchesDir, engineDir, patchFilename, added } = args;
+  const { patchesDir, engineDir, patchFilename, added, config } = args;
   if (added.length === 0) return;
 
   const candidateDiff = await getDiffForFilesAgainstHead(engineDir, [...added]);
@@ -272,7 +292,7 @@ export async function assertScanAdoptionsHaveNoForwardImports(args: {
   const candidateCreations = detectNewFilesInDiff(candidateDiff);
   const candidateAdditions = buildModifiedFileAdditionsFromDiff(candidateDiff);
 
-  const baseCtx = await buildPatchQueueContext(patchesDir);
+  const baseCtx = await buildPatchQueueContext(patchesDir, config);
   const projectedEntries = baseCtx.entries.map((entry) => {
     if (entry.filename !== patchFilename) return entry;
     return {
@@ -285,36 +305,61 @@ export async function assertScanAdoptionsHaveNoForwardImports(args: {
   });
 
   const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
-  const projectedIssues = lintPatchQueue({ entries: projectedEntries }).filter(
+  const projectedIssues = lintPatchQueue({ ...baseCtx, entries: projectedEntries }).filter(
     (i) => i.severity === 'error'
   );
   const addedSet = new Set(added);
-  const offending = computeProjectedLintRegressions(baselineIssues, projectedIssues).filter(
+  const regressions = computeProjectedLintRegressions(baselineIssues, projectedIssues);
+  const offending = regressions.filter(
     (issue) => issue.check === 'forward-import' && addedSet.has(issue.file)
   );
-  if (offending.length === 0) return;
+  // A forward registration (jar.mn packaging, a test manifest, ...) only
+  // regresses here because the candidates moved the registered file's
+  // creation to this patch, or because a candidate registers it: either way
+  // the adoption caused it, and the operator should declare it in the same
+  // pass as the import instead of meeting it later in the queue audit.
+  const registrations = regressions.filter((issue) => issue.check === 'forward-registration');
+  if (offending.length === 0 && registrations.length === 0) return;
 
   const details = offending.map((issue) => `  - ${issue.file}: ${issue.message}`).join('\n');
+  const registrationDetails = registrations
+    .map((issue) => `  - ${issue.file}: ${issue.message}`)
+    .join('\n');
+  const parts: string[] = [];
+  if (offending.length > 0) {
+    parts.push(
+      `${offending.length} scanned file${offending.length === 1 ? '' : 's'} import modules created by later patches:\n${details}`
+    );
+  }
+  if (registrations.length > 0) {
+    parts.push(
+      `${registrations.length} forward registration${registrations.length === 1 ? '' : 's'} the adoption would leave dangling:\n${registrationDetails}`
+    );
+  }
   throw new GeneralError(
-    `Refusing to adopt ${offending.length} scanned file${offending.length === 1 ? '' : 's'} into ${patchFilename} ` +
-      `because they import modules created by later patches:\n${details}\n` +
-      formatForwardImportRemedy('re-running the scan')
+    `Refusing to adopt scanned files into ${patchFilename}: ${parts.join('\n')}\n` +
+      formatForwardImportRemedy({
+        reRunHint: 're-running the scan',
+        issues: [...offending, ...registrations],
+        manifest: manifestFromQueue(baseCtx),
+        ...(args.config !== undefined ? { config: args.config } : {}),
+        ...categoryOf(baseCtx, patchFilename),
+      })
   );
 }
 
-/**
- * The one remedy sentence for a forward import a patch body cannot carry.
- * Shared by the `--scan` adoption gate and the plain re-export projection
- * gate so both refusals point at the same commands.
- *
- * @param reRunHint - What to do after the fix ("re-running the scan")
- */
-export function formatForwardImportRemedy(reRunHint: string): string {
-  return (
-    'Export those files as their own later patch ("fireforge export --order <n>" / ' +
-    '"fireforge patch split --order <n>") or declare the intentional dependency with ' +
-    `"fireforge patch staged-dependency --add" before ${reRunHint}.`
-  );
+/** The manifest rows a queue context carries, for remedy computations. */
+export function manifestFromQueue(ctx: PatchQueueContext): PatchesManifest {
+  return {
+    version: 1,
+    patches: ctx.entries.flatMap((entry) => (entry.metadata ? [entry.metadata] : [])),
+  };
+}
+
+/** `{ category }` of the named queue entry, or `{}` when it has no metadata. */
+export function categoryOf(ctx: PatchQueueContext, filename: string): { category?: string } {
+  const category = ctx.entries.find((entry) => entry.filename === filename)?.metadata?.category;
+  return category !== undefined ? { category } : {};
 }
 
 /** Refuses explicit `--scan-file` additions that did not produce patch hunks. */

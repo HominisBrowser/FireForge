@@ -20,6 +20,7 @@ import { info, intro, outro, success, warn } from '../utils/logger.js';
 import { pickDefined } from '../utils/options.js';
 import { normalizeTokenName } from '../utils/validation.js';
 import { tokenCoverageCommand } from './token-coverage.js';
+import { tokenLintCommand } from './token-lint.js';
 import { tokenListCommand, tokenShowCommand } from './token-list.js';
 
 async function normalizeTokenNameForProject(
@@ -298,6 +299,20 @@ export function registerToken(
     .action(
       withErrorHandling(async (tokenName: string, options: { json?: boolean }) => {
         await tokenShowCommand(getProjectRoot(), tokenName, pickDefined({ json: options.json }));
+      })
+    );
+
+  token
+    .command('lint')
+    .description(
+      'Check the token system: themed override blocks declare only tokens the base :root ' +
+        'declares, and every var(--<prefix>…) in the tokens CSS or a patch-touched CSS file ' +
+        'names a declared token. Exits non-zero on any finding'
+    )
+    .option('--json', 'Emit the machine-readable envelope on stdout (see docs/machine-output.md)')
+    .action(
+      withErrorHandling(async (options: { json?: boolean }) => {
+        await tokenLintCommand(getProjectRoot(), pickDefined({ json: options.json }));
       })
     );
 

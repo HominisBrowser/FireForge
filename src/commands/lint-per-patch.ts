@@ -6,11 +6,11 @@ import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { withPrivateGitIndex } from '../core/git-readonly-index.js';
 import {
   buildPatchQueueContext,
-  countNonBinaryDiffLines,
   formatPatchLintIssue,
   lintExportedPatch,
   type LintExportedPatchOptions,
   lintPatchQueue,
+  measurePatchSize,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
 import type { PerPatchLintCacheFile } from '../core/patch-lint-cache.js';
@@ -23,10 +23,20 @@ import {
   setCachedPerPatchLintIssues,
 } from '../core/patch-lint-cache.js';
 import type { PatchQueueContext } from '../core/patch-lint-cross.js';
+import {
+  buildLintIgnoreChecks,
+  evaluateLintIgnoreCeilings,
+  formatLintIgnoreEntry,
+  isLintIgnoreCeiling,
+  lintIgnoreCacheTokens,
+  removableCeilingIssues,
+} from '../core/patch-lint-ignore.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
+import { evaluatePatchPolicyContent } from '../core/patch-policy-content.js';
+import { selectPatchSubset } from '../core/patch-subset.js';
 import { GeneralError } from '../errors/base.js';
-import type { PatchesManifest, PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
+import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
 import type { LintCommandOptions } from '../types/commands/index.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
@@ -83,7 +93,7 @@ interface QueuedPatchResult {
   rawIssues: PatchLintIssue[];
   /** Issues dropped by the patch's lintIgnore waivers. */
   suppressedIssues: PatchLintIssue[];
-  /** Non-binary diff line count, 0 when skipped. */
+  /** Patch size in the configured `patchSizeMetric`, 0 when skipped. */
   lineCount: number;
   /** Present only on a fresh lint with the cache enabled. */
   cacheWrite?: { key: string; lintIgnore: string[] };
@@ -120,7 +130,7 @@ async function lintQueuedPatch(
     };
   }
 
-  const ignore = patch.lintIgnore?.length ? new Set<string>(patch.lintIgnore) : undefined;
+  const ignore = buildLintIgnoreChecks(patch.lintIgnore);
   let cacheKey: string | undefined;
   if (cache) {
     cacheKey = await buildPerPatchLintCacheKey({
@@ -133,7 +143,12 @@ async function lintQueuedPatch(
       queueContext: ctx,
       ...(engineHeadSha === undefined ? {} : { engineHeadSha }),
     });
-    const cached = getCachedPerPatchLintIssues(cache, patch.filename, cacheKey, ignore);
+    const cached = getCachedPerPatchLintIssues(
+      cache,
+      patch.filename,
+      cacheKey,
+      lintIgnoreCacheTokens(ignore)
+    );
     if (cached) {
       // Returning before the empty-diff probe below is safe: the cache key
       // hashes every affected engine file's content plus engineHeadSha, so
@@ -181,8 +196,13 @@ async function lintQueuedPatch(
     lintOptions.precomputedCheckJs = precomputedCheckJs;
   }
 
+  // Measured from the working tree, like every other rule here: the files
+  // on disk are the would-be export, so a size tier fires mid-edit rather
+  // than first at the re-export.
+  const patchSize = await measurePatchSize(paths.engine, diff, existing, config);
   const patchIssues = await lintExportedPatch(paths.engine, existing, diff, config, {
     ...lintOptions,
+    patchSizeMeasurement: patchSize,
     patchQueueCtx: ctx,
     ...(ignore ? { ignoreChecks: ignore } : {}),
     ...(patch.tier ? { patchTier: patch.tier } : {}),
@@ -192,11 +212,11 @@ async function lintQueuedPatch(
     existingFiles: existing,
     rawIssues: patchIssues,
     suppressedIssues,
-    lineCount: countNonBinaryDiffLines(diff).textLines,
+    lineCount: patchSize.lines,
     usedCheckJs,
   };
   if (cache && cacheKey) {
-    result.cacheWrite = { key: cacheKey, lintIgnore: [...(ignore ?? [])] };
+    result.cacheWrite = { key: cacheKey, lintIgnore: lintIgnoreCacheTokens(ignore) };
   }
   return result;
 }
@@ -289,6 +309,18 @@ async function applyPerPatchResults(
     for (const issue of result.rawIssues) {
       issues.push({ ...issue, file: `${patch.filename} :: ${issue.file}` });
     }
+    // A ceiling the patch no longer needs is reported as a notice naming
+    // the command that drops it.
+    issues.push(
+      ...removableCeilingIssues(
+        patch.filename,
+        evaluateLintIgnoreCeilings(
+          patch.lintIgnore,
+          [...result.rawIssues, ...result.suppressedIssues],
+          { lines: result.lineCount, files: patch.filesAffected.length }
+        )
+      )
+    );
 
     // A waived size finding still reports its measurement: the finding stays
     // suppressed (no exit-code / --max-warnings effect) but the current count
@@ -300,8 +332,13 @@ async function applyPerPatchResults(
         heldNotices.push({ check: suppressedIssue.check, patch: patch.filename, suppressed: true });
         continue;
       }
+      const ceiling = patch.lintIgnore?.find(
+        (entry) => isLintIgnoreCeiling(entry) && entry.rule === suppressedIssue.check
+      );
+      const waiver =
+        ceiling === undefined ? 'lintIgnore' : `lintIgnore (${formatLintIgnoreEntry(ceiling)})`;
       info(
-        `NOTICE [${suppressedIssue.check}] ${patch.filename}: suppressed by lintIgnore — ${suppressedIssue.message}`
+        `NOTICE [${suppressedIssue.check}] ${patch.filename}: suppressed by ${waiver} — ${suppressedIssue.message}`
       );
     }
     totals.suppressed += result.suppressedIssues.length;
@@ -441,66 +478,10 @@ function reportNoticeSummary(heldNotices: HeldNotice[], issues: PatchLintIssue[]
   }
 }
 
-/**
- * Resolves the `--patches <name…>` subset filter against the manifest,
- * matching each requested name tolerantly (exact filename, filename ±
- * `.patch`, the bare order number, or the manifest `name` field). Throws listing the available
- * patches when a requested name matches none, so a typo fails loud rather
- * than silently linting nothing.
- */
-function selectPatchSubset(
-  manifest: PatchesManifest,
-  requested: readonly string[]
-): PatchMetadata[] {
-  const normalizedRequests = requested
-    .flatMap((entry) => entry.split(','))
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-
-  const patchAliases = (p: PatchMetadata): Set<string> => {
-    const aliases = new Set<string>([p.filename, p.filename.replace(/\.patch$/, ''), p.name]);
-    // The bare order number, both as the manifest records it and as the
-    // filename spells it (`2` and `002`). The refusal message offers stems,
-    // and an operator reading `102-ui-canvas-tiles.patch` in a lint finding
-    // reaches for `102` first.
-    aliases.add(String(p.order));
-    const match = /^(\d+)-([a-z]+)-(.+)\.patch$/.exec(p.filename);
-    if (match?.[1]) aliases.add(match[1]);
-    if (match?.[2] && match[3]) {
-      aliases.add(`${match[2]}-${match[3]}`);
-      aliases.add(match[3]);
-    }
-    return aliases;
-  };
-
-  const matches = (p: PatchMetadata, name: string): boolean => {
-    const stem = name.replace(/\.patch$/, '');
-    return (
-      patchAliases(p).has(name) || patchAliases(p).has(stem) || patchAliases(p).has(`${stem}.patch`)
-    );
-  };
-
-  const selected: PatchMetadata[] = [];
-  const seen = new Set<string>();
-  for (const name of normalizedRequests) {
-    const found = manifest.patches.filter((p) => matches(p, name));
-    if (found.length === 0) {
-      const available = manifest.patches.map((p) => p.filename).join(', ');
-      throw new GeneralError(
-        `No patch in the queue matches "${name}". In --per-patch mode, positional arguments ` +
-          `and --patches select patches (filename, stem, order number, manifest name, or slug) — not engine ` +
-          `files; drop --per-patch to lint engine paths. Available patches: ${available}`
-      );
-    }
-    for (const p of found) {
-      if (!seen.has(p.filename)) {
-        seen.add(p.filename);
-        selected.push(p);
-      }
-    }
-  }
-  return selected;
-}
+/** The refusal sentence `selectPatchSubset` adds for a `lint --per-patch` miss. */
+const PER_PATCH_SUBSET_HINT =
+  'In --per-patch mode, positional arguments and --patches select patches (filename, stem, ' +
+  'order number, manifest name, or slug) — not engine files; drop --per-patch to lint engine paths.';
 
 /**
  * Lints each patch in the queue as its own isolated diff, honouring
@@ -535,7 +516,7 @@ async function lintPerPatchInner(
 
   const subset =
     options.patches && options.patches.length > 0
-      ? selectPatchSubset(manifest, options.patches)
+      ? selectPatchSubset(manifest, options.patches, PER_PATCH_SUBSET_HINT)
       : manifest.patches;
   const subsetNames = new Set(subset.map((p) => p.filename));
   const isSubset = subset.length !== manifest.patches.length;
@@ -558,7 +539,11 @@ async function lintPerPatchInner(
   const cache = options.noCache === true ? undefined : await loadPerPatchLintCache(projectRoot);
   const engineHeadSha = cache ? await getPerPatchLintCacheHeadSha(paths.engine) : undefined;
   const issues: PatchLintIssue[] = [];
-  for (const issue of evaluatePatchPolicy(config, manifest)) {
+  const policyIssues = [
+    ...evaluatePatchPolicy(config, manifest),
+    ...(await evaluatePatchPolicyContent(config, projectRoot, manifest, ctx.entries)),
+  ];
+  for (const issue of policyIssues) {
     if (isSubset && !subsetNames.has(issue.filename)) continue;
     issues.push({
       file: issue.filename,
@@ -596,9 +581,11 @@ async function lintPerPatchInner(
   const { linted, skipped, cacheDirty, reusedCacheEntries, suppressed } =
     await applyPerPatchResults(subset, results, issues, checkJs, cache, heldNotices);
 
+  const queueIssues: PatchLintIssue[] = [];
   for (const issue of lintPatchQueue(ctx)) {
     if (isSubset && !subsetTouchedFiles.has(issue.file)) continue;
     issues.push(issue);
+    queueIssues.push(issue);
   }
 
   if (cache && cacheDirty) await savePerPatchLintCache(projectRoot, cache);
@@ -612,7 +599,7 @@ async function lintPerPatchInner(
   }
 
   if (options.report !== undefined) {
-    await writePerPatchLintReport(options.report, subset, results);
+    await writePerPatchLintReport(options.report, subset, results, config, queueIssues);
   }
 
   reportPerPatchOutcome(issues, linted, skipped, options, heldNotices);

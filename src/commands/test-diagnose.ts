@@ -26,6 +26,7 @@ import {
   type PostRebuildFailureContext,
   prependPostRebuildFailureContext,
 } from '../core/test-harness-output.js';
+import { buildIncompleteRunMessage } from '../core/test-run-completeness.js';
 import { GeneralError } from '../errors/base.js';
 import { TestFailureError } from '../errors/build.js';
 import { toError } from '../utils/errors.js';
@@ -330,6 +331,14 @@ function applySingleRunOutcome(
     }
     return;
   }
+  if (outcome.verdict.incomplete !== undefined) {
+    throw new TestFailureError(
+      buildIncompleteRunMessage(outcome.verdict.incomplete),
+      'mach test',
+      formatFailureBlocks(outcome.verdict.realFailureBlocks),
+      getActiveRunLogPath()
+    );
+  }
   if (outcome.verdict.kind === 'no-tests' && outcome.result.exitCode === 0) {
     // The silent false green: exit 0 plus a "Passed: 0"-style summary with
     // zero TEST-START lines must fail rather than pass.
@@ -382,6 +391,9 @@ export function diagnoseShardOutcome(
 ): string | undefined {
   if (outcome.verdict.kind === 'no-tests' && outcome.result.exitCode === 0) {
     return buildNoTestsRanMessage(0, [path]);
+  }
+  if (outcome.verdict.incomplete !== undefined) {
+    return buildIncompleteRunMessage(outcome.verdict.incomplete);
   }
   if (outcome.verdict.greenSummaryRejected) {
     return buildGreenSummaryRejectedMessage(

@@ -3,7 +3,7 @@ import { type FSWatcher, watch as fsWatch } from 'node:fs';
 
 import { loadConfig } from '../../core/config.js';
 import { applyAllComponents, computeComponentChecksums } from '../../core/furnace-apply.js';
-import { logApplyResult } from '../../core/furnace-apply-output.js';
+import { formatSkipBreakdown, logApplyResult } from '../../core/furnace-apply-output.js';
 import { getFurnacePaths } from '../../core/furnace-config.js';
 import { isComponentSourceFile } from '../../core/furnace-constants.js';
 import { runFurnaceMutation, waitLockMutationOptions } from '../../core/furnace-operation.js';
@@ -127,7 +127,9 @@ async function runWatchLoop(projectRoot: string): Promise<void> {
       }
       const applied = result.applied.length;
       const skipped = result.skipped.length;
-      info(`Re-applied: ${applied} applied, ${skipped} skipped`);
+      info(
+        `Re-applied: ${applied} applied, ${skipped} skipped${formatSkipBreakdown(result.skipped)}`
+      );
       retryNeeded = false;
       lastChecksums = await snapshotWatchedChecksums(watchDirs);
     } catch (err: unknown) {
@@ -364,7 +366,7 @@ export async function furnaceApplyCommand(
   if (dryRun) {
     outro(`Dry run complete — would apply ${appliedCount}, skip ${skippedCount}`);
   } else {
-    outro(`Applied ${appliedCount}, skipped ${skippedCount}`);
+    outro(`Applied ${appliedCount}, skipped ${skippedCount}${formatSkipBreakdown(result.skipped)}`);
   }
 
   // Watch mode: re-apply on file changes in component directories

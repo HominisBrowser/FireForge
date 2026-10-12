@@ -41,7 +41,8 @@ describe('describeProjectedGaps', () => {
     expect(lines[0]).toBe(
       'deleting 202-ui-p202.patch leaves ui range 200-499 with a gap at 202; the queue will ' +
         'fail numeric-gap (patchPolicy.allowGaps is false) until "fireforge export --order 202" ' +
-        'fills it or "fireforge patch compact" renumbers.'
+        'fills it or "fireforge patch compact" renumbers. "fireforge patch retire 202-ui-p202.patch" ' +
+        'removes the patch and keeps its order as a retired slot instead, so no gap opens.'
     );
   });
 
@@ -59,6 +60,19 @@ describe('describeProjectedGaps', () => {
     expect(describeProjectedGaps(configWith(false), manifestOf(201, 202, 203), ui(203))).toEqual(
       []
     );
+  });
+
+  it('treats a retired slot as occupied, so the removal next to it opens no extra gap', () => {
+    const manifest: PatchesManifest = {
+      ...manifestOf(201, 203, 204),
+      retired: [
+        { order: 202, category: 'ui', filename: '202-ui-old.patch', retiredAt: '2026-01-01' },
+      ],
+    };
+    expect(describeProjectedGaps(configWith(false), manifest, ui(204))).toEqual([]);
+    const lines = describeProjectedGaps(configWith(false), manifest, ui(203));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('a gap at 203;');
   });
 
   it('returns nothing when gaps are allowed or no policy is configured', () => {

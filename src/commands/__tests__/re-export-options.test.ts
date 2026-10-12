@@ -91,3 +91,74 @@ describe('--expect-unmanaged', () => {
     }).toThrow(/--refuse-adjacent-unmanaged applies to the scan-less path only/);
   });
 });
+
+describe('--expect-new and --adjacent-ignore', () => {
+  it('are refused without --refuse-adjacent-unmanaged', () => {
+    expect(() => {
+      validateReExportOptionCombinations(['101-fonts.patch'], {
+        expectNew: ['browser/modules/hominis/HominisBangs.sys.mjs'],
+      });
+    }).toThrow(/--expect-new relaxes --refuse-adjacent-unmanaged/);
+    expect(() => {
+      validateReExportOptionCombinations(['101-fonts.patch'], {
+        adjacentIgnore: ['widget/headless/tests/lab/*.json'],
+      });
+    }).toThrow(/--adjacent-ignore relaxes --refuse-adjacent-unmanaged/);
+  });
+
+  it('refuses a ** ignore entry, which would span subtrees', () => {
+    expect(() => {
+      validateReExportOptionCombinations(['101-fonts.patch'], {
+        refuseAdjacentUnmanaged: true,
+        adjacentIgnore: ['widget/headless/**'],
+      });
+    }).toThrow(/\*\* is refused/);
+  });
+
+  it('accepts both alongside --refuse-adjacent-unmanaged', () => {
+    expect(() => {
+      validateReExportOptionCombinations(['101-fonts.patch'], {
+        refuseAdjacentUnmanaged: true,
+        expectNew: ['browser/modules/hominis/HominisBangs.sys.mjs'],
+        adjacentIgnore: ['widget/headless/tests/lab/*.json'],
+      });
+    }).not.toThrow();
+  });
+});
+
+describe('path flag values that are flags', () => {
+  it.each([
+    ['expect', '--expect', { refuseForeignDrift: true }],
+    ['expectUnmanaged', '--expect-unmanaged', { refuseAdjacentUnmanaged: true }],
+    ['expectNew', '--expect-new', { refuseAdjacentUnmanaged: true }],
+    ['adjacentIgnore', '--adjacent-ignore', { refuseAdjacentUnmanaged: true }],
+    ['scanFiles', '--scan-file', { scan: true }],
+    ['expectRemoved', '--expect-removed', {}],
+  ] as const)('refuses a %s value that starts with a dash', (key, flag, extra) => {
+    expect(() => {
+      validateReExportOptionCombinations(['101-fonts.patch'], {
+        ...extra,
+        [key]: ['comp/a.js', '--dry-run'],
+      });
+    }).toThrow(`${flag} was given "--dry-run", which is a flag, not an engine path`);
+  });
+
+  it('names the swallowed flag before any combination error it would trip', () => {
+    // `--expect --refuse-foreign-drift` swallows the very flag --expect
+    // needs; the combination error alone would blame the wrong thing.
+    expect(() => {
+      validateReExportOptionCombinations(['101-fonts.patch'], {
+        expect: ['--refuse-foreign-drift'],
+      });
+    }).toThrow(/--expect was given "--refuse-foreign-drift"/);
+  });
+
+  it('refuses a short flag swallowed as a value too', () => {
+    expect(() => {
+      validateReExportOptionCombinations(['101-fonts.patch'], {
+        refuseAdjacentUnmanaged: true,
+        expectUnmanaged: ['-y'],
+      });
+    }).toThrow(/--expect-unmanaged was given "-y"/);
+  });
+});

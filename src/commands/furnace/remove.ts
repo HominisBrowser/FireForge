@@ -14,7 +14,12 @@ import {
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
 import { resolveFtlDir, xpcshellTestParentDir } from '../../core/furnace-constants.js';
-import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-operation.js';
+import {
+  completeJournalRollback,
+  type FurnaceOperationContext,
+  runFurnaceMutation,
+  waitLockMutationOptions,
+} from '../../core/furnace-operation.js';
 import {
   createRollbackJournal,
   type RollbackJournal,
@@ -448,7 +453,7 @@ export async function furnaceRemoveCommand(
 
   await requireGitEngineForRemove(type, name, paths.engine);
 
-  await runFurnaceMutation(projectRoot, 'remove-rollback', async (ctx) => {
+  const mutate = async (ctx: FurnaceOperationContext): Promise<void> => {
     const journal = createRollbackJournal();
     ctx.registerJournal(journal);
 
@@ -530,7 +535,13 @@ export async function furnaceRemoveCommand(
         subject: `component "${name}"`,
       });
     }
-  });
+  };
+  await runFurnaceMutation(
+    projectRoot,
+    'remove-rollback',
+    mutate,
+    waitLockMutationOptions(options.waitLockSeconds)
+  );
 
   info(`Removed "${name}" from furnace.json`);
   outro('Component removed');

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * CSS patch-lint rules: introduced raw color values and non-tokenized
- * custom-property references.
+ * CSS patch-lint rules: introduced raw color values, non-tokenized
+ * custom-property references, and (opt-in) token scales over created CSS.
  *
  * Split out of `patch-lint.ts` so each rule family stays within the
  * per-file line budget. `patch-lint.ts` re-exports `lintPatchedCss` so
@@ -17,7 +17,12 @@ import { pathExists, readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { hasRawCssColors } from '../utils/regex.js';
 import { loadFurnaceConfig } from './furnace-config.js';
-import { extractAddedLineNumbersPerFile, extractAddedLinesPerFile } from './patch-lint-diff.js';
+import {
+  detectNewFilesInDiff,
+  extractAddedLineNumbersPerFile,
+  extractAddedLinesPerFile,
+} from './patch-lint-diff.js';
+import { lintTokenScales } from './patch-lint-token-scale.js';
 
 /** Furnace token-lint inputs, or undefined when furnace.json is unavailable. */
 interface CssTokenContext {
@@ -55,7 +60,7 @@ async function loadCssTokenContext(repoDir: string): Promise<CssTokenContext | u
  * numbers stay stable. An unclosed trailing `/*` is masked to EOF,
  * matching how a CSS parser treats it.
  */
-function maskCssComments(source: string): string {
+export function maskCssComments(source: string): string {
   const masked = source.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
   const openerIndex = masked.indexOf('/*');
   if (openerIndex === -1) return masked;
@@ -248,6 +253,10 @@ export async function lintPatchedCss(
   const addedLineNumbersByFile = diffContent
     ? extractAddedLineNumbersPerFile(diffContent)
     : undefined;
+  // `patchLint.tokenScales` governs only CSS the patch creates.
+  const tokenScales = config?.patchLint?.tokenScales ?? [];
+  const createdFiles =
+    diffContent && tokenScales.length > 0 ? detectNewFilesInDiff(diffContent) : new Set<string>();
 
   for (const file of cssFiles) {
     const filePath = join(repoDir, file);
@@ -266,6 +275,7 @@ export async function lintPatchedCss(
       issues,
     });
     checkTokenPrefixViolations(file, cssContent, addedLinesByFile, tokenContext, issues);
+    if (createdFiles.has(file)) issues.push(...lintTokenScales(file, rawCss, tokenScales));
   }
 
   return issues;

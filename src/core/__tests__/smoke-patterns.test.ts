@@ -5,6 +5,7 @@ import {
   compileAllowlistFromFile,
   compileAllowlistFromStrings,
   findOverCapAllowlistEntries,
+  isBrowserConsoleLine,
   matchAllowlist,
   matchesSmokeError,
 } from '../smoke-patterns.js';
@@ -202,5 +203,15 @@ describe('compileAllowlistFromStrings', () => {
     expect(() => compileAllowlistFromStrings(['ok', '[unterminated'])).toThrow(
       /position 2.*"\[unterminated"/
     );
+  });
+});
+
+describe('isBrowserConsoleLine', () => {
+  it("separates browser output from mach's timestamped log and blank lines", () => {
+    expect(isBrowserConsoleLine(' 0:00.42 /obj/dist/bin/firefox -profile /p')).toBe(false);
+    expect(isBrowserConsoleLine('12:03.10 Exiting')).toBe(false);
+    expect(isBrowserConsoleLine('   ')).toBe(false);
+    expect(isBrowserConsoleLine('console.warn: RSLoader: ready')).toBe(true);
+    expect(isBrowserConsoleLine('JavaScript error: chrome://x.js, line 1')).toBe(true);
   });
 });

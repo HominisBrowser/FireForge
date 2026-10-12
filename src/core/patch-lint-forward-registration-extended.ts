@@ -33,7 +33,11 @@ import type {
   PatchQueueForwardRegistrationEntry,
   PatchQueueView,
 } from './patch-lint-queue-types.js';
-import { isLaterOwner, quoteRegistrationLine } from './patch-lint-staged-registration.js';
+import {
+  isLaterOwner,
+  quoteRegistrationLine,
+  STAGED_DEPENDENCY_REASON_PLACEHOLDER,
+} from './patch-lint-staged-registration.js';
 
 /** Which carriers `forward-registration` checks. */
 export type ForwardRegistrationScope = 'support-files' | 'extended';
@@ -206,6 +210,38 @@ function customElementsReferences(
   return refs;
 }
 
+/** True for a jar.mn, moz.build or test manifest, the carriers {@link resolveCarrierReferences} reads. */
+export function isRegistrationCarrier(file: string): boolean {
+  const name = basename(normalizePathSlashes(file));
+  return name === 'jar.mn' || name === 'moz.build' || TEST_MANIFEST_BASENAMES.has(name);
+}
+
+function carrierReferences(file: string, content: string): RegistrationReference[] {
+  const name = basename(file);
+  if (name === 'jar.mn') return jarMnReferences(file, content);
+  if (name === 'moz.build') return mozBuildReferences(file, content);
+  if (TEST_MANIFEST_BASENAMES.has(name)) return testManifestReferences(file, content);
+  return [];
+}
+
+/**
+ * The engine paths named by the lines of one jar.mn, moz.build or test
+ * manifest, resolved the way this rule resolves them. Exported for a caller
+ * outside the queue lint (re-export's adjacency belt asks which files a
+ * patch's added registration lines name). A `customElements.js` chrome URL
+ * resolves only through the queue's jar.mn index, so it is not covered.
+ *
+ * @param rawPath - Engine-relative path of the carrier
+ * @param content - The carrier lines to read (typically the added ones)
+ * @returns One entry per resolvable token. `exact` is set when it has no wildcard.
+ */
+export function resolveCarrierReferences(
+  rawPath: string,
+  content: string
+): { line: string; exact?: string; matches: (candidate: string) => boolean }[] {
+  return carrierReferences(normalizePathSlashes(rawPath), content);
+}
+
 function referencesFor(
   entry: PatchQueueForwardRegistrationEntry,
   jarTargets: ReadonlyMap<string, string>
@@ -213,12 +249,10 @@ function referencesFor(
   const refs: RegistrationReference[] = [];
   for (const [rawPath, content] of [...entry.newFiles, ...entry.modifiedFileAdditions]) {
     const file = normalizePathSlashes(rawPath);
-    const name = basename(file);
-    if (name === 'jar.mn') refs.push(...jarMnReferences(file, content));
-    else if (name === 'moz.build') refs.push(...mozBuildReferences(file, content));
-    else if (TEST_MANIFEST_BASENAMES.has(name)) refs.push(...testManifestReferences(file, content));
-    else if (name === 'customElements.js') {
+    if (basename(file) === 'customElements.js') {
       refs.push(...customElementsReferences(file, content, jarTargets));
+    } else {
+      refs.push(...carrierReferences(file, content));
     }
   }
   return refs;
@@ -247,7 +281,7 @@ export function formatRegistrationDeclaration(
   return (
     `fireforge patch staged-dependency ${patch} --add --kind registration ` +
     `--file ${file} --line "${quoteRegistrationLine(line)}" ` +
-    `--creates ${creates} --owner ${owner}`
+    `--creates ${creates} --owner ${owner} ${STAGED_DEPENDENCY_REASON_PLACEHOLDER}`
   );
 }
 

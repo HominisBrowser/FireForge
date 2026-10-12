@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { formatEngineSessionLockStatus, formatWaitExtendedLine } from '../engine-session-lock.js';
-import { readLockQueue, readLockStatus, withFileLock } from '../file-lock.js';
+import { readLockStatus, withFileLock } from '../file-lock.js';
+import { readLockQueue } from '../file-lock-queue.js';
 
 describe('readLockStatus', () => {
   let dir: string;

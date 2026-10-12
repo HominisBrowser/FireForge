@@ -39,6 +39,11 @@ import { pathExists } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import { withGeckoDomTypes } from './gecko-dom-types.js';
+import {
+  anyTypedImportHint,
+  type AnyTypedImports,
+  createModuleLiteralResolver,
+} from './patch-lint-checkjs-any-import.js';
 import { type CheckJsSourceFileCache, withSharedSourceFiles } from './patch-lint-checkjs-cache.js';
 import {
   collectUnmanagedCompanions,
@@ -381,6 +386,9 @@ export async function runCheckJsGrouped(
   };
 
   const resolveOwnedSpecifier = createOwnedSpecifierResolver(ts, ownedAbsolute);
+  // URL imports this program cannot resolve, per importing file (see
+  // patch-lint-checkjs-any-import.ts).
+  const anyTypedImports: AnyTypedImports = new Map();
 
   // Custom compiler host: reads patch-owned files from disk, returns
   // the shim for the shim path, and returns empty content for
@@ -425,13 +433,11 @@ export async function runCheckJsGrouped(
       if (fileName === shimPath) return shimSource;
       return defaultHost.readFile(fileName);
     },
-    resolveModuleNameLiterals(moduleLiterals) {
-      return moduleLiterals.map((literal) => {
-        const owned = resolveOwnedSpecifier(literal.text);
-        if (owned) return { resolvedModule: owned };
-        return { resolvedModule: resolveViaPaths?.(literal.text) };
-      });
-    },
+    resolveModuleNameLiterals: createModuleLiteralResolver(
+      resolveOwnedSpecifier,
+      resolveViaPaths,
+      anyTypedImports
+    ),
   };
 
   const program = ts.createProgram(
@@ -443,7 +449,8 @@ export async function runCheckJsGrouped(
     ts,
     [...program.getSemanticDiagnostics(), ...program.getSyntacticDiagnostics()],
     relByAbsolute,
-    input.mode?.undefinedIdentifiers ?? 'warning'
+    input.mode?.undefinedIdentifiers ?? 'warning',
+    anyTypedImports
   );
 
   verbose(`checkJs: analyzed ${rootFiles.length - 1} file(s) across ${byFile.size} owning file(s)`);
@@ -461,7 +468,8 @@ function groupOwnedDiagnostics(
   ts: typeof import('typescript'),
   diagnostics: readonly import('typescript').Diagnostic[],
   relByAbsolute: ReadonlyMap<string, string>,
-  undefinedIdentifiers: PatchLintSeverityGate = 'warning'
+  undefinedIdentifiers: PatchLintSeverityGate = 'warning',
+  anyTypedImports: AnyTypedImports = new Map()
 ): Map<string, PatchLintIssue[]> {
   const byFile = new Map<string, PatchLintIssue[]>();
   for (const diag of diagnostics) {
@@ -493,7 +501,7 @@ function groupOwnedDiagnostics(
       check: 'checkjs-type-error',
       message: isUndefinedIdentifier
         ? `Line ${line}: ${messageText} ${UNDEFINED_IDENTIFIER_HINT}`
-        : `Line ${line}: ${messageText}`,
+        : `Line ${line}: ${messageText}${anyTypedImportHint(diag.code, anyTypedImports.get(sourceFile.fileName))}`,
       severity,
     });
     byFile.set(relPath, bucket);

@@ -25,6 +25,7 @@ import { assertConfirmationAvailable, confirmDestructive } from '../../core/dest
 import { appendHistoryBestEffort } from '../../core/history-log.js';
 import { formatPatchNotFoundError } from '../../core/patch-identifier-suggest.js';
 import { buildPatchQueueContext } from '../../core/patch-lint.js';
+import { buildLintIgnoreChecks } from '../../core/patch-lint-ignore.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
   loadPatchesManifest,
@@ -34,6 +35,7 @@ import {
   validatePatchesManifest,
 } from '../../core/patch-manifest.js';
 import { enforcePatchPolicy } from '../../core/patch-policy.js';
+import { manifestWithRetiredSlots } from '../../core/patch-retired.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchSplitOptions } from '../../types/commands/index.js';
@@ -56,13 +58,50 @@ import {
   buildNewPatchMetadata,
   buildSplitDiff,
   buildSplitSummary,
-  findOwnerRewriteHolders,
   mergeStagedForwardImports,
   projectSplitManifest,
-  rewriteSplitOwners,
   runProjectedSplitLint,
   type SplitPlan,
 } from './split-plan.js';
+import {
+  describeStagedMaintenance,
+  emptyStagedMaintenance,
+  findOwnerRewriteHolders,
+  rewriteSplitOwners,
+  withoutDroppedDeclarations,
+  withoutRelocatedDeclarations,
+} from './split-staged.js';
+
+/**
+ * History payload for the declarations a split re-homed or dropped, omitted
+ * when it touched none so unaffected records keep their old shape.
+ */
+function stagedMaintenanceHistory(plan: SplitPlan): Record<string, unknown> {
+  const { relocated, dropped } = plan.stagedMaintenance;
+  const relocatedCount =
+    (relocated.forwardImports?.length ?? 0) + (relocated.registrations?.length ?? 0);
+  return {
+    ...(relocatedCount > 0 ? { relocatedDeclarations: relocated } : {}),
+    ...(dropped.length > 0 ? { droppedDeclarations: dropped } : {}),
+  };
+}
+
+/**
+ * Prints the owner rewrites and the declarations the move re-homed or
+ * dropped, after a committed split or `move-files --create`.
+ */
+export function reportSplitStagedChanges(plan: SplitPlan): void {
+  if (plan.ownerRewrites.length > 0) {
+    info(`Re-pointed staged-dependency owners in: ${plan.ownerRewrites.join(', ')}`);
+  }
+  for (const line of describeStagedMaintenance(
+    plan.stagedMaintenance,
+    plan.source.filename,
+    plan.placement.newFilename
+  )) {
+    info(line);
+  }
+}
 
 /**
  * Commits a confirmed split under the patch directory lock: renumber →
@@ -140,12 +179,16 @@ export async function commitPatchSplit(
           if (decls?.length) {
             withOwners = mergeStagedForwardImports(withOwners, decls);
           }
+          withOwners = withoutDroppedDeclarations(withOwners, plan.stagedMaintenance.dropped);
           if (patch.filename !== effectiveSourceFilename) return withOwners;
-          return { ...withOwners, filesAffected: plan.remainingFiles };
+          return {
+            ...withoutRelocatedDeclarations(withOwners, movedSet),
+            filesAffected: plan.remainingFiles,
+          };
         });
         updatedPatches.push(newMetadata);
         updatedPatches.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
-        const updated = validatePatchesManifest({ ...fresh, patches: updatedPatches });
+        const updated = validatePatchesManifest(manifestWithRetiredSlots(fresh, updatedPatches));
         await savePatchesManifest(patchesDir, updated);
 
         await appendHistoryBestEffort(
@@ -158,6 +201,7 @@ export async function commitPatchSplit(
               order: plan.placement.insertionOrder,
               files: plan.movedFiles,
               ownerRewrites: plan.ownerRewrites,
+              ...stagedMaintenanceHistory(plan),
               renames: [...plan.placement.renameMap.entries()].map(([from, entry]) => ({
                 from,
                 to: entry.newFilename,
@@ -307,9 +351,21 @@ export async function patchSplitCommand(
     name: displayName,
     description: options.description ?? '',
     ownerRewrites: findOwnerRewriteHolders(manifest.patches, source.filename, movedSet),
-    // Populated by runProjectedSplitLint below (forward edges into the new patch).
+    // Populated by runProjectedSplitLint below (forward edges into the new
+    // patch, and the declarations the move re-homes or makes unused).
     stagedDependencyAdditions: new Map(),
+    stagedMaintenance: emptyStagedMaintenance(),
   };
+
+  // Policy first: the projected manifest (orders, ranges, the gap rule)
+  // does not depend on the lint below, so a refused --order fails before
+  // the per-patch and projected lint passes instead of after them.
+  enforcePatchPolicy({
+    config,
+    manifest: projectSplitManifest(manifest, plan, buildNewPatchMetadata(plan, config)),
+    command: 'patch split',
+    forceUnsafe: options.forceUnsafe === true,
+  });
 
   // Per-patch lint both projected bodies, threading the source patch's
   // tier/lintIgnore so an intentional-advisory patch can still split.
@@ -317,7 +373,7 @@ export async function patchSplitCommand(
   // parity) resolves cross-patch imports and sibling head.js harness roots
   // instead of linting each projected body blind.
   const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
-  const ignoreChecks = source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined;
+  const ignoreChecks = buildLintIgnoreChecks(source.lintIgnore);
   await runPatchLint({
     engineDir: paths.engine,
     filesAffected: remainingFiles,
@@ -339,15 +395,13 @@ export async function patchSplitCommand(
     patchTier: source.tier,
   });
 
-  const { conflicts, stagedDependencyAdditions } = runProjectedSplitLint(plan, patchQueueCtx);
+  const { conflicts, stagedDependencyAdditions, stagedMaintenance } = runProjectedSplitLint(
+    plan,
+    patchQueueCtx
+  );
   plan.stagedDependencyAdditions = stagedDependencyAdditions;
+  plan.stagedMaintenance = stagedMaintenance;
   const newMetadata = buildNewPatchMetadata(plan, config);
-  enforcePatchPolicy({
-    config,
-    manifest: projectSplitManifest(manifest, plan, newMetadata),
-    command: 'patch split',
-    forceUnsafe: options.forceUnsafe === true,
-  });
 
   const decision = await confirmDestructive({
     operation: 'patch-split',
@@ -365,9 +419,7 @@ export async function patchSplitCommand(
   success(
     `Split ${source.filename}: ${placement.newFilename} now owns ${plan.movedFiles.length} file(s)`
   );
-  if (plan.ownerRewrites.length > 0) {
-    info(`Re-pointed staged-dependency owners in: ${plan.ownerRewrites.join(', ')}`);
-  }
+  reportSplitStagedChanges(plan);
   outro('Split complete');
 }
 

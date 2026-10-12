@@ -8,6 +8,8 @@ export type {
   FireForgeConfig,
   FirefoxConfig,
   FirefoxProduct,
+  PatchLintFileSizeThresholds,
+  PatchLintFileSizeTier,
   ProjectLicense,
   ProjectPaths,
   WireConfig,

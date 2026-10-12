@@ -10,6 +10,8 @@ import type {
   PatchPolicyRange,
   PatchPolicyReservedAllowedPatch,
   PatchPolicyReservedRange,
+  PatchPolicyScopeRule,
+  PatchPolicyUpstreamAllowEntry,
 } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { type ParsedRecord, parseObject } from '../utils/parse.js';
@@ -148,6 +150,122 @@ function assertPolicyRangesDoNotOverlap(
   }
 }
 
+function parseNonEmptyString(raw: unknown, label: string): string {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new ConfigError(`Config field "${label}" must be a non-empty string`);
+  }
+  return raw;
+}
+
+function parseGlobList(raw: unknown, label: string): string[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new ConfigError(`Config field "${label}" must be a non-empty array of path globs`);
+  }
+  return raw.map((entry, index) => parseNonEmptyString(entry, `${label}[${index}]`));
+}
+
+function parseUpstreamAllowEntry(
+  raw: unknown,
+  label: string,
+  defaultMarker: string | undefined
+): string | PatchPolicyUpstreamAllowEntry {
+  if (typeof raw === 'string') return parseNonEmptyString(raw, label);
+  let rec;
+  try {
+    rec = parseObject(raw, label);
+  } catch {
+    throw new ConfigError(`Config field "${label}" must be a path glob or an object`);
+  }
+  const entry: PatchPolicyUpstreamAllowEntry = {
+    path: parseNonEmptyString(rec.raw('path'), `${label}.path`),
+  };
+  const addOnly = rec.raw('addOnly');
+  if (addOnly !== undefined) {
+    if (typeof addOnly !== 'boolean') {
+      throw new ConfigError(`Config field "${label}.addOnly" must be a boolean`);
+    }
+    entry.addOnly = addOnly;
+  }
+  const marker = rec.raw('marker');
+  if (marker !== undefined) entry.marker = parseNonEmptyString(marker, `${label}.marker`);
+  if (entry.addOnly === true && entry.marker === undefined && defaultMarker === undefined) {
+    throw new ConfigError(
+      `Config field "${label}" sets addOnly but no marker: set "${label}.marker" or "patchPolicy.addOnlyMarker"`
+    );
+  }
+  return entry;
+}
+
+function parseScopeRule(raw: unknown, label: string): PatchPolicyScopeRule {
+  let rec;
+  try {
+    rec = parseObject(raw, label);
+  } catch {
+    throw new ConfigError(`Config field "${label}" must be an object`);
+  }
+  const rule: PatchPolicyScopeRule = { files: parseGlobList(rec.raw('files'), `${label}.files`) };
+  const category = rec.raw('category');
+  if (category !== undefined) {
+    rule.category = parsePatchPolicyCategory(category, `${label}.category`);
+  }
+  const filenamePattern = optionalConfigString(rec, 'filenamePattern', `${label}.filenamePattern`);
+  if (filenamePattern !== undefined) {
+    try {
+      new RegExp(filenamePattern);
+    } catch (error: unknown) {
+      throw new ConfigError(
+        `Config field "${label}.filenamePattern" must be a valid regular expression: ${toError(error).message}`
+      );
+    }
+    rule.filenamePattern = filenamePattern;
+  }
+  if (rule.category === undefined && rule.filenamePattern === undefined) {
+    throw new ConfigError(
+      `Config field "${label}" must set "category" or "filenamePattern" to select the patches it scopes`
+    );
+  }
+  return rule;
+}
+
+/**
+ * Parses the registration-only policy fields: `upstreamAllowlist`,
+ * `addOnlyMarker`, `scopeRules` and `verifyDocumentPaths`. All opt-in.
+ */
+function parsePatchPolicyContentRules(rec: ParsedRecord, out: PatchPolicyConfig): void {
+  const addOnlyMarker = rec.raw('addOnlyMarker');
+  if (addOnlyMarker !== undefined) {
+    out.addOnlyMarker = parseNonEmptyString(addOnlyMarker, 'patchPolicy.addOnlyMarker');
+  }
+
+  const allowlist = rec.raw('upstreamAllowlist');
+  if (allowlist !== undefined) {
+    if (!Array.isArray(allowlist)) {
+      throw new ConfigError('Config field "patchPolicy.upstreamAllowlist" must be an array');
+    }
+    out.upstreamAllowlist = allowlist.map((entry, index) =>
+      parseUpstreamAllowEntry(entry, `patchPolicy.upstreamAllowlist[${index}]`, out.addOnlyMarker)
+    );
+  }
+
+  const scopeRules = rec.raw('scopeRules');
+  if (scopeRules !== undefined) {
+    if (!Array.isArray(scopeRules)) {
+      throw new ConfigError('Config field "patchPolicy.scopeRules" must be an array');
+    }
+    out.scopeRules = scopeRules.map((entry, index) =>
+      parseScopeRule(entry, `patchPolicy.scopeRules[${index}]`)
+    );
+  }
+
+  const verifyDocumentPaths = rec.raw('verifyDocumentPaths');
+  if (verifyDocumentPaths !== undefined) {
+    if (typeof verifyDocumentPaths !== 'boolean') {
+      throw new ConfigError('Config field "patchPolicy.verifyDocumentPaths" must be a boolean');
+    }
+    out.verifyDocumentPaths = verifyDocumentPaths;
+  }
+}
+
 /** Parses and validates the optional patch policy config block. */
 export function parsePatchPolicyBlock(rec: ParsedRecord): PatchPolicyConfig {
   const out: PatchPolicyConfig = { ranges: [] };
@@ -216,6 +334,8 @@ export function parsePatchPolicyBlock(rec: ParsedRecord): PatchPolicyConfig {
     );
     assertPolicyRangesDoNotOverlap(out.reservedRanges, 'patchPolicy.reservedRanges');
   }
+
+  parsePatchPolicyContentRules(rec, out);
 
   return out;
 }

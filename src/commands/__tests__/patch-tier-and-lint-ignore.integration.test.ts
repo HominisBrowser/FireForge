@@ -12,7 +12,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HISTORY_LOG_FILENAME } from '../../core/destructive.js';
+import { DEFAULT_HISTORY_LOG_PATH } from '../../core/history-log-file.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import {
   createTempProject,
@@ -324,6 +324,97 @@ describe('patch lint-ignore', () => {
 
     const manifest = await loadManifest(patchesDir);
     expect(manifest.patches[0]).not.toHaveProperty('lintIgnore');
+  });
+
+  it('--add --max --reason writes a ceiling entry and warns for review', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-branding-a.patch', 1, ['a.js'], { lintIgnore: ['existing-rule'] }),
+    ]);
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      add: ['file-too-large'],
+      max: 1200,
+      reason: 'reviewed controller',
+      yes: true,
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.lintIgnore).toEqual([
+      'existing-rule',
+      { rule: 'file-too-large', max: 1200, reason: 'reviewed controller' },
+    ]);
+    expect(sawReviewWarning()).toBe(true);
+  });
+
+  it('--add replaces an existing entry for the same rule (move or widen a ceiling)', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-branding-a.patch', 1, ['a.js'], {
+        lintIgnore: [{ rule: 'file-too-large', max: 1000, reason: 'old' }],
+      }),
+    ]);
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      add: ['file-too-large'],
+      max: 1100,
+      reason: 'grew',
+      yes: true,
+    });
+    expect((await loadManifest(patchesDir)).patches[0]?.lintIgnore).toEqual([
+      { rule: 'file-too-large', max: 1100, reason: 'grew' },
+    ]);
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      add: ['file-too-large'],
+      yes: true,
+    });
+    expect((await loadManifest(patchesDir)).patches[0]?.lintIgnore).toEqual(['file-too-large']);
+  });
+
+  it('re-adding an identical ceiling is a no-op without the review warning', async () => {
+    const ceiling = { rule: 'large-patch-lines', max: 4000, reason: 'r' };
+    await seed(patchesDir, [
+      makeMetadata('001-branding-a.patch', 1, ['a.js'], { lintIgnore: [ceiling] }),
+    ]);
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      add: ['large-patch-lines'],
+      max: 4000,
+      reason: 'r',
+      yes: true,
+    });
+
+    expect((await loadManifest(patchesDir)).patches[0]?.lintIgnore).toEqual([ceiling]);
+    expect(sawReviewWarning()).toBe(false);
+  });
+
+  it('--remove drops a ceiling entry by its rule', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-branding-a.patch', 1, ['a.js'], {
+        lintIgnore: ['x', { rule: 'file-too-large', max: 1000, reason: 'r' }],
+      }),
+    ]);
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      remove: ['file-too-large'],
+      yes: true,
+    });
+
+    expect((await loadManifest(patchesDir)).patches[0]?.lintIgnore).toEqual(['x']);
+  });
+
+  it.each([
+    [{ remove: ['file-too-large'], max: 5 }, '--max and --reason only apply to --add'],
+    [{ add: ['file-too-large'], max: 5 }, 'needs both --max <n> and --reason <text>'],
+    [{ add: ['file-too-large'], reason: 'r' }, 'needs both --max <n> and --reason <text>'],
+    [{ add: ['file-too-large'], max: 5, reason: '  ' }, '--reason must not be empty'],
+    [{ add: ['raw-color-value'], max: 5, reason: 'r' }, 'only applies to the measured size rules'],
+  ])('refuses a malformed ceiling request %j', async (options, message) => {
+    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
+
+    await expect(
+      patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', { ...options, yes: true })
+    ).rejects.toThrow(message);
+    expect((await loadManifest(patchesDir)).patches[0]).not.toHaveProperty('lintIgnore');
   });
 });
 
@@ -897,7 +988,7 @@ describe('metadata-only patch subcommand contract', () => {
 
       await command.run(projectRoot, {});
 
-      const history = await readFile(join(patchesDir, HISTORY_LOG_FILENAME), 'utf-8');
+      const history = await readFile(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH), 'utf-8');
       const entry = JSON.parse(history.trim()) as {
         operation: string;
         args: Record<string, unknown>;

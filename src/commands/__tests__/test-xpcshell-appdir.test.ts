@@ -392,30 +392,40 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
   });
 
   it.each([
-    ['a plain run', {}],
-    ['a run that would dispatch the pre-test build', { build: true }],
+    ['a plain run', {}, 0],
+    ['a run with the pre-test build', { build: true }, 1],
   ])(
-    'refuses %s that mixes xpcshell and browser paths, before mach is reached',
-    async (_label, options) => {
+    'runs %s that mixes xpcshell and browser paths as two mach invocations, xpcshell first',
+    async (_label, options, builds) => {
       vi.mocked(findNearestXpcshellManifest).mockImplementation((_engineDir, path) =>
         Promise.resolve(
           path.includes('/xpcshell/') ? nativePath('/project/engine/foo/xpcshell.toml') : null
         )
       );
+      vi.mocked(runMachTestSuite).mockResolvedValue({
+        exitCode: 0,
+        stdout: 'TEST-START | t\nTEST-OK | t',
+        stderr: '',
+      });
 
       await expect(
         testCommand(
           '/project',
           [
-            'browser/base/content/test/xpcshell/test_tile.js',
             'browser/base/content/test/browser/browser_tile.js',
+            'browser/base/content/test/xpcshell/test_tile.js',
           ],
           options
         )
-      ).rejects.toThrow(/cannot run xpcshell and browser\/mochitest paths/i);
+      ).resolves.toBeUndefined();
 
-      expect(runProtectedMachBuild).not.toHaveBeenCalled();
-      expect(runMachTestSuite).not.toHaveBeenCalled();
+      expect(runProtectedMachBuild).toHaveBeenCalledTimes(builds);
+      expect(
+        vi.mocked(runMachTestSuite).mock.calls.map(([kind, call]) => [kind, call.testPaths])
+      ).toEqual([
+        ['xpcshell-test', ['browser/base/content/test/xpcshell/test_tile.js']],
+        ['mochitest', ['browser/base/content/test/browser/browser_tile.js']],
+      ]);
     }
   );
 });

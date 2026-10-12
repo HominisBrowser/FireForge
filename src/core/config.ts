@@ -20,6 +20,7 @@ import { isObject } from '../utils/validation.js';
 import { getProjectPaths } from './config-paths.js';
 import { validateConfig } from './config-validate.js';
 import { createSiblingLockPath, withFileLock } from './file-lock.js';
+import { rewriteJsonPreservingFormat } from './json-preserving-edit.js';
 
 // ---- re-exports ----
 
@@ -130,6 +131,11 @@ export async function writeConfig(root: string, config: FireForgeConfig): Promis
  * This is used by CLI `config --force`, where callers may intentionally write
  * keys or value shapes outside the validated FireForgeConfig schema.
  *
+ * An existing file is edited in place: only the values that differ from the
+ * document on disk are rewritten, so a one-key change keeps the file's
+ * formatting (compact objects and arrays, indentation, key order) and stays
+ * a one-hunk diff. A missing or unparseable file is written in full.
+ *
  * Individual writes are atomic via {@link writeJson} (temp file + rename),
  * but atomicity alone does not prevent lost updates across concurrent
  * writers: each writer reads an old copy, mutates its own in-memory view,
@@ -143,6 +149,15 @@ export async function writeConfigDocument(
   config: FireForgeConfig | JsonObject
 ): Promise<void> {
   const paths = getProjectPaths(root);
+  if (await fsUtils.pathExists(paths.config)) {
+    const current = await fsUtils.readText(paths.config);
+    // `FireForgeConfig` is plain parsed-config data, so it is a JSON object.
+    const edited = rewriteJsonPreservingFormat(current, config as JsonObject);
+    if (edited !== undefined) {
+      if (edited !== current) await fsUtils.writeText(paths.config, edited);
+      return;
+    }
+  }
   await fsUtils.writeJson(paths.config, config);
 }
 

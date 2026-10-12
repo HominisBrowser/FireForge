@@ -2,8 +2,10 @@
 import { join } from 'node:path';
 
 import { reportOrphanedHarnessProcesses } from '../core/harness-orphans.js';
+import { deferBusyPortToHarness, resolveAutoPorts } from '../core/harness-port-fallback.js';
 import {
   assertMarionettePortAvailable,
+  DEFAULT_MARIONETTE_PORT,
   ensureLaunchableBrowserNotRunning,
   ensureMarionettePortAvailable,
   extractForwardedMarionettePort,
@@ -15,7 +17,10 @@ import {
   reportMarionettePreflight,
   runMarionettePreflight,
 } from '../core/marionette-preflight.js';
-import { ensureMochitestServerPortAvailable } from '../core/mochitest-server-port.js';
+import {
+  DEFAULT_MOCHITEST_SERVER_PORT,
+  ensureMochitestServerPortAvailable,
+} from '../core/mochitest-server-port.js';
 import { waitForPreflight } from '../core/preflight-wait.js';
 import { GeneralError } from '../errors/base.js';
 import type { TestOptions } from '../types/commands/index.js';
@@ -208,7 +213,19 @@ export async function ensureTestBrowserEnvironment(
   // browser connect to a server that cannot serve this run's manifest,
   // which surfaces as a 370s "Ran 0 checks" stall naming nothing. xpcshell
   // does not use the httpd, so an xpcshell-only run is never blocked by it.
-  if (!xpcshellOnly) {
+  // Auto ports (opt-in) step aside for a peer's listener and let the
+  // harness's own busy-port fallback move this run; see
+  // src/core/harness-port-fallback.ts.
+  const autoPorts = xpcshellOnly
+    ? undefined
+    : await resolveAutoPorts(engineDir, options, projectConfig);
+  if (
+    !xpcshellOnly &&
+    !(
+      autoPorts?.serverPorts === true &&
+      (await deferBusyPortToHarness(DEFAULT_MOCHITEST_SERVER_PORT, 'Mochitest server', engineDir))
+    )
+  ) {
     await waitForPreflight(
       () =>
         ensureMochitestServerPortAvailable(undefined, {
@@ -232,6 +249,19 @@ export async function ensureTestBrowserEnvironment(
     ? extractForwardedMarionettePort(options.machArg)
     : undefined;
   const effectivePort = options.marionettePort ?? forwardedPort;
+  // Never under --doctor: its handshake launches a browser on this port
+  // itself and would talk to the peer's browser instead.
+  if (
+    autoPorts?.marionettePort === true &&
+    options.doctor !== true &&
+    (await deferBusyPortToHarness(
+      effectivePort ?? DEFAULT_MARIONETTE_PORT,
+      'Marionette',
+      engineDir
+    ))
+  ) {
+    return { forwardedPort, effectivePort };
+  }
   await waitForPreflight(
     () =>
       ensureTestMarionettePortAvailable(effectivePort, projectConfig.binaryName, options, {

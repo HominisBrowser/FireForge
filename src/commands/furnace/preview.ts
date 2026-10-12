@@ -3,7 +3,11 @@ import { join } from 'node:path';
 
 import { applyAllComponents, type ApplyAllComponentsResult } from '../../core/furnace-apply.js';
 import { updateFurnaceState } from '../../core/furnace-config.js';
-import { runFurnaceMutation } from '../../core/furnace-operation.js';
+import {
+  type FurnaceOperationContext,
+  runFurnaceMutation,
+  waitLockMutationOptions,
+} from '../../core/furnace-operation.js';
 import { assertFurnaceReady } from '../../core/furnace-precondition.js';
 import { restoreRollbackJournal, type RollbackJournal } from '../../core/furnace-rollback.js';
 import { countEntriesWithBlockingStepErrors } from '../../core/furnace-step-errors.js';
@@ -286,7 +290,7 @@ export async function furnacePreviewCommand(
   // entrypoint's global signal handlers consulting the lifecycle registry.
   // The body's own try/catch + teardown path handles the normal exit case
   // (mach storybook returns or throws).
-  await runFurnaceMutation(projectRoot, 'preview-teardown', async (ctx) => {
+  const mutate = async (ctx: FurnaceOperationContext): Promise<void> => {
     // Register the stories cleanup as an extra teardown hook so the signal
     // handler can wipe the staged stories directory in addition to the
     // journal restore.
@@ -420,7 +424,13 @@ export async function furnacePreviewCommand(
       // holds and downstream formatters always see a message/stack pair.
       throw toError(primaryError);
     }
-  });
+  };
+  await runFurnaceMutation(
+    projectRoot,
+    'preview-teardown',
+    mutate,
+    waitLockMutationOptions(options.waitLockSeconds)
+  );
 
   if (
     previewResult &&

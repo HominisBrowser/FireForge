@@ -124,7 +124,9 @@ describe('CSS fragment deploy lifecycle (applyAllComponents, real fs)', () => {
     const second = await applyAllComponents(projectRoot);
     expect(second.errors).toEqual([]);
     expect(second.applied).toEqual([]);
-    expect(second.skipped).toEqual([{ name: 'moz-fancy', reason: 'No changes since last apply' }]);
+    expect(second.skipped).toEqual([
+      { name: 'moz-fancy', reason: 'No changes since last apply', kind: 'already-current' },
+    ]);
 
     // Editing the fragment alone (no component file changed) must surface
     // as drift and refresh the deployed expansion.

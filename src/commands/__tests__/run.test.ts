@@ -499,6 +499,31 @@ describe('runCommand', () => {
       expect((thrown as SmokeRunError).code).toBe(ExitCode.SMOKE_LAUNCH_FAILURE);
     });
 
+    it('fails with SMOKE_LAUNCH_FAILURE on a clean early exit with no browser output', async () => {
+      // Mach's own timestamped command echo is not browser output.
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStdoutLine?.(' 0:00.42 /obj/dist/bin/firefox -profile /p');
+        opts.onStdoutLine?.('');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 0, timedOut: false });
+      });
+
+      const thrown = await runCommand('/project', { smokeExit: 30 }).catch(
+        (error: unknown) => error
+      );
+      expect(thrown).toBeInstanceOf(SmokeRunError);
+      expect((thrown as SmokeRunError).code).toBe(ExitCode.SMOKE_LAUNCH_FAILURE);
+      expect((thrown as SmokeRunError).message).toContain('without any console output');
+    });
+
+    it('accepts a clean early exit that printed browser output', async () => {
+      vi.mocked(runMachSmoke).mockImplementation((_args, _engine, opts) => {
+        opts.onStderrLine?.('console.warn: shutting down');
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 0, timedOut: false });
+      });
+
+      await expect(runCommand('/project', { smokeExit: 30 })).resolves.toBeUndefined();
+    });
+
     it('rejects a zero or negative smokeExit explicitly', async () => {
       await expect(runCommand('/project', { smokeExit: 0 })).rejects.toThrow(/positive integer/i);
       expect(runMachSmoke).not.toHaveBeenCalled();
@@ -845,16 +870,24 @@ describe('runCommand', () => {
       expect(await exists(dir)).toBe(false);
     });
 
-    itPosix('uses --profile verbatim with --smoke-exit and leaves it in place', async () => {
+    itPosix('uses --profile verbatim with --smoke-exit and purges its caches', async () => {
       vi.mocked(runMachSmoke).mockResolvedValue(smokeResult);
 
       await runCommand('/project', { smokeExit: 30, headless: true, profile: '/profiles/named' });
 
       expect(runMachSmoke).toHaveBeenCalledWith(
-        ['run', '--headless', '-profile', '/profiles/named'],
+        ['run', '--headless', '-profile', '/profiles/named', '-purgecaches'],
         '/project/engine',
         expect.anything()
       );
+    });
+
+    itPosix('keeps the named profile caches with --no-purge-caches', async () => {
+      vi.mocked(run).mockResolvedValue(0);
+
+      await runCommand('/project', { profile: '/profiles/named', purgeCaches: false });
+
+      expect(run).toHaveBeenCalledWith('/project/engine', ['-profile', '/profiles/named']);
     });
 
     it("keeps mach's own profile for a plain run", async () => {
@@ -911,6 +944,26 @@ describe('runCommand', () => {
         '/project/engine',
         expect.objectContaining({ smokeTimeoutMs: 30_000 })
       );
+    });
+
+    itPosix('purges a --profile cache by default and keeps it with --no-purge-caches', async () => {
+      vi.mocked(run).mockResolvedValue(0);
+      const parse = async (args: string[]): Promise<void> => {
+        const program = new Command();
+        registerRun(program, {
+          getProjectRoot: () => '/project',
+          withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
+        });
+        await program.parseAsync(['node', 'fireforge', 'run', ...args]);
+      };
+
+      await parse(['--profile', '/profiles/kept']);
+      await parse(['--profile', '/profiles/kept', '--no-purge-caches']);
+
+      expect(vi.mocked(run).mock.calls.map((call) => call[1])).toEqual([
+        ['-profile', '/profiles/kept', '-purgecaches'],
+        ['-profile', '/profiles/kept'],
+      ]);
     });
 
     it('rejects --smoke-exit with a non-integer value at parse time', async () => {

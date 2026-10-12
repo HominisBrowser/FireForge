@@ -35,6 +35,8 @@ import {
   findStagedRegistrationFailure,
   isLaterOwner,
   quoteRegistrationLine,
+  STAGED_DEPENDENCY_REASON_PLACEHOLDER,
+  stagedDependencyUnusedFingerprint,
 } from './patch-lint-staged-registration.js';
 import { loadPatchesManifest } from './patch-manifest-io.js';
 import { categoryRangeForOrder, categoryRangeLabel } from './patch-policy.js';
@@ -707,7 +709,7 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
         (o) =>
           `fireforge patch staged-dependency ${entry.filename} --add ` +
           `--file ${sitePath} --specifier "${specifier}" ` +
-          `--creates ${o.fullPath} --owner ${o.filename}`
+          `--creates ${o.fullPath} --owner ${o.filename} ${STAGED_DEPENDENCY_REASON_PLACEHOLDER}`
       )
       .join('; ');
 
@@ -716,6 +718,14 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
       check: 'forward-import',
       patches: [entry.filename],
       fingerprint: `forward-import|${sitePath}|${cleaned}|${fingerprintOwners}`,
+      stagedDeclarations: laterOwners.map((o) => ({
+        patch: entry.filename,
+        kind: 'import' as const,
+        file: sitePath,
+        specifier,
+        creates: o.fullPath,
+        owner: o.filename,
+      })),
       message:
         `${sitePath} in ${entry.filename} imports "${specifier}", ` +
         `but the matching new file is created by a later patch: ${ownersSummary}. ` +
@@ -735,7 +745,7 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
         file: dependency.file,
         check: 'staged-dependency-unused',
         patches: [entry.filename],
-        fingerprint: `staged-dependency-unused|${entry.filename}|${dependency.file}|${dependency.specifier}|${dependency.creates}|${dependency.owner ?? ''}`,
+        fingerprint: stagedDependencyUnusedFingerprint(entry.filename, dependency),
         message:
           `${entry.filename} declares a staged forward import from ${dependency.file} ` +
           `to "${dependency.specifier}" / ${dependency.creates}, but that exact forward dependency was not found. ` +
@@ -759,7 +769,7 @@ export function lintPatchQueueForwardImports(ctx: PatchQueueContext): PatchLintI
         file: registration.file,
         check: 'staged-dependency-unused',
         patches: [entry.filename],
-        fingerprint: `staged-dependency-unused|${entry.filename}|${registration.file}|reg:${registration.line}|${registration.creates}|${registration.owner ?? ''}`,
+        fingerprint: stagedDependencyUnusedFingerprint(entry.filename, registration),
         message:
           `${entry.filename} declares a staged registration in ${registration.file} ` +
           `("${registration.line}") for ${registration.creates}, but ${describeRegistrationFailure(failure)} ` +

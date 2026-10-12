@@ -315,7 +315,8 @@ describe('furnaceScanCommand', () => {
     expect(runFurnaceMutation).toHaveBeenCalledWith(
       '/project',
       'scan-rollback',
-      expect.any(Function)
+      expect.any(Function),
+      {}
     );
     // The body must snapshot furnace.json before the write so a failure
     // can roll back creation of a default file.
@@ -368,7 +369,7 @@ describe('furnaceScanCommand', () => {
       custom: {},
     } as never);
 
-    await furnaceScanCommand('/project', { track: true });
+    await furnaceScanCommand('/project', { track: true, waitLockSeconds: 30 });
 
     // Only untracked components are appended. Existing entries are kept
     // and never duplicated.
@@ -379,7 +380,8 @@ describe('furnaceScanCommand', () => {
     expect(runFurnaceMutation).toHaveBeenCalledWith(
       '/project',
       'scan-rollback',
-      expect.any(Function)
+      expect.any(Function),
+      { lockTimeoutMs: 30_000 }
     );
     expect(success).toHaveBeenCalledWith(expect.stringContaining('Tracked 2 components'));
     expect(prompts.confirm).not.toHaveBeenCalled();

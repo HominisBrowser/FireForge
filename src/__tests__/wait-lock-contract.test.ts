@@ -10,8 +10,9 @@
  *  - Exactly the lock-taking commands honor it. Any command that
  *    serializes on a FireForge lock (`withEngineSessionLock` for
  *    engine-mutating commands, `withPatchDirectoryLock` at command level
- *    for queue-mutating ones) must register `addWaitLockOption` and appear
- *    in the expected list below.
+ *    for queue-mutating ones, `runFurnaceMutation`'s furnace lock for the
+ *    furnace authoring commands) must register `addWaitLockOption` and
+ *    appear in the expected list below.
  *
  * Set equality is asserted in both directions, so a lock-taking command
  * that forgets the flag fails here, and a newly flagged command that is
@@ -33,7 +34,21 @@ const EXPECTED_WAIT_LOCK_COMMANDS = [
   'furnace apply',
   'furnace deploy',
   'furnace sync',
+  // These take only Furnace's own lock (`.fireforge/furnace.lock`, via
+  // `runFurnaceMutation`). They used to carry the accept-and-ignore
+  // registration, whose help claimed "no FireForge lock", while their lock
+  // budget came only from FIREFORGE_WAIT_LOCK.
+  'furnace create',
+  'furnace remove',
+  'furnace rename',
+  'furnace refresh',
+  'furnace scan',
+  'furnace override',
+  'furnace preview',
+  'furnace chrome-doc create',
+  'furnace chrome-doc remove',
   'patch delete',
+  'patch retire',
   'patch reorder',
   'patch rename',
   'patch move-files',

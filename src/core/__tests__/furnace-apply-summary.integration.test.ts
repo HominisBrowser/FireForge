@@ -93,7 +93,9 @@ describe('furnace apply skip-report accuracy', () => {
 
     // Settled state skips. This is the baseline for the incident sequence.
     const settled = await applyAllComponents(projectRoot);
-    expect(settled.skipped).toEqual([{ name: 'panel', reason: 'No changes since last apply' }]);
+    expect(settled.skipped).toEqual([
+      { name: 'panel', reason: 'No changes since last apply', kind: 'already-current' },
+    ]);
 
     // Edit the source, then apply. The report must say applied, and the
     // engine copy must carry the edit.
@@ -140,7 +142,9 @@ describe('furnace apply skip-report accuracy', () => {
 
     // And the state settles again.
     const settled = await applyAllComponents(projectRoot);
-    expect(settled.skipped).toEqual([{ name: 'panel', reason: 'No changes since last apply' }]);
+    expect(settled.skipped).toEqual([
+      { name: 'panel', reason: 'No changes since last apply', kind: 'already-current' },
+    ]);
   });
 
   it('candidate 4: a named apply with persistState:false leaves batch state honest', async () => {
@@ -167,7 +171,9 @@ describe('furnace apply skip-report accuracy', () => {
 
     // And once persisted, the report settles to an accurate skip.
     const settled = await applyAllComponents(projectRoot);
-    expect(settled.skipped).toEqual([{ name: 'panel', reason: 'No changes since last apply' }]);
+    expect(settled.skipped).toEqual([
+      { name: 'panel', reason: 'No changes since last apply', kind: 'already-current' },
+    ]);
     await expect(readFile(engineCssPath, 'utf-8')).resolves.toBe('.panel { color: teal; }\n');
   });
 });

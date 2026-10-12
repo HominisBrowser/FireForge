@@ -386,6 +386,7 @@ describe('lint integration', () => {
       patches: Array<{
         filename: string;
         status: string;
+        metric: string;
         lineCount: number;
         filesAffected: number;
         tier: { tier: string };
@@ -399,12 +400,108 @@ describe('lint integration', () => {
     const row = report.patches[0];
     expect(row?.filename).toBe('001-core-big.patch');
     expect(row?.status).toBe('linted');
+    expect(row?.metric).toBe('diff');
     expect(row?.lineCount).toBeGreaterThan(800);
     expect(row?.filesAffected).toBe(1);
     expect(row?.tier.tier).toBe('general');
     expect(row?.thresholds.lines.error).toBe(3000);
     expect(row?.suppressedIssues.some((issue) => issue.check === 'large-patch-lines')).toBe(true);
     expect(report.totals.suppressed).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a lintIgnore ceiling suppresses within max, fires past it, and reports a removable waiver', async () => {
+    const { readFile, writeFile } = await import('node:fs/promises');
+    const { info, warn } = await import('../../utils/logger.js');
+    const engineDir = join(projectRoot, 'engine');
+    const within = 'browser/modules/mybrowser/Within.sys.mjs';
+    const past = 'browser/modules/mybrowser/Past.sys.mjs';
+    const small = 'browser/modules/mybrowser/Small.sys.mjs';
+    await initCommittedRepo(engineDir, {
+      [within]: '// placeholder\n',
+      [past]: '// placeholder\n',
+      [small]: '// placeholder\n',
+    });
+    // ~1600 diff lines each: the general tier's warning band.
+    await writeFiles(engineDir, {
+      [within]: generateLargeModule(1600),
+      [past]: generateLargeModule(1600),
+      [small]: '// placeholder\n// one more line\n',
+    });
+    const row = (filename: string, order: number, file: string, max: number): PatchMetadata => ({
+      filename,
+      order,
+      category: 'core',
+      name: filename.replace(/^\d+-core-|\.patch$/g, ''),
+      description: '',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      sourceEsrVersion: '140.9.0esr',
+      filesAffected: [file],
+      lintIgnore: [{ rule: 'large-patch-lines', max, reason: 'reviewed' }],
+    });
+    const manifest = {
+      version: 1,
+      patches: [
+        row('001-core-within.patch', 1, within, 2000),
+        row('002-core-past.patch', 2, past, 1000),
+        row('003-core-small.patch', 3, small, 500),
+      ],
+    };
+    await writeFiles(projectRoot, {
+      'patches/patches.json': JSON.stringify(manifest, null, 2) + '\n',
+    });
+    for (const patch of manifest.patches) {
+      await writeFile(join(projectRoot, 'patches', patch.filename), '# stub\n');
+    }
+
+    const reportPath = join(projectRoot, 'ceiling-report.json');
+    await expect(
+      lintCommand(projectRoot, [], { perPatch: true, noCache: true, report: reportPath })
+    ).resolves.toBeUndefined();
+
+    const infoLines = vi.mocked(info).mock.calls.map((call) => call[0]);
+    const warnLines = vi.mocked(warn).mock.calls.map((call) => call[0]);
+    expect(
+      infoLines.some((line) =>
+        line.startsWith(
+          'NOTICE [large-patch-lines] 001-core-within.patch: suppressed by lintIgnore (large-patch-lines<=2000)'
+        )
+      )
+    ).toBe(true);
+    expect(
+      warnLines.some(
+        (line) =>
+          line.includes('002-core-past.patch') &&
+          line.includes("exceeds the patch's lintIgnore ceiling for large-patch-lines (max 1000")
+      )
+    ).toBe(true);
+    expect(
+      infoLines.some(
+        (line) =>
+          line.startsWith('NOTICE') &&
+          line.includes('lint-ignore-removable') &&
+          line.includes('patch lint-ignore 003-core-small.patch --remove large-patch-lines')
+      )
+    ).toBe(true);
+
+    const report = JSON.parse(await readFile(reportPath, 'utf8')) as {
+      patches: Array<{
+        filename: string;
+        lintIgnoreCeilings: Array<{
+          rule: string;
+          max: number;
+          measurement: number;
+          state: string;
+        }>;
+      }>;
+    };
+    const states = Object.fromEntries(
+      report.patches.map((patch) => [patch.filename, patch.lintIgnoreCeilings[0]])
+    );
+    expect(states['001-core-within.patch']).toMatchObject({ max: 2000, state: 'within' });
+    expect(states['001-core-within.patch']?.measurement).toBeGreaterThan(1500);
+    expect(states['002-core-past.patch']).toMatchObject({ max: 1000, state: 'exceeded' });
+    expect(states['003-core-small.patch']).toMatchObject({ max: 500, state: 'removable' });
+    expect(states['003-core-small.patch']?.measurement).toBeLessThan(500);
   });
 
   it('--notices summary folds NOTICE lines into one per check; full stays as it was', async () => {

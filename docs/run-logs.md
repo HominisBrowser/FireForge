@@ -53,7 +53,8 @@ the mistake.
 - **Opened before any preflight**, so a refusal is logged too. Those are
   exactly the runs whose only output a `tail` throws away.
 - **Retained 20 deep per command kind.** Per kind, so that a busy `test` loop
-  cannot evict the `build` log an operator needs to read beside it. Pruning
+  cannot evict the `build` log an operator needs to read beside it. A
+  `--keep-log` copy (below) is outside this count. Pruning
   runs before the new file is opened, and orders by the timestamp in the
   filename rather than by stat-ing every entry.
 - **Timestamps are filesystem-safe.** They use the ISO form with `:` and `.`
@@ -66,6 +67,24 @@ the mistake.
   logged verbosely only. The entry point's SIGINT/SIGTERM path closes the
   active log, also best-effort, before exiting, so the held partial line of a
   killed run reaches disk.
+
+## Keeping a log past retention
+
+Retention is shared by every session on the checkout, so on a busy shared
+checkout a log a verdict line names can be pruned within the hour.
+`--keep-log <path>` (on `test` and `build`) also writes the run's log to a
+path of the caller's choosing, outside `.fireforge/logs/` and never pruned.
+`FIREFORGE_LOG_KEEP=<path>` sets the same for every run in a session. The
+flag wins over the variable. A value ending in `/` or naming an existing
+directory receives the log under its own `.fireforge/logs/` file name, so a
+session directory collects one file per run; any other value is the file
+itself. Relative values resolve against the working directory.
+
+The copy is written live, line for line through the same redaction, rather
+than copied at the end, so a killed run keeps what it had written, exactly
+as the primary log does. `log=` still names the primary. The copy is
+best-effort too: if it cannot be opened, the run proceeds with the primary
+alone, and if the primary cannot be opened, the copy stands in for it.
 
 ## Preflight refusals
 

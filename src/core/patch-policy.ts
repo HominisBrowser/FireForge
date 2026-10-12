@@ -15,6 +15,7 @@ import { warn } from '../utils/logger.js';
 import { PATCH_CATEGORIES } from '../utils/validation.js';
 import { rewriteStagedDependencyOwners } from './patch-manifest-io.js';
 import { formatOrderRange, formatPatchOrder } from './patch-parse.js';
+import { manifestWithRetiredSlots, retiredOrderSet } from './patch-retired.js';
 
 /** Default patch filename contract used when a policy omits `filenamePattern`. */
 const DEFAULT_PATCH_POLICY_FILENAME_PATTERN =
@@ -31,7 +32,12 @@ export type PatchPolicyIssueCode =
   | 'reserved-documentation'
   | 'reserved-files'
   | 'description-required'
-  | 'numeric-gap';
+  | 'numeric-gap'
+  // Body-dependent rules, evaluated by `patch-policy-content.ts`.
+  | 'upstream-allowlist'
+  | 'add-only'
+  | 'scope'
+  | 'reserved-document-missing';
 
 /** A single patch policy validation finding. */
 export interface PatchPolicyIssue {
@@ -54,13 +60,22 @@ export interface PatchPolicyEnforcementInput {
    * `patch move-files --create`).
    */
   hints?: Partial<Record<PatchPolicyIssueCode, string>>;
+  /**
+   * Patch filenames whose findings this mutation answers for. When set, only
+   * issues attributed to these rows are enforced: queue-level findings
+   * (order collisions, numeric gaps) and other patches' findings are left to
+   * `verify` and `lint --per-patch`. For mutations that change only the
+   * scoped rows' contents (`re-export`), so one patch's stale row cannot fail
+   * an unrelated patch refreshed in the same call.
+   */
+  scope?: readonly string[];
 }
 
-function policy(config: FireForgeConfig): PatchPolicyConfig | undefined {
+function policy(config: Pick<FireForgeConfig, 'patchPolicy'>): PatchPolicyConfig | undefined {
   return config.patchPolicy;
 }
 
-function mutationMode(config: FireForgeConfig): 'error' | 'warn' | 'force' {
+function mutationMode(config: Pick<FireForgeConfig, 'patchPolicy'>): 'error' | 'warn' | 'force' {
   return policy(config)?.mutationMode ?? 'error';
 }
 
@@ -310,7 +325,8 @@ function evaluatePatchMetadata(
 function evaluateGaps(
   cfg: PatchPolicyConfig,
   patches: readonly PatchMetadata[],
-  severity: 'error' | 'warning'
+  severity: 'error' | 'warning',
+  retiredOrders: ReadonlySet<number> = new Set()
 ): PatchPolicyIssue[] {
   if (cfg.allowGaps !== false) return [];
   const issues: PatchPolicyIssue[] = [];
@@ -332,7 +348,13 @@ function evaluateGaps(
     const last = occupied[occupied.length - 1] as number;
     const missing: number[] = [];
     for (let order = first; order <= last; order++) {
-      if (!occupiedSet.has(order) && reservedRangeForOrder(cfg, order) === null) {
+      // A retired slot (`patch retire`) is an occupied order with no
+      // patch behind it: the number stays spent, so it is not a gap.
+      if (
+        !occupiedSet.has(order) &&
+        !retiredOrders.has(order) &&
+        reservedRangeForOrder(cfg, order) === null
+      ) {
         missing.push(order);
       }
     }
@@ -380,7 +402,7 @@ function evaluateOrderCollisions(
 
 /** Evaluates an entire patch manifest against the configured policy. */
 export function evaluatePatchPolicy(
-  config: FireForgeConfig,
+  config: Pick<FireForgeConfig, 'patchPolicy'>,
   manifest: PatchesManifest
 ): PatchPolicyIssue[] {
   const cfg = policy(config);
@@ -388,11 +410,15 @@ export function evaluatePatchPolicy(
   const severity = mutationMode(config) === 'warn' ? 'warning' : 'error';
   const issues = manifest.patches.flatMap((patch) => evaluatePatchMetadata(cfg, patch, severity));
   issues.push(...evaluateOrderCollisions(manifest.patches, severity));
-  issues.push(...evaluateGaps(cfg, manifest.patches, severity));
+  issues.push(...evaluateGaps(cfg, manifest.patches, severity, retiredOrderSet(manifest)));
   return issues;
 }
 
-/** Builds a sorted manifest snapshot from projected patch metadata. */
+/**
+ * Builds a sorted manifest snapshot from projected patch metadata. Retired
+ * slots of `current` carry over unless a projected patch fills them, so a
+ * projection judges gaps the way the written manifest will.
+ */
 export function buildProjectedManifest(
   current: PatchesManifest | null,
   patches: PatchMetadata[]
@@ -400,10 +426,7 @@ export function buildProjectedManifest(
   const next = patches
     .map((patch) => ({ ...patch, filesAffected: [...patch.filesAffected] }))
     .sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
-  return {
-    version: current?.version ?? 1,
-    patches: next,
-  };
+  return manifestWithRetiredSlots(current, next);
 }
 
 /** Applies a filename/order rename projection to a manifest without mutating it. */
@@ -434,7 +457,10 @@ export function applyRenameMapToManifest(
 /** Enforces patch policy according to the configured mutation mode. */
 export function enforcePatchPolicy(input: PatchPolicyEnforcementInput): void {
   if (policy(input.config) === undefined) return;
-  const issues = evaluatePatchPolicy(input.config, input.manifest);
+  const scope = input.scope === undefined ? undefined : new Set(input.scope);
+  const issues = evaluatePatchPolicy(input.config, input.manifest).filter(
+    (issue) => scope === undefined || scope.has(issue.filename)
+  );
   if (issues.length === 0) return;
 
   const mode = mutationMode(input.config);

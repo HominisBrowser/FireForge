@@ -22,7 +22,7 @@ which error class produces each one.
 |   10 | `RESOLUTION_ERROR`     | Conflict resolution failed.                                                                                                                   | `ResolutionError`                                                                                 |
 |   11 | `INTERNAL_ERROR`       | A FireForge invariant did not hold. This is a bug in FireForge, not something the operator can fix.                                           | `InternalInvariantError`                                                                          |
 |   12 | `SMOKE_EXIT_FAILURE`   | `run --smoke-exit` saw console errors that were not allowed in the smoke window, or an allowlisted shape fired past its `# max-hits` ceiling. | `SmokeRunError`                                                                                   |
-|   13 | `SMOKE_LAUNCH_FAILURE` | `run --smoke-exit` saw the browser exit uncleanly before the window elapsed.                                                                  | `SmokeRunError`                                                                                   |
+|   13 | `SMOKE_LAUNCH_FAILURE` | `run --smoke-exit` saw the browser exit uncleanly before the window elapsed, or exit cleanly before it without any console output.            | `SmokeRunError`                                                                                   |
 |   14 | `INCONCLUSIVE`         | A test run's verdict was thrown away because `engine/` moved while the harness ran. This is not red. Re-run it.                               | `InconclusiveVerdictError`                                                                        |
 |   15 | `LOCK_TIMEOUT`         | A lock wait expired, so the run never started. Re-queue it with a larger `--wait-lock`.                                                       | `LockContentionError`                                                                             |
 |  130 | `USER_CANCELLED`       | The operator interrupted a prompt (Esc or Ctrl+C). 128 + SIGINT.                                                                              | `CancellationError`                                                                               |
@@ -74,6 +74,23 @@ not tell them apart. They are now distinct: an interrupt raises
 `CancellationError` and exits 130, and a declined confirmation returns
 normally and exits 0, because the run did what it was asked and the answer
 was no.
+
+## `fireforge check`
+
+The composed gate maps its verdict onto the existing codes rather than
+adding one:
+
+| Exit | When                                                                                                                                                                                                |
+| ---: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|    0 | Every step passed or was skipped.                                                                                                                                                                   |
+|    1 | At least one step failed (`reason=step-failures`). Each step's own exit code is in the `--json` document's `steps[].exitCode`. Also a `--patches` name that matches no patch, before any step runs. |
+|   15 | Every failed step exited 15 (`reason=lock-timeout`): nothing was judged red, the steps never got their locks. Re-queue it.                                                                          |
+|    2 | `fireforge.json` is invalid, including a `check.status` policy `status` would refuse. Raised before any step runs.                                                                                  |
+|    8 | An unknown `--only`/`--skip` step, or a bad `--jobs`. Raised before any step runs.                                                                                                                  |
+
+`furnace validate` exits 9 (`FURNACE_ERROR`) both for errors and for
+warnings past `--max-warnings`, so a gate that wants the distinction reads
+`summary.errors` from its `--json` document.
 
 ## Adding a code
 

@@ -25,6 +25,7 @@ import {
   completeJournalRollback,
   type FurnaceOperationContext,
   runFurnaceMutation,
+  waitLockMutationOptions,
 } from '../../core/furnace-operation.js';
 import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
 import {
@@ -35,6 +36,7 @@ import {
 import { DEFAULT_LICENSE, getLicenseHeader } from '../../core/license-headers.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
+import type { FurnaceLockWaitable } from '../../types/commands/index.js';
 import type { ProjectLicense } from '../../types/config.js';
 import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { intro, note, outro, warn } from '../../utils/logger.js';
@@ -56,7 +58,7 @@ import {
 } from './chrome-doc-tests.js';
 
 /** Options for `furnace chrome-doc create`. */
-export interface FurnaceChromeDocCreateOptions {
+export interface FurnaceChromeDocCreateOptions extends FurnaceLockWaitable {
   /**
    * Emit the titlebar-buttonbox markup and leave platform window controls
    * visible. Defaults to `true` because the common case is a full chrome
@@ -491,18 +493,22 @@ export async function furnaceChromeDocCreateCommand(
     return;
   }
 
-  const written = await runFurnaceMutation(projectRoot, 'chrome-doc-rollback', (ctx) =>
-    performChromeDocMutations({
-      projectRoot,
-      name,
-      license,
-      engineDir,
-      withTitlebar,
-      withTests,
-      browserWindow,
-      binaryName: forgeConfig.binaryName,
-      operationContext: ctx,
-    })
+  const written = await runFurnaceMutation(
+    projectRoot,
+    'chrome-doc-rollback',
+    (ctx) =>
+      performChromeDocMutations({
+        projectRoot,
+        name,
+        license,
+        engineDir,
+        withTitlebar,
+        withTests,
+        browserWindow,
+        binaryName: forgeConfig.binaryName,
+        operationContext: ctx,
+      }),
+    waitLockMutationOptions(options.waitLockSeconds)
   );
 
   const nextSteps: string[] = [

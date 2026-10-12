@@ -63,6 +63,14 @@ export function parseTestBlock(rec: ConfigRecord, config: FireForgeConfig): void
     out.reapOrphans = reapOrphans;
   }
 
+  const mochitestPorts = testRec.raw('mochitestPorts');
+  if (mochitestPorts !== undefined) {
+    if (mochitestPorts !== 'fixed' && mochitestPorts !== 'auto') {
+      throw new ConfigError('Config field "test.mochitestPorts" must be "fixed" or "auto"');
+    }
+    out.mochitestPorts = mochitestPorts;
+  }
+
   config.test = out;
 }
 

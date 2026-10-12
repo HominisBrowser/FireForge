@@ -18,11 +18,12 @@ import {
   lintPatchQueue,
   type PatchQueueEntry,
 } from '../core/patch-lint.js';
+import { buildLintIgnoreChecks, mergeLintIgnoreIds } from '../core/patch-lint-ignore.js';
 import { computeProjectedLintRegressions } from '../core/patch-lint-projection.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy.js';
 import { InvalidArgumentError } from '../errors/base.js';
-import type { PatchMetadata, ReExportOptions } from '../types/commands/index.js';
+import type { LintIgnoreEntry, PatchMetadata, ReExportOptions } from '../types/commands/index.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { pathExists } from '../utils/fs.js';
 import { info, outro, success, warn } from '../utils/logger.js';
@@ -43,13 +44,11 @@ function resolveEffectiveTierAndLintIgnore(
   options: ReExportOptions
 ): {
   effectiveTier: 'branding' | undefined;
-  effectiveLintIgnore: string[] | undefined;
+  effectiveLintIgnore: LintIgnoreEntry[] | undefined;
   flagIgnoreSet: Set<string>;
 } {
-  const existingIgnoreSet = new Set<string>(target.lintIgnore ?? []);
   const flagIgnoreSet = new Set<string>(options.lintIgnore ?? []);
-  const mergedIgnoreSet = new Set<string>([...existingIgnoreSet, ...flagIgnoreSet]);
-  const effectiveLintIgnore = mergedIgnoreSet.size > 0 ? [...mergedIgnoreSet] : undefined;
+  const effectiveLintIgnore = mergeLintIgnoreIds(target.lintIgnore, [...flagIgnoreSet]);
   const effectiveTier = options.tier ?? target.tier;
   return { effectiveTier, effectiveLintIgnore, flagIgnoreSet };
 }
@@ -64,9 +63,12 @@ function resolveEffectiveTierAndLintIgnore(
 async function runProjectedCrossPatchLint(
   patchesDir: string,
   targetFilename: string,
-  projectedDiff: string
+  projectedDiff: string,
+  config: FireForgeConfig
 ): Promise<ConflictReport | null> {
-  const baseCtx = await buildPatchQueueContext(patchesDir);
+  // The config threads `patchLint.forwardRegistration` through, so a forward
+  // jar.mn registration is judged the way `lint --per-patch` judges it.
+  const baseCtx = await buildPatchQueueContext(patchesDir, config);
   const projection = projectEntryBody(projectedDiff);
   const projectedEntries: PatchQueueEntry[] = baseCtx.entries.map((entry) => {
     if (entry.filename !== targetFilename) return entry;
@@ -74,7 +76,7 @@ async function runProjectedCrossPatchLint(
   });
 
   const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
-  const projectedIssues = lintPatchQueue({ entries: projectedEntries }).filter(
+  const projectedIssues = lintPatchQueue({ ...baseCtx, entries: projectedEntries }).filter(
     (i) => i.severity === 'error'
   );
   const regressions = computeProjectedLintRegressions(baselineIssues, projectedIssues);
@@ -101,7 +103,7 @@ async function runProjectedCrossPatchLint(
 function buildFilesModeMetadataUpdates(
   actualProjectedFiles: string[],
   options: ReExportOptions,
-  effectiveLintIgnore: string[] | undefined,
+  effectiveLintIgnore: LintIgnoreEntry[] | undefined,
   flagIgnoreSet: Set<string>
 ): Partial<PatchMetadata> {
   const updates: Partial<PatchMetadata> = {
@@ -330,7 +332,7 @@ export async function reExportFilesInPlace(
     target,
     options
   );
-  const ignoreChecks = effectiveLintIgnore ? new Set<string>(effectiveLintIgnore) : undefined;
+  const ignoreChecks = buildLintIgnoreChecks(effectiveLintIgnore);
 
   const patchQueueCtx = (await pathExists(paths.patches))
     ? await buildPatchQueueContext(paths.patches)
@@ -346,7 +348,12 @@ export async function reExportFilesInPlace(
     patchTier: effectiveTier,
   });
 
-  const conflicts = await runProjectedCrossPatchLint(paths.patches, target.filename, projectedDiff);
+  const conflicts = await runProjectedCrossPatchLint(
+    paths.patches,
+    target.filename,
+    projectedDiff,
+    config
+  );
   const filesUpdates = buildFilesModeMetadataUpdates(
     actualProjectedFiles,
     options,
@@ -365,6 +372,7 @@ export async function reExportFilesInPlace(
       ),
       command: 're-export --files',
       forceUnsafe: options.forceUnsafe === true,
+      scope: [target.filename],
     });
   }
 
@@ -419,6 +427,7 @@ export async function reExportFilesInPlace(
       config,
       command: 're-export --files',
       forceUnsafe: options.forceUnsafe === true,
+      scope: [target.filename],
     },
   });
 

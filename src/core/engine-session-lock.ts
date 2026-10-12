@@ -6,7 +6,12 @@ import { toError } from '../utils/errors.js';
 import { info, warn } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
 import type { LockHolder, LockQueueState } from './file-lock.js';
-import { type LockStatusSnapshot, readLockStatus, withFileLock } from './file-lock.js';
+import {
+  formatLockQueuePosition,
+  type LockStatusSnapshot,
+  readLockStatus,
+  withFileLock,
+} from './file-lock.js';
 import { git } from './git-base.js';
 
 const ENGINE_SESSION_LOCK_PATH = join('.fireforge', 'engine-session.lock');
@@ -44,13 +49,9 @@ function formatWaitProgressLine(
 ): string {
   const progress = `${Math.round(waitedMs / 1000)}s of up to ${Math.round(timeoutMs / 1000)}s`;
   // Queue position: under several concurrent sessions the wait
-  // line alone left operators inferring their place from `ps`.
-  const position =
-    queue === undefined || queue.depth === 0
-      ? ''
-      : queue.ahead === 0
-        ? ` You are next in a queue of ${queue.depth}.`
-        : ` ${queue.ahead} ahead of you (queue of ${queue.depth}).`;
+  // line alone left operators inferring their place from `ps`. It names the
+  // ordering rule, because the count is only useful if the grant honours it.
+  const position = formatLockQueuePosition(queue);
   if (holder === undefined) {
     return `Waiting for the FireForge engine lock — ${progress}.${position}`;
   }
@@ -310,6 +311,27 @@ function parsePorcelainRecords(body: string): string[] {
 }
 
 /**
+ * Engine-relative paths whose working-tree status differs between two
+ * generation tokens (both sides of a rename), and whether HEAD moved. An
+ * untracked directory keeps git's trailing `/`.
+ */
+export function generationDeltaPaths(
+  before: string,
+  after: string
+): { headMoved: boolean; paths: string[] } {
+  const from = splitGenerationToken(before);
+  const to = splitGenerationToken(after);
+  const beforeRecords = new Set(parsePorcelainRecords(from.body));
+  const afterRecords = new Set(parsePorcelainRecords(to.body));
+  const paths = new Set<string>();
+  for (const record of [...afterRecords, ...beforeRecords]) {
+    if (beforeRecords.has(record) && afterRecords.has(record)) continue;
+    for (const path of record.slice(3).split(' -> ')) paths.add(path);
+  }
+  return { headMoved: from.head !== to.head, paths: [...paths].sort() };
+}
+
+/**
  * Describes what moved between two generation tokens, in operator terms.
  *
  * The refusal used to say only that the engine changed, which left the
@@ -374,7 +396,8 @@ export function describeEngineGenerationDelta(before: string, after: string): st
  */
 export async function assertEngineGenerationUnchanged(
   engineDir: string,
-  before: string
+  before: string,
+  tolerateDelta?: (before: string, after: string) => Promise<boolean>
 ): Promise<void> {
   const after = await snapshotEngineGeneration(engineDir);
   const beforeUnavailable = isUnavailableGenerationToken(before);
@@ -403,6 +426,9 @@ export async function assertEngineGenerationUnchanged(
   }
 
   if (after === before) return;
+  // A caller that can prove the delta never reached the runtime under test
+  // (a perf sample, see `test-perf-scope.ts`) keeps its verdict.
+  if (tolerateDelta !== undefined && (await tolerateDelta(before, after))) return;
 
   const delta = describeEngineGenerationDelta(before, after);
   throw new InconclusiveVerdictError(

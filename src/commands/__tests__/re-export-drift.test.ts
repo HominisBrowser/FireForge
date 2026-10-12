@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Pure-function tests for the re-export foreign-drift comparison: offset
- * shifts are not drift, new payload lines are, scan adoptions are excluded,
- * and binary sections compare by recorded hash.
+ * shifts are not drift, new and dropped payload lines are, scan adoptions
+ * and retirements are excluded, and binary sections compare by recorded hash.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -96,5 +96,57 @@ describe('computeForeignDrift', () => {
     const newBody = textBody(FILE, ['@@ -1,1 +1,2 @@', ' ctx', '+foreign']);
     const drift = computeForeignDrift(oldBody, newBody, [FILE]);
     expect(drift[0]?.addedLines).toBe(1);
+  });
+
+  it('counts a dropped + line (a deletion-only engine edit) as a removed line', () => {
+    const oldBody = textBody(FILE, ['@@ -10,2 +10,4 @@', ' ctx', '+mine', '+peer deleted this']);
+    const newBody = textBody(FILE, ['@@ -10,2 +10,3 @@', ' ctx', '+mine']);
+    const drift = computeForeignDrift(oldBody, newBody, [FILE]);
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toMatchObject({ file: FILE, addedLines: 0, removedLines: 1 });
+    expect(drift[0]?.hunkSummaries[0]).toContain('in the old body, dropped (+0/-1)');
+  });
+
+  it('counts a dropped - line (an upstream line restored) as an added line', () => {
+    const oldBody = textBody(FILE, ['@@ -10,3 +10,3 @@', ' ctx', '+mine', '-upstream line']);
+    const newBody = textBody(FILE, ['@@ -10,2 +10,3 @@', ' ctx', '+mine']);
+    const drift = computeForeignDrift(oldBody, newBody, [FILE]);
+    expect(drift[0]).toMatchObject({ addedLines: 1, removedLines: 0 });
+    expect(drift[0]?.hunkSummaries[0]).toContain('dropped (+1/-0)');
+  });
+
+  it('counts an edited line as one added and one removed', () => {
+    const oldBody = textBody(FILE, ['@@ -1,1 +1,2 @@', ' ctx', '+value = 1;']);
+    const newBody = textBody(FILE, ['@@ -1,1 +1,2 @@', ' ctx', '+value = 2;']);
+    const drift = computeForeignDrift(oldBody, newBody, [FILE]);
+    expect(drift[0]).toMatchObject({ addedLines: 1, removedLines: 1 });
+    expect(drift[0]?.hunkSummaries).toHaveLength(2);
+  });
+
+  it('reports an owned file whose section left the body (engine copy back at HEAD)', () => {
+    const other = 'browser/base/content/other.js';
+    const oldBody =
+      textBody(FILE, ['@@ -1,1 +1,2 @@', ' ctx', '+mine']) +
+      textBody(other, ['@@ -1,1 +1,3 @@', ' ctx', '+a', '+b']);
+    const newBody = textBody(FILE, ['@@ -1,1 +1,2 @@', ' ctx', '+mine']);
+    const drift = computeForeignDrift(oldBody, newBody, [FILE, other]);
+    expect(drift).toEqual([
+      expect.objectContaining({ file: other, addedLines: 0, removedLines: 2 }),
+    ]);
+  });
+
+  it('skips a dropped file that is not in the compared set (an --expect-removed retirement)', () => {
+    const other = 'browser/base/content/other.js';
+    const oldBody =
+      textBody(FILE, ['@@ -1,1 +1,2 @@', ' ctx', '+mine']) +
+      textBody(other, ['@@ -1,1 +1,2 @@', ' ctx', '+a']);
+    const newBody = textBody(FILE, ['@@ -1,1 +1,2 @@', ' ctx', '+mine']);
+    expect(computeForeignDrift(oldBody, newBody, [FILE])).toEqual([]);
+  });
+
+  it('flags a binary section that left the body', () => {
+    const oldBody = binaryBody(FILE, '1'.repeat(40), '2'.repeat(40));
+    const drift = computeForeignDrift(oldBody, '', [FILE]);
+    expect(drift[0]).toMatchObject({ file: FILE, binaryChanged: true });
   });
 });

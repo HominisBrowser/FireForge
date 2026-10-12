@@ -10,8 +10,8 @@ import { PatchError } from '../errors/patch.js';
 import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
 import { info } from '../utils/logger.js';
-import type { LockHolder } from './file-lock.js';
-import { readLockStatus, withFileLock } from './file-lock.js';
+import type { LockHolder, LockQueueState } from './file-lock.js';
+import { formatLockQueuePosition, readLockStatus, withFileLock } from './file-lock.js';
 
 const PATCH_DIRECTORY_LOCK = '.fireforge-patches.lock';
 
@@ -35,14 +35,16 @@ export interface PatchDirectoryLockOptions {
 function formatWaitProgressLine(
   waitedMs: number,
   timeoutMs: number,
-  holder: LockHolder | undefined
+  holder: LockHolder | undefined,
+  queue?: LockQueueState
 ): string {
   const progress = `${Math.round(waitedMs / 1000)}s of up to ${Math.round(timeoutMs / 1000)}s`;
+  const position = formatLockQueuePosition(queue);
   if (holder === undefined) {
-    return `Waiting for the FireForge patch directory lock — ${progress}.`;
+    return `Waiting for the FireForge patch directory lock — ${progress}.${position}`;
   }
   const details = holder.metadata.length > 0 ? ` (${holder.metadata.join(', ')})` : '';
-  return `Waiting for the FireForge patch directory lock held by PID ${holder.pid}${details} — ${progress}.`;
+  return `Waiting for the FireForge patch directory lock held by PID ${holder.pid}${details} — ${progress}.${position}`;
 }
 
 /**
@@ -115,8 +117,8 @@ export async function withPatchDirectoryLock<T>(
           pollMs: 100,
           pollMaxMs: 2000,
           waitProgressMs: 5000,
-          onWaitProgress: ({ waitedMs, timeoutMs, holder }): void => {
-            info(formatWaitProgressLine(waitedMs, timeoutMs, holder));
+          onWaitProgress: ({ waitedMs, timeoutMs, holder, queue }): void => {
+            info(formatWaitProgressLine(waitedMs, timeoutMs, holder, queue));
           },
         }
       : {}),

@@ -11,6 +11,10 @@ import type { FurnaceConfig, OverrideComponentConfig } from '../types/furnace.js
 import type { JsonObject, JsonValue } from '../types/json.js';
 import { isJsonObject, isString } from '../utils/validation.js';
 import { parseStringArray } from './furnace-config-array-utils.js';
+import {
+  parseOptInChecks,
+  parseValidationExceptions,
+} from './furnace-config-validate-exceptions.js';
 
 /**
  * Validates an override component config object.
@@ -158,5 +162,13 @@ export function applyOptionalFurnaceFields(migrated: JsonObject, config: Furnace
       }
     }
     config.scanPaths = paths;
+  }
+
+  // `furnace validate` policy: reviewed exceptions and opt-in checks.
+  if (migrated['validationExceptions'] !== undefined) {
+    config.validationExceptions = parseValidationExceptions(migrated['validationExceptions']);
+  }
+  if (migrated['optInChecks'] !== undefined) {
+    config.optInChecks = parseOptInChecks(migrated['optInChecks']);
   }
 }

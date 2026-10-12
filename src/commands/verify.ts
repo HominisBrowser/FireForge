@@ -35,6 +35,7 @@ import {
 } from '../core/patch-lint.js';
 import { loadPatchesManifest, validatePatchesManifestConsistency } from '../core/patch-manifest.js';
 import { evaluatePatchPolicy } from '../core/patch-policy.js';
+import { evaluatePatchPolicyContentForQueue } from '../core/patch-policy-content.js';
 import { collectPatchRegistrationReferences } from '../core/patch-registration-refs.js';
 import { buildPatchClaims } from '../core/status-classify.js';
 import { classifyFiles } from '../core/status-classify.js';
@@ -42,6 +43,14 @@ import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
+import {
+  anyPatchInScope,
+  isFilenameInScope,
+  resolveVerifyScope,
+  scopeLintIssues,
+  scopePatches,
+  type VerifyScope,
+} from './verify-scope.js';
 
 /**
  * Reports duplicate `filesAffected` entries across patches. The manifest
@@ -83,7 +92,8 @@ export interface PatchQueueHealth {
 async function detectDanglingRegistrations(
   patchesDir: string,
   engineDir: string,
-  patches: ReadonlyArray<{ filename: string; filesAffected: string[] }>
+  patches: ReadonlyArray<{ filename: string; filesAffected: string[] }>,
+  scope: VerifyScope | undefined
 ): Promise<DanglingRegistrationIssue[]> {
   // Aggregate the set of all paths any patch in the queue is responsible for
   // (per `filesAffected`). Individual patch bodies are deliberately not
@@ -98,8 +108,9 @@ async function detectDanglingRegistrations(
     }
   }
 
+  // Every patch supplies targets; only the scoped ones are judged.
   const issues: DanglingRegistrationIssue[] = [];
-  for (const patch of patches) {
+  for (const patch of scopePatches(patches, scope)) {
     const patchPath = join(patchesDir, patch.filename);
     if (!(await pathExists(patchPath))) continue;
 
@@ -151,7 +162,8 @@ async function detectWorktreeOwnershipDrift(
   projectRoot: string,
   engineDir: string,
   patchesDir: string,
-  binaryName: string
+  binaryName: string,
+  scope: VerifyScope | undefined
 ): Promise<{ unowned: string[]; patchOwnedDrift: string[] }> {
   if (!(await pathExists(engineDir)) || !(await isGitRepository(engineDir))) {
     return { unowned: [], patchOwnedDrift: [] };
@@ -170,29 +182,71 @@ async function detectWorktreeOwnershipDrift(
     furnacePrefixes
   );
   return {
+    // An unowned change belongs to no patch, so no --patches scope covers it.
     unowned: [
       ...new Set(
         classified
-          .filter((entry) => entry.classification === 'unmanaged')
+          .filter((entry) => scope === undefined && entry.classification === 'unmanaged')
           .map((entry) => entry.file)
       ),
     ].sort(),
     patchOwnedDrift: [
       ...new Set(
         classified
-          .filter((entry) => entry.classification === 'patch-owned-drift')
+          .filter(
+            (entry) =>
+              entry.classification === 'patch-owned-drift' &&
+              anyPatchInScope(scope, entry.owner === undefined ? [] : [entry.owner])
+          )
           .map((entry) => entry.file)
       ),
     ].sort(),
   };
 }
 
+/** The warning groups for unowned changes and patch-owned drift. */
+function buildWorktreeDriftGroups(drift: {
+  unowned: string[];
+  patchOwnedDrift: string[];
+}): VerifyIssueGroup[] {
+  const groups: VerifyIssueGroup[] = [];
+  if (drift.unowned.length > 0) {
+    groups.push({
+      title: `Unowned worktree changes (${drift.unowned.length})`,
+      issues: drift.unowned.map(
+        (file) => `${file} is changed in engine/ but is not listed in any patch filesAffected entry`
+      ),
+      errorCount: 0,
+      warningCount: drift.unowned.length,
+    });
+  }
+  if (drift.patchOwnedDrift.length > 0) {
+    groups.push({
+      title: `Patch-owned worktree drift (${drift.patchOwnedDrift.length})`,
+      issues: drift.patchOwnedDrift.map(
+        (file) =>
+          `${file} is claimed by exactly one patch, but engine/ no longer matches that patch output`
+      ),
+      errorCount: 0,
+      warningCount: drift.patchOwnedDrift.length,
+    });
+  }
+  return groups;
+}
+
 /**
  * Collects the same queue-health findings reported by `fireforge verify`
  * without printing. Used by doctor recovery paths that need a read-only
  * "is this queue healthy?" decision before clearing stale state.
+ *
+ * @param projectRoot - Project root directory
+ * @param scope - `verify --patches`: keep only the findings that name these
+ *   patches (see verify-scope.ts). Omitted, every finding counts.
  */
-export async function collectPatchQueueHealth(projectRoot: string): Promise<PatchQueueHealth> {
+export async function collectPatchQueueHealth(
+  projectRoot: string,
+  scope?: VerifyScope
+): Promise<PatchQueueHealth> {
   const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
   if (!(await pathExists(paths.patches))) {
@@ -208,7 +262,9 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
   let errorCount = 0;
   let warningCount = 0;
 
-  const consistencyIssues = await validatePatchesManifestConsistency(paths.patches);
+  const consistencyIssues = (await validatePatchesManifestConsistency(paths.patches)).filter(
+    (issue) => isFilenameInScope(scope, issue.filename)
+  );
   if (consistencyIssues.length > 0) {
     const issues = consistencyIssues.map((issue) => `[${issue.code}] ${issue.message}`);
     groups.push({
@@ -222,7 +278,10 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
 
   const manifest = await loadPatchesManifest(paths.patches);
   if (manifest) {
-    const policyIssues = evaluatePatchPolicy(config, manifest);
+    const policyIssues = [
+      ...evaluatePatchPolicy(config, manifest),
+      ...(await evaluatePatchPolicyContentForQueue(config, projectRoot, paths.patches, manifest)),
+    ].filter((issue) => isFilenameInScope(scope, issue.filename));
     if (policyIssues.length > 0) {
       const policyErrors = policyIssues.filter((issue) => issue.severity === 'error').length;
       const policyWarnings = policyIssues.length - policyErrors;
@@ -247,7 +306,7 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
     if (await pathExists(paths.engine)) {
       const unresolved = await findUnresolvedSystemModuleImports(
         paths.engine,
-        manifest.patches.flatMap((patch) => patch.filesAffected)
+        scopePatches(manifest.patches, scope).flatMap((patch) => patch.filesAffected)
       );
       if (unresolved.length > 0) {
         groups.push({
@@ -260,7 +319,9 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
       }
     }
 
-    const crossClaims = detectCrossPatchFileClaims(manifest.patches);
+    const crossClaims = detectCrossPatchFileClaims(manifest.patches).filter((claim) =>
+      anyPatchInScope(scope, claim.filenames)
+    );
     if (crossClaims.length > 0) {
       groups.push({
         title: `Cross-patch filesAffected conflicts (${crossClaims.length})`,
@@ -275,7 +336,7 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
   }
 
   const ctx = await buildPatchQueueContext(paths.patches);
-  const lintIssues = lintPatchQueue(ctx);
+  const lintIssues = scopeLintIssues(lintPatchQueue(ctx), scope);
   if (lintIssues.length > 0) {
     const lintErrors = lintIssues.filter((issue) => issue.severity === 'error').length;
     const lintWarnings = lintIssues.filter((issue) => issue.severity === 'warning').length;
@@ -298,38 +359,18 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
       projectRoot,
       paths.engine,
       paths.patches,
-      config.binaryName
+      config.binaryName,
+      scope
     );
-    if (worktreeDrift.unowned.length > 0) {
-      groups.push({
-        title: `Unowned worktree changes (${worktreeDrift.unowned.length})`,
-        issues: worktreeDrift.unowned.map(
-          (file) =>
-            `${file} is changed in engine/ but is not listed in any patch filesAffected entry`
-        ),
-        errorCount: 0,
-        warningCount: worktreeDrift.unowned.length,
-      });
-      warningCount += worktreeDrift.unowned.length;
-    }
-
-    if (worktreeDrift.patchOwnedDrift.length > 0) {
-      groups.push({
-        title: `Patch-owned worktree drift (${worktreeDrift.patchOwnedDrift.length})`,
-        issues: worktreeDrift.patchOwnedDrift.map(
-          (file) =>
-            `${file} is claimed by exactly one patch, but engine/ no longer matches that patch output`
-        ),
-        errorCount: 0,
-        warningCount: worktreeDrift.patchOwnedDrift.length,
-      });
-      warningCount += worktreeDrift.patchOwnedDrift.length;
-    }
+    const driftGroups = buildWorktreeDriftGroups(worktreeDrift);
+    groups.push(...driftGroups);
+    warningCount += driftGroups.reduce((sum, group) => sum + group.warningCount, 0);
 
     const registrationIssues = await detectDanglingRegistrations(
       paths.patches,
       paths.engine,
-      manifest.patches
+      manifest.patches,
+      scope
     );
     if (registrationIssues.length > 0) {
       groups.push({
@@ -358,9 +399,17 @@ export async function collectPatchQueueHealth(projectRoot: string): Promise<Patc
  * Read-only. Exits non-zero on any error-severity finding.
  *
  * @param projectRoot - Project root directory
+ * @param options - `patches`: the raw `--patches` values
  */
-export async function verifyCommand(projectRoot: string): Promise<void> {
+export async function verifyCommand(
+  projectRoot: string,
+  options: { patches?: string[] } = {}
+): Promise<void> {
   intro('FireForge Verify');
+  const scope = await resolveVerifyScope(getProjectPaths(projectRoot).patches, options.patches);
+  if (scope !== undefined) {
+    info(`Judging only: ${[...scope.patches].join(', ')}`);
+  }
 
   // `verify` is read-only to the OPERATOR but not to git: the working-tree
   // status probe refreshes (and rewrites) `engine/.git/index`, making this
@@ -368,7 +417,7 @@ export async function verifyCommand(projectRoot: string): Promise<void> {
   // concurrent `fireforge test`'s engine fingerprint. A private index keeps
   // every refresh off the primary checkout.
   const health = await withPrivateGitIndex(getProjectPaths(projectRoot).engine, () =>
-    collectPatchQueueHealth(projectRoot)
+    collectPatchQueueHealth(projectRoot, scope)
   );
   if (!health.hasPatchesDirectory) {
     info('No patches directory. Nothing to verify.');
@@ -412,9 +461,13 @@ export function registerVerify(
   program
     .command('verify')
     .description('Read-only fsck for the patch queue (manifest + cross-patch lint)')
+    .option(
+      '--patches <names...>',
+      'Judge only findings that name these patches (filename, stem, order number, manifest name, or slug; repeat or comma-separate). Queue-wide findings stay; unowned worktree changes drop out'
+    )
     .action(
-      withErrorHandling(async () => {
-        await verifyCommand(getProjectRoot());
+      withErrorHandling(async (options: { patches?: string[] }) => {
+        await verifyCommand(getProjectRoot(), options);
       })
     );
 }

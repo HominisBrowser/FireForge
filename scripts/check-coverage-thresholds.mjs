@@ -15,6 +15,14 @@ const MODULE_THRESHOLDS = {
   // Pinned just below landing coverage. The extend anchor is the fail-closed
   // guard for a coverage claim, so every refusal branch must stay exercised.
   'src/core/coverage-extend.ts': { lines: 95, branches: 85 },
+  // Per-path coverage anchors and the stale-build exemptions decide whether
+  // a run may dispatch against existing packaging, so hold them near landing.
+  'src/core/coverage-records.ts': { lines: 95, branches: 88, functions: 100 },
+  'src/core/coverage-dispatch.ts': { lines: 98, branches: 95, functions: 100 },
+  'src/core/objdir-install-manifests.ts': { lines: 92, branches: 85 },
+  'src/core/test-stale-exempt.ts': { lines: 98, branches: 95, functions: 100 },
+  'src/commands/test-perf-scope.ts': { lines: 98, branches: 95, functions: 100 },
+  'src/commands/test-build-furnace.ts': { lines: 98, branches: 95, functions: 100 },
   // Hold measured refusal, recovery and retry
   // coverage so unrelated well-covered modules cannot hide a regression.
   'src/core/build-baseline-validate.ts': { lines: 98, branches: 95, functions: 100 },
@@ -130,6 +138,11 @@ const MODULE_THRESHOLDS = {
   'src/core/test-stale-check.ts': { lines: 90, branches: 75, functions: 100 },
   // Lint diff-scoping helper: pure filtering + git integration.
   'src/core/patch-lint-diff-tag.ts': { lines: 95, branches: 80 },
+  // Size-rule measurement: a miscount here silently moves every patch's
+  // size verdict, so the metric and threshold modules stay fully exercised.
+  'src/core/patch-lint-size.ts': { lines: 95, branches: 90, functions: 100 },
+  'src/core/patch-lint-size-thresholds.ts': { lines: 95, branches: 90, functions: 100 },
+  'src/core/patch-lint-code-lines.ts': { lines: 95, branches: 90, functions: 100 },
   // Chrome-doc scaffolder: transactional, journal-backed.
   'src/commands/furnace/chrome-doc.ts': { lines: 88, branches: 78 },
   // Chrome-doc templates: pure string assembly.
@@ -194,6 +207,13 @@ const MODULE_THRESHOLDS = {
   // lock being reaped under a live holder, and the PID-reuse liveness guard.
   // A false "dead" verdict here reaps a live lock, so every branch stays pinned.
   'src/core/file-lock-owner.ts': { lines: 95, branches: 90, functions: 100 },
+  // Lock waiter tickets decide who is granted a contended lock. A ticket
+  // wrongly judged live blocks the whole queue; one wrongly judged dead lets
+  // a later arrival jump it (measured 92.9/84.2).
+  'src/core/file-lock-queue.ts': { lines: 90, branches: 80 },
+  // Patch history log location and legacy migration: a wrong branch here
+  // drops or duplicates audit records (measured 97.6/90.9).
+  'src/core/history-log-file.ts': { lines: 95, branches: 85 },
   // Severity resolution for every doctor check: one resolver shared by
   // `doctor.ts` and `bootstrap.ts`, which are easy to drift apart.
   'src/commands/doctor-check-core.ts': { lines: 98, branches: 80, functions: 100 },

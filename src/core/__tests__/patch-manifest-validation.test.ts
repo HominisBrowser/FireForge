@@ -193,7 +193,7 @@ describe('validatePatchesManifest', () => {
     expect(result.patches[0]?.lintIgnore).toEqual(['large-patch-lines', 'large-patch-files']);
   });
 
-  it('rejects lintIgnore when present but not a string array', () => {
+  it('rejects lintIgnore when an entry is neither a string nor a ceiling', () => {
     expect(() =>
       validatePatchesManifest({
         version: 1,
@@ -211,7 +211,78 @@ describe('validatePatchesManifest', () => {
           },
         ],
       })
-    ).toThrow('patches[0].lintIgnore must be an array of strings');
+    ).toThrow(
+      'patches[0].lintIgnore[1] must be a check ID string or a { rule, max, reason } object'
+    );
+  });
+
+  it('preserves a { rule, max, reason } ceiling beside bare IDs', () => {
+    const ceiling = { rule: 'file-too-large', max: 1200, reason: 'reviewed 2026-10-12' };
+    const result = validatePatchesManifest({
+      version: 1,
+      patches: [
+        {
+          filename: '001-ui.patch',
+          order: 1,
+          category: 'ui',
+          name: 'ui',
+          description: 'UI patch',
+          createdAt: '2026-04-07T00:00:00.000Z',
+          sourceEsrVersion: '140.9.0esr',
+          filesAffected: ['browser/base/content/browser.js'],
+          lintIgnore: ['large-patch-lines', ceiling],
+        },
+      ],
+    });
+    expect(result.patches[0]?.lintIgnore).toEqual(['large-patch-lines', ceiling]);
+  });
+
+  it.each([
+    [{ rule: 'raw-color-value', max: 3, reason: 'r' }, '.rule must be one of the measured'],
+    [{ rule: 'file-too-large', max: 0, reason: 'r' }, '.max must be a positive integer'],
+    [{ rule: 'file-too-large', max: 1.5, reason: 'r' }, '.max must be a positive integer'],
+    [{ rule: 'file-too-large', max: 10, reason: ' ' }, '.reason must be a non-empty string'],
+    [{ rule: 'file-too-large', max: 10, reason: 'r', file: 'x' }, 'unknown field(s): file'],
+  ])('rejects a malformed ceiling %j', (entry, message) => {
+    expect(() =>
+      validatePatchesManifest({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui.patch',
+            order: 1,
+            category: 'ui',
+            name: 'ui',
+            description: 'UI patch',
+            createdAt: '2026-04-07T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/content/browser.js'],
+            lintIgnore: [entry],
+          },
+        ],
+      })
+    ).toThrow(message);
+  });
+
+  it('rejects a ceiling beside a bare entry for the same rule', () => {
+    expect(() =>
+      validatePatchesManifest({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui.patch',
+            order: 1,
+            category: 'ui',
+            name: 'ui',
+            description: 'UI patch',
+            createdAt: '2026-04-07T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: ['browser/base/content/browser.js'],
+            lintIgnore: ['file-too-large', { rule: 'file-too-large', max: 10, reason: 'r' }],
+          },
+        ],
+      })
+    ).toThrow('names "file-too-large" more than once');
   });
 
   it('omits lintIgnore from the validated output when absent', () => {

@@ -156,7 +156,7 @@ import {
   updateFurnaceState,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { recordFurnaceRollbackFailure } from '../../core/furnace-operation.js';
+import { recordFurnaceRollbackFailure, runFurnaceMutation } from '../../core/furnace-operation.js';
 import { refreshOverrideFile } from '../../core/furnace-refresh.js';
 import { restoreRollbackJournalOrThrow } from '../../core/furnace-rollback.js';
 import { getHead } from '../../core/git.js';
@@ -237,6 +237,22 @@ describe('furnace refresh', () => {
     await furnaceRefreshCommand('/project', 'moz-button');
 
     expect(refreshOverrideFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('threads --wait-lock into the furnace lock', async () => {
+    vi.mocked(refreshOverrideFile).mockResolvedValue({
+      fileName: 'file.mjs',
+      status: 'merged',
+    });
+
+    await furnaceRefreshCommand('/project', 'moz-button', { waitLockSeconds: 20 });
+
+    expect(runFurnaceMutation).toHaveBeenCalledWith(
+      '/project',
+      'refresh-rollback',
+      expect.any(Function),
+      { dryRun: false, lockTimeoutMs: 20_000 }
+    );
   });
 
   it('updates baseVersion on clean merge', async () => {

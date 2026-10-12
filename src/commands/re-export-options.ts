@@ -2,6 +2,7 @@
 import { InvalidArgumentError } from '../errors/base.js';
 import type { ReExportOptions } from '../types/commands/index.js';
 import { info } from '../utils/logger.js';
+import { validateScanFileOwners } from './re-export-scan-owner.js';
 
 /**
  * Heuristic for `--files` positional folding: an extra positional that
@@ -94,6 +95,50 @@ function validateWhitelistFlagDependencies(options: ReExportOptions): void {
       '--expect-unmanaged'
     );
   }
+
+  for (const [flag, values] of [
+    ['--expect-new', options.expectNew],
+    ['--adjacent-ignore', options.adjacentIgnore],
+  ] as const) {
+    if (values !== undefined && values.length > 0 && options.refuseAdjacentUnmanaged !== true) {
+      throw new InvalidArgumentError(
+        `${flag} relaxes --refuse-adjacent-unmanaged and has no effect without it. Pass --refuse-adjacent-unmanaged, or drop ${flag}.`,
+        flag
+      );
+    }
+  }
+  if (options.adjacentIgnore?.some((entry) => entry.includes('**'))) {
+    throw new InvalidArgumentError(
+      '--adjacent-ignore takes a path or a glob whose * stays within one path segment; ** is refused, because a subtree carve-out is how a reviewed exception becomes a blanket one.',
+      '--adjacent-ignore'
+    );
+  }
+}
+
+/**
+ * Refuses a path-valued flag whose value starts with `-`. Commander hands a
+ * required option value whatever follows it, so a list that ended early
+ * (`--expect-unmanaged --dry-run`) silently turned the next flag into a path
+ * and the dry run into a write. No engine path starts with a dash.
+ */
+function validatePathFlagValues(options: ReExportOptions): void {
+  for (const [flag, values] of [
+    ['--expect', options.expect],
+    ['--expect-unmanaged', options.expectUnmanaged],
+    ['--expect-new', options.expectNew],
+    ['--expect-removed', options.expectRemoved],
+    ['--adjacent-ignore', options.adjacentIgnore],
+    ['--scan-file', options.scanFiles],
+  ] as const) {
+    const swallowed = (values ?? []).filter((value) => value.trim().startsWith('-'));
+    if (swallowed.length > 0) {
+      throw new InvalidArgumentError(
+        `${flag} was given ${swallowed.map((value) => `"${value}"`).join(', ')}, which is a flag, not an engine path: ` +
+          `the ${flag} before it had no value, so it took the next argument. Give every ${flag} a path.`,
+        flag
+      );
+    }
+  }
 }
 
 function validateExpectedRemovalUsage(patches: readonly string[], options: ReExportOptions): void {
@@ -113,6 +158,9 @@ export function validateReExportOptionCombinations(
   patches: readonly string[],
   options: ReExportOptions
 ): void {
+  // First: a swallowed flag would otherwise surface as whichever
+  // combination error it happens to trip, naming the wrong problem.
+  validatePathFlagValues(options);
   validateExpectedRemovalUsage(patches, options);
   if (options.files !== undefined) {
     if (options.all || options.scan) {
@@ -140,12 +188,13 @@ export function validateReExportOptionCombinations(
         '--scan-file'
       );
     }
-    if (options.all || patches.length !== 1) {
+    if (options.all) {
       throw new InvalidArgumentError(
-        '--scan-file operates on exactly one target patch. Pass a single patch identifier.',
+        '--scan-file cannot be combined with --all. Pass the target patch identifiers.',
         '--scan-file'
       );
     }
+    validateScanFileOwners(patches, options.scanFiles);
   }
 
   if (options.scanFilesManifest !== undefined) {
@@ -166,9 +215,12 @@ export function validateReExportOptionCombinations(
     );
   }
 
-  if (options.refuseForeignDrift === true && (options.scan || options.files !== undefined)) {
+  // Beside --scan the belt covers the files each patch already owns; the
+  // files a scan adopts are the run's stated intent. --files replaces the
+  // file list outright, so there is no owned set left to guard.
+  if (options.refuseForeignDrift === true && options.files !== undefined) {
     throw new InvalidArgumentError(
-      '--refuse-foreign-drift applies to the scan-less path only and cannot be combined with --scan or --files (those explicitly capture the current engine state).',
+      '--refuse-foreign-drift cannot be combined with --files (it sets filesAffected explicitly and captures the current engine state).',
       '--refuse-foreign-drift'
     );
   }

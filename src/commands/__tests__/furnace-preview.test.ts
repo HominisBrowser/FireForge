@@ -115,6 +115,7 @@ vi.mock('../../utils/logger.js', () => ({
 
 import { applyAllComponents } from '../../core/furnace-apply.js';
 import { updateFurnaceState } from '../../core/furnace-config.js';
+import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import { restoreRollbackJournal } from '../../core/furnace-rollback.js';
 import { cleanStories, syncStories } from '../../core/furnace-stories.js';
 import { hasBuildArtifacts, runMach, runMachCapture } from '../../core/mach.js';
@@ -229,6 +230,17 @@ describe('furnacePreviewCommand', () => {
 
     expect(syncStories).toHaveBeenCalled();
     expect(cleanStories).toHaveBeenCalledWith(nativePath('/project/engine'));
+  });
+
+  it('threads --wait-lock into the furnace lock', async () => {
+    await furnacePreviewCommand('/project', { waitLockSeconds: 5 });
+
+    expect(runFurnaceMutation).toHaveBeenCalledWith(
+      '/project',
+      'preview-teardown',
+      expect.any(Function),
+      { lockTimeoutMs: 5_000 }
+    );
   });
 
   it('stages workspace components and restores them on teardown', async () => {

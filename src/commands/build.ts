@@ -29,6 +29,7 @@ import { waitForPreflight } from '../core/preflight-wait.js';
 import {
   closeActiveRunLog,
   getActiveRunLogPath,
+  keepRunLogCopy,
   openRunLog,
   setActiveRunLog,
 } from '../core/run-log.js';
@@ -52,6 +53,7 @@ import {
   resolveWaitLockSeconds,
 } from '../utils/options.js';
 import { isPositiveInteger } from '../utils/validation.js';
+import { waitForBuildBrowserBeforeLock } from './build-prelock.js';
 
 function parseJobCount(value: string): number {
   const parsed = Number(value);
@@ -238,8 +240,14 @@ function buildFailureDiagnostics(
  * Runs the build command.
  * @param projectRoot - Root directory of the project
  * @param options - Build options
+ * @param underLock - Runs the build under the engine session lock; a
+ *   `--wait-browser` budget is spent before it (see build-prelock.ts)
  */
-export async function buildCommand(projectRoot: string, options: BuildOptions): Promise<void> {
+export async function buildCommand(
+  projectRoot: string,
+  options: BuildOptions,
+  underLock: (body: () => Promise<void>) => Promise<void> = (body) => body()
+): Promise<void> {
   const buildType = options.ui ? 'UI-only' : 'Full';
   const brandInfo = options.brand ? ` [${options.brand}]` : '';
   intro(`FireForge Build (${buildType}${brandInfo})`);
@@ -247,9 +255,12 @@ export async function buildCommand(projectRoot: string, options: BuildOptions): 
   // A build's own complete output, kept independently of whatever the
   // operator piped the run through. `build` prints no FIREFORGE-VERDICT
   // line, so the path is announced directly at the end of the run.
-  setActiveRunLog(await openRunLog(projectRoot, 'build'));
+  setActiveRunLog(
+    await keepRunLogCopy(await openRunLog(projectRoot, 'build'), options.keepLog, 'build')
+  );
   try {
-    await runBuildCommandBody(projectRoot, options);
+    const lockedOptions = await waitForBuildBrowserBeforeLock(projectRoot, options);
+    await underLock(() => runBuildCommandBody(projectRoot, lockedOptions));
   } finally {
     const logPath = getActiveRunLogPath();
     await closeActiveRunLog();
@@ -519,6 +530,10 @@ export function registerBuild(
       'Wait for this objdir browser to exit before changing its build (default 60)',
       commanderArgParser((raw: string) => resolveWaitLockSeconds(raw))
     )
+    .option(
+      '--keep-log <path>',
+      "Also write this run's log to <path> (a directory receives it under its own name), outside .fireforge/logs/ retention. FIREFORGE_LOG_KEEP sets a session default."
+    )
     .option('--ui', 'Fast UI-only rebuild')
     .option('-j, --jobs <n>', 'Number of parallel jobs', parseJobCount)
     .option('--brand <name>', 'Build specific brand')
@@ -528,7 +543,7 @@ export function registerBuild(
     )
     .option(
       '--refuse-unexported-drift',
-      'Refuse (instead of warning) when the build would overwrite engine content recorded in neither a patch body nor the pristine baseline — the multi-session hazard where an unexported edit is silently reverted and a later re-export captures a hybrid'
+      'Refuse (instead of warning) when the build would overwrite engine content recorded in neither a patch body nor the pristine baseline — the multi-session hazard where an unexported edit is silently reverted and a later re-export captures a hybrid. A deployed Furnace file that is a deployment of its own component source is allowed'
     )
     .addHelpText(
       'after',
@@ -554,11 +569,10 @@ export function registerBuild(
   addWaitLockOption(build).action(
     withErrorHandling(async (options: BuildOptions) => {
       const projectRoot = getProjectRoot();
-      await withEngineSessionLock(
-        projectRoot,
-        'build',
-        () => buildCommand(projectRoot, pickDefined(options)),
-        { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
+      await buildCommand(projectRoot, pickDefined(options), (body) =>
+        withEngineSessionLock(projectRoot, 'build', body, {
+          waitLockSeconds: resolveWaitLockSeconds(options.waitLock),
+        })
       );
     })
   );

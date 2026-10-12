@@ -38,6 +38,7 @@ export const SUPPORTED_CONFIG_ROOT_KEYS = [
   'build',
   'buildAudit',
   'test',
+  'history',
   'externalToolchains',
   'license',
   'wire',
@@ -45,6 +46,7 @@ export const SUPPORTED_CONFIG_ROOT_KEYS = [
   'patchPolicy',
   'typecheck',
   'markerComment',
+  'check',
 ] as const;
 
 /** Supported config paths that can be read or set without --force. */
@@ -66,6 +68,9 @@ export const SUPPORTED_CONFIG_PATHS = [
   'test.canaryPath',
   'test.canaryTimeoutSeconds',
   'test.reapOrphans',
+  'test.mochitestPorts',
+  'history',
+  'history.path',
   'externalToolchains',
   'wire',
   'wire.subscriptDir',
@@ -81,11 +86,14 @@ export const SUPPORTED_CONFIG_PATHS = [
   'patchLint.testAssertionFloor',
   'patchLint.chromeScriptJsDoc',
   'patchLint.forwardRegistration',
+  'patchLint.fileSizeMetric',
+  'patchLint.patchSizeMetric',
   'patchPolicy',
   'typecheck',
   'typecheck.projects',
   'typecheck.extraShim',
   'markerComment',
+  'check',
 ] as const;
 
 /**

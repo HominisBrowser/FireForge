@@ -100,13 +100,13 @@ vi.mock('../../core/harness-orphans.js', () => ({
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import { loadConfig } from '../../core/config.js';
 import { reportOrphanedHarnessProcesses } from '../../core/harness-orphans.js';
-import { hasBuildArtifacts, runProtectedMachBuild } from '../../core/mach.js';
+import { hasBuildArtifacts, hasRunnableBundle, runProtectedMachBuild } from '../../core/mach.js';
 import { assertMarionettePortAvailable } from '../../core/marionette-port.js';
 import { ensureLaunchableBrowserNotRunning } from '../../core/marionette-port.js';
 import { ensureMochitestServerPortAvailable } from '../../core/mochitest-server-port.js';
 import { checkStaleBuildForTest } from '../../core/test-stale-check.js';
 import { findNearestXpcshellManifest } from '../../core/xpcshell-appdir.js';
-import { PreflightRefusalError } from '../../errors/base.js';
+import { LockContentionError, PreflightRefusalError } from '../../errors/base.js';
 import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
 import { testCommand } from '../test.js';
 import { ensureTestBrowserEnvironment } from '../test-browser-preflight.js';
@@ -155,6 +155,46 @@ beforeEach(async () => {
 afterEach(async () => {
   restoreStdout();
   await rm(projectRoot, { recursive: true, force: true });
+});
+
+describe('the lock-free head of the run', () => {
+  it('refuses a missing launchable binary before the lock is requested, naming its class', async () => {
+    vi.mocked(hasRunnableBundle).mockResolvedValueOnce({
+      runnable: false,
+      expectedPath: 'obj-debug/dist/bin/firefox',
+    });
+    const underLock = vi.fn((body: () => Promise<void>) => body());
+    await expect(
+      testCommand(projectRoot, ['browser/base/content/test/browser_a.js'], {}, underLock)
+    ).rejects.toThrow(/launchable binary is missing/);
+    expect(underLock).not.toHaveBeenCalled();
+    expect(stdout).toContain('note=no-launchable-binary');
+  });
+
+  it('emits lock-timeout (not preflight) when the lock runner gives up, with the log named', async () => {
+    const underLock = vi.fn(() =>
+      Promise.reject(new LockContentionError('Another engine-mutating command holds the lock.'))
+    );
+    await expect(
+      testCommand(projectRoot, ['browser/base/content/test/browser_a.js'], {}, underLock)
+    ).rejects.toThrow(LockContentionError);
+    expect(stdout).not.toContain('Preflight refused:');
+    expect(stdout.trimEnd().split('\n').at(-1)).toMatch(
+      /^FIREFORGE-VERDICT: FAIL reason=lock-timeout log=/
+    );
+  });
+
+  it('keeps a --keep-log copy of the run, refusal included', async () => {
+    vi.mocked(ensureLaunchableBrowserNotRunning).mockRejectedValueOnce(
+      new PreflightRefusalError(STALE_BROWSER_TEXT, 'stale-browser')
+    );
+    const kept = join(projectRoot, 'kept', 'run.log');
+    await expect(
+      testCommand(projectRoot, ['browser/base/content/test/browser_a.js'], { keepLog: kept })
+    ).rejects.toThrow(PreflightRefusalError);
+    expect(await readFile(kept, 'utf8')).toBe(await readRunLog());
+    expect(await readFile(kept, 'utf8')).toContain('already running (PID 4242)');
+  });
 });
 
 describe('preflight refusals reach the captured stream and the run log', () => {

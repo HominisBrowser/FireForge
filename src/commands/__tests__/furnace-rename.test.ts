@@ -100,9 +100,14 @@ vi.mock('../../core/furnace-registration.js', () => ({
   addCustomElementRegistration: vi.fn(),
   addJarMnEntries: vi.fn(),
   addLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(1)),
+  hasLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(true)),
   removeCustomElementRegistration: vi.fn(),
   removeJarMnEntries: vi.fn(),
-  removeLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve()),
+  // True: the old locale line existed and was removed, so it is re-pointed.
+  removeLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(true)),
+  // False by default: no in-place entry to rewrite, so the rename falls
+  // back to remove-and-add.
+  renameCustomElementRegistration: vi.fn(() => Promise.resolve(false)),
 }));
 
 vi.mock('../../core/furnace-registration-validate.js', () => ({
@@ -131,6 +136,7 @@ import {
   updateFurnaceState,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
+import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import {
   addCustomElementRegistration,
   addJarMnEntries,
@@ -138,6 +144,7 @@ import {
   removeCustomElementRegistration,
   removeJarMnEntries,
   removeLocaleFtlJarMnEntry,
+  renameCustomElementRegistration,
 } from '../../core/furnace-registration.js';
 import { restoreRollbackJournalOrThrow, snapshotFile } from '../../core/furnace-rollback.js';
 import { InvalidArgumentError } from '../../errors/base.js';
@@ -580,10 +587,13 @@ describe('furnaceRenameCommand engine registrations', () => {
       nativePath('/project/engine'),
       'moz-sidebar'
     );
+    // The fresh entry carries the project marker (binaryName upper-cased
+    // when fireforge.json sets no markerComment), like every apply line.
     expect(mockAddCustomElementRegistration).toHaveBeenCalledWith(
       nativePath('/project/engine'),
       'moz-nav',
-      'chrome://global/content/elements/moz-nav.mjs'
+      'chrome://global/content/elements/moz-nav.mjs',
+      { markerComment: 'MYBROWSER' }
     );
     expect(mockRemoveJarMnEntries).toHaveBeenCalledWith(
       nativePath('/project/engine'),
@@ -684,6 +694,64 @@ describe('furnaceRenameCommand engine registrations', () => {
     );
   });
 
+  it('rewrites the customElements.js entry in place instead of remove-and-add', async () => {
+    vi.mocked(renameCustomElementRegistration).mockResolvedValueOnce(true);
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    expect(renameCustomElementRegistration).toHaveBeenCalledWith(
+      nativePath('/project/engine'),
+      'moz-sidebar',
+      'moz-nav'
+    );
+    expect(mockRemoveCustomElementRegistration).not.toHaveBeenCalled();
+    expect(mockAddCustomElementRegistration).not.toHaveBeenCalled();
+  });
+
+  it('adds no per-component locale line for a sharedFtl component', async () => {
+    // A sharedFtl component has no `<tag>.ftl`: a locale line for the new
+    // name would register a file that does not exist.
+    mockLoadFurnaceConfig.mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: [],
+      overrides: {},
+      custom: {
+        'moz-sidebar': {
+          description: 'Shared-bundle sidebar',
+          targetPath: 'toolkit/content/widgets/moz-sidebar',
+          register: true,
+          localized: true,
+          sharedFtl: 'browser/mybrowser-sidebar.ftl',
+        },
+      },
+    });
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    expect(vi.mocked(removeLocaleFtlJarMnEntry)).toHaveBeenCalled();
+    expect(vi.mocked(addLocaleFtlJarMnEntry)).not.toHaveBeenCalled();
+  });
+
+  it('adds no locale line when the old component had none to re-point', async () => {
+    mockLoadFurnaceConfig.mockResolvedValue({
+      ...defaultCustomConfig(),
+      custom: {
+        'moz-sidebar': {
+          description: 'Localized sidebar widget',
+          targetPath: 'toolkit/content/widgets/moz-sidebar',
+          register: true,
+          localized: true,
+        },
+      },
+    });
+    vi.mocked(removeLocaleFtlJarMnEntry).mockResolvedValueOnce(false);
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    expect(vi.mocked(addLocaleFtlJarMnEntry)).not.toHaveBeenCalled();
+  });
+
   it('leaves the locale jar.mn alone on non-localized renames', async () => {
     // Belt check against regressions that would fire the locale jar.mn
     // re-wire even when the component is not localized, which would
@@ -692,6 +760,65 @@ describe('furnaceRenameCommand engine registrations', () => {
 
     expect(vi.mocked(removeLocaleFtlJarMnEntry)).not.toHaveBeenCalled();
     expect(vi.mocked(addLocaleFtlJarMnEntry)).not.toHaveBeenCalled();
+  });
+});
+
+describe('furnaceRenameCommand --dry-run and lock budget', () => {
+  it('prints the plan and writes nothing', async () => {
+    mockReadText.mockImplementation((path: string) => {
+      if (path.includes('customElements.js')) {
+        return Promise.resolve(
+          '    ["moz-sidebar", "chrome://global/content/elements/moz-sidebar.mjs"],  // MYBROWSER:\n'
+        );
+      }
+      if (path.includes('jar.mn')) {
+        return Promise.resolve(
+          '  content/global/elements/moz-sidebar.mjs  (widgets/moz-sidebar/moz-sidebar.mjs)\n' +
+            '  content/global/elements/moz-sidebar.css  (widgets/moz-sidebar/moz-sidebar.css)\n'
+        );
+      }
+      return Promise.resolve('');
+    });
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav', { dryRun: true });
+
+    expect(runFurnaceMutation).not.toHaveBeenCalled();
+    expect(mockWriteText).not.toHaveBeenCalled();
+    expect(mockWriteFurnaceConfig).not.toHaveBeenCalled();
+    const plan = vi.mocked(note).mock.calls[0]?.[0] ?? '';
+    expect(plan).toContain('moz-sidebar.mjs → moz-nav.mjs');
+    expect(plan).toContain('rewrite the "moz-sidebar" entry in place as "moz-nav"');
+    expect(plan).toContain('replace 2 "moz-sidebar" line(s) with moz-nav.css, moz-nav.mjs');
+  });
+
+  it('threads the --wait-lock budget into the furnace lock', async () => {
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav', { waitLockSeconds: 120 });
+
+    expect(runFurnaceMutation).toHaveBeenCalledWith(
+      '/project',
+      'rename-rollback',
+      expect.any(Function),
+      { lockTimeoutMs: 120_000 }
+    );
+  });
+
+  it('rewrites whole-tag mentions of the old name in the description', async () => {
+    mockLoadFurnaceConfig.mockResolvedValue({
+      ...defaultCustomConfig(),
+      custom: {
+        'moz-sidebar': {
+          description: 'moz-sidebar panel (not moz-sidebar-item)',
+          targetPath: 'toolkit/content/widgets/moz-sidebar',
+          register: false,
+          localized: false,
+        },
+      },
+    });
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    const written = mockWriteFurnaceConfig.mock.calls[0]?.[1];
+    expect(written?.custom['moz-nav']?.description).toBe('moz-nav panel (not moz-sidebar-item)');
   });
 });
 

@@ -247,6 +247,31 @@ describe('verify command', () => {
     await expect(verifyCommand(projectRoot)).rejects.toBeInstanceOf(GeneralError);
   });
 
+  it('fails verify and lint --per-patch on a registration-only policy violation', async () => {
+    await writeFireForgeConfig(projectRoot, {
+      patchPolicy: {
+        ranges: [{ from: 1, to: 99, category: 'infra' }],
+        upstreamAllowlist: [{ path: '**/jar.mn', addOnly: true, marker: 'mybrowser' }],
+      },
+    });
+    await initCommittedRepo(join(projectRoot, 'engine'), {
+      'browser/base/jar.mn': 'content/upstream.js\n',
+    });
+    await seedManifestAndPatches(patchesDir, [
+      {
+        metadata: makeMetadata('001-infra-reg.patch', 1, ['browser/base/jar.mn']),
+        body: createModifyDiff('browser/base/jar.mn', 'content/upstream.js', 'content/other.js'),
+      },
+    ]);
+
+    await expect(verifyCommand(projectRoot)).rejects.toBeInstanceOf(GeneralError);
+    expect(stdout).toContain('[add-only] 001-infra-reg.patch');
+    await expect(lintCommand(projectRoot, [], { perPatch: true })).rejects.toThrow(
+      /Patch lint found \d+ error/
+    );
+    expect(stdout).toContain('patch-policy/add-only');
+  });
+
   it('reports patchPolicy violations in lint --per-patch', async () => {
     await writeFireForgeConfig(projectRoot, {
       patchPolicy: {
@@ -376,5 +401,77 @@ describe('verify command', () => {
     ]);
 
     await expect(verifyCommand(projectRoot)).resolves.toBeUndefined();
+  });
+
+  describe('--patches scope', () => {
+    async function seedForwardImportQueue(): Promise<void> {
+      // 001 imports a module 002 creates later in the queue: a forward
+      // import implicating 001. 003 is clean.
+      await seedManifestAndPatches(patchesDir, [
+        {
+          metadata: makeMetadata('001-infra-a.patch', 1, ['foo/A.sys.mjs']),
+          body: createDiff(
+            'foo/A.sys.mjs',
+            'import { B } from "resource:///modules/B.sys.mjs";\nexport const A = B;'
+          ),
+        },
+        {
+          metadata: makeMetadata('002-infra-b.patch', 2, ['foo/B.sys.mjs']),
+          body: createDiff('foo/B.sys.mjs', 'export const B = 1;'),
+        },
+        {
+          metadata: makeMetadata('003-infra-c.patch', 3, ['foo/C.sys.mjs']),
+          body: createDiff('foo/C.sys.mjs', 'export const C = 1;'),
+        },
+      ]);
+    }
+
+    it('passes when the failing findings name only unscoped patches', async () => {
+      await seedForwardImportQueue();
+      await expect(verifyCommand(projectRoot, { patches: ['003'] })).resolves.toBeUndefined();
+      expect(stdout).toContain('Judging only: 003-infra-c.patch');
+    });
+
+    it('still fails when a scoped patch is implicated', async () => {
+      await seedForwardImportQueue();
+      await expect(verifyCommand(projectRoot, { patches: ['001,003'] })).rejects.toThrow(
+        /fireforge verify found/
+      );
+    });
+
+    it('keeps a missing patch file only for the scoped patch', async () => {
+      await ensureDir(patchesDir);
+      const manifest: PatchesManifest = {
+        version: 1,
+        patches: [
+          makeMetadata('001-infra-ghost.patch', 1, ['foo/Ghost.sys.mjs']),
+          makeMetadata('002-infra-real.patch', 2, ['foo/Real.sys.mjs']),
+        ],
+      };
+      await writeFile(join(patchesDir, 'patches.json'), JSON.stringify(manifest));
+      await writeFile(
+        join(patchesDir, '002-infra-real.patch'),
+        createDiff('foo/Real.sys.mjs', 'export const Real = 1;')
+      );
+
+      await expect(verifyCommand(projectRoot, { patches: ['002'] })).resolves.toBeUndefined();
+      await expect(verifyCommand(projectRoot, { patches: ['001'] })).rejects.toBeInstanceOf(
+        GeneralError
+      );
+    });
+
+    it('refuses a name that matches no patch, and a missing queue', async () => {
+      await seedForwardImportQueue();
+      await expect(verifyCommand(projectRoot, { patches: ['nope'] })).rejects.toThrow(
+        'No patch in the queue matches "nope"'
+      );
+      await writeFile(
+        join(patchesDir, 'patches.json'),
+        JSON.stringify({ version: 1, patches: [] })
+      );
+      await expect(verifyCommand(projectRoot, { patches: ['001'] })).rejects.toThrow(
+        '--patches needs a patch queue'
+      );
+    });
   });
 });

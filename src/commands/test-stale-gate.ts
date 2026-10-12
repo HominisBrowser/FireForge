@@ -9,6 +9,7 @@
  */
 
 import type { BuildBaseline } from '../core/build-baseline-types.js';
+import { filterByCarriedFullCoverage } from '../core/coverage-dispatch.js';
 import {
   checkStaleBuildForTest,
   checkStaticComponentsStale,
@@ -17,10 +18,13 @@ import {
   formatStaleBuildWarning,
   formatStaticComponentsRefusal,
   formatTestCoverageRefusal,
+  FULL_SUITE_REQUEST,
 } from '../core/test-stale-check.js';
+import { formatStaleExemptions } from '../core/test-stale-exempt.js';
 import { PreflightRefusalError } from '../errors/base.js';
 import type { TestOptions } from '../types/commands/index.js';
-import { warn } from '../utils/logger.js';
+import { info, warn } from '../utils/logger.js';
+import { describePerfStaleImpact } from './test-perf-scope.js';
 
 /**
  * Stale-build preflight: when `--build` was not requested, detect packageable
@@ -51,46 +55,85 @@ export async function enforceStaleBuildGate(
   const stale = await checkStaleBuildForTest(projectRoot, engineDir);
   const dispatchesNoTests = options.doctor === true && normalizedPaths.length === 0;
   if (!dispatchesNoTests) {
-    const recordedCoverage = stale.baseline?.testPackagingCoverage;
-    const uncovered = findUncoveredRequestPaths(recordedCoverage, normalizedPaths);
-    if (uncovered.length > 0) {
-      // The refusal is correct on its own. Naming the manifest that gained
-      // an entry is the triage step it otherwise leaves to the reader.
-      const changedManifests = await findChangedTestManifestsForPaths(
-        engineDir,
-        stale.baseline,
-        uncovered
-      );
-      throw new PreflightRefusalError(
-        formatTestCoverageRefusal(
-          uncovered,
-          Array.isArray(recordedCoverage) ? recordedCoverage : [],
-          changedManifests
-        ),
-        'coverage-replaced'
-      );
-    }
+    await enforceCoverageGate(engineDir, stale.baseline, normalizedPaths);
   }
 
   await enforceStaticComponentsGate(engineDir, stale.baseline, options);
 
-  const staleMessage = stale.stale
-    ? `${formatStaleBuildWarning(stale)}\n\n` +
-      'Run `fireforge test --build` to refresh the packaged runtime first — that is almost ' +
-      'always the right move, because the usual cause is your own edit landing between the ' +
-      'last build and this run.\n\n' +
-      '`--allow-stale-build` is NOT the general escape hatch: it accepts a packaging that ' +
-      'predates the edit under test, so the run tests the OLD code. Pass it only when you ' +
-      'rebuilt out-of-band (outside FireForge) and know the packaged runtime already contains ' +
-      'the change.'
-    : undefined;
-  if (staleMessage !== undefined) {
-    if (options.allowStaleBuild === true) {
-      warn(staleMessage);
-    } else {
-      throw new PreflightRefusalError(staleMessage, 'stale-build');
-    }
+  const exempt = stale.exempt ?? [];
+  if (!stale.stale && exempt.length > 0) {
+    info(
+      `Stale-build preflight: ${exempt.length} edit(s) since the last build need no rebuild: ${formatStaleExemptions(exempt)}.`
+    );
   }
+  if (!stale.stale) return;
+
+  // The one-line repackaging command, so a build-less sitting (a perf
+  // series) can repackage and continue without dispatching anything.
+  const repackage =
+    normalizedPaths.length > 0
+      ? `fireforge test --build-only ${normalizedPaths.join(' ')}`
+      : 'fireforge build --ui';
+  const perfImpact =
+    options.perfSamples === undefined
+      ? ''
+      : `\n\n${await describePerfStaleImpact(engineDir, stale.changedPaths, normalizedPaths)}`;
+  const staleMessage =
+    `${formatStaleBuildWarning(stale)}\n\n` +
+    'Run `fireforge test --build` to refresh the packaged runtime first — that is almost ' +
+    'always the right move, because the usual cause is your own edit landing between the ' +
+    'last build and this run. To repackage without running anything: ' +
+    `\`${repackage}\`.${perfImpact}\n\n` +
+    '`--allow-stale-build` is NOT the general escape hatch: it accepts a packaging that ' +
+    'predates the edit under test, so the run tests the OLD code. Pass it only when you ' +
+    'rebuilt out-of-band (outside FireForge) and know the packaged runtime already contains ' +
+    'the change.';
+  if (options.allowStaleBuild === true) {
+    warn(staleMessage);
+  } else {
+    throw new PreflightRefusalError(staleMessage, 'stale-build');
+  }
+}
+
+/**
+ * Packaging-coverage refusal. A path outside the recorded scoped list is
+ * still covered while its own staging inputs are unchanged against a
+ * carried full-build anchor. The refusal names, per uncovered path, the
+ * inputs that changed.
+ */
+async function enforceCoverageGate(
+  engineDir: string,
+  baseline: BuildBaseline | undefined,
+  normalizedPaths: readonly string[]
+): Promise<void> {
+  const recordedCoverage = baseline?.testPackagingCoverage;
+  const outsideList = findUncoveredRequestPaths(recordedCoverage, normalizedPaths);
+  if (outsideList.length === 0) return;
+  const remaining = await filterByCarriedFullCoverage(
+    engineDir,
+    baseline,
+    outsideList,
+    FULL_SUITE_REQUEST
+  );
+  if (remaining.length === 0) return;
+  const uncovered = remaining.map((request) => request.path);
+  // The refusal is correct on its own. Naming the manifest that gained
+  // an entry is the triage step it otherwise leaves to the reader.
+  const changedManifests = await findChangedTestManifestsForPaths(engineDir, baseline, uncovered);
+  throw new PreflightRefusalError(
+    formatTestCoverageRefusal(
+      uncovered,
+      Array.isArray(recordedCoverage) ? recordedCoverage : [],
+      changedManifests,
+      {
+        changedInputs: Object.fromEntries(
+          remaining.map((request) => [request.path, request.changed])
+        ),
+        carriesFullAnchor: baseline?.fullCoverageAnchor !== undefined,
+      }
+    ),
+    'coverage-replaced'
+  );
 }
 
 /**

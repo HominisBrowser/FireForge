@@ -44,6 +44,9 @@ describe('CLI help output', () => {
     // The epilogue's reason list must stay in step with FireforgeVerdictReason.
     expect(testHelp).toContain('inconclusive|lock-timeout|killed]');
     expect(testHelp).toContain('reason=killed means a signal terminated the run');
+    expect(testHelp).toContain('A dev objdir symlinks chrome JS/CSS and widget files into engine/');
+    expect(testHelp).toContain('a hand-made neuter must stay until the verdict line');
+    expect(testHelp).toContain('started=<n>/<m> first-unstarted=<path>');
   });
 
   it('exposes the full furnace subcommand set', () => {

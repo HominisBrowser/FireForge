@@ -31,6 +31,7 @@ import {
   type PatchQueueEntry,
 } from '../../core/patch-lint.js';
 import type { PatchQueueContext } from '../../core/patch-lint-cross.js';
+import { buildLintIgnoreChecks } from '../../core/patch-lint-ignore.js';
 import { computeProjectedLintRegressions } from '../../core/patch-lint-projection.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
@@ -52,12 +53,8 @@ import { resolveWaitLockSeconds } from '../../utils/options.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { runPatchLint } from '../export-shared.js';
 import { projectEntryBody } from './entry-projection.js';
-import {
-  buildSplitDiff,
-  findOwnerRewriteHolders,
-  mergeStagedForwardImports,
-  rewriteSplitOwners,
-} from './split-plan.js';
+import { buildSplitDiff, mergeStagedForwardImports } from './split-plan.js';
+import { findOwnerRewriteHolders, rewriteSplitOwners } from './split-staged.js';
 
 /** Everything the commit step needs, computed and confirmed up front. */
 export interface MoveIntoPlan {
@@ -296,7 +293,7 @@ export async function runMoveFilesInto(args: {
     config: args.config,
     skipLint: options.skipLint,
     patchQueueCtx,
-    ignoreChecks: source.lintIgnore ? new Set<string>(source.lintIgnore) : undefined,
+    ignoreChecks: buildLintIgnoreChecks(source.lintIgnore),
     patchTier: source.tier,
   });
   await runPatchLint({
@@ -306,7 +303,7 @@ export async function runMoveFilesInto(args: {
     config: args.config,
     skipLint: options.skipLint,
     patchQueueCtx,
-    ignoreChecks: target.lintIgnore ? new Set<string>(target.lintIgnore) : undefined,
+    ignoreChecks: buildLintIgnoreChecks(target.lintIgnore),
     patchTier: target.tier,
   });
 

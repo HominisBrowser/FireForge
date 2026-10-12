@@ -21,8 +21,8 @@
  */
 
 import { createWriteStream, type WriteStream } from 'node:fs';
-import { mkdir, readdir, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readdir, stat, unlink } from 'node:fs/promises';
+import { basename as basenameOf, dirname, join, resolve } from 'node:path';
 import { Writable } from 'node:stream';
 
 import { toError } from '../utils/errors.js';
@@ -133,11 +133,27 @@ export async function openRunLog(
   now: Date = new Date()
 ): Promise<RunLog | undefined> {
   const dir = getRunLogDir(projectRoot);
-  let stream: WriteStream;
   const path = join(dir, `${command}-${fileSafeTimestamp(now)}.log`);
   try {
     await mkdir(dir, { recursive: true });
     await pruneRunLogs(dir, command);
+  } catch (error: unknown) {
+    verbose(`Run log unavailable (${path}): ${toError(error).message}`);
+    return undefined;
+  }
+  return openRunLogSink(path);
+}
+
+/**
+ * Opens one redacting log file at `path`, creating its directory.
+ *
+ * @param path - Absolute file path
+ * @returns The sink, or undefined when the file could not be opened
+ */
+async function openRunLogSink(path: string): Promise<RunLog | undefined> {
+  let stream: WriteStream;
+  try {
+    await mkdir(dirname(path), { recursive: true });
     stream = createWriteStream(path, { flags: 'a' });
   } catch (error: unknown) {
     verbose(`Run log unavailable (${path}): ${toError(error).message}`);
@@ -193,6 +209,82 @@ export async function openRunLog(
           resolve();
         });
       });
+    },
+  };
+}
+
+/** Environment variable naming where every run's log is also kept. */
+const LOG_KEEP_ENV_VAR = 'FIREFORGE_LOG_KEEP';
+
+/**
+ * Where a run's kept copy goes: `--keep-log <path>` when given, else
+ * {@link LOG_KEEP_ENV_VAR}, else nowhere. A value that ends in a path
+ * separator or names an existing directory receives the log under its own
+ * `.fireforge/logs/` basename, so a session-wide directory collects one
+ * file per run. Any other value is the file itself. Relative values resolve
+ * against the caller's working directory.
+ *
+ * @param flag - The `--keep-log` value, if any
+ * @param basename - The run log's own file name
+ * @returns The absolute destination, or undefined when none was asked for
+ */
+async function resolveRunLogKeepPath(
+  flag: string | undefined,
+  basename: string
+): Promise<string | undefined> {
+  const raw = flag ?? process.env[LOG_KEEP_ENV_VAR]?.trim();
+  if (raw === undefined || raw.length === 0) return undefined;
+  const target = resolve(raw);
+  let directory = /[\\/]$/.test(raw);
+  if (!directory) {
+    try {
+      directory = (await stat(target)).isDirectory();
+    } catch {
+      directory = false;
+    }
+  }
+  return directory ? join(target, basename) : target;
+}
+
+/**
+ * Tees a run log into a caller-chosen copy (`--keep-log`,
+ * {@link LOG_KEEP_ENV_VAR}) that retention never prunes.
+ *
+ * `.fireforge/logs/` keeps twenty logs per command kind for EVERY session
+ * on the checkout, so on a shared checkout a log named by a verdict line
+ * can be gone within the hour, and a failure recorded only by its log path
+ * cannot be read later. The copy is written live, line for line with the
+ * same redaction, rather than copied at the end: a killed run keeps what it
+ * had written, like the primary log does.
+ *
+ * The primary path stays the one `log=` names. When the primary could not
+ * be opened the copy stands in for it.
+ *
+ * @param log - The primary run log, if one opened
+ * @param flag - The `--keep-log` value, if any
+ * @param command - Command kind, naming a copy that has no primary
+ * @returns A sink writing to both, or whichever one opened
+ */
+export async function keepRunLogCopy(
+  log: RunLog | undefined,
+  flag: string | undefined,
+  command: string
+): Promise<RunLog | undefined> {
+  const basename =
+    log === undefined ? `${command}-${fileSafeTimestamp(new Date())}.log` : basenameOf(log.path);
+  const keepPath = await resolveRunLogKeepPath(flag, basename);
+  if (keepPath === undefined || keepPath === log?.path) return log;
+  const copy = await openRunLogSink(keepPath);
+  if (copy === undefined) return log;
+  if (log === undefined) return copy;
+  return {
+    path: log.path,
+    write: (chunk: string): void => {
+      log.write(chunk);
+      copy.write(chunk);
+    },
+    close: async (): Promise<void> => {
+      await Promise.all([log.close(), copy.close()]);
     },
   };
 }

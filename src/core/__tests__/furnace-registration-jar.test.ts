@@ -6,6 +6,7 @@ import {
   addJarMnEntries,
   addLocaleFtlJarMnEntry,
   findStaleJarMnEntries,
+  hasLocaleFtlJarMnEntry,
   pruneStaleJarMnEntries,
   removeJarMnEntries,
   removeLocaleFtlJarMnEntry,
@@ -88,6 +89,40 @@ toolkit.jar:
 
     expect(mockWriteText).not.toHaveBeenCalled();
   });
+  it('never duplicates a hand-written line that sits elsewhere in the jar', async () => {
+    // A module registered by hand below an unrelated entry, not where
+    // Furnace would insert it. A second, identical line makes mach fail
+    // every build with "Item already in manifest".
+    mockReadText.mockResolvedValue(
+      [
+        'toolkit.jar:',
+        '% content global %content/global/',
+        '   content/global/elements/moz-bar.css  (widgets/moz-bar/moz-bar.css)',
+        '   content/global/elements/moz-bar.mjs  (widgets/moz-bar/moz-bar.mjs)',
+        '   content/global/elements/wizard.js  (widgets/wizard/wizard.js)',
+        '   content/global/elements/moz-bar-rows.mjs (widgets/moz-bar/moz-bar-rows.mjs)',
+      ].join('\n')
+    );
+
+    await expect(
+      addJarMnEntries('/engine', 'moz-bar', ['moz-bar.css', 'moz-bar.mjs', 'moz-bar-rows.mjs'])
+    ).resolves.toBe(0);
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it('treats a line sourcing the same component file as registered', async () => {
+    mockReadText.mockResolvedValue(
+      [
+        'toolkit.jar:',
+        '   content/global/elements/moz-bar.mjs  (widgets/moz-bar/moz-bar.mjs)',
+        '   content/global/elements/moz-bar/rows.mjs  (widgets/moz-bar/moz-bar-rows.mjs)',
+      ].join('\n')
+    );
+
+    await expect(addJarMnEntries('/engine', 'moz-bar', ['moz-bar-rows.mjs'])).resolves.toBe(0);
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
   it('throws a descriptive error when jar.mn is empty', async () => {
     mockReadText.mockResolvedValue('');
 
@@ -391,12 +426,40 @@ describe('removeLocaleFtlJarMnEntry', () => {
 
   it('is a no-op when the jar.mn file is missing', async () => {
     mockPathExists.mockResolvedValueOnce(false);
-    await removeLocaleFtlJarMnEntry(
-      '/engine',
-      'toolkit/locales/jar.mn',
-      'moz-dock',
-      'toolkit/global'
-    );
+    await expect(
+      removeLocaleFtlJarMnEntry('/engine', 'toolkit/locales/jar.mn', 'moz-dock', 'toolkit/global')
+    ).resolves.toBe(false);
     expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it('reports whether a line was removed', async () => {
+    mockReadText.mockResolvedValue(
+      '  locale/@AB_CD@/toolkit/global/moz-card.ftl (%toolkit/global/moz-card.ftl)'
+    );
+    await expect(
+      removeLocaleFtlJarMnEntry('/engine', 'toolkit/locales/jar.mn', 'moz-dock', 'toolkit/global')
+    ).resolves.toBe(false);
+    await expect(
+      removeLocaleFtlJarMnEntry('/engine', 'toolkit/locales/jar.mn', 'moz-card', 'toolkit/global')
+    ).resolves.toBe(true);
+  });
+});
+
+describe('hasLocaleFtlJarMnEntry', () => {
+  it('detects a per-widget locale line and tolerates a missing jar', async () => {
+    mockReadText.mockResolvedValue(
+      '  locale/@AB_CD@/toolkit/global/moz-card.ftl (%toolkit/global/moz-card.ftl)'
+    );
+    await expect(
+      hasLocaleFtlJarMnEntry('/engine', 'toolkit/locales/jar.mn', 'moz-card', 'toolkit/global')
+    ).resolves.toBe(true);
+    await expect(
+      hasLocaleFtlJarMnEntry('/engine', 'toolkit/locales/jar.mn', 'moz-dock', 'toolkit/global')
+    ).resolves.toBe(false);
+
+    mockPathExists.mockResolvedValueOnce(false);
+    await expect(
+      hasLocaleFtlJarMnEntry('/engine', 'toolkit/locales/jar.mn', 'moz-card', 'toolkit/global')
+    ).resolves.toBe(false);
   });
 });

@@ -11,11 +11,13 @@ import { setActiveRunLog } from '../../core/run-log.js';
 import { error as logError } from '../../utils/logger.js';
 import {
   addVerdictRunCount,
+  emitAggregateVerdict,
   emitFailVerdict,
   emitHarnessVerdict,
   emitKilledVerdict,
   emitPassVerdict,
   resetVerdictEmission,
+  setVerdictCapture,
   setVerdictRunAttribute,
   verdictEmitted,
 } from '../test-verdict.js';
@@ -167,6 +169,54 @@ describe('verdict rendering', () => {
       capture.restore();
     }
     expect(capture.writes).toEqual(['FIREFORGE-VERDICT: PASS checks=16 unexpected=0\n']);
+  });
+});
+
+describe('sub-run capture (multi-run orchestration)', () => {
+  it('records the first sub-run line without printing or sealing, then the aggregate prints', () => {
+    const stdout = captureStdout();
+    try {
+      const slot: { line?: string } = {};
+      setVerdictCapture(slot);
+      expect(verdictEmitted()).toBe(false);
+      emitHarnessVerdict({ kind: 'tests-ran-ok', checks: 4 });
+      emitFailVerdict('inconclusive');
+      expect(verdictEmitted()).toBe(true);
+      expect(slot.line).toBe('FIREFORGE-VERDICT: PASS checks=4');
+      setVerdictCapture(undefined);
+      expect(verdictEmitted()).toBe(false);
+      setVerdictRunAttribute('shuffle', '7');
+      emitAggregateVerdict('PASS runs=2/2');
+      emitPassVerdict();
+    } finally {
+      stdout.restore();
+    }
+    expect(stdout.writes).toEqual(['FIREFORGE-VERDICT: PASS runs=2/2 shuffle=7\n']);
+  });
+
+  it('a kill during a captured sub-run still prints its terminal line', () => {
+    const stdout = captureStdout();
+    try {
+      setVerdictCapture({});
+      expect(emitKilledVerdict('SIGINT')).toBe(true);
+    } finally {
+      stdout.restore();
+    }
+    expect(stdout.writes).toEqual(['FIREFORGE-VERDICT: FAIL reason=killed signal=SIGINT\n']);
+  });
+
+  it('resetVerdictEmission drops a capture slot left installed', () => {
+    const slot: { line?: string } = {};
+    setVerdictCapture(slot);
+    resetVerdictEmission();
+    const stdout = captureStdout();
+    try {
+      emitPassVerdict();
+    } finally {
+      stdout.restore();
+    }
+    expect(slot.line).toBeUndefined();
+    expect(stdout.writes).toEqual(['FIREFORGE-VERDICT: PASS\n']);
   });
 });
 

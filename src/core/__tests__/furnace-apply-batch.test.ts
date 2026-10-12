@@ -302,7 +302,9 @@ describe('applyAllComponents', () => {
           filesAffected: ['browser/components/panel/moz-panel.mjs'],
         },
       ],
-      skipped: [{ name: 'moz-card', reason: 'No changes since last apply' }],
+      skipped: [
+        { name: 'moz-card', reason: 'No changes since last apply', kind: 'already-current' },
+      ],
       errors: [],
     });
     expect(extractComponentChecksums).toHaveBeenCalledWith(
@@ -503,8 +505,8 @@ describe('applyAllComponents', () => {
 
     expect(result.applied).toEqual([]);
     expect(result.skipped).toEqual([
-      { name: 'moz-card', reason: 'No changes since last apply' },
-      { name: 'moz-panel', reason: 'No changes since last apply' },
+      { name: 'moz-card', reason: 'No changes since last apply', kind: 'already-current' },
+      { name: 'moz-panel', reason: 'No changes since last apply', kind: 'already-current' },
     ]);
     expect(applyOverrideComponent).not.toHaveBeenCalled();
     expect(applyCustomComponent).not.toHaveBeenCalled();

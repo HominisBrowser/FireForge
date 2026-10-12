@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { getProjectPaths, loadState } from '../../core/config.js';
 import { diffLines, renderHunks } from '../../core/diff-hunks.js';
 import { getOverrideEngineTargetPath } from '../../core/furnace-apply-helpers.js';
+import { normalizeForChecksum } from '../../core/furnace-checksum-utils.js';
+import { composeComponentSource } from '../../core/furnace-composed-source.js';
 import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { isComponentSourceFile, resolveFtlDir } from '../../core/furnace-constants.js';
 import { getFileContentAtRef } from '../../core/git-file-ops.js';
@@ -136,6 +138,14 @@ async function diffOverride(
  * copy. Shows what would change (or has changed) on the next
  * `furnace apply`.
  *
+ * The workspace side is the Furnace-composed source: a stylesheet with
+ * `@fireforge-include` directives is compared in its fragment-expanded
+ * form, exactly as apply deploys it. Comparing the raw source instead
+ * reported every freshly deployed fragment includer as a large difference
+ * (the inlined fragment bodies and end markers), so the diff could not show
+ * whether a deploy would change anything. Line endings and a BOM are
+ * ignored, as apply's own drift check ignores them.
+ *
  * `.ftl` files deploy to `engine/<ftlDir>/<name>.ftl` via
  * `applyCustomFtlFile`, not to `customConfig.targetPath`, so the
  * deployment-target lookup has to branch on extension. Without the branch, a
@@ -167,7 +177,21 @@ async function diffCustom(name: string, projectRoot: string, config: FurnaceConf
     if (!isComponentSourceFile(entry.name)) continue;
 
     const workspacePath = join(customDir, entry.name);
-    const workspaceContent = await readText(workspacePath);
+    const rawWorkspace = await readText(workspacePath);
+    let workspaceContent = rawWorkspace;
+    let composedNote = '';
+    try {
+      workspaceContent = await composeComponentSource(
+        rawWorkspace,
+        entry.name,
+        furnacePaths.sharedDir
+      );
+      if (workspaceContent !== rawWorkspace) composedNote = ' (composed: fragments expanded)';
+    } catch (error: unknown) {
+      // A missing fragment: no composed form exists, so show the raw
+      // source and say why; `furnace validate` reports the fragment itself.
+      composedNote = ` (raw: ${toError(error).message})`;
+    }
 
     // `.ftl` files deploy to the locale tree, not the component's
     // targetPath. Mirror `applyCustomFtlFile`'s target computation so the
@@ -188,7 +212,8 @@ async function diffCustom(name: string, projectRoot: string, config: FurnaceConf
       continue;
     }
 
-    const deployedContent = await readText(deployedPath);
+    const deployedContent = normalizeForChecksum(await readText(deployedPath));
+    workspaceContent = normalizeForChecksum(workspaceContent);
 
     if (workspaceContent === deployedContent) {
       continue;
@@ -196,7 +221,7 @@ async function diffCustom(name: string, projectRoot: string, config: FurnaceConf
 
     hasDifferences = true;
     info(`--- ${deployedDisplayPath}`);
-    info(`+++ components/custom/${name}/${entry.name}`);
+    info(`+++ components/custom/${name}/${entry.name}${composedNote}`);
 
     for (const line of formatUnifiedDiff(deployedContent, workspaceContent)) {
       info(line);

@@ -19,11 +19,14 @@ import { isBrandingManagedPath } from '../core/branding.js';
 import { getModifiedFilesInDir, getUntrackedFilesInDir } from '../core/git-status.js';
 import { getClaimedFiles } from '../core/patch-manifest.js';
 import { isGeneratedBrandingPath } from '../core/status-classify.js';
-import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
+import type { PatchesManifest, PatchMetadata, ReExportOptions } from '../types/commands/index.js';
 import type { ProjectPaths } from '../types/config.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { pathExists } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
+import { escapeRegex } from '../utils/regex.js';
+import { findRegisteredChangedFiles } from './re-export-adjacent-registrations.js';
+import { normalizeEngineRelativeInput } from './re-export-scan.js';
 
 /**
  * Shared per-run context for the adjacency advisory: the classification
@@ -44,6 +47,23 @@ export interface AdjacentUnmanagedContext {
   /** Approved paths actually met this run, so unused ones can be surfaced. */
   approvedSeen: Set<string>;
   /**
+   * Engine-relative paths named by `--expect-new`: files this session
+   * created and will adopt with its next export (or `--scan-file`). They
+   * pass the belt and are reported, while every other adjacent file still
+   * refuses, so a peer's neighbour is not admitted with them.
+   */
+  expectedNew: ReadonlySet<string>;
+  /** `--expect-new` paths actually met this run. */
+  expectedNewSeen: Set<string>;
+  /**
+   * Reviewed `--adjacent-ignore` entries: an engine-relative path, or a
+   * glob whose `*` stays within one path segment. Matches are reported in
+   * one line and never refuse.
+   */
+  adjacentIgnore: readonly string[];
+  /** `--adjacent-ignore` entries that matched a file this run. */
+  adjacentIgnoreSeen: Set<string>;
+  /**
    * Offenders collected across the loop. `files` stays the bare paths that
    * downstream consumers already read. `anchored` carries the same entries
    * with the owned directory that made each one adjacent, so the run-level
@@ -51,6 +71,39 @@ export interface AdjacentUnmanagedContext {
    */
   refusals: { patchFilename: string; files: string[]; anchored: string[] }[];
 }
+
+/**
+ * Builds the run's adjacency context. The path flags are normalized once
+ * here, so the per-file comparison matches git's engine-relative output.
+ */
+export function buildAdjacentUnmanagedContext(
+  options: ReExportOptions,
+  binaryName: string,
+  furnacePrefixes: ReadonlySet<string>
+): AdjacentUnmanagedContext {
+  const normalized = (flag: string, values: readonly string[] | undefined): string[] =>
+    (values ?? []).map((value) => normalizeEngineRelativeInput(value, flag));
+  return {
+    binaryName,
+    furnacePrefixes,
+    refuseAdjacentUnmanaged: options.refuseAdjacentUnmanaged === true,
+    approvedUnmanaged: new Set(normalized('--expect-unmanaged', options.expectUnmanaged)),
+    approvedSeen: new Set(),
+    expectedNew: new Set(normalized('--expect-new', options.expectNew)),
+    expectedNewSeen: new Set(),
+    adjacentIgnore: normalized('--adjacent-ignore', options.adjacentIgnore),
+    adjacentIgnoreSeen: new Set(),
+    refusals: [],
+  };
+}
+
+/**
+ * The one definition of "adjacent", shared by the per-patch notice and the
+ * run-level refusal so the two cannot drift apart.
+ */
+export const ADJACENT_MEANS =
+  'Adjacent means the file sits in the same directory as a file this patch owns, ' +
+  'or a registration line this patch adds (jar.mn, moz.build, test manifest) names it.';
 
 /** Concurrency bound for existence probes (matches the classify/lint pools). */
 const PATH_PROBE_CONCURRENCY = 8;
@@ -98,10 +151,37 @@ function isToolManagedPath(
 export interface AdjacentUnmanagedFile {
   /** Engine-relative path of the unmanaged file. */
   file: string;
-  /** Directory holding at least one file this patch owns. */
+  /**
+   * Directory holding at least one file this patch owns, or for a
+   * registration-named file, the directory of the carrier naming it.
+   */
   anchorDir: string;
+  /** The owned carrier whose added registration line names the file. */
+  registeredBy?: string;
 }
 
+/**
+ * Matches an `--adjacent-ignore` entry. A `*` stays inside one path
+ * segment, the same narrowness as `buildAudit.unpackaged`: a carve-out that
+ * silently spans subtrees is how a reviewed exception becomes a blanket one.
+ */
+function matchesIgnoreEntry(entry: string, file: string): boolean {
+  if (!entry.includes('*')) return entry === file;
+  const pattern = entry
+    .split('*')
+    .map((part) => escapeRegex(part))
+    .join('[^/]*');
+  return new RegExp(`^${pattern}$`).test(file);
+}
+
+/**
+ * Lists the unmanaged files a re-export of this patch would plausibly have
+ * to capture: changed files directly in a directory the patch owns a file
+ * in, and changed files a registration line the patch adds names. A file in
+ * a sibling or nested directory is not adjacent. The directory listing
+ * recurses (pathspecs do), so it is filtered back to the exact directories,
+ * the same footprint the broad `--scan` adopts from.
+ */
 async function findAdjacentUnmanagedFiles(args: {
   currentFilesAffected: readonly string[];
   engineDir: string;
@@ -111,11 +191,17 @@ async function findAdjacentUnmanagedFiles(args: {
 }): Promise<AdjacentUnmanagedFile[]> {
   const { currentFilesAffected, engineDir, manifest, patchFilename, ctx } = args;
   const parentDirs = [...new Set(currentFilesAffected.map((file) => dirname(file)))];
+  const parentDirSet = new Set(parentDirs);
   const currentSet = new Set(currentFilesAffected);
   const claimedByOthers = getClaimedFiles(manifest, patchFilename);
-  // First anchor wins: the dirs are scanned in ownership order and a file
-  // lives in exactly one of them, so the map is a dedupe, not a choice.
-  const candidates = new Map<string, string>();
+  // First anchor wins: a file lives in exactly one directory, and a
+  // directory anchor is the stronger statement than a registration one.
+  const candidates = new Map<string, AdjacentUnmanagedFile>();
+  const isCandidate = (file: string, isNewFile: boolean): boolean =>
+    !currentSet.has(file) &&
+    !claimedByOthers.has(file) &&
+    !candidates.has(file) &&
+    !isToolManagedPath(file, isNewFile, ctx);
 
   for (const dir of parentDirs) {
     const [modifiedFiles, untrackedFiles] = await Promise.all([
@@ -124,43 +210,95 @@ async function findAdjacentUnmanagedFiles(args: {
     ]);
     const untrackedSet = new Set(untrackedFiles);
     for (const file of [...modifiedFiles, ...untrackedFiles]) {
-      if (currentSet.has(file) || claimedByOthers.has(file)) continue;
-      if (isToolManagedPath(file, untrackedSet.has(file), ctx)) continue;
-      if (!candidates.has(file)) candidates.set(file, dir);
+      if (!parentDirSet.has(dirname(file))) continue;
+      if (isCandidate(file, untrackedSet.has(file))) {
+        candidates.set(file, { file, anchorDir: dirname(file) });
+      }
     }
   }
 
-  return [...candidates.entries()]
-    .map(([file, anchorDir]) => ({ file, anchorDir }))
-    .sort((a, b) => a.file.localeCompare(b.file));
+  const registered = await findRegisteredChangedFiles(engineDir, currentFilesAffected);
+  for (const { file, carrier } of registered) {
+    // A registered path is a patch candidate whatever its tracking state,
+    // so it is classified as new: only a generated path is tool-managed.
+    if (isCandidate(file, true)) {
+      candidates.set(file, { file, anchorDir: dirname(carrier), registeredBy: carrier });
+    }
+  }
+
+  return [...candidates.values()].sort((a, b) => a.file.localeCompare(b.file));
+}
+
+/** Which carve-out admitted an adjacent file, or `refusing` for none. */
+type AdjacentDisposition = 'refusing' | 'approved' | 'expected-new' | 'ignored';
+
+function dispositionOf(file: string, ctx: AdjacentUnmanagedContext): AdjacentDisposition {
+  if (ctx.approvedUnmanaged.has(file)) {
+    ctx.approvedSeen.add(file);
+    return 'approved';
+  }
+  if (ctx.expectedNew.has(file)) {
+    ctx.expectedNewSeen.add(file);
+    return 'expected-new';
+  }
+  const ignore = ctx.adjacentIgnore.find((entry) => matchesIgnoreEntry(entry, file));
+  if (ignore !== undefined) {
+    ctx.adjacentIgnoreSeen.add(ignore);
+    return 'ignored';
+  }
+  return 'refusing';
 }
 
 /**
- * Splits the candidates into the ones that refuse and the ones a
- * `--expect-unmanaged` carve-out admits. Approved paths are recorded as seen
- * so an unused carve-out can be reported, and are returned rather than
- * dropped, so the exception stays visible instead of quietly widening.
+ * Splits the candidates into the ones that refuse and the ones a carve-out
+ * (`--expect-unmanaged`, `--expect-new`, `--adjacent-ignore`) admits. Met
+ * carve-outs are recorded so an unused one can be reported, and admitted
+ * files are returned rather than dropped, so the exception stays visible
+ * instead of quietly widening.
  */
 function partitionApproved(
   files: readonly AdjacentUnmanagedFile[],
   ctx: AdjacentUnmanagedContext
-): { refusing: AdjacentUnmanagedFile[]; approved: AdjacentUnmanagedFile[] } {
-  const refusing: AdjacentUnmanagedFile[] = [];
-  const approved: AdjacentUnmanagedFile[] = [];
-  for (const entry of files) {
-    if (ctx.approvedUnmanaged.has(entry.file)) {
-      ctx.approvedSeen.add(entry.file);
-      approved.push(entry);
-    } else {
-      refusing.push(entry);
-    }
-  }
-  return { refusing, approved };
+): Record<AdjacentDisposition, AdjacentUnmanagedFile[]> {
+  const groups: Record<AdjacentDisposition, AdjacentUnmanagedFile[]> = {
+    refusing: [],
+    approved: [],
+    'expected-new': [],
+    ignored: [],
+  };
+  for (const entry of files) groups[dispositionOf(entry.file, ctx)].push(entry);
+  return groups;
 }
 
-/** Renders `<file> (beside engine/<dir>)` for a notice line. */
+/** How a notice names one file's anchor. */
+function describeAnchor(entry: AdjacentUnmanagedFile): string {
+  return entry.registeredBy !== undefined
+    ? `registered by engine/${entry.registeredBy}`
+    : `beside engine/${entry.anchorDir}`;
+}
+
+/** Renders `<file> (beside engine/<dir>)` or `<file> (registered by engine/<carrier>)`. */
 function describeAnchored(entry: AdjacentUnmanagedFile): string {
-  return `${entry.file} (beside engine/${entry.anchorDir})`;
+  return `${entry.file} (${describeAnchor(entry)})`;
+}
+
+/** The admitted-file notice lines, one per carve-out that admitted anything. */
+function reportAdmitted(
+  patchFilename: string,
+  groups: Record<AdjacentDisposition, AdjacentUnmanagedFile[]>
+): void {
+  const notices: [AdjacentUnmanagedFile[], string][] = [
+    [groups.approved, 'admitted by --expect-unmanaged'],
+    [groups['expected-new'], 'expected by --expect-new'],
+    [groups.ignored, 'ignored by --adjacent-ignore'],
+  ];
+  for (const [entries, how] of notices) {
+    if (entries.length === 0) continue;
+    info(
+      `${patchFilename}: ${entries.length} adjacent unmanaged file(s) ${how} ` +
+        `(${entries.map(describeAnchored).join(', ')}) — reported, not refused.`
+    );
+  }
 }
 
 /**
@@ -198,26 +336,22 @@ export async function reportAdjacentUnmanagedFiles(args: {
     patchFilename: patch.filename,
     ctx,
   });
-  const { refusing: unmanagedFiles, approved } = partitionApproved(allUnmanaged, ctx);
-
-  if (approved.length > 0) {
-    info(
-      `${patch.filename}: ${approved.length} adjacent unmanaged file(s) admitted by ` +
-        `--expect-unmanaged (${approved.map(describeAnchored).join(', ')}) — reported, not refused.`
-    );
-  }
+  const groups = partitionApproved(allUnmanaged, ctx);
+  reportAdmitted(patch.filename, groups);
+  const unmanagedFiles = groups.refusing;
   if (unmanagedFiles.length === 0) return false;
 
   const firstFew = unmanagedFiles.slice(0, 3).map(describeAnchored).join(', ');
   const more = unmanagedFiles.length > 3 ? `, +${unmanagedFiles.length - 3} more` : '';
   warn(
-    `${patch.filename}: found ${unmanagedFiles.length} unmanaged file(s) adjacent to this patch's ownership (${firstFew}${more}); ` +
-      `adjacent means the file sits in a directory this patch already owns a file in. ` +
-      `Plain re-export keeps filesAffected unchanged — use --scan-file to include reviewed files.`
+    `${patch.filename}: found ${unmanagedFiles.length} unmanaged file(s) adjacent to this patch's ownership (${firstFew}${more}). ` +
+      `${ADJACENT_MEANS} ` +
+      `Plain re-export keeps filesAffected unchanged — use --scan-file to include reviewed files, ` +
+      `or --expect-new for a file your next export adopts.`
   );
   for (const entry of unmanagedFiles) {
     info(
-      `  ${entry.file} — beside engine/${entry.anchorDir} — ` +
+      `  ${entry.file} — ${describeAnchor(entry)} — ` +
         `fireforge re-export ${patch.filename} --scan --scan-file ${entry.file}`
     );
   }
@@ -231,4 +365,37 @@ export async function reportAdjacentUnmanagedFiles(args: {
     return true;
   }
   return false;
+}
+
+/**
+ * End-of-run accounting for `--expect-new` and `--adjacent-ignore`.
+ *
+ * An `--expect-new` path is a promise that the next export adopts it, so a
+ * met one is repeated as the export still owed, and an unmet one is a
+ * warning: a typo there leaves the refusal armed for the file it meant to
+ * admit. An unmatched `--adjacent-ignore` entry is only noted, because a
+ * reviewed ignore list is reused across runs and patches, and "not met"
+ * is its normal case.
+ */
+export function reportAdjacentCarveOutUsage(ctx: AdjacentUnmanagedContext): void {
+  const unseenNew = [...ctx.expectedNew].filter((file) => !ctx.expectedNewSeen.has(file));
+  if (unseenNew.length > 0) {
+    warn(
+      `--expect-new path(s) were not met as adjacent unmanaged files this run: ` +
+        `${unseenNew.join(', ')}. Check the path for a typo, and that a selected patch owns a ` +
+        'file in its directory or registers it. The refusal stayed armed for everything else.'
+    );
+  }
+  if (ctx.expectedNewSeen.size > 0) {
+    info(
+      `--expect-new admitted ${[...ctx.expectedNewSeen].sort().join(', ')}, which no patch owns ` +
+        'yet. Export them next so the queue does not register files it does not ship.'
+    );
+  }
+  const unseenIgnore = ctx.adjacentIgnore.filter((entry) => !ctx.adjacentIgnoreSeen.has(entry));
+  if (unseenIgnore.length > 0) {
+    info(
+      `--adjacent-ignore entries matched no adjacent file this run: ${unseenIgnore.join(', ')}.`
+    );
+  }
 }

@@ -11,6 +11,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_HISTORY_LOG_PATH } from '../../core/history-log-file.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import {
   createTempProject,
@@ -188,8 +189,8 @@ describe('re-export --files integration', () => {
     expect(manifest.patches[0]?.filesAffected).toEqual(['browser/base/content/browser.js']);
 
     // History entry must be appended.
-    expect(await pathExists(join(patchesDir, '.fireforge-history.jsonl'))).toBe(true);
-    const history = await readFile(join(patchesDir, '.fireforge-history.jsonl'), 'utf-8');
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(true);
+    const history = await readFile(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH), 'utf-8');
     expect(history).toContain('re-export-files');
 
     // And the patch file itself must contain the new diff body (with the
@@ -233,7 +234,7 @@ describe('re-export --files integration', () => {
     expect(stdout).toContain(
       'deleted on disk (captured as deletions the patch will replay): browser/base/content/browser.css'
     );
-    expect(await pathExists(join(patchesDir, '.fireforge-history.jsonl'))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('--files --dry-run does not write and does not append history', async () => {
@@ -263,7 +264,7 @@ describe('re-export --files integration', () => {
     ]);
     const body = await readFile(join(patchesDir, '001-infra-a.patch'), 'utf-8');
     expect(body).toBe('unchanged');
-    expect(await pathExists(join(patchesDir, '.fireforge-history.jsonl'))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('--files rejects a scope that would erase the patch body entirely', async () => {
@@ -287,7 +288,7 @@ describe('re-export --files integration', () => {
     ) as PatchesManifest;
     expect(manifest.patches[0]?.filesAffected).toEqual(['browser/base/content/browser.js']);
     expect(await readFile(join(patchesDir, '001-infra-a.patch'), 'utf-8')).toBe('unchanged');
-    expect(await pathExists(join(patchesDir, '.fireforge-history.jsonl'))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('--files captures a DELETION of a tracked file instead of silently dropping it', async () => {
@@ -340,7 +341,7 @@ describe('re-export --files integration', () => {
     expect(newBody).toContain('browser/base/content/browser.css');
     expect(newBody).toContain('deleted file mode');
 
-    const history = await readFile(join(patchesDir, '.fireforge-history.jsonl'), 'utf-8');
+    const history = await readFile(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH), 'utf-8');
     interface HistoryRecord {
       args: { files?: string[]; deletionsCaptured?: string[] };
     }
@@ -379,7 +380,7 @@ describe('re-export --files integration', () => {
       'browser/base/content/browser.css',
     ]);
     expect(await readFile(join(patchesDir, '001-infra-a.patch'), 'utf-8')).toBe('unchanged');
-    expect(await pathExists(join(patchesDir, '.fireforge-history.jsonl'))).toBe(false);
+    expect(await pathExists(join(patchesDir, '..', DEFAULT_HISTORY_LOG_PATH))).toBe(false);
   });
 
   it('--files --force does NOT block on a pre-existing issue in an unrelated patch', async () => {

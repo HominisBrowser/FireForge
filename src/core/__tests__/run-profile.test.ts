@@ -54,9 +54,14 @@ describe('run profiles', () => {
     const named = join(root, 'named');
     await mkdir(named);
     const profile = await resolveRunProfile({ profile: named, smoke: true, tempRoot: root });
-    expect(profile.args).toEqual(['-profile', resolve(named)]);
+    expect(profile.args).toEqual(['-profile', resolve(named), '-purgecaches']);
     await profile.dispose();
     expect(await existsOnDisk(named)).toBe(true);
+  });
+
+  it('leaves a named profile cache alone when purgeCaches is false', async () => {
+    const profile = await resolveRunProfile({ profile: 'named', purgeCaches: false, smoke: false });
+    expect(profile.args).toEqual(['-profile', resolve('named')]);
   });
 
   it('creates a seeded temporary profile for a smoke run and removes it on dispose', async () => {

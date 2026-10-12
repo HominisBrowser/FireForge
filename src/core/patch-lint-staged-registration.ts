@@ -13,7 +13,16 @@
  */
 import { basename } from 'node:path';
 
-import type { PatchStagedRegistration } from '../types/commands/index.js';
+import type { PatchStagedForwardImport, PatchStagedRegistration } from '../types/commands/index.js';
+
+/**
+ * The `--reason` argument every printed `patch staged-dependency --add`
+ * remedy ends with. A declaration without a reason reads as unreviewed
+ * residue to a queue audit, so the paste-and-run command asks for one
+ * rather than inviting the operator to leave it out.
+ */
+export const STAGED_DEPENDENCY_REASON_PLACEHOLDER =
+  "--reason '<why this patch references a file the owner creates later>'";
 
 /** A patch that creates a given path, with its position in the queue. */
 export interface NewFileOwner {
@@ -134,4 +143,21 @@ function isRegistrationLinePresent(
  */
 export function quoteRegistrationLine(line: string): string {
   return line.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * The `staged-dependency-unused` fingerprint for one declaration on
+ * `holder`, the one spelling both the rule and the callers that need to
+ * recognise its findings (`patch split`/`move-files --create` deciding which
+ * declarations a move made unused) build it with.
+ *
+ * @param holder - Filename of the patch carrying the declaration
+ * @param declaration - Either declaration kind
+ */
+export function stagedDependencyUnusedFingerprint(
+  holder: string,
+  declaration: PatchStagedForwardImport | PatchStagedRegistration
+): string {
+  const matcher = 'specifier' in declaration ? declaration.specifier : `reg:${declaration.line}`;
+  return `staged-dependency-unused|${holder}|${declaration.file}|${matcher}|${declaration.creates}|${declaration.owner ?? ''}`;
 }

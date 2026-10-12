@@ -7,7 +7,7 @@ vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import type { ApplyResult, DryRunAction } from '../../types/furnace.js';
 import { error, info, success, warn } from '../../utils/logger.js';
-import { logApplyResult, logApplyWarnings } from '../furnace-apply-output.js';
+import { formatSkipBreakdown, logApplyResult, logApplyWarnings } from '../furnace-apply-output.js';
 
 const mockError = vi.mocked(error);
 const mockInfo = vi.mocked(info);
@@ -85,6 +85,39 @@ describe('logApplyResult — successful apply', () => {
     logApplyResult(result, false);
 
     expect(mockInfo).toHaveBeenCalledWith('moz-card — No changes since last apply');
+  });
+
+  it('explains an already-current skip instead of the bare reason', () => {
+    logApplyResult(
+      {
+        applied: [],
+        skipped: [
+          { name: 'moz-card', reason: 'No changes since last apply', kind: 'already-current' },
+        ],
+        errors: [],
+      },
+      false
+    );
+
+    expect(mockInfo).toHaveBeenCalledWith(
+      'moz-card — already current: source unchanged since the last recorded apply (from any session) and the engine copy matches it'
+    );
+  });
+});
+
+describe('formatSkipBreakdown', () => {
+  it('is empty when nothing was skipped', () => {
+    expect(formatSkipBreakdown([])).toBe('');
+  });
+
+  it('counts skips by reason, using the kind label when one is set', () => {
+    expect(
+      formatSkipBreakdown([
+        { name: 'a', reason: 'No changes since last apply', kind: 'already-current' },
+        { name: 'b', reason: 'No changes since last apply', kind: 'already-current' },
+        { name: 'c', reason: 'refused by policy' },
+      ])
+    ).toBe(' (2 already current, 1 refused by policy)');
   });
 });
 

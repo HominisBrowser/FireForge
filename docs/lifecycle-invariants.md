@@ -73,6 +73,17 @@ command, read the decision table at the bottom first.
    prompting, so the flag only showed up in the history record. Enforced by
    `patch-tier-and-lint-ignore.integration.test.ts`.
 
+   The history log is write-only: FireForge appends to it and no command
+   reads it back, so nothing depends on its contents or location. It lives
+   at `.fireforge/history.jsonl` (or `fireforge.json#history.path`), outside
+   the tracked patch queue. Before 0.50.0 it was
+   `patches/.fireforge-history.jsonl`; the first append after upgrading
+   moves that file, and appends its records when both exist rather than
+   overwriting either. Each record carries `invocationId` (one per FireForge
+   process), `pid`, `ppid`, and `sessionId` when `FIREFORGE_SESSION_ID` is
+   set, so a session sharing the checkout can select its own lines.
+   Enforced by `history-log-file.test.ts`.
+
 7. **A verification tree never mutates shared state.** Trees are full
    project-root CoW snapshots under `.fireforge/trees/<name>`, with no
    merge-back model.
@@ -204,16 +215,28 @@ command, read the decision table at the bottom first.
    `git-readonly-index.test.ts`, against a real repository and a real index
    mtime.
 
-10. **Lock queues are observable, and leaving one is as reliable as joining
-    it.** A waiter that contends registers a file in `<lock>.waiters/` named
-    `<startedAtMs>-<pid>-<uuid>` and deregisters in a `finally` that covers
-    both outcomes: acquired the lock, or timed out. Depth counts only entries
-    whose PID is still alive, so a killed waiter cannot inflate it forever,
-    and the registry is advisory: failures to register are logged verbosely
-    and never fail an acquisition. `fireforge status --lock` and the
-    `--wait-lock` progress line read it. Enforced by `lock-visibility.test.ts`
-    (a real concurrent waiter) and `engine-session-lock.test.ts` (queue
-    position in the wait line).
+10. **Lock queues are observable, first come first served, and leaving one
+    is as reliable as joining it.** A waiter that contends registers a ticket
+    in `<lock>.waiters/` named `<startedAtMs>-<pid>-<uuid>` and deregisters in
+    a `finally` that covers both outcomes: acquired the lock, or timed out.
+    A newcomer that finds live tickets takes one before trying the lock at
+    all. Since 0.50.0 the tickets decide the grant: only the waiter with no
+    live ticket ahead of it (arrival time, then ticket name) attempts the
+    lock, so "You are next" is a promise. Before, every waiter raced `mkdir`
+    and a waiter whose poll had backed off lost each free moment to later
+    arrivals. Because a ticket now blocks the queue, a dead one must not: a
+    ticket whose PID is gone (or reused, where the start tick can tell) is
+    skipped and removed, and one its owner has not refreshed for 30 s (every
+    waiter rewrites its ticket every 5 s) is skipped, which covers a stopped
+    waiter and PID reuse elsewhere. A registry that cannot be written falls
+    back to the old unordered contention rather than failing an acquisition.
+    This applies to every `withFileLock` lock: the engine-session, patch,
+    furnace and build locks among them. `fireforge status --lock` and the
+    `--wait-lock` progress lines read it, and the lines name the ordering
+    rule. Enforced by `file-lock-queue.test.ts` (arrival order against faster
+    later pollers, crashed, killed and stopped waiters, timeouts),
+    `lock-visibility.test.ts` (a real concurrent waiter) and
+    `engine-session-lock.test.ts` (queue position in the wait line).
 
 11. **A manifest repair preserves what it cannot recompute, or refuses.**
     `doctor --repair-patches-manifest` is a merge: only `filesAffected` and
@@ -346,7 +369,10 @@ run and how large the budget is.
 
 The budget is not the engine lock's alone. It covers every lock the command
 takes, which for the three furnace commands means the per-root furnace lock as
-well (see the `furnace-operation.ts` section). `FIREFORGE_WAIT_LOCK=<seconds>`
+well (see the `furnace-operation.ts` section). The furnace leaves that take
+only the furnace lock (`create`, `remove`, `rename`, `refresh`, `scan`,
+`override`, `preview`, `chrome-doc create`/`remove`) honour the flag too, for
+that one lock. `FIREFORGE_WAIT_LOCK=<seconds>`
 sets the same budget for a whole session, parsed with the same bounds as the
 flag so the two cannot drift, and an explicit budget at a call site always
 wins. Commands that take no lock accept `--wait-lock` and ignore it, so a
@@ -364,11 +390,10 @@ cleanups and a `completed` flag), signal rollback with bounded timeouts,
 
 The lock's wait budget is `options.lockTimeoutMs`, threaded from `--wait-lock`
 by `waitLockMutationOptions`, which does the seconds-to-milliseconds
-conversion once. It falls back to `sessionWaitLockMs()`
-(`FIREFORGE_WAIT_LOCK`) and then to `DEFAULT_LOCK_TIMEOUT_MS`. That fallback
-is what covers the twelve furnace mutators that declare no flag (`create`,
-`remove`, `rename`, `refresh`, `scan`, `override`, `chrome-doc`, and the
-rest). A contended refusal here names the furnace lock, says it is the second
+conversion once. Every furnace leaf that takes the lock threads its own
+flag. It falls back to `sessionWaitLockMs()` (`FIREFORGE_WAIT_LOCK`) and then
+to `DEFAULT_LOCK_TIMEOUT_MS`; that fallback is the only budget for callers
+that thread none (the pre-build apply, `doctor --repair-furnace`). A contended refusal here names the furnace lock, says it is the second
 of two, and points at `--wait-lock` and `FIREFORGE_WAIT_LOCK`. A budget that
 is paid in full and then refuses anyway is the worst shape a budget can have,
 so the refusal must not read as the engine lock's.
@@ -404,7 +429,9 @@ hold it.
 
 The destructive-operation contract: `confirmDestructive` (summary, prompt,
 `--yes`, `--dry-run`, conflict refusal, `--force-unsafe`) and the
-`.fireforge-history.jsonl` audit log.
+append-only history log (`src/core/history-log-file.ts` resolves its path,
+migrates a legacy `patches/.fireforge-history.jsonl`, and stamps each
+record's invocation and session).
 
 ### `src/core/tree-store.ts`
 
@@ -444,9 +471,15 @@ On SIGINT or SIGTERM, `bin/fireforge.ts`:
      work: the group sweep and the caller's `postCloseSweep` (the harness
      helper reap in `fireforge test`). Both run before the child's closure
      settles, so a forwarded SIGTERM cannot race `process.exit` past them.
-3. Force-releases the furnace lock directories of active operations, since
+3. Restores any `test --negative-control` mutation still applied
+   (`restoreActiveNegativeControlsForSignal`), after child shutdown and
+   before any lock is released, so the next lock holder never builds or
+   tests the neuter. A restore the run itself already started is awaited.
+   A control a SIGKILL left behind is undone by the next `fireforge test`
+   from its on-disk journal (`src/core/negative-control.ts`).
+4. Force-releases the furnace lock directories of active operations, since
    `withFileLock`'s `finally` will never run past `process.exit`.
-4. Calls `process.exit(130 | 143)`.
+5. Calls `process.exit(130 | 143)`.
 
 A parent that dies without signalling FireForge (SIGKILL on the `npm` above
 it) enters no handler here. `fireforge test` covers that case itself with

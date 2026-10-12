@@ -11,12 +11,8 @@ import { describe, expect, it } from 'vitest';
 import { makePatch } from '../../../test-utils/index.js';
 import type { PatchStagedForwardImport } from '../../../types/commands/index.js';
 import type { PlacementPlan } from '../../export-flow.js';
-import {
-  buildSplitSummary,
-  mergeStagedForwardImports,
-  rewriteSplitOwners,
-  type SplitPlan,
-} from '../split-plan.js';
+import { buildSplitSummary, mergeStagedForwardImports, type SplitPlan } from '../split-plan.js';
+import { emptyStagedMaintenance, rewriteSplitOwners } from '../split-staged.js';
 
 const DECL: PatchStagedForwardImport = {
   file: 'a/Importer.sys.mjs',
@@ -104,6 +100,7 @@ describe('buildSplitSummary', () => {
       description: '',
       ownerRewrites: [],
       stagedDependencyAdditions: new Map(),
+      stagedMaintenance: emptyStagedMaintenance(),
       ...overrides,
     };
   }

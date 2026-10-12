@@ -42,6 +42,7 @@ import {
   getPatchPolicyCategories,
   isCategoryAllowedByConfig,
 } from '../../core/patch-policy.js';
+import { carryRetiredSlots } from '../../core/patch-retired.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchRenameOptions } from '../../types/commands/index.js';
@@ -209,6 +210,11 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
           ...(descriptionChanging ? { description: newDescription ?? '' } : {}),
         };
       }
+
+      // A rename onto a retired order fills that slot.
+      const retired = carryRetiredSlots(fresh, fresh.patches);
+      if (retired === undefined) delete fresh.retired;
+      else fresh.retired = retired;
 
       enforcePatchPolicy({
         config: input.config,

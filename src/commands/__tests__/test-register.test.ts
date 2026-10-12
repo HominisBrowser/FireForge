@@ -13,7 +13,19 @@
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../test.js', () => ({ testCommand: vi.fn() }));
+// testCommand takes the lock itself, around everything after its lock-free
+// preflights, through the runner the registration layer hands it. The mock
+// keeps that shape and runs an empty body under the lock.
+vi.mock('../test.js', () => ({
+  testCommand: vi.fn(
+    (
+      _root: string,
+      _paths: string[],
+      _options: unknown,
+      underLock: (body: () => Promise<void>) => Promise<void>
+    ) => underLock(() => Promise.resolve())
+  ),
+}));
 vi.mock('../../core/engine-session-lock.js', () => ({
   withEngineSessionLock: vi.fn((_root: string, _name: string, operation: () => Promise<unknown>) =>
     operation()
@@ -57,7 +69,8 @@ describe('registerTest', () => {
     expect(testCommand).toHaveBeenCalledWith(
       PROJECT_ROOT,
       ['browser/base/content/test/browser_a.js'],
-      expect.any(Object)
+      expect.any(Object),
+      expect.any(Function)
     );
   });
 
@@ -103,6 +116,21 @@ describe('registerTest', () => {
     for (const [key, value] of Object.entries(options)) {
       expect(value, `option "${key}" should not be undefined`).not.toBeUndefined();
     }
+  });
+
+  it('parses the multi-run and port options into the command options', async () => {
+    await parse('--repeat', '3', '--negative-control', 'neuter.diff', '--auto-ports', 'a.js');
+    expect(vi.mocked(testCommand).mock.calls[0]?.[2]).toMatchObject({
+      repeat: 3,
+      negativeControl: 'neuter.diff',
+      autoPorts: true,
+    });
+  });
+
+  it.each(['0', 'two', '-1'])('rejects --repeat %s through Commander', async (value) => {
+    await expect(parse('--repeat', value)).rejects.toMatchObject({
+      code: 'commander.invalidArgument',
+    });
   });
 
   describe('--mach-arg accumulator', () => {
@@ -224,8 +252,8 @@ describe('registerTest', () => {
   });
 
   describe('verdict emission when the engine lock fails', () => {
-    // The lock is acquired outside testCommand's exactly-one-verdict
-    // guarantee, so the registration layer must emit for lock failures or
+    // The registration layer keeps a fallback emission for lock failures
+    // testCommand did not classify (here: a mocked testCommand), or
     // verdict-keyed callers see nothing at all.
     let stdoutLines: string[];
     let restoreStdout: () => void;
@@ -254,9 +282,13 @@ describe('registerTest', () => {
       vi.mocked(withEngineSessionLock).mockRejectedValueOnce(
         new LockContentionError('Another engine-mutating FireForge command is running.')
       );
+      const body = vi.fn(() => Promise.resolve());
+      vi.mocked(testCommand).mockImplementationOnce((_root, _paths, _options, underLock) =>
+        (underLock ?? ((run) => run()))(body)
+      );
       await expect(parse('--wait-lock', '300')).rejects.toThrow(LockContentionError);
       expect(verdictLines()).toEqual(['FIREFORGE-VERDICT: FAIL reason=lock-timeout\n']);
-      expect(testCommand).not.toHaveBeenCalled();
+      expect(body).not.toHaveBeenCalled();
     });
 
     it('emits FAIL reason=preflight for non-contention failures escaping the lock wrapper', async () => {
@@ -272,10 +304,12 @@ describe('registerTest', () => {
           throw new GeneralError('post-verdict failure');
         }
       );
-      vi.mocked(testCommand).mockImplementationOnce(() => {
-        emitFailVerdict('test-failures');
-        return Promise.resolve();
-      });
+      vi.mocked(testCommand).mockImplementationOnce((_root, _paths, _options, underLock) =>
+        (underLock ?? ((run) => run()))(() => {
+          emitFailVerdict('test-failures');
+          return Promise.resolve();
+        })
+      );
       await expect(parse()).rejects.toThrow('post-verdict failure');
       expect(verdictLines()).toEqual(['FIREFORGE-VERDICT: FAIL reason=test-failures\n']);
     });

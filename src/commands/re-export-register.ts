@@ -12,6 +12,7 @@ import { Command, Option } from 'commander';
 
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
 import type { CommandContext } from '../types/cli.js';
+import type { ReExportOptions } from '../types/commands/index.js';
 import {
   addWaitLockOption,
   pickDefined,
@@ -19,6 +20,7 @@ import {
   stringListOption,
 } from '../utils/options.js';
 import { reExportCommand } from './re-export.js';
+import { preflightReExportArguments, readPathListFile } from './re-export-preflight.js';
 
 /** Registers the re-export command on the CLI program. */
 export function registerReExport(
@@ -36,7 +38,7 @@ export function registerReExport(
     .option('-s, --scan', 'Scan directories for new/removed files and update filesAffected')
     .option(
       '--scan-file <path>',
-      'With --scan, add this explicit engine-relative file to one target patch without collecting adjacent files. Repeatable.',
+      'With --scan, add this explicit engine-relative file without collecting adjacent files. Prefix the owning patch (<patch>:<path>, required with several target patches) to adopt into one of them; selected patches without a --scan-file refresh scan-less. Repeatable.',
       ...stringListOption()
     )
     .option(
@@ -54,11 +56,11 @@ export function registerReExport(
     )
     .option(
       '--refuse-adjacent-unmanaged',
-      'Refuse a scan-less re-export (non-zero exit, patch not written) when unmanaged files exist adjacent to the patch ownership, instead of warning. Mutually exclusive with --scan and --files.'
+      'Refuse a scan-less re-export (non-zero exit, patch not written) when unmanaged files exist adjacent to the patch ownership, instead of warning. Adjacent means the same directory as an owned file (not a sibling or nested directory), or named by a registration line the patch adds. Mutually exclusive with --scan and --files.'
     )
     .option(
       '--refuse-foreign-drift',
-      "Refuse a scan-less re-export (non-zero exit, patch not written) when the refreshed body would absorb engine lines not present in the old patch body — protects multi-session checkouts from silently capturing another session's uncommitted edits. Mutually exclusive with --scan and --files."
+      "Refuse a re-export (non-zero exit, patch not written) when the refreshed body would add or drop lines, in a file the patch already owns, that the old patch body did not carry — protects multi-session checkouts from silently capturing another session's uncommitted edits. Beside --scan it guards each patch's existing files (adopted files count as expected). Mutually exclusive with --files."
     )
     .option(
       '--expect <path>',
@@ -71,8 +73,22 @@ export function registerReExport(
       ...stringListOption()
     )
     .option(
+      '--expect-from <file>',
+      'Read --expect paths from a file, one engine-relative path per line (blank lines and # comments ignored). Adds to any --expect flags.'
+    )
+    .option(
+      '--expect-new <path>',
+      'With --refuse-adjacent-unmanaged, name a file this session created and will adopt with its next export (or --scan-file): it passes the belt and is reported, while every other adjacent file still refuses. Must be changed in engine/ and owned by no patch. Repeatable.',
+      ...stringListOption()
+    )
+    .option(
+      '--adjacent-ignore <path|glob>',
+      'With --refuse-adjacent-unmanaged, a reviewed ignore-list entry: an engine-relative path, or a glob whose * stays within one path segment (** is refused). Matches are reported, never refused. Repeatable.',
+      ...stringListOption()
+    )
+    .option(
       '--expect-removed <path>',
-      'Retire an absent file created by the selected patch while keeping scan-less refusals armed. Repeatable.',
+      'Retire a file from the selected patch while keeping scan-less refusals armed: an absent file the patch created, or a patch-modified upstream file whose engine copy is back at HEAD. Repeatable.',
       ...stringListOption()
     )
     .option('--dry-run', 'Show what would change without writing')
@@ -104,55 +120,89 @@ export function registerReExport(
       ...stringListOption()
     );
   addWaitLockOption(reExport).action(
-    withErrorHandling(
-      async (
-        patches: string[],
-        options: {
-          all?: boolean;
-          scan?: boolean;
-          scanFile?: string[];
-          scanFiles?: string;
-          files?: string[];
-          refuseAdjacentUnmanaged?: boolean;
-          refuseForeignDrift?: boolean;
-          expect?: string[];
-          expectUnmanaged?: string[];
-          expectRemoved?: string[];
-          dryRun?: boolean;
-          skipLint?: boolean;
-          yes?: boolean;
-          allowShrink?: boolean;
-          allowStaleFurnace?: boolean;
-          forceUnsafe?: boolean;
-          stamp?: boolean;
-          tier?: string;
-          lintIgnore?: string[];
-          waitLock?: number | boolean;
-          cache?: boolean;
-        }
-      ) => {
-        const { tier, lintIgnore, scanFile, scanFiles, cache, expect, expectUnmanaged, ...rest } =
-          options;
-        const projectRoot = getProjectRoot();
-        await withEngineSessionLock(
-          projectRoot,
-          're-export',
-          () =>
-            reExportCommand(projectRoot, patches, {
-              ...pickDefined(rest),
-              ...(scanFile !== undefined && scanFile.length > 0 ? { scanFiles: scanFile } : {}),
-              ...(scanFiles !== undefined ? { scanFilesManifest: scanFiles } : {}),
-              ...(tier !== undefined ? { tier: tier as 'branding' } : {}),
-              ...(lintIgnore !== undefined && lintIgnore.length > 0 ? { lintIgnore } : {}),
-              ...(expect !== undefined && expect.length > 0 ? { expect } : {}),
-              ...(expectUnmanaged !== undefined && expectUnmanaged.length > 0
-                ? { expectUnmanaged }
-                : {}),
-              ...(cache === false ? { noCache: true } : {}),
-            }),
-          { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
-        );
-      }
-    )
+    withErrorHandling(async (patches: string[], options: ReExportCliOptions) => {
+      const projectRoot = getProjectRoot();
+      const reExportOptions = await toReExportOptions(options);
+      // Refuse what the locked run would refuse before queueing for the
+      // lock, which can be a long wait under contention.
+      await preflightReExportArguments(projectRoot, patches, reExportOptions);
+      await withEngineSessionLock(
+        projectRoot,
+        're-export',
+        () => reExportCommand(projectRoot, patches, reExportOptions),
+        { waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
+      );
+    })
   );
+}
+
+/** Raw commander options for `re-export`, before renaming and list reads. */
+interface ReExportCliOptions {
+  all?: boolean;
+  scan?: boolean;
+  scanFile?: string[];
+  scanFiles?: string;
+  files?: string[];
+  refuseAdjacentUnmanaged?: boolean;
+  refuseForeignDrift?: boolean;
+  expect?: string[];
+  expectUnmanaged?: string[];
+  expectFrom?: string;
+  expectNew?: string[];
+  adjacentIgnore?: string[];
+  expectRemoved?: string[];
+  dryRun?: boolean;
+  skipLint?: boolean;
+  yes?: boolean;
+  allowShrink?: boolean;
+  allowStaleFurnace?: boolean;
+  forceUnsafe?: boolean;
+  stamp?: boolean;
+  tier?: string;
+  lintIgnore?: string[];
+  waitLock?: number | boolean;
+  cache?: boolean;
+}
+
+/**
+ * Maps commander's option names onto {@link ReExportOptions}, reading the
+ * `--expect-from` list into `expect` and dropping empty repeatables.
+ */
+async function toReExportOptions(options: ReExportCliOptions): Promise<ReExportOptions> {
+  const {
+    tier,
+    lintIgnore,
+    scanFile,
+    scanFiles,
+    cache,
+    expect: expectFlags,
+    expectFrom,
+    expectUnmanaged,
+    expectNew,
+    adjacentIgnore,
+    ...rest
+  } = options;
+  const expect = [
+    ...(expectFlags ?? []),
+    ...(expectFrom !== undefined ? await readPathListFile(expectFrom, '--expect-from') : []),
+  ];
+  return {
+    ...pickDefined({
+      ...rest,
+      scanFiles: nonEmpty(scanFile),
+      scanFilesManifest: scanFiles,
+      tier: tier as 'branding' | undefined,
+      lintIgnore: nonEmpty(lintIgnore),
+      expect: nonEmpty(expect),
+      expectUnmanaged: nonEmpty(expectUnmanaged),
+      expectNew: nonEmpty(expectNew),
+      adjacentIgnore: nonEmpty(adjacentIgnore),
+    }),
+    ...(cache === false ? { noCache: true } : {}),
+  };
+}
+
+/** The list when it has entries, else undefined (which `pickDefined` drops). */
+function nonEmpty(values: string[] | undefined): string[] | undefined {
+  return values !== undefined && values.length > 0 ? values : undefined;
 }

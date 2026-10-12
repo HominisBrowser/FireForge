@@ -84,9 +84,9 @@ export interface RunFurnaceMutationOptions {
    * never passed: `furnace deploy --wait-lock 1800` waited 1800 s for the
    * engine session lock and then met `.fireforge/furnace.lock` with a fixed
    * 30 s, which is the worst shape a budget can have: it pays the whole
-   * wait and still refuses. When absent, {@link sessionWaitLockMs} supplies
-   * the session-wide budget so the twelve furnace mutators that declare no
-   * flag are covered too.
+   * wait and still refuses. Every furnace leaf that takes this lock threads
+   * its `--wait-lock` here. When absent, {@link sessionWaitLockMs} supplies
+   * the session-wide budget (`FIREFORGE_WAIT_LOCK`).
    */
   lockTimeoutMs?: number;
   /**

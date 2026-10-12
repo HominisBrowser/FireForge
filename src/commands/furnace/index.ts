@@ -4,7 +4,12 @@ import { Command, Option } from 'commander';
 import { withEngineSessionLock } from '../../core/engine-session-lock.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { FurnaceCreateOptions, FurnaceRefreshOptions } from '../../types/commands/index.js';
-import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
+import {
+  addWaitLockOption,
+  type DefinedProps,
+  pickDefined,
+  resolveWaitLockSeconds,
+} from '../../utils/options.js';
 import { furnaceApplyCommand } from './apply.js';
 import { furnaceChromeDocCreateCommand, type FurnaceChromeDocCreateOptions } from './chrome-doc.js';
 import { furnaceChromeDocRemoveCommand } from './chrome-doc-remove.js';
@@ -22,6 +27,21 @@ import { furnaceScanCommand } from './scan.js';
 import { furnaceStatusCommand } from './status.js';
 import { furnaceSyncCommand } from './sync.js';
 import { furnaceValidateCommand } from './validate.js';
+import { parseMaxWarnings } from './validate-report.js';
+
+/**
+ * Splits the raw `--wait-lock` value off a furnace leaf's parsed options and
+ * resolves it into `waitLockSeconds` (flag, else `FIREFORGE_WAIT_LOCK`, else
+ * undefined) for the furnace lock `runFurnaceMutation` takes. Used by the
+ * leaves that take only Furnace's lock, where the flag used to be accepted
+ * and ignored.
+ */
+function withFurnaceLockBudget<T extends { waitLock?: number | boolean }>(
+  options: T
+): DefinedProps<Omit<T, 'waitLock'> & { waitLockSeconds: number | undefined }> {
+  const { waitLock, ...rest } = options;
+  return pickDefined({ ...rest, waitLockSeconds: resolveWaitLockSeconds(waitLock) });
+}
 
 async function runEngineLockedFurnaceCommand(
   context: CommandContext,
@@ -78,18 +98,31 @@ function registerFurnaceApplyCommand(furnace: Command, context: CommandContext):
 function registerFurnaceDeployCommand(furnace: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
   const deploy = furnace
-    .command('deploy [name]')
-    .description('Apply components and validate in one step')
+    .command('deploy [names...]')
+    .description(
+      'Apply components and validate in one step (name several to deploy them under one lock hold)'
+    )
     .option(
       '--dry-run',
       'Show what would be changed without writing (reads may overlap concurrent mutations)'
     )
     .option('--force', 'Proceed despite baseVersion drift (stale overrides)')
-    .option('--skip-validate', 'Skip the validation step (apply only)');
+    .option('--skip-validate', 'Skip the validation step (apply only)')
+    .addHelpText(
+      'after',
+      [
+        '',
+        'Deploy registers every .mjs and .css file in a custom component directory in',
+        'toolkit/content/jar.mn, including extra modules beside the main one (e.g.',
+        'components/custom/<tag>/<tag>-rows.mjs). Add the file to the directory and run',
+        '`fireforge furnace deploy <tag>` instead of writing the jar.mn line by hand; a line',
+        'that already exists anywhere in jar.mn is kept and never duplicated.',
+      ].join('\n')
+    );
   addWaitLockOption(deploy).action(
     withErrorHandling(
       async (
-        name?: string,
+        names: string[],
         options?: {
           dryRun?: boolean;
           force?: boolean;
@@ -101,7 +134,7 @@ function registerFurnaceDeployCommand(furnace: Command, context: CommandContext)
         const waitLockSeconds = resolveWaitLockSeconds(waitLock);
         const parsed = pickDefined({ ...rest, waitLockSeconds });
         const run = (projectRoot: string): Promise<void> =>
-          furnaceDeployCommand(projectRoot, name, parsed);
+          furnaceDeployCommand(projectRoot, names, parsed);
         if (parsed.dryRun === true) {
           await run(getProjectRoot());
           return;
@@ -171,7 +204,7 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
   registerFurnaceApplyCommand(furnace, context);
   registerFurnaceDeployCommand(furnace, context);
 
-  furnace
+  const scan = furnace
     .command('scan')
     .description(
       'Scan engine for available components. Report-only by default: persist the discovered ' +
@@ -182,12 +215,14 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
     .option(
       '--track',
       'Persist every discovered untracked component into the stock section of furnace.json (non-interactive)'
-    )
-    .action(
-      withErrorHandling(async (options: { deep?: boolean; track?: boolean }) => {
-        await furnaceScanCommand(getProjectRoot(), pickDefined(options));
-      })
     );
+  addWaitLockOption(scan).action(
+    withErrorHandling(
+      async (options: { deep?: boolean; track?: boolean; waitLock?: number | boolean }) => {
+        await furnaceScanCommand(getProjectRoot(), withFurnaceLockBudget(options));
+      }
+    )
+  );
 
   furnace
     .command('init')
@@ -203,7 +238,7 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
       )
     );
 
-  furnace
+  const create = furnace
     .command('create [name]')
     .description('Create a new custom component')
     .option('-d, --description <desc>', 'Component description')
@@ -246,12 +281,17 @@ function registerFurnaceInfoCommands(furnace: Command, context: CommandContext):
     .option(
       '--allow-prefix-mismatch',
       'Create the component even when its name does not start with the configured `componentPrefix` in furnace.json. Without this flag the command refuses to write anything on a prefix mismatch.'
-    )
-    .action(
-      withErrorHandling(async (name: string | undefined, options: FurnaceCreateOptions) => {
-        await furnaceCreateCommand(getProjectRoot(), name, options);
-      })
     );
+  addWaitLockOption(create).action(
+    withErrorHandling(
+      async (
+        name: string | undefined,
+        options: FurnaceCreateOptions & { waitLock?: number | boolean }
+      ) => {
+        await furnaceCreateCommand(getProjectRoot(), name, withFurnaceLockBudget(options));
+      }
+    )
+  );
 
   registerChromeDocCommands(furnace, context);
 }
@@ -263,7 +303,7 @@ function registerChromeDocCommands(furnace: Command, context: CommandContext): v
     .command('chrome-doc')
     .description('Scaffold top-level chrome documents (xhtml + js + css + ftl + jar.mn)');
 
-  chromeDoc
+  const chromeDocCreate = chromeDoc
     .command('create <name>')
     .description('Scaffold a new top-level chrome document')
     .option('--no-titlebar', 'Frameless overlay-style document (omits titlebar-buttonbox)')
@@ -275,23 +315,33 @@ function registerChromeDocCommands(furnace: Command, context: CommandContext): v
       '--with-tests',
       'Scaffold an xpcshell packaging-verification test that probes XCurProcD/chrome/browser/... directly (bypasses the xpcshell chrome:// URI limitation).'
     )
-    .option('--dry-run', 'Show the chrome-doc scaffold plan without writing')
-    .action(
-      withErrorHandling(async (name: string, options: FurnaceChromeDocCreateOptions) => {
-        await furnaceChromeDocCreateCommand(getProjectRoot(), name, pickDefined(options));
-      })
-    );
+    .option('--dry-run', 'Show the chrome-doc scaffold plan without writing');
+  addWaitLockOption(chromeDocCreate).action(
+    withErrorHandling(
+      async (
+        name: string,
+        options: FurnaceChromeDocCreateOptions & { waitLock?: number | boolean }
+      ) => {
+        await furnaceChromeDocCreateCommand(getProjectRoot(), name, withFurnaceLockBudget(options));
+      }
+    )
+  );
 
-  chromeDoc
+  const chromeDocRemove = chromeDoc
     .command('remove <name>')
     .description('Remove a scaffolded top-level chrome document')
     .option('-y, --yes', 'Skip confirmation')
-    .option('--dry-run', 'Show the chrome-doc removal plan without writing')
-    .action(
-      withErrorHandling(async (name: string, options: { yes?: boolean; dryRun?: boolean }) => {
-        await furnaceChromeDocRemoveCommand(getProjectRoot(), name, pickDefined(options));
-      })
-    );
+    .option('--dry-run', 'Show the chrome-doc removal plan without writing');
+  addWaitLockOption(chromeDocRemove).action(
+    withErrorHandling(
+      async (
+        name: string,
+        options: { yes?: boolean; dryRun?: boolean; waitLock?: number | boolean }
+      ) => {
+        await furnaceChromeDocRemoveCommand(getProjectRoot(), name, withFurnaceLockBudget(options));
+      }
+    )
+  );
 }
 
 /**
@@ -303,22 +353,30 @@ function registerChromeDocCommands(furnace: Command, context: CommandContext): v
 function registerFurnaceModifyCommands(furnace: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
 
-  furnace
+  const override = furnace
     .command('override [names...]')
     .description('Fork one or more existing components for modification')
     .addOption(new Option('-t, --type <type>', 'Override type').choices(['css-only', 'full']))
-    .option('-d, --description <desc>', 'Description')
-    .action(
-      withErrorHandling(
-        async (names: string[], options: { type?: 'css-only' | 'full'; description?: string }) => {
-          if (names.length <= 1) {
-            await furnaceOverrideCommand(getProjectRoot(), names[0], options);
-          } else {
-            await furnaceBatchOverrideCommand(getProjectRoot(), names, options);
-          }
+    .option('-d, --description <desc>', 'Description');
+  addWaitLockOption(override).action(
+    withErrorHandling(
+      async (
+        names: string[],
+        rawOptions: {
+          type?: 'css-only' | 'full';
+          description?: string;
+          waitLock?: number | boolean;
         }
-      )
-    );
+      ) => {
+        const options = withFurnaceLockBudget(rawOptions);
+        if (names.length <= 1) {
+          await furnaceOverrideCommand(getProjectRoot(), names[0], options);
+        } else {
+          await furnaceBatchOverrideCommand(getProjectRoot(), names, options);
+        }
+      }
+    )
+  );
 
   furnace
     .command('list')
@@ -330,34 +388,54 @@ function registerFurnaceModifyCommands(furnace: Command, context: CommandContext
       })
     );
 
-  furnace
+  const remove = furnace
     .command('remove <name>')
     .description('Remove a component from the workspace')
-    .option('-y, --yes', 'Skip confirmation')
-    .action(
-      withErrorHandling(async (name: string, options: { yes?: boolean }) => {
-        await furnaceRemoveCommand(getProjectRoot(), name, options);
-      })
-    );
+    .option('-y, --yes', 'Skip confirmation');
+  addWaitLockOption(remove).action(
+    withErrorHandling(
+      async (name: string, options: { yes?: boolean; waitLock?: number | boolean }) => {
+        await furnaceRemoveCommand(getProjectRoot(), name, withFurnaceLockBudget(options));
+      }
+    )
+  );
 
-  furnace
+  const preview = furnace
     .command('preview')
     .description('Start component preview (Storybook)')
-    .option('--install', 'Force reinstall Storybook dependencies')
-    .action(
-      withErrorHandling(async (options: { install?: boolean }) => {
-        await furnacePreviewCommand(getProjectRoot(), options);
-      })
-    );
+    .option('--install', 'Force reinstall Storybook dependencies');
+  addWaitLockOption(preview).action(
+    withErrorHandling(async (options: { install?: boolean; waitLock?: number | boolean }) => {
+      await furnacePreviewCommand(getProjectRoot(), withFurnaceLockBudget(options));
+    })
+  );
 
   furnace
     .command('validate [name]')
     .description('Run accessibility and compatibility checks')
     .option('--fix', 'Auto-fix registration issues (missing jar.mn entries, customElements.js)')
+    .option(
+      '--json',
+      'Write the result as one JSON document (findings, excepted findings, stale exceptions, verdict) to stdout'
+    )
+    .option(
+      '--max-warnings <n>',
+      'Fail when more than <n> warnings remain after furnace.json validationExceptions (0 for a warning-clean gate)'
+    )
     .action(
-      withErrorHandling(async (name?: string, options?: { fix?: boolean }) => {
-        await furnaceValidateCommand(getProjectRoot(), name, pickDefined(options ?? {}));
-      })
+      withErrorHandling(
+        async (
+          name?: string,
+          options?: { fix?: boolean; json?: boolean; maxWarnings?: string }
+        ) => {
+          const { maxWarnings, ...rest } = options ?? {};
+          await furnaceValidateCommand(
+            getProjectRoot(),
+            name,
+            pickDefined({ ...rest, maxWarnings: parseMaxWarnings(maxWarnings) })
+          );
+        }
+      )
     );
 
   furnace
@@ -371,7 +449,7 @@ function registerFurnaceModifyCommands(furnace: Command, context: CommandContext
       })
     );
 
-  furnace
+  const refresh = furnace
     .command('refresh [name]')
     .description('Merge upstream Firefox changes into overrides (three-way merge)')
     .option('--dry-run', 'Show what would change without modifying files')
@@ -385,21 +463,41 @@ function registerFurnaceModifyCommands(furnace: Command, context: CommandContext
     .option(
       '--reset-base',
       'Reset baseline to current engine HEAD (skips three-way merge, recovers from missing baseCommit)'
-    )
-    .action(
-      withErrorHandling(async (name: string | undefined, options: FurnaceRefreshOptions) => {
-        await furnaceRefreshCommand(getProjectRoot(), name, pickDefined(options));
-      })
     );
+  addWaitLockOption(refresh).action(
+    withErrorHandling(
+      async (
+        name: string | undefined,
+        options: FurnaceRefreshOptions & { waitLock?: number | boolean }
+      ) => {
+        await furnaceRefreshCommand(getProjectRoot(), name, withFurnaceLockBudget(options));
+      }
+    )
+  );
 
-  furnace
+  const rename = furnace
     .command('rename <old-name> <new-name>')
     .description('Rename a component (updates files, config, and registrations)')
-    .action(
-      withErrorHandling(async (oldName: string, newName: string) => {
-        await furnaceRenameCommand(getProjectRoot(), oldName, newName);
-      })
+    .option(
+      '--dry-run',
+      'Show the planned file moves, furnace.json change and engine registration edits without writing'
     );
+  addWaitLockOption(rename).action(
+    withErrorHandling(
+      async (
+        oldName: string,
+        newName: string,
+        options: { dryRun?: boolean; waitLock?: number | boolean }
+      ) => {
+        await furnaceRenameCommand(
+          getProjectRoot(),
+          oldName,
+          newName,
+          withFurnaceLockBudget(options)
+        );
+      }
+    )
+  );
 
   registerFurnaceSyncCommand(furnace, context);
 }

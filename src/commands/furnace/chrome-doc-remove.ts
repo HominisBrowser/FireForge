@@ -15,6 +15,7 @@ import {
   completeJournalRollback,
   type FurnaceOperationContext,
   runFurnaceMutation,
+  waitLockMutationOptions,
 } from '../../core/furnace-operation.js';
 import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
 import {
@@ -24,12 +25,13 @@ import {
   snapshotFile,
 } from '../../core/furnace-rollback.js';
 import { FurnaceError } from '../../errors/furnace.js';
+import type { FurnaceLockWaitable } from '../../types/commands/index.js';
 import { pathExists, readText, removeDir, removeFile, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, note, outro } from '../../utils/logger.js';
 import { buildChromeDocPlan, type ChromeDocPlan, validateChromeDocName } from './chrome-doc.js';
 
 /** Options for `furnace chrome-doc remove`. */
-export interface FurnaceChromeDocRemoveOptions {
+export interface FurnaceChromeDocRemoveOptions extends FurnaceLockWaitable {
   /** Skip confirmation. Required for real non-interactive removal. */
   yes?: boolean;
   /** Print the removal plan without writing files. */
@@ -200,15 +202,19 @@ export async function furnaceChromeDocRemoveCommand(
     }
   }
 
-  const result = await runFurnaceMutation(projectRoot, 'chrome-doc-rollback', (ctx) =>
-    performChromeDocRemoveMutations({
-      projectRoot,
-      name,
-      engineDir,
-      plan,
-      binaryName: forgeConfig.binaryName,
-      operationContext: ctx,
-    })
+  const result = await runFurnaceMutation(
+    projectRoot,
+    'chrome-doc-rollback',
+    (ctx) =>
+      performChromeDocRemoveMutations({
+        projectRoot,
+        name,
+        engineDir,
+        plan,
+        binaryName: forgeConfig.binaryName,
+        operationContext: ctx,
+      }),
+    waitLockMutationOptions(options.waitLockSeconds)
   );
 
   info(

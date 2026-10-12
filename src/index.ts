@@ -34,13 +34,19 @@ export {
   validateFurnaceConfig,
 } from './core/furnace-config.js';
 export { validateAllComponents, validateComponent } from './core/furnace-validate.js';
-export type { PatchSizeTierDecision } from './core/patch-lint.js';
+export type { PatchSizeThresholds, PatchSizeTierDecision } from './core/patch-lint.js';
 export {
   countNonBinaryDiffLines,
   filesMeasuredByFileTooLarge,
   getPatchSizeThresholds,
+  isTestFile,
   resolvePatchSizeTier,
 } from './core/patch-lint.js';
+export type { CodeLineCount } from './core/patch-lint-code-lines.js';
+export { countCodeLines } from './core/patch-lint-code-lines.js';
+export type { ResolvedFileSizeTier } from './core/patch-lint-file-size.js';
+export { resolveFileSizeThresholds } from './core/patch-lint-file-size.js';
+export type { ResolvedPatchFilesTier } from './core/patch-lint-size-thresholds.js';
 export type { AddTokenOptions, AddTokenResult, TokenMode } from './core/token-manager.js';
 export { addToken, getTokensCssPath, validateTokenAdd } from './core/token-manager.js';
 export {
@@ -65,6 +71,8 @@ export type {
   FurnaceState,
   OverrideComponentConfig,
   OverrideType,
+  PatchLintFileSizeThresholds,
+  PatchLintFileSizeTier,
   ProjectLicense,
   StepError,
   ValidationIssue,

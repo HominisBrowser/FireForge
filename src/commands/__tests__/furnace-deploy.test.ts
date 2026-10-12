@@ -143,9 +143,10 @@ import {
   prefixChecksums,
 } from '../../core/furnace-apply.js';
 import { loadFurnaceConfig, updateFurnaceState } from '../../core/furnace-config.js';
+import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
 import { pathExists } from '../../utils/fs.js';
-import { notice, success, warn } from '../../utils/logger.js';
+import { note, notice, success, warn } from '../../utils/logger.js';
 import { furnaceDeployCommand } from '../furnace/deploy.js';
 import {
   formatFragmentIncluderNotice,
@@ -829,6 +830,169 @@ describe('furnaceDeployCommand', () => {
       { 'moz-card.css': 'hash' },
       'override',
       'moz-card'
+    );
+  });
+});
+
+describe('furnaceDeployCommand with several names', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(pathExists).mockResolvedValue(true);
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'Test Browser',
+      vendor: 'Test Vendor',
+      appId: 'org.example.test',
+      binaryName: 'testbrowser',
+      firefox: { version: '145.0', product: 'firefox' },
+    });
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      version: 1,
+      componentPrefix: 'moz-',
+      stock: ['moz-stock'],
+      overrides: {
+        'moz-card': {
+          type: 'css-only',
+          description: 'Override card',
+          basePath: 'toolkit/content/widgets/moz-card',
+          baseVersion: '145.0',
+        },
+      },
+      custom: {
+        'moz-sidebar': {
+          description: 'Custom sidebar',
+          targetPath: 'toolkit/content/widgets/moz-sidebar',
+          register: true,
+          localized: false,
+        },
+      },
+    });
+    vi.mocked(computeComponentChecksums).mockResolvedValue({ 'a.css': 'hash' });
+    vi.mocked(prefixChecksums).mockReturnValue({});
+    vi.mocked(validateComponent).mockResolvedValue([]);
+  });
+
+  function applyByName(failing?: string): void {
+    vi.mocked(applyAllComponents).mockImplementation((_root, _dryRun, options) => {
+      const name = options?.componentName ?? '';
+      if (name === failing) {
+        return Promise.resolve({
+          applied: [],
+          skipped: [],
+          errors: [{ name, error: 'boom' }],
+        });
+      }
+      return Promise.resolve({
+        applied: [{ name, type: name === 'moz-card' ? 'override' : 'custom', filesAffected: [] }],
+        skipped: [],
+        errors: [],
+      });
+    });
+  }
+
+  it('applies every named component under ONE furnace lock hold and validates each', async () => {
+    applyByName();
+
+    await expect(
+      furnaceDeployCommand('/project', ['moz-card', 'moz-sidebar', 'moz-stock', 'moz-card'])
+    ).resolves.toBeUndefined();
+
+    expect(runFurnaceMutation).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(applyAllComponents).mock.calls.map((call) => call[2]?.componentName)).toEqual([
+      'moz-card',
+      'moz-sidebar',
+    ]);
+    // Each named component is its own atomic unit: state per component.
+    expect(updateFurnaceState).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(validateComponent).mock.calls.map((call) => call[1])).toEqual([
+      'moz-card',
+      'moz-sidebar',
+    ]);
+    expect(warn).toHaveBeenCalledWith(
+      '"moz-stock" is a stock component. Stock components are not applied locally.'
+    );
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining('Applied 2, skipped 0'),
+      'Deploy Summary'
+    );
+  });
+
+  it('refuses the whole invocation before any write when one name is unknown', async () => {
+    applyByName();
+
+    await expect(furnaceDeployCommand('/project', ['moz-card', 'moz-nope'])).rejects.toThrow(
+      'Component "moz-nope" not found in furnace.json.'
+    );
+    expect(applyAllComponents).not.toHaveBeenCalled();
+  });
+
+  it('keeps going after a failed name, validates the clean ones and fails the deploy', async () => {
+    applyByName('moz-card');
+
+    await expect(furnaceDeployCommand('/project', ['moz-card', 'moz-sidebar'])).rejects.toThrow(
+      'Deploy completed with 1 apply error(s).'
+    );
+
+    expect(updateFurnaceState).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(validateComponent).mock.calls.map((call) => call[1])).toEqual(['moz-sidebar']);
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining('Skipped validation for 1 component(s) with apply errors'),
+      'Deploy Summary'
+    );
+  });
+
+  it('counts every failed name as skipped from validation when all fail', async () => {
+    vi.mocked(applyAllComponents).mockImplementation((_root, _dryRun, options) =>
+      Promise.resolve({
+        applied: [],
+        skipped: [],
+        errors: [{ name: options?.componentName ?? '', error: 'boom' }],
+      })
+    );
+
+    await expect(furnaceDeployCommand('/project', ['moz-card', 'moz-sidebar'])).rejects.toThrow(
+      'Deploy completed with 2 apply error(s).'
+    );
+    expect(validateComponent).not.toHaveBeenCalled();
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining('Skipped validation for 2 component(s) with apply errors'),
+      'Deploy Summary'
+    );
+  });
+
+  it('runs the includer pass once per clean named component, never re-reporting a named one', async () => {
+    applyByName();
+    vi.mocked(refreshStaleFragmentIncluders).mockResolvedValueOnce({
+      fragments: ['anims.css'],
+      refreshed: ['moz-sidebar', 'moz-other'],
+      failed: [],
+      results: [],
+    });
+
+    await furnaceDeployCommand('/project', ['moz-card', 'moz-sidebar'], {
+      dryRun: true,
+      skipValidate: true,
+    });
+
+    expect(refreshStaleFragmentIncluders).toHaveBeenCalledTimes(2);
+    expect(notice).toHaveBeenCalledWith(
+      'Would also refresh 1 other includer of "anims.css": moz-other.'
+    );
+  });
+
+  it('names the reason for each skip in the summary line', async () => {
+    vi.mocked(applyAllComponents).mockResolvedValue({
+      applied: [],
+      skipped: [
+        { name: 'moz-card', reason: 'No changes since last apply', kind: 'already-current' },
+      ],
+      errors: [],
+    });
+
+    await furnaceDeployCommand('/project', ['moz-card']);
+
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining('Applied 0, skipped 1 (1 already current)'),
+      'Deploy Summary'
     );
   });
 });

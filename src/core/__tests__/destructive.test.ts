@@ -22,7 +22,8 @@ import {
   setInteractiveMode,
 } from '../../test-utils/index.js';
 import * as logger from '../../utils/logger.js';
-import { appendHistory, confirmDestructive, HISTORY_LOG_FILENAME } from '../destructive.js';
+import { appendHistory, confirmDestructive } from '../destructive.js';
+import { DEFAULT_HISTORY_LOG_PATH } from '../history-log-file.js';
 
 // Mock @clack/prompts so we can control the confirm() return value in
 // interactive-path tests without a real stdin.
@@ -204,12 +205,15 @@ describe('appendHistory', () => {
       result: 'ok',
     });
 
-    const content = await readFile(join(patchesDir, HISTORY_LOG_FILENAME), 'utf-8');
+    // The log lives outside the tracked patch queue.
+    const content = await readFile(join(projectRoot, DEFAULT_HISTORY_LOG_PATH), 'utf-8');
     const lines = content.trim().split('\n');
     expect(lines).toHaveLength(2);
 
     interface HistoryRecord {
       ts: string;
+      invocationId: string;
+      pid: number;
       operation: string;
       args: { filename?: string };
       yes?: boolean;
@@ -224,5 +228,9 @@ describe('appendHistory', () => {
     const second = JSON.parse(lines[1] ?? '{}') as HistoryRecord;
     expect(second.operation).toBe('patch-reorder');
     expect(second.yes).toBe(true);
+    // One invocation, one id: a session can select its own lines.
+    expect(first.invocationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second.invocationId).toBe(first.invocationId);
+    expect(first.pid).toBe(process.pid);
   });
 });

@@ -312,6 +312,16 @@ export function lintPatchQueueForwardRegistrations(
       check: 'forward-registration',
       patches: [found.patch],
       fingerprint: `forward-registration|${found.patch}|${found.file}|${found.token}|${found.creates}|${found.owner}`,
+      stagedDeclarations: [
+        {
+          patch: found.patch,
+          kind: 'registration',
+          file: found.file,
+          line: found.line,
+          creates: found.creates,
+          owner: found.owner,
+        },
+      ],
       message:
         `${found.file} in ${found.patch} registers "${found.token}" ${KIND_PHRASES[found.kind]}, ` +
         `but ${found.creates} is created by the later patch ${found.owner}. ` +

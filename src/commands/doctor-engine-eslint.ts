@@ -15,6 +15,10 @@ export const ENGINE_ESLINT_DOCTOR_CHECK: DoctorCheckDefinition = {
       : warning(
           'Engine ESLint installed',
           'Engine-local ESLint is missing after source extraction; an engine-eslint ratchet cannot run.',
-          'Run "cd engine && ./mach eslint --setup" after each source refresh, before building or running the gate.'
+          // `./mach npm ci` installs only the node dependencies the ratchet
+          // runs. `./mach eslint --setup` also builds mach's Python `lint`
+          // virtualenv, whose pinned requirements can stop resolving on PyPI
+          // and fail the whole step with node_modules still missing.
+          'Run "cd engine && ./mach npm ci --no-audit --no-fund" after each source refresh, before building or running the gate. It installs engine/node_modules without the Python lint virtualenv "./mach eslint --setup" also builds.'
         ),
 };

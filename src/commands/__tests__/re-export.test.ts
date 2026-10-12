@@ -92,6 +92,13 @@ vi.mock('../../core/patch-lint.js', () => ({
   lintPatchQueue: vi.fn().mockReturnValue([]),
   resolvePatchSizeTier: vi.fn().mockReturnValue({ tier: 'general' }),
   countNonBinaryDiffLines: vi.fn().mockReturnValue({ total: 0, textLines: 0 }),
+  measurePatchSize: vi.fn().mockResolvedValue({
+    metric: 'diff',
+    lines: 0,
+    testLines: 0,
+    files: 0,
+    registrationFiles: 0,
+  }),
 }));
 
 vi.mock('../../core/patch-lint-cache.js', () => ({
@@ -344,7 +351,11 @@ describe('reExportCommand - --scan flag', () => {
     // Partial re-export throws after the summary prints, so the
     // honest "N of M" accounting stays visible but the exit code is non-zero.
     await expect(reExportCommand('/fake/root', ['001', '002'], {})).rejects.toThrow(
-      /Re-exported only 1 of 2 selected patch\(es\)\. Skipped: 1 patch\(es\)/
+      /Re-exported only 1 of 2 selected patch\(es\)\. Skipped: 002-ui-missing\.patch/
+    );
+    // One line names what was written and what was not, and why.
+    expect(info).toHaveBeenCalledWith(
+      'Re-export summary: wrote 1 of 2: 001-ui-keep.patch; NOT written: 002-ui-missing.patch (skipped).'
     );
 
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
@@ -479,13 +490,15 @@ describe('reExportCommand - --scan flag', () => {
     ).rejects.toThrow('--refuse-adjacent-unmanaged applies to the scan-less path only');
   });
 
-  it('--refuse-foreign-drift is refused alongside --scan and --files', async () => {
-    await expect(
-      reExportCommand('/fake/root', ['001'], { scan: true, refuseForeignDrift: true })
-    ).rejects.toThrow('--refuse-foreign-drift applies to the scan-less path only');
+  it('--refuse-foreign-drift is refused alongside --files but not --scan', async () => {
     await expect(
       reExportCommand('/fake/root', ['001'], { files: ['a.js'], refuseForeignDrift: true })
-    ).rejects.toThrow('--refuse-foreign-drift applies to the scan-less path only');
+    ).rejects.toThrow('--refuse-foreign-drift cannot be combined with --files');
+    // Beside --scan the belt passes argument validation and reaches the
+    // manifest load (empty in this mocked root).
+    await expect(
+      reExportCommand('/fake/root', ['001'], { scan: true, refuseForeignDrift: true })
+    ).rejects.toThrow('No patches found in manifest');
   });
 
   it('--expect is refused without --refuse-foreign-drift', async () => {
@@ -580,14 +593,23 @@ describe('reExportCommand - --scan flag', () => {
         scan: true,
         scanFiles: ['browser/modules/foo/new.js'],
       })
-    ).rejects.toThrow('--scan-file operates on exactly one target patch');
+    ).rejects.toThrow('--scan-file cannot be combined with --all');
+
+    await expect(
+      reExportCommand('/fake/root', [], {
+        scan: true,
+        scanFiles: ['browser/modules/foo/new.js'],
+      })
+    ).rejects.toThrow('--scan-file needs explicit target patch identifiers');
 
     await expect(
       reExportCommand('/fake/root', ['001', '002'], {
         scan: true,
-        scanFiles: ['browser/modules/foo/new.js'],
+        scanFiles: ['001:browser/modules/foo/a.js', 'browser/modules/foo/new.js'],
       })
-    ).rejects.toThrow('--scan-file operates on exactly one target patch');
+    ).rejects.toThrow(
+      /must name each file's owning patch.*Missing an owner: browser\/modules\/foo\/new\.js/
+    );
   });
 
   it('--scan-file rejects paths that are not safe engine-relative paths', async () => {

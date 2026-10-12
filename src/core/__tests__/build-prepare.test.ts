@@ -73,6 +73,13 @@ vi.mock('../furnace-apply.js', () => ({
   applyAllComponents: vi.fn(),
 }));
 
+// The guard's classification has its own suites; here only the belt's
+// decision (refuse, warn, or note) is under test. The formatters stay real.
+vi.mock('../build-overwrite-guard.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../build-overwrite-guard.js')>()),
+  assessUnexportedDrift: vi.fn(() => Promise.resolve({ atRisk: [], deployedUnexported: [] })),
+}));
+
 vi.mock('../furnace-operation.js', () => ({
   runFurnaceMutation: vi.fn(
     async (_root: string, _kind: string, body: (ctx: unknown) => Promise<unknown>) =>
@@ -88,6 +95,7 @@ import type { FireForgeConfig, ProjectPaths } from '../../types/config.js';
 import { pathExists, readText } from '../../utils/fs.js';
 import { info, notice, spinner, warn } from '../../utils/logger.js';
 import { isBrandingSetup, setupBranding } from '../branding.js';
+import { assessUnexportedDrift } from '../build-overwrite-guard.js';
 import { prepareBuildEnvironment } from '../build-prepare.js';
 import { hashEngineFile } from '../coverage-extend.js';
 import { applyAllComponents } from '../furnace-apply.js';
@@ -228,6 +236,30 @@ describe('prepareBuildEnvironment', () => {
     ).operationContext;
     expect(typeof operationContext.registerJournal).toBe('function');
     expect(typeof operationContext.registerCleanup).toBe('function');
+  });
+
+  it('reports the applied component names, and skips the apply on request', async () => {
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig.mockResolvedValue({
+      overrides: { 'moz-button': {} },
+      custom: {},
+      stock: [],
+    } as never);
+    mockApplyAllComponents.mockResolvedValue({
+      applied: [{ name: 'moz-button' }],
+      errors: [],
+      skipped: [],
+    } as never);
+
+    const applied = await prepareBuildEnvironment('/project', paths, config);
+    expect(applied.furnaceAppliedNames).toEqual(['moz-button']);
+
+    mockApplyAllComponents.mockClear();
+    const skipped = await prepareBuildEnvironment('/project', paths, config, {
+      skipFurnaceApply: true,
+    });
+    expect(mockApplyAllComponents).not.toHaveBeenCalled();
+    expect(skipped).toMatchObject({ furnaceApplied: 0, furnaceAppliedNames: [] });
   });
 
   it('skips Furnace when furnace.json does not exist', async () => {
@@ -442,6 +474,46 @@ describe('prepareBuildEnvironment', () => {
       /1 component failed to apply cleanly/
     );
     expect(mockWarn).toHaveBeenCalledWith('Furnace: moz-button [register] pattern mismatch');
+  });
+});
+
+describe('prepareBuildEnvironment unexported-drift belt', () => {
+  const deployed = {
+    file: 'toolkit/content/widgets/moz-x/moz-x.css',
+    classification: 'deployed-unexported' as const,
+    match: 'composed-source' as const,
+    owner: '010-ui-x.patch',
+  };
+
+  it('lets a belted build overwrite deployed files equal to their component source', async () => {
+    vi.mocked(assessUnexportedDrift).mockResolvedValueOnce({
+      atRisk: [],
+      deployedUnexported: [deployed],
+    });
+
+    await expect(
+      prepareBuildEnvironment('/project', paths, config, { refuseUnexportedDrift: true })
+    ).resolves.toBeDefined();
+    expect(mockInfo).toHaveBeenCalledWith(
+      expect.stringContaining('[deployed-unexported: composed-source]')
+    );
+  });
+
+  it('still refuses a real unrecorded edit beside them', async () => {
+    vi.mocked(assessUnexportedDrift).mockResolvedValueOnce({
+      atRisk: [
+        {
+          file: 'toolkit/content/widgets/moz-x/moz-x.mjs',
+          classification: 'patch-owned-drift',
+          owner: '010-ui-x.patch',
+        },
+      ],
+      deployedUnexported: [deployed],
+    });
+
+    await expect(
+      prepareBuildEnvironment('/project', paths, config, { refuseUnexportedDrift: true })
+    ).rejects.toThrow('toolkit/content/widgets/moz-x/moz-x.mjs [patch-owned-drift]');
   });
 });
 

@@ -217,6 +217,40 @@ describe('runDeployValidation', () => {
     );
   });
 
+  it('does not count findings furnace.json records as validationExceptions', async () => {
+    const results = new Map<string, ValidationIssue[]>();
+    results.set('moz-panel', [
+      { component: 'moz-panel', check: 'no-aria-role', severity: 'error', message: 'Reviewed' },
+    ]);
+    vi.mocked(validateAllComponents).mockResolvedValue(results);
+    vi.mocked(validateComponent).mockResolvedValue([
+      { component: 'moz-panel', check: 'no-aria-role', severity: 'error', message: 'Reviewed' },
+    ]);
+    const config: FurnaceConfig = {
+      ...baseConfig,
+      validationExceptions: [
+        { component: 'moz-panel', check: 'no-aria-role', reason: 'wraps a native button' },
+        // A stale entry is furnace validate's report, never a deploy finding.
+        { component: 'moz-card', check: 'hardcoded-text', reason: 'reviewed' },
+      ],
+    };
+    const common = {
+      validateSpinner: makeSpinner(),
+      config,
+      furnacePaths,
+      failedComponents: new Set<string>(),
+      isDryRun: false,
+      projectRoot: '/project',
+    };
+
+    await expect(runDeployValidation({ ...common, name: undefined })).resolves.toEqual(
+      expect.objectContaining({ totalErrors: 0, totalWarnings: 0 })
+    );
+    await expect(runDeployValidation({ ...common, name: 'moz-panel' })).resolves.toEqual(
+      expect.objectContaining({ totalErrors: 0, totalWarnings: 0 })
+    );
+  });
+
   it('validates alsoValidate tags alongside the named target and counts them', async () => {
     const spinner = makeSpinner();
     vi.mocked(validateComponent).mockImplementation((_dir, name) =>

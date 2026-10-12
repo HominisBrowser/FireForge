@@ -31,6 +31,15 @@ import { pathExists } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
 import { type PlacementPlan } from '../export-flow.js';
 import { projectEntryBody } from './entry-projection.js';
+import {
+  describeStagedMaintenance,
+  findDeclarationsMadeUnused,
+  keptRelocatedDeclarations,
+  relocatedSourceDeclarations,
+  rewriteSplitOwners,
+  type SplitStagedMaintenance,
+  withoutRelocatedDeclarations,
+} from './split-staged.js';
 
 /** Everything the commit step needs, computed and confirmed up front. */
 export interface SplitPlan {
@@ -55,6 +64,11 @@ export interface SplitPlan {
    * and persisted on commit so the real per-patch gate stays clean.
    */
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
+  /**
+   * Declarations the move re-homes on the new patch or drops as made
+   * unused. Populated by {@link runProjectedSplitLint}.
+   */
+  stagedMaintenance: SplitStagedMaintenance;
 }
 
 /**
@@ -111,46 +125,6 @@ export async function buildSplitDiff(
   return diff;
 }
 
-/**
- * Finds patches declaring a staged-dependency forward-import whose `owner`
- * is the source patch and whose `creates` path moves to the new patch.
- */
-export function findOwnerRewriteHolders(
-  patches: readonly PatchMetadata[],
-  sourceFilename: string,
-  movedSet: ReadonlySet<string>
-): string[] {
-  return patches
-    .filter((patch) =>
-      (patch.stagedDependencies?.forwardImports ?? []).some(
-        (fi) => fi.owner === sourceFilename && movedSet.has(fi.creates)
-      )
-    )
-    .map((patch) => patch.filename);
-}
-
-/** Rewrites split-affected owners on one manifest row. */
-export function rewriteSplitOwners(
-  patch: PatchMetadata,
-  sourceFilename: string,
-  movedSet: ReadonlySet<string>,
-  newFilename: string
-): PatchMetadata {
-  const forwardImports = patch.stagedDependencies?.forwardImports;
-  if (!forwardImports?.some((fi) => fi.owner === sourceFilename && movedSet.has(fi.creates))) {
-    return patch;
-  }
-  return {
-    ...patch,
-    stagedDependencies: {
-      ...patch.stagedDependencies,
-      forwardImports: forwardImports.map((fi) =>
-        fi.owner === sourceFilename && movedSet.has(fi.creates) ? { ...fi, owner: newFilename } : fi
-      ),
-    },
-  };
-}
-
 /** Builds the projected post-split queue entries (renumber + shrunken source + new patch). */
 function buildProjectedSplitEntries(
   baseCtx: PatchQueueContext,
@@ -170,6 +144,9 @@ function buildProjectedSplitEntries(
         movedSet,
         plan.placement.newFilename
       );
+      if (entry.filename === plan.source.filename) {
+        metadata = withoutRelocatedDeclarations(metadata, movedSet);
+      }
     }
     const rename = plan.placement.renameMap.get(entry.filename);
     const base = rename
@@ -179,10 +156,27 @@ function buildProjectedSplitEntries(
     return { ...base, ...projectEntryBody(plan.remainingDiff) };
   });
 
+  // Declarations whose declaring file moved travel with it, so the new
+  // patch's projected entry carries them (and only then needs metadata).
+  const relocated = relocatedSourceDeclarations(plan.source, movedSet, ownerLookup);
+  const hasRelocated =
+    (relocated.forwardImports?.length ?? 0) + (relocated.registrations?.length ?? 0) > 0;
   entries.push({
     filename: plan.placement.newFilename,
     order: plan.placement.insertionOrder,
-    metadata: null,
+    metadata: hasRelocated
+      ? {
+          filename: plan.placement.newFilename,
+          order: plan.placement.insertionOrder,
+          category: plan.category,
+          name: plan.name,
+          description: plan.description,
+          createdAt: '',
+          sourceEsrVersion: plan.source.sourceEsrVersion,
+          filesAffected: plan.movedFiles,
+          stagedDependencies: relocated,
+        }
+      : null,
     ...projectEntryBody(plan.movedDiff),
   });
   entries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
@@ -278,6 +272,7 @@ export function runProjectedSplitLint(
 ): {
   conflicts: ConflictReport | null;
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
+  stagedMaintenance: SplitStagedMaintenance;
 } {
   const projectedEntries = buildProjectedSplitEntries(baseCtx, plan);
 
@@ -289,13 +284,35 @@ export function runProjectedSplitLint(
   );
   injectStagedDependencyAdditions(projectedEntries, stagedDependencyAdditions);
 
-  const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
-  const projectedIssues = lintPatchQueue({
+  const baselineAll = lintPatchQueue(baseCtx);
+  const projectedAll = lintPatchQueue({
     entries: projectedEntries,
     // Keep the projection patch-policy-aware whenever the baseline is, so
     // computeProjectedLintRegressions compares symmetric rule sets.
     ...(baseCtx.patchPolicy ? { patchPolicy: baseCtx.patchPolicy } : {}),
-  }).filter((i) => i.severity === 'error');
+  });
+  const baselineIssues = baselineAll.filter((i) => i.severity === 'error');
+  const projectedIssues = projectedAll.filter((i) => i.severity === 'error');
+  const oldNameByNew = new Map(
+    [...plan.placement.renameMap].map(([oldName, entry]) => [entry.newFilename, oldName] as const)
+  );
+  const stagedMaintenance: SplitStagedMaintenance = {
+    relocated: relocatedSourceDeclarations(
+      plan.source,
+      new Set(plan.movedFiles),
+      (old) => plan.placement.renameMap.get(old)?.newFilename
+    ),
+    dropped: findDeclarationsMadeUnused({
+      baselineEntries: baseCtx.entries,
+      projectedEntries,
+      baselineIssues: baselineAll,
+      projectedIssues: projectedAll,
+      sourceFilename: plan.source.filename,
+      newFilename: plan.placement.newFilename,
+      mapBack: (name) => oldNameByNew.get(name) ?? name,
+      movedSet: new Set(plan.movedFiles),
+    }),
+  };
   const regressions = computeProjectedLintRegressions(baselineIssues, projectedIssues);
   if (baselineIssues.length > 0 && regressions.length === 0) {
     warn(
@@ -310,7 +327,7 @@ export function runProjectedSplitLint(
           reason: `split would introduce ${regressions.length} cross-patch lint error(s)`,
           details: regressions.map(formatPatchLintIssue),
         };
-  return { conflicts, stagedDependencyAdditions };
+  return { conflicts, stagedDependencyAdditions, stagedMaintenance };
 }
 
 /** Builds the projected manifest for policy enforcement. */
@@ -341,6 +358,8 @@ export function projectSplitManifest(
  * source's provenance (product, version, category) onto the new patch.
  */
 export function buildNewPatchMetadata(plan: SplitPlan, config: FireForgeConfig): PatchMetadata {
+  const staged = keptRelocatedDeclarations(plan.stagedMaintenance, plan.placement.newFilename);
+  const hasStaged = (staged.forwardImports?.length ?? 0) + (staged.registrations?.length ?? 0) > 0;
   return {
     filename: plan.placement.newFilename,
     order: plan.placement.insertionOrder,
@@ -350,6 +369,7 @@ export function buildNewPatchMetadata(plan: SplitPlan, config: FireForgeConfig):
     createdAt: new Date().toISOString(),
     ...buildPatchSourceMetadata(config.firefox),
     filesAffected: plan.movedFiles,
+    ...(hasStaged ? { stagedDependencies: staged } : {}),
   };
 }
 
@@ -377,5 +397,12 @@ export function buildSplitSummary(plan: SplitPlan): string[] {
       `staged-dependency owners re-pointed to the new patch in: ${plan.ownerRewrites.join(', ')}`
     );
   }
+  summary.push(
+    ...describeStagedMaintenance(
+      plan.stagedMaintenance,
+      plan.source.filename,
+      plan.placement.newFilename
+    )
+  );
   return summary;
 }

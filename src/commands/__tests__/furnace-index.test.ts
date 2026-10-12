@@ -163,7 +163,12 @@ describe('registerFurnace', () => {
     expect(furnaceRemoveCommand).toHaveBeenCalledWith('/project', 'moz-thing', { yes: true });
 
     await runFurnaceCommand('rename', 'moz-old', 'moz-new');
-    expect(furnaceRenameCommand).toHaveBeenCalledWith('/project', 'moz-old', 'moz-new');
+    expect(furnaceRenameCommand).toHaveBeenCalledWith('/project', 'moz-old', 'moz-new', {});
+
+    await runFurnaceCommand('rename', 'moz-old', 'moz-new', '--dry-run');
+    expect(furnaceRenameCommand).toHaveBeenLastCalledWith('/project', 'moz-old', 'moz-new', {
+      dryRun: true,
+    });
   });
 
   it('routes the nested "furnace chrome-doc remove" to its own handler', async () => {
@@ -297,7 +302,7 @@ describe('registerFurnace', () => {
 
   it('routes deploy and sync through the engine session lock', async () => {
     await runFurnaceCommand('deploy', 'moz-button');
-    expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', 'moz-button', {});
+    expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', ['moz-button'], {});
     expect(withEngineSessionLock).toHaveBeenCalledWith(
       '/project',
       'furnace deploy',
@@ -320,7 +325,7 @@ describe('registerFurnace', () => {
     // A dry run mutates nothing, so making it queue behind a running build
     // would be a needless refusal. The short-circuit is the contract.
     await runFurnaceCommand('deploy', 'moz-button', '--dry-run');
-    expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', 'moz-button', { dryRun: true });
+    expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', ['moz-button'], { dryRun: true });
     expect(withEngineSessionLock).not.toHaveBeenCalled();
 
     await runFurnaceCommand('sync', '--dry-run');
@@ -365,6 +370,52 @@ describe('registerFurnace', () => {
     // Absent the flag (and the env var), nothing is threaded: the file lock
     // keeps its 30 s default and the ~1 s fail-fast path is untouched.
     expect(furnaceApplyCommand).toHaveBeenCalledWith('/project', 'moz-button', {});
+  });
+
+  it('passes several deploy names to ONE invocation under one engine session lock', async () => {
+    await runFurnaceCommand('deploy', 'moz-a', 'moz-b', 'moz-c', '--wait-lock', '45');
+
+    expect(furnaceDeployCommand).toHaveBeenCalledTimes(1);
+    expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', ['moz-a', 'moz-b', 'moz-c'], {
+      waitLockSeconds: 45,
+    });
+    expect(withEngineSessionLock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['create', ['moz-new'], furnaceCreateCommand, ['/project', 'moz-new']],
+    ['remove', ['moz-thing', '--yes'], furnaceRemoveCommand, ['/project', 'moz-thing']],
+    ['rename', ['moz-old', 'moz-new'], furnaceRenameCommand, ['/project', 'moz-old', 'moz-new']],
+    ['refresh', ['moz-thing'], furnaceRefreshCommand, ['/project', 'moz-thing']],
+    ['scan', [], furnaceScanCommand, ['/project']],
+    ['override', ['moz-thing'], furnaceOverrideCommand, ['/project', 'moz-thing']],
+    ['preview', [], furnacePreviewCommand, ['/project']],
+  ] as const)(
+    'threads --wait-lock into the furnace lock of "furnace %s" (takes only that lock)',
+    async (name, args, handler, leading) => {
+      await runFurnaceCommand(name, ...args, '--wait-lock', '90');
+
+      expect(handler).toHaveBeenCalledWith(
+        ...leading,
+        expect.objectContaining({ waitLockSeconds: 90 })
+      );
+      // These commands never take the engine session lock.
+      expect(withEngineSessionLock).not.toHaveBeenCalled();
+    }
+  );
+
+  it('threads --wait-lock into the chrome-doc pair', async () => {
+    await runFurnaceCommand('chrome-doc', 'create', 'my-doc', '--wait-lock');
+    expect(furnaceChromeDocCreateCommand).toHaveBeenCalledWith(
+      '/project',
+      'my-doc',
+      expect.objectContaining({ waitLockSeconds: 60 })
+    );
+
+    await runFurnaceCommand('chrome-doc', 'remove', 'my-doc', '--wait-lock', '15');
+    expect(furnaceChromeDocRemoveCommand).toHaveBeenCalledWith('/project', 'my-doc', {
+      waitLockSeconds: 15,
+    });
   });
 
   it('rejects out-of-range --wait-lock values', async () => {

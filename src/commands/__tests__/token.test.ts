@@ -52,6 +52,10 @@ vi.mock('../token-coverage.js', () => ({
   tokenCoverageCommand: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('../token-lint.js', () => ({
+  tokenLintCommand: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../token-list.js', () => ({
   tokenListCommand: vi.fn(() => Promise.resolve()),
   tokenShowCommand: vi.fn(() => Promise.resolve()),
@@ -62,6 +66,7 @@ import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-confi
 import { addToken, validateTokenAdd } from '../../core/token-manager.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
 import { registerToken, tokenAddCommand } from '../token.js';
+import { tokenLintCommand } from '../token-lint.js';
 import { tokenListCommand, tokenShowCommand } from '../token-list.js';
 
 const mockedAddToken = vi.mocked(addToken);
@@ -532,6 +537,16 @@ describe('registerToken', () => {
     await program.parseAsync(['node', 'fireforge', 'token', 'show', '--json', 'canvas-gap']);
 
     expect(mockedTokenShowCommand).toHaveBeenCalledWith('/project', 'canvas-gap', { json: true });
+  });
+
+  it('routes token lint through the registered CLI action', async () => {
+    const program = createProgram();
+
+    await program.parseAsync(['node', 'fireforge', 'token', 'lint', '--json']);
+    expect(vi.mocked(tokenLintCommand)).toHaveBeenCalledWith('/project', { json: true });
+
+    await program.parseAsync(['node', 'fireforge', 'token', 'lint']);
+    expect(vi.mocked(tokenLintCommand)).toHaveBeenLastCalledWith('/project', {});
   });
 
   it('prints help and exits cleanly when invoked without a subcommand', async () => {

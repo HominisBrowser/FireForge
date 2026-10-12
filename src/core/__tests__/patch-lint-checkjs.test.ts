@@ -152,6 +152,53 @@ describe('runCheckJs', () => {
     }
   });
 
+  it('says an implicit-any finding came from a resource:/// import this program cannot resolve', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-any-'));
+    await writeFile(
+      join(tmpDir, 'UsesLater.sys.mjs'),
+      [
+        '/** @type {typeof import("resource:///modules/Later.sys.mjs")} */',
+        '// @ts-ignore -- the value itself comes from a lazy getter',
+        'const Later = globalThis.Later;',
+        'export const names = Later.items.map((item) => item.name);',
+        'export function plain(x) {',
+        '  return x;',
+        '}',
+        '',
+      ].join('\n')
+    );
+    await writeFile(join(tmpDir, 'Plain.sys.mjs'), 'export function f(x) {\n  return x;\n}\n');
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(
+        tmpDir,
+        new Set(['UsesLater.sys.mjs', 'Plain.sys.mjs']),
+        undefined,
+        undefined,
+        { strict: true }
+      );
+      const usesLater = issues.filter((i) => i.file === 'UsesLater.sys.mjs');
+      const itemFinding = usesLater.find((i) => /'item'/.test(i.message));
+      expect(itemFinding?.message).toContain(
+        'This file imports resource:///modules/Later.sys.mjs, which this per-patch checkJs program cannot resolve'
+      );
+      // A file without such an import gets no note.
+      const plain = issues.find((i) => i.file === 'Plain.sys.mjs');
+      expect(plain?.message).toMatch(/implicitly has an 'any' type/);
+      expect(plain?.message).not.toContain('cannot resolve');
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('does not flag dynamic import("resource:-…") or chrome:// namespaces under strict checkJs', async () => {
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');

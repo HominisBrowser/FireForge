@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { writeFile } from 'node:fs/promises';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -280,6 +282,28 @@ describe('configCommand', () => {
 
     expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
     expect(info).toHaveBeenCalledWith('arbitraryUnknown = one (unchanged)');
+  });
+
+  it('changes only the set key and keeps compact sections on one line', async () => {
+    const compact = [
+      '{',
+      '  "name": "Test Browser", "vendor": "Test", "appId": "org.test.browser",',
+      '  "binaryName": "testbrowser",',
+      '  "firefox": { "version": "140.0esr", "product": "firefox-esr" },',
+      '  "patchLint": { "rawColorAllowlist": ["a.css", "b.css"] }',
+      '}',
+      '',
+    ].join('\n');
+    await writeFile(`${projectRoot}/fireforge.json`, compact);
+
+    await configCommand(projectRoot, 'build.jobs', '8');
+    await configCommand(projectRoot, 'patchLint.rawColorAllowlist', '["a.css","b.css","c.css"]');
+
+    expect(await readProjectText(projectRoot, 'fireforge.json')).toBe(
+      compact
+        .replace('"b.css"]', '"b.css", "c.css"]')
+        .replace('] }\n}', '] },\n  "build": {\n    "jobs": 8\n  }\n}')
+    );
   });
 
   it('preserves earlier forced keys when subsequent --force writes land', async () => {

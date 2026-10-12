@@ -1,21 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { loadConfig } from '../../core/config.js';
 import { applyAllComponents, type ApplyAllComponentsResult } from '../../core/furnace-apply.js';
-import { logApplyResult } from '../../core/furnace-apply-output.js';
+import { formatSkipBreakdown, logApplyResult } from '../../core/furnace-apply-output.js';
 import { getFurnacePaths } from '../../core/furnace-config.js';
 import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
-import {
-  type FurnaceOperationContext,
-  runFurnaceMutation,
-  waitLockMutationOptions,
-} from '../../core/furnace-operation.js';
+import { runFurnaceMutation, waitLockMutationOptions } from '../../core/furnace-operation.js';
 import { assertFurnaceReady } from '../../core/furnace-precondition.js';
-import {
-  getPersistableAppliedEntry,
-  getStepFailureCount,
-  persistSingleComponentState,
-  shouldPersistSingleComponentState,
-} from '../../core/furnace-state-persist.js';
+import { getStepFailureCount } from '../../core/furnace-state-persist.js';
 import { hasBlockingStepErrors } from '../../core/furnace-step-errors.js';
 import type { OverrideVersionDrift } from '../../core/furnace-version-drift.js';
 import {
@@ -25,14 +16,9 @@ import {
 } from '../../core/furnace-version-drift.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceDeployOptions } from '../../types/commands/index.js';
-import type { FurnaceConfig } from '../../types/furnace.js';
 import { info, intro, note, notice, outro, spinner, warn } from '../../utils/logger.js';
-import {
-  formatFragmentIncluderNotice,
-  type FragmentIncluderRefresh,
-  mergeApplyResults,
-  refreshStaleFragmentIncluders,
-} from './deploy-fragment-includers.js';
+import { formatFragmentIncluderNotice } from './deploy-fragment-includers.js';
+import { deployNamedComponents, type NamedDeployOutcome } from './deploy-named.js';
 import { runDeployValidation } from './validation-output.js';
 
 /**
@@ -73,59 +59,6 @@ function getFailedComponentNames(result: ApplyAllComponentsResult): Set<string> 
 }
 
 /**
- * Applies a single named override or custom component in targeted deploy
- * mode.
- *
- * Delegates to {@link applyAllComponents} with a `componentName` filter so
- * targeted deploys run the exact same pipeline as deploy-all, including
- * workspace-deletion detection, engine orphan undeploy, and jar.mn /
- * customElements.js re-sync. Calling the per-component apply helpers
- * directly never prunes: renaming a helper file in the workspace then leaves
- * the old deployed file and its stale jar.mn line in the engine.
- *
- * `persistState: false` matters here: the batch persist path replaces
- * `appliedChecksums` wholesale with only this run's entries, which for a
- * named deploy would wipe every other component's state. Named deploy keeps
- * its per-component state merge ({@link persistSingleComponentState}) and
- * its atomicity gate ({@link shouldPersistSingleComponentState}) at the call
- * site. Rollback on failure happens inside `applyAllComponents`. The journal
- * returned on success is ignored (the deploy keeps its files).
- *
- * The caller then runs the fragment-includer follow-up
- * ({@link refreshStaleFragmentIncluders}) ONLY after this component's state
- * is persisted: each includer is applied and persisted as its own unit, so
- * a signal mid-loop restores at most the includer in flight and leaves every
- * earlier unit committed. Moving the persist after the includer loop would
- * silently break that atomicity.
- *
- * @param name - Component name to apply
- * @param config - Loaded Furnace configuration
- * @param isDryRun - Whether file writes should be skipped
- * @returns Apply result for the named component, or `stock` for stock-only
- *   entries
- */
-async function applyNamedComponent(
-  name: string,
-  config: FurnaceConfig,
-  isDryRun: boolean,
-  projectRoot: string,
-  operationContext?: FurnaceOperationContext
-): Promise<ApplyAllComponentsResult | 'stock'> {
-  if (!(name in config.overrides) && !(name in config.custom)) {
-    if (config.stock.includes(name)) {
-      return 'stock';
-    }
-    throw new FurnaceError(`Component "${name}" not found in furnace.json.`, name);
-  }
-
-  return applyAllComponents(projectRoot, isDryRun, {
-    componentName: name,
-    persistState: false,
-    ...(operationContext ? { operationContext } : {}),
-  });
-}
-
-/**
  * Prints the deploy summary after apply and validation complete.
  * @param result - Aggregate apply result
  * @param totalErrors - Total validation errors encountered
@@ -161,7 +94,7 @@ function printDeploymentSummary(
     );
   } else {
     note(
-      `Applied ${appliedCount}, skipped ${skippedCount}\n` +
+      `Applied ${appliedCount}, skipped ${skippedCount}${formatSkipBreakdown(result.skipped)}\n` +
         `${applyErrors} apply error(s)` +
         (stepErrorCount > 0 ? `, ${stepErrorCount} registration step error(s)` : '') +
         `\n` +
@@ -195,17 +128,28 @@ function enforceScopedOverrideVersionDriftPreflight(
 }
 
 /**
+ * Normalises the positional argument: a single name (programmatic callers)
+ * or the variadic list commander passes. An empty list means "deploy all".
+ */
+function normalizeDeployNames(names: string | readonly string[] | undefined): string[] {
+  if (names === undefined) return [];
+  return typeof names === 'string' ? [names] : [...names];
+}
+
+/**
  * Runs the furnace deploy command: apply components then validate in one step.
  * @param projectRoot - Root directory of the project
- * @param name - Optional component name to deploy (deploys all if omitted)
+ * @param names - Component name(s) to deploy, all under one lock hold
+ *   (deploys all when omitted or empty)
  * @param options - Command options
  */
 export async function furnaceDeployCommand(
   projectRoot: string,
-  name?: string,
+  names?: string | readonly string[],
   options: FurnaceDeployOptions = {}
 ): Promise<void> {
   const isDryRun = options.dryRun ?? false;
+  const requested = normalizeDeployNames(names);
 
   intro(isDryRun ? 'Furnace Deploy (dry run)' : 'Furnace Deploy');
 
@@ -227,7 +171,10 @@ export async function furnaceDeployCommand(
   const forgeConfig = await loadConfig(projectRoot);
   const driftEntries = findOverrideBaseVersionDrift(config, forgeConfig.firefox.version);
   const force = options.force ?? false;
-  const scopedDrift = name ? driftEntries.filter((entry) => entry.name === name) : driftEntries;
+  const scopedDrift =
+    requested.length > 0
+      ? driftEntries.filter((entry) => requested.includes(entry.name))
+      : driftEntries;
   enforceScopedOverrideVersionDriftPreflight(scopedDrift, force);
 
   // --- Step 1: Apply ---
@@ -244,69 +191,33 @@ export async function furnaceDeployCommand(
     'deploy-rollback',
     async (
       ctx
-    ): Promise<
-      | { kind: 'stock' }
-      | { kind: 'result'; result: ApplyAllComponentsResult; includers?: FragmentIncluderRefresh }
-    > => {
-      if (name) {
-        const namedApplyResult = await applyNamedComponent(
-          name,
-          config,
-          isDryRun,
+    ): Promise<NamedDeployOutcome | { kind: 'all'; result: ApplyAllComponentsResult }> => {
+      if (requested.length > 0) {
+        return deployNamedComponents({
           projectRoot,
-          ctx
-        );
-
-        if (namedApplyResult === 'stock') {
-          return { kind: 'stock' };
-        }
-
-        // Named deploy is atomic: state is persisted only when every apply
-        // step succeeded. Any rollback triggered by applyNamedComponent has
-        // already restored the engine to its pre-deploy state, so persisting
-        // partial checksums here would mis-report the next status/apply run
-        // against a workspace that was never actually deployed.
-        const primaryClean = shouldPersistSingleComponentState(namedApplyResult, isDryRun);
-        if (primaryClean) {
-          await persistSingleComponentState(
-            projectRoot,
-            getPersistableAppliedEntry('Deploy', name, namedApplyResult.applied[0]),
-            furnacePaths
-          );
-        }
-
-        // Other deployed includers of a fragment this component includes
-        // would otherwise keep a stale expansion. Only after a clean,
-        // persisted primary apply (dry-run always previews).
-        if (!primaryClean && !isDryRun) {
-          return { kind: 'result', result: namedApplyResult };
-        }
-        const includers = await refreshStaleFragmentIncluders({
-          projectRoot,
-          name,
+          names: requested,
           config,
           furnacePaths,
           isDryRun,
           operationContext: ctx,
         });
-        return {
-          kind: 'result',
-          result: mergeApplyResults(namedApplyResult, includers.results),
-          includers,
-        };
       }
-
       const allResult = await applyAllComponents(projectRoot, isDryRun, {
         operationContext: ctx,
       });
-      return { kind: 'result', result: allResult };
+      return { kind: 'all', result: allResult };
     },
     { dryRun: isDryRun, ...waitLockMutationOptions(options.waitLockSeconds) }
   );
 
+  const warnStock = (): void => {
+    for (const stockName of applyOutcome.kind === 'all' ? [] : applyOutcome.stock) {
+      warn(`"${stockName}" is a stock component. Stock components are not applied locally.`);
+    }
+  };
   if (applyOutcome.kind === 'stock') {
     applySpinner.stop('Apply skipped');
-    warn(`"${name}" is a stock component. Stock components are not applied locally.`);
+    warnStock();
     outro(isDryRun ? 'Dry run complete (no files modified)' : 'Deploy complete');
     return;
   }
@@ -314,9 +225,10 @@ export async function furnaceDeployCommand(
   const result = applyOutcome.result;
 
   applySpinner.stop(isDryRun ? 'Planned actions calculated' : 'Components applied');
+  warnStock();
 
   logApplyResult(result, isDryRun);
-  if (applyOutcome.includers) {
+  if (applyOutcome.kind === 'result') {
     for (const line of formatFragmentIncluderNotice(applyOutcome.includers, isDryRun)) {
       notice(line);
     }
@@ -342,19 +254,34 @@ export async function furnaceDeployCommand(
 
   const validateSpinner = spinner(isDryRun ? 'Validating (read-only)...' : 'Validating...');
   const failedComponents = getFailedComponentNames(result);
+  // A named deploy validates every named component that applied, then the
+  // includers it refreshed. The first clean name leads (the validation
+  // runner skips the whole named branch when its lead failed), and every
+  // failed name is counted as skipped.
+  const deployed = applyOutcome.kind === 'result' ? applyOutcome.deployed : [];
+  const failedNamed = deployed.filter((tag) => failedComponents.has(tag));
+  const lead = deployed.find((tag) => !failedComponents.has(tag)) ?? deployed[0];
   const validation = await runDeployValidation({
     validateSpinner,
-    name,
+    name: lead,
     config,
     furnacePaths,
     failedComponents,
     isDryRun,
     projectRoot,
     dryRunActions: result.actions,
-    alsoValidate: applyOutcome.includers?.refreshed ?? [],
+    alsoValidate:
+      applyOutcome.kind === 'result'
+        ? [...deployed.filter((tag) => tag !== lead), ...applyOutcome.includers.refreshed]
+        : [],
   });
   if (validation.done) return;
-  const { totalErrors, totalWarnings, componentCount, skippedValidationCount } = validation;
+  const { totalErrors, totalWarnings, componentCount } = validation;
+  // The runner counts a failed lead itself; failed extras it drops silently.
+  const skippedValidationCount =
+    lead !== undefined && failedComponents.has(lead)
+      ? failedNamed.length
+      : validation.skippedValidationCount + failedNamed.length;
 
   // --- Step 3: Summary ---
   printDeploymentSummary(

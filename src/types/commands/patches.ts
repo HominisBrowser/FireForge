@@ -58,6 +58,25 @@ export interface PatchResult {
 }
 
 /**
+ * A size waiver with a ceiling, one form of a `PatchMetadata.lintIgnore`
+ * entry. The named size rule stays suppressed while its measurement is at
+ * or below `max` and fires again past it, so a waived file cannot grow
+ * without bound. Only the measured size rules (`file-too-large`,
+ * `large-patch-lines`, `large-patch-files`) accept a ceiling.
+ */
+export interface LintIgnoreCeiling {
+  /** Size rule check ID the waiver applies to. */
+  rule: string;
+  /** Largest measurement (lines or files) the waiver still suppresses. */
+  max: number;
+  /** Why the waiver exists. Required so the ceiling is reviewable. */
+  reason: string;
+}
+
+/** One `PatchMetadata.lintIgnore` entry: a bare check ID or a ceiling waiver. */
+export type LintIgnoreEntry = string | LintIgnoreCeiling;
+
+/**
  * Extended patch information with metadata.
  */
 export interface PatchMetadata {
@@ -97,8 +116,11 @@ export interface PatchMetadata {
    * listed here still run normally. An entry for an unknown check ID is a
    * no-op: the metadata documents the intent to suppress even if the check
    * is later renamed or removed.
+   *
+   * An entry may instead be a {@link LintIgnoreCeiling}, which waives a size
+   * rule only up to a measured maximum.
    */
-  lintIgnore?: string[];
+  lintIgnore?: LintIgnoreEntry[];
   /**
    * Optional per-patch threshold-tier override for the `large-patch-lines`
    * rule. Exists for branding patches that must touch a small number of
@@ -182,6 +204,27 @@ export interface PatchStagedRegistration {
 }
 
 /**
+ * A staged-dependency declaration a lint finding proposes: the arguments of
+ * one `patch staged-dependency <patch> --add` call.
+ */
+export interface PatchLintStagedDeclaration {
+  /** Patch that must carry the declaration. */
+  patch: string;
+  /** Declaration kind (`--kind`). */
+  kind: 'import' | 'registration';
+  /** Declaring file path relative to engine/. */
+  file: string;
+  /** Import specifier (`kind: import`). */
+  specifier?: string;
+  /** Registration line as the patch adds it (`kind: registration`). */
+  line?: string;
+  /** Later-created file path relative to engine/. */
+  creates: string;
+  /** Later patch that creates it. */
+  owner: string;
+}
+
+/**
  * Schema for patches/patches.json file.
  */
 export interface PatchesManifest {
@@ -189,6 +232,28 @@ export interface PatchesManifest {
   version: 1;
   /** Array of patch metadata entries */
   patches: PatchMetadata[];
+  /**
+   * Order numbers a `patch retire` emptied on purpose. A retired slot has no
+   * `.patch` file and no row in `patches`, so apply, export, lint and rebase
+   * never see it; only the `patchPolicy.allowGaps: false` gap check reads it,
+   * as an occupied order. A patch that later takes the same order fills the
+   * slot, and the slot is dropped on that write.
+   */
+  retired?: PatchRetiredSlot[];
+}
+
+/** One placeholder left by `patch retire`. */
+export interface PatchRetiredSlot {
+  /** The order number the retired patch held. */
+  order: number;
+  /** Category of the retired patch, kept so the slot stays in its range. */
+  category: PatchCategory;
+  /** Filename of the retired patch, for the audit trail only. */
+  filename: string;
+  /** ISO timestamp of the retirement. */
+  retiredAt: string;
+  /** Optional human-readable rationale. */
+  reason?: string;
 }
 
 /**
@@ -233,6 +298,13 @@ export interface PatchLintIssue {
    * rename-sensitive fingerprint.
    */
   patches?: string[];
+  /**
+   * For a `forward-import` or `forward-registration` finding: the staged
+   * declarations that would discharge it, one per later creator. The same
+   * records the printed `patch staged-dependency --add` commands carry, in
+   * the shape `patch staged-dependency --from` reads back.
+   */
+  stagedDeclarations?: PatchLintStagedDeclaration[];
   /** Severity: errors block export, warnings are advisory, notices are informational (not counted) */
   severity: 'error' | 'warning' | 'notice';
   /**
@@ -244,4 +316,10 @@ export interface PatchLintIssue {
    *   introduced by the current task.
    */
   tag?: 'introduced' | 'cumulative';
+  /**
+   * The value a size rule measured (lines for `file-too-large` and
+   * `large-patch-lines`, files for `large-patch-files`). A lintIgnore
+   * ceiling compares against it, and `lint --report` carries it.
+   */
+  measurement?: number;
 }

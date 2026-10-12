@@ -28,7 +28,7 @@ describe('early engine and test type preconditions', () => {
     const context = { paths: getProjectPaths(root), engineExists: true } as DoctorCheckContext;
     const missing = await ENGINE_ESLINT_DOCTOR_CHECK.run(context);
     expect(missing).toMatchObject({ severity: 'warning' });
-    expect(JSON.stringify(missing)).toContain('./mach eslint --setup');
+    expect(JSON.stringify(missing)).toContain('./mach npm ci --no-audit --no-fund');
     await writeFiles(root, { 'engine/node_modules/eslint/bin/eslint.js': '// installed' });
     expect(await ENGINE_ESLINT_DOCTOR_CHECK.run(context)).toMatchObject({ severity: 'ok' });
     expect(ENGINE_ESLINT_DOCTOR_CHECK.skipIf?.({ ...context, engineExists: false })).toBe(true);
@@ -49,6 +49,39 @@ describe('early engine and test type preconditions', () => {
     await expect(
       checkRequestedTestTypes(getProjectPaths(root), config, [file])
     ).resolves.toBeUndefined();
+  });
+
+  describe('unowned support heads', () => {
+    const dir = 'browser/base/content/test/kit';
+    const LOADER =
+      'Services.scriptloader.loadSubScript("chrome://mochitests/content/browser/kit/head_kit.js", this);\n';
+
+    async function check(loader: string, manifest: string): Promise<void> {
+      await writeFiles(root, {
+        'patches/patches.json': JSON.stringify({ version: 1, patches: [] }),
+        [join('engine', dir, 'browser.toml')]: manifest,
+        [join('engine', dir, 'head_kit.js')]: 'function kitHelper() {\n  return 42;\n}\n',
+        [join('engine', dir, 'browser_kit.js')]:
+          `${loader}/** @type {number} */ const value = kitHelper();\n`,
+      });
+      const config = await loadConfig(root);
+      config.patchLint = { checkJs: true, checkJsTestFiles: true, undefinedIdentifiers: 'error' };
+      await checkRequestedTestTypes(getProjectPaths(root), config, [`${dir}/browser_kit.js`]);
+    }
+
+    it('joins the pass when a named test loads it with loadSubScript (was refused)', async () => {
+      await expect(check(LOADER, '[DEFAULT]\n')).resolves.toBeUndefined();
+    });
+
+    it('joins the pass when the manifest lists it in support-files', async () => {
+      await expect(
+        check('', '[DEFAULT]\nsupport-files = ["head_kit.js"]\n')
+      ).resolves.toBeUndefined();
+    });
+
+    it('stays out when nothing brings it into scope, so the undefined name still refuses', async () => {
+      await expect(check('', '[DEFAULT]\n')).rejects.toThrow(/before build/);
+    });
   });
 
   it('leaves checkJs opt-in and skips pathless builds', async () => {

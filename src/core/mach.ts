@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { MachNotFoundError } from '../errors/build.js';
 import { pathExists } from '../utils/fs.js';
@@ -13,6 +13,7 @@ import {
   type SmokeLineCallback,
   type SmokeRunResult,
 } from '../utils/process.js';
+import { withBuildRunRecord } from './build-run-record.js';
 import { createSiblingLockPath, withFileLock } from './file-lock.js';
 import { ensureFirefoxIgnorefileCompatibility } from './firefox-ignorefile.js';
 import { explainMachError } from './mach-error-hints.js';
@@ -354,6 +355,20 @@ export async function runProtectedMachBuild(
     args.push('-j', String(options.jobs));
   }
 
+  // The run record lets any session see why a bundle is missing after this
+  // build dies part-way (see build-run-record.ts). The engine directory is
+  // always `<projectRoot>/engine`.
+  return withBuildRunRecord(dirname(engineDir), `mach ${args.join(' ')}`, () =>
+    runProtectedMachBuildAttempts(args, kind, engineDir, options)
+  );
+}
+
+async function runProtectedMachBuildAttempts(
+  args: string[],
+  kind: ProtectedBuildKind,
+  engineDir: string,
+  options: ProtectedMachBuildOptions
+): Promise<ProtectedMachBuildResult> {
   const maxAttempts = Math.max(1, (options.retries ?? DEFAULT_BUILD_CRASH_RETRIES) + 1);
   for (let attempt = 1; ; attempt += 1) {
     const { env } = await installMachResourceGuard(engineDir);

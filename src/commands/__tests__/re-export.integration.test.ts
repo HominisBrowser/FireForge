@@ -473,6 +473,17 @@ describe('reExportCommand integration', () => {
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('fireforge patch staged-dependency --add')
     );
+    // The remedy names the earliest legal order and the exact declaration.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('"fireforge export <files> --order 003"; 003 is the earliest')
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '  fireforge patch staged-dependency 001-ui-test.patch --add --file adopter.sys.mjs ' +
+          '--specifier "resource:///modules/Helper.sys.mjs" --creates modules/Helper.sys.mjs ' +
+          "--owner 002-ui-helper.patch --reason '<why"
+      )
+    );
     // Nothing adopted: the refusal fires before any write.
     await expect(readProjectText(projectRoot, 'patches/patches.json')).resolves.toBe(
       manifestBefore
@@ -887,14 +898,17 @@ describe('reExportCommand adjacency advisory', () => {
     await expect(readProjectText(projectRoot, 'patches/001-ui-test.patch')).resolves.toBe(before);
   });
 
-  it('reports a new file in a subdirectory below an owned directory (untracked scan is recursive)', async () => {
+  it('does not count a new file in a subdirectory below an owned directory as adjacent', async () => {
+    // A scan-less re-export never captures it, and the broad --scan adopts
+    // only from the exact owned directories, so refusing on it blocked
+    // header-only re-exports over a peer's unexported nested test.
     await writeFiles(join(projectRoot, 'engine'), {
       'comp/tests/browser/helpers/head_extra.js': 'helper\n',
     });
 
-    await reExportCommand(projectRoot, ['001'], {});
+    await reExportCommand(projectRoot, ['001'], { refuseAdjacentUnmanaged: true });
 
-    expect(warn).toHaveBeenCalledWith(
+    expect(warn).not.toHaveBeenCalledWith(
       expect.stringContaining('comp/tests/browser/helpers/head_extra.js')
     );
   });
@@ -1051,7 +1065,7 @@ describe('reExportCommand foreign-drift guard', () => {
     await reExportCommand(projectRoot, ['001'], {});
 
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('refreshed body absorbs 1 line not present in the old patch body')
+      expect.stringContaining('refreshed body changes 1 line against the old patch body')
     );
     const body = await readProjectText(projectRoot, 'patches/001-ui-mod.patch');
     expect(body).toContain('+foreign registration');
@@ -1059,7 +1073,7 @@ describe('reExportCommand foreign-drift guard', () => {
 
   it('prints no drift preview when the refresh only re-captures the same change', async () => {
     await reExportCommand(projectRoot, ['001'], {});
-    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('refreshed body absorbs'));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('refreshed body changes'));
   });
 
   it('refuses under --refuse-foreign-drift leaving the body byte-identical', async () => {
@@ -1079,7 +1093,7 @@ describe('reExportCommand foreign-drift guard', () => {
 
     await reExportCommand(projectRoot, ['001'], { dryRun: true });
 
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refreshed body absorbs'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refreshed body changes'));
     await expect(readProjectText(projectRoot, 'patches/001-ui-mod.patch')).resolves.toBe(before);
   });
 });
@@ -1183,13 +1197,13 @@ describe('reExportCommand --expect and fail-closed drift baseline', () => {
 
     // The preview tags the expected file. The unexpected one carries no tag.
     expect(info).toHaveBeenCalledWith(
-      expect.stringContaining(`${OWNED}: +1/-0 newly captured line(s) (expected via --expect)`)
+      expect.stringContaining(`${OWNED}: +1 added / -0 removed line(s) (expected via --expect)`)
     );
     expect(info).toHaveBeenCalledWith(
-      expect.stringContaining(`${OTHER}: +1/-0 newly captured line(s)`)
+      expect.stringContaining(`${OTHER}: +1 added / -0 removed line(s)`)
     );
     expect(info).not.toHaveBeenCalledWith(
-      expect.stringContaining(`${OTHER}: +1/-0 newly captured line(s) (expected`)
+      expect.stringContaining(`${OTHER}: +1 added / -0 removed line(s) (expected`)
     );
     await expect(readProjectText(projectRoot, 'patches/001-ui-mod.patch')).resolves.toBe(before);
   });

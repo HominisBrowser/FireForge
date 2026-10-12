@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import type { FurnacePaths } from '../../core/furnace-config.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
+import { applyValidationExceptions } from '../../core/furnace-validate-exceptions.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { DryRunAction, FurnaceConfig, ValidationIssue } from '../../types/furnace.js';
 import { pathExists } from '../../utils/fs.js';
@@ -49,6 +50,18 @@ function filterProjectedDryRunIssues(
     }
     return true;
   });
+}
+
+/**
+ * Drops the findings `furnace.json#validationExceptions` records as
+ * reviewed, so a deploy does not fail on a finding `furnace validate`
+ * accepts. Staleness is `furnace validate`'s report, not a deploy's.
+ */
+function withoutExceptedIssues(
+  issues: ValidationIssue[],
+  config: FurnaceConfig
+): ValidationIssue[] {
+  return applyValidationExceptions(issues, config.validationExceptions, () => false).issues;
 }
 
 function resolveNamedValidationTarget(
@@ -136,7 +149,8 @@ async function validateNamedTarget(args: {
     config,
     projectRoot
   );
-  const issues = isDryRun ? filterProjectedDryRunIssues(rawIssues, dryRunActions) : rawIssues;
+  const counted = withoutExceptedIssues(rawIssues, config);
+  const issues = isDryRun ? filterProjectedDryRunIssues(counted, dryRunActions) : counted;
   if (issues.length === 0) {
     success(`${name} — all checks passed`);
     return [0, 0];
@@ -217,9 +231,10 @@ export async function runDeployValidation(
       }
 
       componentCount++;
+      const counted = withoutExceptedIssues(issues, config);
       const projectedIssues = isDryRun
-        ? filterProjectedDryRunIssues(issues, dryRunActions)
-        : issues;
+        ? filterProjectedDryRunIssues(counted, dryRunActions)
+        : counted;
       if (projectedIssues.length === 0) {
         success(`${componentName} — all checks passed`);
       } else {

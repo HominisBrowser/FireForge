@@ -21,6 +21,12 @@ import { discoverPatches } from '../../core/patch-files.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import { getPatchSourceVersion } from '../../core/patch-source-metadata.js';
 import { type DryRunReplay, replayQueueIndexOnly } from '../../core/rebase-dry-run.js';
+import {
+  formatPatchStampSpread,
+  readCommittedFirefoxPin,
+  resolveRebaseFromVersion,
+  tallyPatchStamps,
+} from '../../core/rebase-from-version.js';
 import type { RebaseSession } from '../../core/rebase-session.js';
 import {
   getRebaseSessionPath,
@@ -42,7 +48,7 @@ import {
   pickDefined,
   resolveWaitLockSeconds,
 } from '../../utils/options.js';
-import { compareFirefoxVersions, parsePositiveIntegerFlag } from '../../utils/validation.js';
+import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 import { handleAbort } from './abort.js';
 import { confirmDirtyEngineReset } from './confirm.js';
 import { handleContinue } from './continue.js';
@@ -85,32 +91,35 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
     throw new GeneralError('No patches found in manifest. Nothing to rebase.');
   }
 
-  // Determine the "from" version from the patch stamps. A queue can carry
-  // several: patches re-exported since the last hop are stamped newer than
-  // untouched ones. The oldest stamp is "from", compared semantically (a
-  // lexical sort put 153.10.0esr before 153.2.0esr).
-  const versionCounts = new Map<string, number>();
-  for (const patch of manifest.patches) {
-    const version = getPatchSourceVersion(patch);
-    versionCounts.set(version, (versionCounts.get(version) ?? 0) + 1);
-  }
-  const sortedVersions = [...versionCounts.keys()].sort(compareFirefoxVersions);
-  const fromVersion = sortedVersions[0] ?? currentVersion;
-  const fromProduct =
-    manifest.patches.find((p) => getPatchSourceVersion(p) === fromVersion)?.sourceProduct ??
-    config.firefox.product;
+  // The queue can carry several stamps: patches re-exported since the last
+  // hop are stamped newer than untouched ones. "Nothing to rebase" is a fact
+  // about the stamps; the "from" label is the previous pin (the committed
+  // `firefox.version`), with the oldest stamp only as the fallback.
+  const spread = tallyPatchStamps(manifest.patches.map((p) => getPatchSourceVersion(p)));
+  const oldestStamp = spread.versions[0] ?? currentVersion;
+  const from = resolveRebaseFromVersion(
+    currentVersion,
+    await readCommittedFirefoxPin(projectRoot),
+    spread,
+    manifest.patches.find((p) => getPatchSourceVersion(p) === oldestStamp)?.sourceProduct
+  );
+  const fromVersion = from.version;
+  const fromProduct = from.product ?? config.firefox.product;
 
-  if (versionCounts.size === 1 && fromVersion === currentVersion) {
+  if (spread.versions.length === 1 && oldestStamp === currentVersion) {
     info('All patches already match the current Firefox version. Nothing to rebase.');
     outro('Rebase not needed');
     return;
   }
 
   info(`Rebasing patches: ${fromVersion} → ${currentVersion}`);
-  if (versionCounts.size > 1) {
+  if (from.origin === 'patch-stamps') {
     info(
-      `Patch stamps: ${sortedVersions.map((v) => `${versionCounts.get(v)} at ${v}`).join(', ')}`
+      'From-version is the oldest patch stamp: no committed fireforge.json pin precedes the target.'
     );
+  }
+  if (from.origin === 'committed-pin' || spread.versions.length > 1) {
+    info(`Patch stamps: ${formatPatchStampSpread(spread)}`);
   }
   // The rebase replays onto whatever engine/ holds. The pin is the target,
   // so an engine still on another version means the download step has not

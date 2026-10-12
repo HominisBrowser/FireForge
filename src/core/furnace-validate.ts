@@ -77,7 +77,9 @@ export async function validateComponent(
   // parameter, so this is a no-op for stock and override components.
   const customConfigForTag = type === 'custom' ? config?.custom[tagName] : undefined;
   issues.push(...(await validateStructure(componentDir, tagName, type, customConfigForTag)));
-  issues.push(...(await validateAccessibility(componentDir, tagName, customConfigForTag)));
+  issues.push(
+    ...(await validateAccessibility(componentDir, tagName, customConfigForTag, config?.optInChecks))
+  );
   issues.push(...(await validateCompatibility(componentDir, tagName, type, config, root)));
 
   if (root && config && type === 'override') {

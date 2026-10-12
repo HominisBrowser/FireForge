@@ -9,10 +9,16 @@ import {
   loadFurnaceConfig,
   writeFurnaceConfig,
 } from '../../core/furnace-config.js';
-import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-operation.js';
+import {
+  completeJournalRollback,
+  type FurnaceOperationContext,
+  runFurnaceMutation,
+  waitLockMutationOptions,
+} from '../../core/furnace-operation.js';
 import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
 import { createRollbackJournal, snapshotFile } from '../../core/furnace-rollback.js';
 import { DEEP_SCAN_PATHS, scanWidgetsDirectory } from '../../core/furnace-scanner.js';
+import type { FurnaceLockWaitable } from '../../types/commands/index.js';
 import type { ScannedComponent } from '../../types/furnace.js';
 import {
   cancel,
@@ -31,11 +37,13 @@ import { furnaceOverrideCommand } from './override.js';
  * @param components - Components discovered in the engine scan
  * @param tracked - Existing Furnace tracking map keyed by tag name
  * @param projectRoot - Root directory of the project
+ * @param waitLockSeconds - Resolved `--wait-lock` budget for the furnace lock
  */
 async function promptAddComponents(
   components: ScannedComponent[],
   tracked: Map<string, 'stock' | 'override' | 'custom'>,
-  projectRoot: string
+  projectRoot: string,
+  waitLockSeconds: number | undefined
 ): Promise<void> {
   const untrackedComponents = components.filter((c) => !tracked.has(c.tagName));
 
@@ -63,7 +71,7 @@ async function promptAddComponents(
     return;
   }
 
-  await persistStockComponents(projectRoot, selected);
+  await persistStockComponents(projectRoot, selected, waitLockSeconds);
 
   const addedNames = selected;
   success(
@@ -89,7 +97,11 @@ async function promptAddComponents(
     return;
   }
 
-  await furnaceOverrideCommand(projectRoot, overrideTarget);
+  await furnaceOverrideCommand(
+    projectRoot,
+    overrideTarget,
+    waitLockSeconds !== undefined ? { waitLockSeconds } : {}
+  );
 }
 
 /**
@@ -105,8 +117,12 @@ async function promptAddComponents(
  * auto-created cleans up after itself instead of leaving an unwanted default
  * config behind.
  */
-async function persistStockComponents(projectRoot: string, names: string[]): Promise<void> {
-  await runFurnaceMutation(projectRoot, 'scan-rollback', async (ctx) => {
+async function persistStockComponents(
+  projectRoot: string,
+  names: string[],
+  waitLockSeconds: number | undefined
+): Promise<void> {
+  const mutate = async (ctx: FurnaceOperationContext): Promise<void> => {
     const journal = createRollbackJournal();
     ctx.registerJournal(journal);
 
@@ -133,7 +149,13 @@ async function persistStockComponents(projectRoot: string, names: string[]): Pro
         subject: `furnace.json update during scan`,
       });
     }
-  });
+  };
+  await runFurnaceMutation(
+    projectRoot,
+    'scan-rollback',
+    mutate,
+    waitLockMutationOptions(waitLockSeconds)
+  );
 }
 
 /**
@@ -152,6 +174,14 @@ function formatComponentFeatures(component: {
   return features.length > 0 ? ` — ${features.join(', ')}` : '';
 }
 
+/** Options for `furnace scan`. */
+export interface FurnaceScanOptions extends FurnaceLockWaitable {
+  /** Search additional Firefox directories beyond the default widgets path. */
+  deep?: boolean;
+  /** Persist every untracked component into furnace.json's stock section. */
+  track?: boolean;
+}
+
 /**
  * Runs the furnace scan command to discover MozLitElement components.
  * @param projectRoot - Root directory of the project
@@ -159,7 +189,7 @@ function formatComponentFeatures(component: {
  */
 export async function furnaceScanCommand(
   projectRoot: string,
-  options: { deep?: boolean; track?: boolean } = {}
+  options: FurnaceScanOptions = {}
 ): Promise<void> {
   intro(options.deep ? 'Furnace Scan (deep)' : 'Furnace Scan');
 
@@ -231,7 +261,7 @@ export async function furnaceScanCommand(
       return;
     }
     const untrackedNames = untrackedComponentList.map((c) => c.tagName);
-    await persistStockComponents(projectRoot, untrackedNames);
+    await persistStockComponents(projectRoot, untrackedNames, options.waitLockSeconds);
     success(
       `Tracked ${untrackedNames.length} component${untrackedNames.length === 1 ? '' : 's'} in the stock section of furnace.json`
     );
@@ -242,7 +272,7 @@ export async function furnaceScanCommand(
   const isInteractive = stdioIsInteractive();
 
   if (isInteractive && untrackedCount > 0) {
-    await promptAddComponents(components, tracked, projectRoot);
+    await promptAddComponents(components, tracked, projectRoot, options.waitLockSeconds);
     return;
   }
 

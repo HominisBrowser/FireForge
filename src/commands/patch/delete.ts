@@ -5,22 +5,15 @@
  * Destructive: refuses when a later patch imports a module owned by the
  * target (that would leave a dangling forward import), prompts for
  * confirmation interactively, requires `--yes` for non-TTY, supports
- * `--dry-run`, and appends to `patches/.fireforge-history.jsonl` on success.
+ * `--dry-run`, and appends to the patch history log on success.
  */
-
-import { basename } from 'node:path';
 
 import { Command } from 'commander';
 
 import { loadConfig } from '../../core/config.js';
-import { confirmDestructive, type ConflictReport } from '../../core/destructive.js';
+import { confirmDestructive } from '../../core/destructive.js';
 import { appendHistoryBestEffort } from '../../core/history-log.js';
-import {
-  buildPatchQueueContext,
-  extractImportSpecifiersWithLines,
-  findForwardImportIgnoreLines,
-  isForwardImportableFile,
-} from '../../core/patch-lint.js';
+import { buildPatchQueueContext } from '../../core/patch-lint.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import { removePatchFileAndManifest } from '../../core/patch-manifest.js';
 import { GeneralError } from '../../errors/base.js';
@@ -31,6 +24,12 @@ import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../ut
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { describeProjectedGaps } from './delete-gap-notice.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
+import {
+  collectRemovalDependents,
+  queueSnapshot,
+  removalConflict,
+  warnDanglingStagedOwners,
+} from './removal-dependents.js';
 
 /**
  * Runs the `patch delete` command: removes a patch file and its manifest
@@ -54,89 +53,15 @@ export async function patchDeleteCommand(
   const target = requirePatchTarget(identifier, manifest.patches);
 
   // Build the full queue context once so we can scan each patch's newFiles
-  // without re-parsing for the dependency check below.
+  // without re-parsing for the dependency check below. Hard refusal: an
+  // import owned by a later patch that points at any of the target's
+  // newly-created files is a dependency on the target.
   const baseCtx = await buildPatchQueueContext(paths.patches);
-
-  // Hard refusal: an import owned by a later patch that points at any of
-  // the target's newly-created files is a dependency on the target. That
-  // check is built directly from `baseCtx` rather than by diffing lint runs
-  // over a projected state.
-  const targetEntry = baseCtx.entries.find((e) => e.filename === target.filename);
-  if (!targetEntry || JSON.stringify(targetEntry.metadata) !== JSON.stringify(target)) {
-    throw new GeneralError(
-      'Patch queue changed while preparing deletion. Re-run patch delete to review the current target.'
-    );
-  }
-  const targetNewFileLeaves = new Set<string>();
-  for (const fullPath of targetEntry.newFiles.keys()) {
-    targetNewFileLeaves.add(basename(fullPath));
-  }
-
-  // Scan every later patch's new files and its added lines on pre-existing
-  // files for import specifiers that resolve to a leaf owned by the target.
-  // Uses the shared specifier extractor so dynamic `import()` and
-  // `ChromeUtils.defineESModuleGetters` are picked up: the forward-import
-  // lint rule already covers those forms, and delete safety must match the
-  // same set or it silently drops dependencies.
-  //
-  // Both source-site maps are covered: `newFiles` (files the later patch
-  // creates) and `modifiedFileAdditions` (added lines against files that
-  // already exist). Scanning only newFiles misses a later patch adding
-  // `import "./TargetHelper.sys.mjs"` to an existing file.
-  const dependents: string[] = [];
-  const scanSite = (entryFilename: string, sitePath: string, content: string): boolean => {
-    if (!isForwardImportableFile(sitePath)) return false;
-
-    const ignoredLines = findForwardImportIgnoreLines(content);
-    const specifiers = extractImportSpecifiersWithLines(content);
-    for (const { specifier, line } of specifiers) {
-      if (ignoredLines.has(line)) continue;
-      const cleaned = specifier.split(/[?#]/)[0] ?? specifier;
-      const leaf = basename(cleaned);
-      if (!leaf || !isForwardImportableFile(leaf)) continue;
-      if (targetNewFileLeaves.has(leaf)) {
-        dependents.push(
-          `${entryFilename} (${sitePath}) imports "${specifier}" which would be deleted`
-        );
-        return true;
-      }
-    }
-    return false;
-  };
-  for (const entry of baseCtx.entries) {
-    if (entry.filename === target.filename) continue;
-    if (entry.order < target.order) continue;
-    let matched = false;
-    for (const [newFile, content] of entry.newFiles) {
-      if (scanSite(entry.filename, newFile, content)) {
-        matched = true;
-        break;
-      }
-    }
-    if (matched) continue;
-    for (const [modifiedPath, addedContent] of entry.modifiedFileAdditions) {
-      if (scanSite(entry.filename, modifiedPath, addedContent)) break;
-    }
-  }
-
-  // Staged-dependency declarations on other patches may name the deleted
-  // patch as their forward-import owner. The dangling reference also
-  // surfaces via cross-patch lint later, but warning here puts the exact
-  // cleanup command in front of the operator at decision time.
-  const danglingOwnerHolders = baseCtx.entries.filter(
-    (entry) =>
-      entry.filename !== target.filename &&
-      (entry.metadata?.stagedDependencies?.forwardImports ?? []).some(
-        (fi) => fi.owner === target.filename
-      )
-  );
-  for (const holder of danglingOwnerHolders) {
-    warn(
-      `${holder.filename} declares a staged dependency with owner ${target.filename}; ` +
-        `after the delete, update it via "fireforge patch staged-dependency ${holder.filename} --remove ..." ` +
-        'or re-point the owner at the patch that will create the file.'
-    );
-  }
+  const dependents = collectRemovalDependents(baseCtx, target, {
+    noun: 'deletion',
+    verb: 'delete',
+  });
+  warnDanglingStagedOwners(baseCtx, target, 'delete');
 
   // Under `patchPolicy.allowGaps: false` the removal can open a numeric gap
   // that every later lint and re-export refuses on. Naming it here, in
@@ -147,21 +72,7 @@ export async function patchDeleteCommand(
     warn(line);
   }
 
-  const conflicts: ConflictReport | null =
-    dependents.length > 0
-      ? {
-          // The wording spells out the runtime impact: `git apply`
-          // does not resolve imports and succeeds even when a later patch
-          // imports a file the target created, so the queue re-imports
-          // cleanly. The breakage surfaces at browser startup when
-          // `ChromeUtils.importESModule` cannot locate the deleted module.
-          // Operators who plan to re-introduce the imported files (rename,
-          // refactor) need to know this is the impact model rather than a
-          // patch-application failure.
-          reason: `${dependents.length} later patch(es) contain import statements that reference files created by ${target.filename}. Patch application itself will still succeed, but runtime imports will fail at browser startup until those files are re-introduced.`,
-          details: dependents,
-        }
-      : null;
+  const conflicts = removalConflict(dependents, target);
 
   const summary: string[] = [
     `delete ${target.filename}  (category: ${target.category}, order: ${target.order})`,
@@ -197,18 +108,9 @@ export async function patchDeleteCommand(
     paths.patches,
     async () => {
       const current = await buildPatchQueueContext(paths.patches);
-      const snapshot = (context: typeof baseCtx): string =>
-        JSON.stringify(
-          context.entries.map(({ filename, order, diff, metadata }) => ({
-            filename,
-            order,
-            diff,
-            metadata,
-          }))
-        );
       // A changed body or manifest invalidates the dependency scan approved
       // before the prompt. Recheck all of its inputs while holding the lock.
-      if (snapshot(current) !== snapshot(baseCtx)) {
+      if (queueSnapshot(current) !== queueSnapshot(baseCtx)) {
         throw new GeneralError(
           'Patch queue changed while waiting for confirmation or the lock. Re-run patch delete to review the current dependencies.'
         );

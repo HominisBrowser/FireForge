@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import {
   closeActiveRunLog,
   getActiveRunLogPath,
   getRunLogDir,
+  keepRunLogCopy,
   openRunLog,
   setActiveRunLog,
   teeToRunLog,
@@ -191,5 +192,75 @@ describe('run-log', () => {
 
     expect(seen.join('')).toContain('mach build output');
     expect(await readFile(path, 'utf-8')).toContain('mach build output');
+  });
+
+  describe('keepRunLogCopy', () => {
+    const previousEnv = process.env['FIREFORGE_LOG_KEEP'];
+
+    afterEach(() => {
+      if (previousEnv === undefined) delete process.env['FIREFORGE_LOG_KEEP'];
+      else process.env['FIREFORGE_LOG_KEEP'] = previousEnv;
+    });
+
+    it('returns the primary log untouched when no copy is asked for', async () => {
+      delete process.env['FIREFORGE_LOG_KEEP'];
+      const log = await openRunLog(root, 'test');
+      expect(await keepRunLogCopy(log, undefined, 'test')).toBe(log);
+      await log?.close();
+    });
+
+    it('writes a redacted live copy to a --keep-log file path and keeps log= on the primary', async () => {
+      const log = await openRunLog(root, 'test');
+      const dest = join(root, 'kept', 'run.log');
+      const both = await keepRunLogCopy(log, dest, 'test');
+      expect(both?.path).toBe(log?.path);
+
+      both?.write('TEST-UNEXPECTED-FAIL | a.js\nAPI_TOKEN=hunter2\n');
+      await both?.close();
+
+      const kept = await readFile(dest, 'utf-8');
+      expect(kept).toContain('TEST-UNEXPECTED-FAIL | a.js');
+      expect(kept).toContain('API_TOKEN=<redacted>');
+      expect(await readFile(log?.path ?? '', 'utf-8')).toBe(kept);
+    });
+
+    it('files the copy under the run log name inside a FIREFORGE_LOG_KEEP directory', async () => {
+      const keepDir = join(root, 'keep');
+      await mkdir(keepDir);
+      process.env['FIREFORGE_LOG_KEEP'] = keepDir;
+      const log = await openRunLog(root, 'test', new Date('2026-09-28T21:22:00.000Z'));
+      const both = await keepRunLogCopy(log, undefined, 'test');
+      both?.write('line\n');
+      await both?.close();
+
+      expect(await readdir(keepDir)).toEqual(['test-2026-09-28T21-22-00-000Z.log']);
+    });
+
+    it('treats a trailing separator as a directory even before it exists, and lets the flag win', async () => {
+      process.env['FIREFORGE_LOG_KEEP'] = join(root, 'ignored');
+      const log = await openRunLog(root, 'build', new Date('2026-09-28T21:22:00.000Z'));
+      const both = await keepRunLogCopy(log, `${join(root, 'fresh')}/`, 'build');
+      both?.write('x\n');
+      await both?.close();
+
+      expect(await readdir(join(root, 'fresh'))).toEqual(['build-2026-09-28T21-22-00-000Z.log']);
+    });
+
+    it('stands the copy in for a primary that could not be opened', async () => {
+      const dest = join(root, 'only.log');
+      const copy = await keepRunLogCopy(undefined, dest, 'test');
+      expect(copy?.path).toBe(dest);
+      copy?.write('y\n');
+      await copy?.close();
+      expect(await readFile(dest, 'utf-8')).toBe('y\n');
+    });
+
+    it('degrades to the primary when the copy cannot be opened', async () => {
+      const blocker = join(root, 'blocker');
+      await writeFile(blocker, '');
+      const log = await openRunLog(root, 'test');
+      expect(await keepRunLogCopy(log, join(blocker, 'sub', 'x.log'), 'test')).toBe(log);
+      await log?.close();
+    });
   });
 });

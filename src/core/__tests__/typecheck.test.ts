@@ -95,6 +95,16 @@ describe('runTypecheck', () => {
     expect(result.issues.filter((i) => i.code === 2304 || i.code === 2552)).toHaveLength(0);
   });
 
+  it('types Cu as nsIXPCComponents_Utils so an unknown member is an error', async () => {
+    const results = await typecheckFixtures({ projects: ['cu-members/jsconfig.json'] });
+    const result: TypecheckProjectResult = expectSingle(results);
+
+    const errors = result.issues.filter((i) => i.category === 'error');
+    const error: TypecheckIssue = expectSingle(errors);
+    expect(error.code).toBe(2339);
+    expect(error.message).toContain("'now'");
+  });
+
   it('skips projects that explicitly opt out via checkJs: false', async () => {
     const results = await typecheckFixtures({
       projects: ['disabled/jsconfig.json'],

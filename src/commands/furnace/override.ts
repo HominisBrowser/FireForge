@@ -8,7 +8,11 @@ import { getProjectPaths, loadConfig, loadState } from '../../core/config.js';
 import { stdioIsInteractive } from '../../core/destructive.js';
 import { getFurnacePaths, writeFurnaceConfig } from '../../core/furnace-config.js';
 import { resolveFtlDir } from '../../core/furnace-constants.js';
-import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-operation.js';
+import {
+  completeJournalRollback,
+  runFurnaceMutation,
+  waitLockMutationOptions,
+} from '../../core/furnace-operation.js';
 import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
 import {
   CUSTOM_ELEMENT_TAG_PATTERN,
@@ -218,6 +222,8 @@ async function performOverrideMutations(args: {
   ftlDir: string;
   firefoxVersion: string;
   baseCommit?: string;
+  /** Resolved `--wait-lock` budget in seconds for the furnace lock. */
+  waitLockSeconds?: number | undefined;
 }): Promise<string[]> {
   return runFurnaceMutation(
     args.projectRoot,
@@ -261,7 +267,8 @@ async function performOverrideMutations(args: {
           subject: `component "${args.componentName}"`,
         });
       }
-    }
+    },
+    waitLockMutationOptions(args.waitLockSeconds)
   );
 }
 
@@ -478,6 +485,7 @@ export async function furnaceOverrideCommand(
     ftlDir,
     firefoxVersion: forgeConfig.firefox.version,
     ...(state.baseCommit ? { baseCommit: state.baseCommit } : {}),
+    waitLockSeconds: options.waitLockSeconds,
   });
 
   // --- Success ---
@@ -604,6 +612,7 @@ export async function furnaceBatchOverrideCommand(
         ftlDir,
         firefoxVersion: forgeConfig.firefox.version,
         ...(state.baseCommit ? { baseCommit: state.baseCommit } : {}),
+        waitLockSeconds: options.waitLockSeconds,
       });
       succeeded.push(componentName);
     } catch (error: unknown) {

@@ -24,6 +24,8 @@ export interface UpdatePatchPolicyGate {
   config: FireForgeConfig;
   command: string;
   forceUnsafe?: boolean;
+  /** Restricts enforcement to these rows' findings (see `enforcePatchPolicy`). */
+  scope?: readonly string[];
 }
 
 export interface UpdatePatchAndMetadataOptions {
@@ -106,6 +108,7 @@ export async function updatePatchAndMetadata(
           manifest: buildProjectedManifest(manifest, manifest.patches),
           command: policyGate.command,
           forceUnsafe: policyGate.forceUnsafe === true,
+          ...(policyGate.scope !== undefined ? { scope: policyGate.scope } : {}),
         });
       }
 

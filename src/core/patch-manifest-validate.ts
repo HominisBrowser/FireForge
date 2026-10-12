@@ -7,6 +7,7 @@ import type {
   PatchCategory,
   PatchesManifest,
   PatchMetadata,
+  PatchRetiredSlot,
   PatchStagedDependencies,
   PatchStagedForwardImport,
   PatchStagedRegistration,
@@ -20,6 +21,7 @@ import {
   isValidFirefoxVersion,
   PATCH_CATEGORIES,
 } from '../utils/validation.js';
+import { parseLintIgnoreEntries } from './patch-lint-ignore.js';
 import { checkDocumentVersion, describeNewerDocument } from './state-file.js';
 
 function parseForwardImports(data: unknown, label: string): PatchStagedForwardImport[] {
@@ -125,7 +127,12 @@ function validatePatchMetadata(data: unknown, index: number): PatchMetadata {
   // `lintIgnore` to suppress a rule is quietly re-tripped the next time the
   // manifest validates. Preserve both `lintIgnore` and `tier` here. Future
   // optional fields follow the same template.
-  const lintIgnore = rec.optionalStringArray('lintIgnore');
+  // Entries are bare check IDs or `{ rule, max, reason }` ceilings.
+  const rawLintIgnore = rec.raw('lintIgnore');
+  const lintIgnore =
+    rawLintIgnore === undefined
+      ? undefined
+      : parseLintIgnoreEntries(rawLintIgnore, `patches[${index}].lintIgnore`);
 
   const rawTier = rec.raw('tier');
   let tier: 'branding' | undefined;
@@ -162,6 +169,34 @@ function validatePatchMetadata(data: unknown, index: number): PatchMetadata {
   return result;
 }
 
+/**
+ * Validates the `retired` placeholders `patch retire` leaves behind. Kept on
+ * the manifest so every write that round-trips a loaded manifest carries
+ * them; dropping them would silently reopen the gaps they were retired to
+ * close.
+ */
+function parseRetiredSlots(data: unknown): PatchRetiredSlot[] {
+  if (!isArray(data)) {
+    throw new Error('patches.json field "retired" must be an array');
+  }
+  return data.map((entry, index) => {
+    const rec = parseObject(entry, `retired[${index}]`);
+    const slot: PatchRetiredSlot = {
+      order: rec.nonNegativeInteger('order'),
+      category: rec.validatedString(
+        'category',
+        (value) => /^[a-z][a-z0-9-]*$/.test(value),
+        'a lowercase category identifier (letters, numbers, hyphens)'
+      ),
+      filename: rec.string('filename'),
+      retiredAt: rec.string('retiredAt'),
+    };
+    const reason = rec.optionalString('reason');
+    if (reason !== undefined) slot.reason = reason;
+    return slot;
+  });
+}
+
 /** Manifest schema version this build writes and understands. */
 const PATCHES_MANIFEST_VERSION = 1;
 
@@ -193,10 +228,12 @@ export function validatePatchesManifest(data: unknown): PatchesManifest {
     throw new Error('patches.json field "patches" must be an array');
   }
 
-  return {
+  const manifest: PatchesManifest = {
     version: 1,
     patches: data['patches'].map((patch, index) => validatePatchMetadata(patch, index)),
   };
+  if (data['retired'] !== undefined) manifest.retired = parseRetiredSlots(data['retired']);
+  return manifest;
 }
 
 /**

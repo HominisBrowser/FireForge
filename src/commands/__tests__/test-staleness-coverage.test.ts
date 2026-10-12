@@ -81,14 +81,10 @@ vi.mock('../../core/tree-store.js', async () =>
   (await import('./test-command-mocks.js')).treeStoreMock()
 );
 
-import { readBuildBaseline, writeBuildBaseline } from '../../core/build-baseline.js';
-/** Options object `writeBuildBaseline` is called with, for matcher casts. */
-type BaselineArgs = Parameters<typeof writeBuildBaseline>[0];
+import { writeBuildBaseline } from '../../core/build-baseline.js';
+import type { CoverageRecord } from '../../core/build-baseline-types.js';
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
-import {
-  checkExtendCoverageAnchor,
-  checkExtendMozconfigAnchor,
-} from '../../core/coverage-extend.js';
+import { applyMozconfigAnchor, planCoverageRetention } from '../../core/coverage-extend.js';
 import {
   buildArtifactMismatchMessage,
   hasBuildArtifacts,
@@ -624,15 +620,33 @@ describe('testCommand staleness and packaging coverage', () => {
       expect(info).toHaveBeenCalledWith('Run each harness separately without --build:');
     });
 
-    it('still refuses mixed paths without --build-only', async () => {
+    it('a mixed --build run builds once with union coverage, then dispatches each half', async () => {
       vi.mocked(findNearestXpcshellManifest).mockImplementation((_engineDir, path) =>
         Promise.resolve(path.includes('/xpcshell/') ? '/project/engine/foo/xpcshell.toml' : null)
       );
+      vi.mocked(runMachTestSuite).mockResolvedValue({
+        exitCode: 0,
+        stdout: 'TEST-START | t\nTEST-OK | t',
+        stderr: '',
+      });
 
-      await expect(testCommand('/project', MIXED_PATHS, { build: true })).rejects.toThrow(
-        /cannot run xpcshell and browser\/mochitest paths/i
+      const capture = captureStdout();
+      try {
+        await expect(
+          testCommand('/project', MIXED_PATHS, { build: true })
+        ).resolves.toBeUndefined();
+      } finally {
+        capture.restore();
+      }
+
+      expect(runProtectedMachBuild).toHaveBeenCalledTimes(1);
+      expect(writeBuildBaseline).toHaveBeenCalledWith(
+        expect.objectContaining({ testPackagingCoverage: MIXED_PATHS })
       );
-      expect(runProtectedMachBuild).not.toHaveBeenCalled();
+      expect(runMachTestSuite).toHaveBeenCalledTimes(2);
+      expect(capture.verdicts()).toEqual([
+        expect.stringMatching(/^FIREFORGE-VERDICT: PASS runs=2\/2\b/) as string,
+      ]);
     });
 
     it('rejects --build-only with mode flags', async () => {
@@ -660,70 +674,76 @@ describe('testCommand staleness and packaging coverage', () => {
       });
     }
 
-    it('unions the new paths onto the recorded scoped claim', async () => {
+    const RECORD_A: CoverageRecord = {
+      engineHeadSha: 'abc',
+      mozconfigHash: 'a'.repeat(64),
+      fingerprints: {},
+      inputs: ['browser/base/content/test/a'],
+    };
+
+    function keepPlan(
+      overrides: Partial<Awaited<ReturnType<typeof planCoverageRetention>>> = {}
+    ): Awaited<ReturnType<typeof planCoverageRetention>> {
+      return {
+        keepFull: false,
+        retained: { [SLICE_A]: RECORD_A },
+        fullAnchor: undefined,
+        narrowedBy: [],
+        dropped: [],
+        ...overrides,
+      };
+    }
+
+    it('keeps the recorded scoped claim it can still prove under --extend-coverage', async () => {
       greenBuild();
-      vi.mocked(readBuildBaseline).mockResolvedValue({
-        engineHeadSha: 'abc',
-        builtAt: '2026-08-11T00:00:00.000Z',
-        binaryName: 'mybrowser',
-        testInputFingerprints: {},
-        testPackagingCoverage: [SLICE_A],
-      });
+      vi.mocked(planCoverageRetention).mockResolvedValue(keepPlan());
 
       await expect(
         testCommand('/project', [SLICE_B], { build: true, extendCoverage: true })
       ).resolves.toBeUndefined();
 
-      expect(writeBuildBaseline).toHaveBeenCalledWith({
-        projectRoot: '/project',
-        engineDir: '/project/engine',
-        binaryName: 'mybrowser',
-        testPackagingCoverage: [SLICE_A, SLICE_B],
-        previousBaseline: expect.anything() as BaselineArgs['previousBaseline'],
-        recordedBy: expect.stringContaining('--extend-coverage') as string,
-        staticComponentsHandling: 'carry-forward',
-        buildKind: 'faster',
-      });
+      expect(writeBuildBaseline).toHaveBeenCalledWith(
+        expect.objectContaining({
+          testPackagingCoverage: [SLICE_A, SLICE_B],
+          testCoverageRecords: expect.objectContaining({ [SLICE_A]: RECORD_A }) as Record<
+            string,
+            CoverageRecord
+          >,
+          recordedBy: expect.stringContaining('--extend-coverage') as string,
+          staticComponentsHandling: 'carry-forward',
+          buildKind: 'faster',
+        })
+      );
     });
 
     it("keeps a 'full' claim full and still carries the static-components anchor forward", async () => {
       greenBuild();
-      vi.mocked(readBuildBaseline).mockResolvedValue({
-        engineHeadSha: 'abc',
-        builtAt: '2026-08-11T00:00:00.000Z',
-        binaryName: 'mybrowser',
-        testInputFingerprints: {},
-        testPackagingCoverage: 'full',
-      });
+      vi.mocked(planCoverageRetention).mockResolvedValue(
+        keepPlan({ keepFull: true, retained: {} })
+      );
 
       await expect(
         testCommand('/project', [SLICE_B], { build: true, extendCoverage: true })
       ).resolves.toBeUndefined();
 
-      // 'carry-forward' matters here: the union evaluates to
-      // 'full', but the build behind it was a scoped `mach build faster`
-      // that did not rebake the compiled StaticComponents table.
+      // 'carry-forward' matters here: the claim stays 'full', but the build
+      // behind it was a scoped `mach build faster` that did not rebake the
+      // compiled StaticComponents table.
       expect(writeBuildBaseline).toHaveBeenCalledWith({
         projectRoot: '/project',
         engineDir: '/project/engine',
         binaryName: 'mybrowser',
         testPackagingCoverage: 'full',
-        previousBaseline: expect.anything() as BaselineArgs['previousBaseline'],
+        previousBaseline: undefined,
         recordedBy: expect.any(String) as string,
         staticComponentsHandling: 'carry-forward',
         buildKind: 'faster',
       });
     });
 
-    it('automatically retains unchanged prior scopes without --extend-coverage', async () => {
+    it('retains unchanged prior paths by default, without --extend-coverage', async () => {
       greenBuild();
-      vi.mocked(readBuildBaseline).mockResolvedValue({
-        engineHeadSha: 'abc',
-        builtAt: '2026-10-04',
-        binaryName: 'mybrowser',
-        testInputFingerprints: {},
-        testPackagingCoverage: [SLICE_A],
-      });
+      vi.mocked(planCoverageRetention).mockResolvedValue(keepPlan());
       await testCommand('/project', [SLICE_B], { build: true });
       expect(writeBuildBaseline).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -731,78 +751,73 @@ describe('testCommand staleness and packaging coverage', () => {
           staticComponentsHandling: 'carry-forward',
         })
       );
-      expect(checkExtendCoverageAnchor).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.anything(),
-        [SLICE_B]
-      );
+      expect(planCoverageRetention).toHaveBeenCalledWith('/project/engine', undefined, [SLICE_B]);
+      expect(notice).not.toHaveBeenCalledWith(expect.stringContaining('drops previous'));
     });
 
-    it('warns with the dropped paths when earlier staging no longer has a sound anchor', async () => {
+    it('names each dropped path with the inputs that changed, and keeps the rest', async () => {
       greenBuild();
-      vi.mocked(readBuildBaseline).mockResolvedValue({
-        engineHeadSha: 'abc',
-        builtAt: '2026-10-04',
-        binaryName: 'mybrowser',
-        testInputFingerprints: {},
-        testPackagingCoverage: [SLICE_A],
-      });
-      vi.mocked(checkExtendCoverageAnchor).mockResolvedValueOnce({
-        ok: false,
-        reason: 'fingerprint-diverged',
-        detail: [SLICE_A],
-      });
+      const SLICE_C = 'browser/base/content/test/c/browser_c.js';
+      vi.mocked(planCoverageRetention).mockResolvedValue(
+        keepPlan({
+          dropped: [{ path: SLICE_C, changed: ['browser/base/content/test/c/head.js'] }],
+        })
+      );
       await testCommand('/project', [SLICE_B], { build: true });
       expect(writeBuildBaseline).toHaveBeenCalledWith(
-        expect.objectContaining({ testPackagingCoverage: [SLICE_B] })
+        expect.objectContaining({ testPackagingCoverage: [SLICE_A, SLICE_B] })
       );
       expect(notice).toHaveBeenCalledWith(
-        expect.stringContaining(`drops previous packaging coverage: ${SLICE_A}`)
+        expect.stringContaining(
+          `drops previous packaging coverage for ${SLICE_C} (staging inputs changed: browser/base/content/test/c/head.js). Kept: ${SLICE_A}.`
+        )
       );
     });
 
-    it('refuses before building when the head/fingerprint anchor moved', async () => {
+    it('refuses before the lock when --extend-coverage would drop a claim', async () => {
       greenBuild();
-      vi.mocked(checkExtendCoverageAnchor).mockResolvedValueOnce({
-        ok: false,
-        reason: 'head-moved',
-        detail: ['recorded abc', 'current def'],
-      });
+      vi.mocked(planCoverageRetention).mockResolvedValueOnce(
+        keepPlan({ dropped: [{ path: SLICE_A, changed: ['x/head.js'] }] })
+      );
 
       await expect(
         testCommand('/project', [SLICE_B], { build: true, extendCoverage: true })
-      ).rejects.toThrow(/--extend-coverage refused: engine HEAD moved/);
+      ).rejects.toThrow(
+        /--extend-coverage refused: this build would drop earlier packaging coverage/
+      );
 
+      expect(prepareBuildEnvironment).not.toHaveBeenCalled();
       expect(runProtectedMachBuild).not.toHaveBeenCalled();
       expect(writeBuildBaseline).not.toHaveBeenCalled();
     });
 
     it('refuses on a regenerated mozconfig, after prepare but before mach', async () => {
       greenBuild();
-      vi.mocked(checkExtendMozconfigAnchor).mockResolvedValueOnce({
-        ok: false,
-        reason: 'mozconfig-changed',
-        detail: [],
-      });
+      vi.mocked(planCoverageRetention).mockResolvedValue(keepPlan());
+      vi.mocked(applyMozconfigAnchor).mockResolvedValueOnce(
+        keepPlan({
+          retained: {},
+          dropped: [{ path: SLICE_A, changed: [], reason: 'engine/mozconfig differs' }],
+        })
+      );
 
       await expect(
         testCommand('/project', [SLICE_B], { build: true, extendCoverage: true })
-      ).rejects.toThrow(/engine\/mozconfig differs from the recorded build/);
+      ).rejects.toThrow(/engine\/mozconfig differs/);
 
+      expect(prepareBuildEnvironment).toHaveBeenCalled();
       expect(runProtectedMachBuild).not.toHaveBeenCalled();
     });
 
-    it('refuses when no previous baseline exists', async () => {
+    it('proceeds when no previous baseline exists: there is nothing to drop', async () => {
       greenBuild();
-      vi.mocked(checkExtendCoverageAnchor).mockResolvedValueOnce({
-        ok: false,
-        reason: 'no-baseline',
-        detail: [],
-      });
-
+      vi.mocked(planCoverageRetention).mockResolvedValue(keepPlan({ retained: {} }));
       await expect(
         testCommand('/project', [SLICE_B], { build: true, extendCoverage: true })
-      ).rejects.toThrow(/nothing to extend/);
+      ).resolves.toBeUndefined();
+      expect(writeBuildBaseline).toHaveBeenCalledWith(
+        expect.objectContaining({ testPackagingCoverage: [SLICE_B] })
+      );
     });
 
     it('is refused without --build/--build-only', async () => {
@@ -819,13 +834,7 @@ describe('testCommand staleness and packaging coverage', () => {
 
     it('composes with --build-only, which is the union-build shape it exists for', async () => {
       greenBuild();
-      vi.mocked(readBuildBaseline).mockResolvedValue({
-        engineHeadSha: 'abc',
-        builtAt: '2026-08-11T00:00:00.000Z',
-        binaryName: 'mybrowser',
-        testInputFingerprints: {},
-        testPackagingCoverage: [SLICE_A],
-      });
+      vi.mocked(planCoverageRetention).mockResolvedValue(keepPlan());
 
       const capture = captureStdout();
       try {
@@ -837,16 +846,14 @@ describe('testCommand staleness and packaging coverage', () => {
       }
 
       expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: PASS\n']);
-      expect(writeBuildBaseline).toHaveBeenCalledWith({
-        projectRoot: '/project',
-        engineDir: '/project/engine',
-        binaryName: 'mybrowser',
-        testPackagingCoverage: [SLICE_A, SLICE_B],
-        previousBaseline: expect.anything() as BaselineArgs['previousBaseline'],
-        recordedBy: expect.stringContaining('--extend-coverage') as string,
-        staticComponentsHandling: 'carry-forward',
-        buildKind: 'faster',
-      });
+      expect(writeBuildBaseline).toHaveBeenCalledWith(
+        expect.objectContaining({
+          testPackagingCoverage: [SLICE_A, SLICE_B],
+          recordedBy: expect.stringContaining('--extend-coverage') as string,
+          staticComponentsHandling: 'carry-forward',
+          buildKind: 'faster',
+        })
+      );
     });
   });
 
@@ -877,6 +884,57 @@ describe('testCommand staleness and packaging coverage', () => {
       await expect(
         testCommand('/project', [SLICE], { refuseUnexportedDrift: true })
       ).rejects.toThrow(/--refuse-unexported-drift requires --build or --build-only/);
+    });
+  });
+
+  describe('--no-furnace-apply', () => {
+    const SLICE = 'browser/base/content/test/b/browser_b.js';
+
+    it('skips the pre-test Furnace apply and stamps the verdict line', async () => {
+      const capture = captureStdout();
+      try {
+        await testCommand('/project', [SLICE], { buildOnly: true, furnaceApply: false });
+      } finally {
+        capture.restore();
+      }
+      expect(prepareBuildEnvironment).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ skipFurnaceApply: true })
+      );
+      expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: PASS furnace-apply=skipped\n']);
+    });
+
+    it('names the components a default pre-test build deployed on the verdict line', async () => {
+      vi.mocked(prepareBuildEnvironment).mockResolvedValueOnce({
+        furnaceApplied: 1,
+        furnaceAppliedNames: ['moz-card'],
+        reconfigured: false,
+        fullBuildRequired: false,
+      });
+      const capture = captureStdout();
+      try {
+        await testCommand('/project', [SLICE], { buildOnly: true });
+      } finally {
+        capture.restore();
+      }
+      expect(prepareBuildEnvironment).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ skipFurnaceApply: false })
+      );
+      expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: PASS furnace-applied=moz-card\n']);
+      expect(notice).toHaveBeenCalledWith(
+        expect.stringContaining('deployed 1 Furnace component(s)')
+      );
+    });
+
+    it('is refused without --build/--build-only', async () => {
+      await expect(testCommand('/project', [SLICE], { furnaceApply: false })).rejects.toThrow(
+        /--no-furnace-apply requires --build or --build-only/
+      );
     });
   });
 });

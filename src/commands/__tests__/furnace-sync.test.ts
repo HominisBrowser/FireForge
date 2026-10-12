@@ -63,13 +63,17 @@ vi.mock('../../core/furnace-apply.js', () => ({
   applyAllComponents: vi.fn(() =>
     Promise.resolve({
       applied: [{ name: 'moz-card', type: 'override', filesAffected: ['moz-card.css'] }],
-      skipped: [{ name: 'moz-widget', reason: 'No changes since last apply' }],
+      skipped: [
+        { name: 'moz-widget', reason: 'No changes since last apply', kind: 'already-current' },
+      ],
       errors: [],
     })
   ),
 }));
 
-vi.mock('../../core/furnace-apply-output.js', () => ({
+vi.mock('../../core/furnace-apply-output.js', async (importOriginal) => ({
+  // `formatSkipBreakdown` is a pure formatter, so it comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-apply-output.js')>()),
   logApplyResult: vi.fn(),
 }));
 
@@ -172,6 +176,8 @@ describe('furnaceSyncCommand', () => {
     );
     expect(furnaceRefreshCommand).toHaveBeenCalledWith('/project', undefined, { all: true });
     expect(outro).toHaveBeenCalledWith(expect.stringContaining('1 applied'));
+    // The summary names why the skipped component was skipped.
+    expect(outro).toHaveBeenCalledWith(expect.stringContaining('1 skipped (1 already current)'));
   });
 
   it('skips refresh when no overrides are drifted', async () => {

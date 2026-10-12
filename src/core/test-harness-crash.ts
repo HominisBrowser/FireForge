@@ -34,7 +34,7 @@ import { classifyProfileArgumentFailure } from './test-profile-files.js';
 // name it without forming an import cycle. Re-exported here because the
 // command layer imports its harness diagnostics from this module.
 export type { HarnessCrashSignature } from './test-harness-signature.js';
-import type { HarnessCrashSignature } from './test-harness-signature.js';
+import type { HarnessCrashSignature, IncompleteRunEvidence } from './test-harness-signature.js';
 
 // The no-output-stall triage text lives in `test-stall-triage.ts` (it is
 // operator advice, not classification) and is re-exported here so the
@@ -91,6 +91,12 @@ export interface HarnessRunVerdict extends HarnessSummaryCounts {
    * only. The status and reason keys are unaffected.
    */
   note?: string;
+  /**
+   * Set when a mach-exit-0 run was refused its pass because it is
+   * incomplete or reported unexpected results. See
+   * `test-run-completeness.ts`.
+   */
+  incomplete?: IncompleteRunEvidence;
 }
 
 /** Why a green-looking embedded summary was not trusted. */
@@ -150,7 +156,7 @@ const FAIL_LINE_PATTERN = /^.*\bTEST-(?!KNOWN-FAIL\b)[A-Z-]*FAIL\b.*$/gm;
  * test failure, pointing the reader at the wrong line.
  */
 const ASSERTION_LINE_PATTERN = /^.*(?:Assertion failure:|MOZ_ASSERT\(|###!!! ASSERTION).*$/gm;
-const SHUTDOWN_REENTRY_PATTERN =
+export const SHUTDOWN_REENTRY_PATTERN =
   /Application shut down \(without crashing\) in the middle of a test/i;
 const FOCUS_STALL_PATTERN = /must wait for focus/i;
 const TRACEBACK_PATTERN = /Traceback \(most recent call last\)/;
@@ -336,7 +342,7 @@ export function hasCompletedGreenSummary(output: string): boolean {
 }
 
 /** Basename shape of a mozbuild-manifest test implementation file. */
-const TEST_FILE_BASENAME_PATTERN = /^(?:browser|test)_.*\.m?js$/;
+export const TEST_FILE_BASENAME_PATTERN = /^(?:browser|test)_.*\.m?js$/;
 
 /**
  * Start/end execution markers, both log dialects: the structured mozlog
@@ -345,7 +351,7 @@ const TEST_FILE_BASENAME_PATTERN = /^(?:browser|test)_.*\.m?js$/;
  * irrelevant here, since any such line already fails the green-summary check
  * before completeness is consulted.
  */
-const START_MARKER_PATTERN = /\bTEST[-_]START\b[:| ]*\s*(\S+)?/;
+export const START_MARKER_PATTERN = /\bTEST[-_]START\b[:| ]*\s*(\S+)?/;
 const END_MARKER_PATTERN = /\bTEST[-_]END\b|\bTEST-OK\b/;
 
 /**
@@ -801,12 +807,14 @@ export function formatFireforgeVerdictLine(
     (verdict.checks !== undefined ? ` checks=${verdict.checks}` : '') +
     (verdict.unexpected !== undefined ? ` unexpected=${verdict.unexpected}` : '');
   const shardSuffix = shards ? ` shards=${shards.passed}/${shards.total}` : '';
+  const { started: n, requested: m, firstUnstarted: first } = verdict.incomplete ?? {};
+  const truncation = first === undefined ? '' : ` started=${n}/${m} first-unstarted=${first}`;
   const note = verdict.note !== undefined ? ` (${verdict.note})` : '';
   if (verdict.kind === 'tests-ran-ok') {
     return `FIREFORGE-VERDICT: PASS${counts}${shardSuffix}${note}`;
   }
   const reason = verdict.kind === 'harness-crash' ? 'crash' : verdict.kind;
-  return `FIREFORGE-VERDICT: FAIL reason=${reason}${counts}${shardSuffix}${note}`;
+  return `FIREFORGE-VERDICT: FAIL reason=${reason}${counts}${truncation}${shardSuffix}${note}`;
 }
 
 /**

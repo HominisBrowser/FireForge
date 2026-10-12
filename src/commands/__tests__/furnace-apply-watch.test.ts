@@ -32,7 +32,9 @@ vi.mock('../../core/furnace-apply.js', () => ({
   computeComponentChecksums: vi.fn(() => Promise.resolve({})),
 }));
 
-vi.mock('../../core/furnace-apply-output.js', () => ({
+vi.mock('../../core/furnace-apply-output.js', async (importOriginal) => ({
+  // `formatSkipBreakdown` is a pure formatter, so it comes from the real module.
+  ...(await importOriginal<typeof import('../../core/furnace-apply-output.js')>()),
   logApplyResult: vi.fn(),
 }));
 

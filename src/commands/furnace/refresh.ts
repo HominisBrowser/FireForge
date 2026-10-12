@@ -11,7 +11,11 @@ import {
 } from '../../core/furnace-config.js';
 import { resolveFtlDir } from '../../core/furnace-constants.js';
 import { isComponentSourceFile } from '../../core/furnace-constants.js';
-import { completeJournalRollback, runFurnaceMutation } from '../../core/furnace-operation.js';
+import {
+  completeJournalRollback,
+  runFurnaceMutation,
+  waitLockMutationOptions,
+} from '../../core/furnace-operation.js';
 import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
 import { type RefreshFileResult, refreshOverrideFile } from '../../core/furnace-refresh.js';
 import {
@@ -233,7 +237,7 @@ async function refreshSingleOverride(
         throw error;
       }
     },
-    { dryRun }
+    { dryRun, ...waitLockMutationOptions(options.waitLockSeconds) }
   );
 
   return { results, currentVersion };

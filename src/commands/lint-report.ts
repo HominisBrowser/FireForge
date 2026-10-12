@@ -15,7 +15,12 @@ import {
   type PatchSizeTierDecision,
   resolvePatchSizeTier,
 } from '../core/patch-lint.js';
+import {
+  evaluateLintIgnoreCeilings,
+  type LintIgnoreCeilingStatus,
+} from '../core/patch-lint-ignore.js';
 import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
+import type { FireForgeConfig, PatchLintPatchSizeMetric } from '../types/config.js';
 import { writeJson } from '../utils/fs.js';
 import { info } from '../utils/logger.js';
 
@@ -39,25 +44,39 @@ interface LintReportPatch {
   filename: string;
   name: string;
   status: 'skipped' | 'cached' | 'linted';
+  /** What `lineCount` counts: `patchLint.patchSizeMetric`. */
+  metric: PatchLintPatchSizeMetric;
   lineCount: number;
   filesAffected: number;
   tier: PatchSizeTierDecision;
   thresholds: PatchSizeThresholds;
   issues: PatchLintIssue[];
   suppressedIssues: PatchLintIssue[];
+  /**
+   * Each `{ rule, max, reason }` lintIgnore ceiling with the current
+   * measurement and whether it holds, was exceeded, or is removable.
+   * Empty when the patch carries no ceiling or was skipped.
+   */
+  lintIgnoreCeilings: LintIgnoreCeilingStatus[];
 }
 
 /**
  * Writes the per-patch lint report JSON. Called after the per-patch
- * results are assembled in patch order. Queue-level and policy findings
- * are patch-attributed by their `file`/`filename` fields upstream and
- * are not duplicated here. The report is the per-patch view.
+ * results are assembled in patch order. Policy findings are
+ * patch-attributed by their `filename` field upstream and are not
+ * duplicated here. Cross-patch findings (`forward-import`,
+ * `forward-registration`, …) go in `queueIssues`, with the
+ * `stagedDeclarations` that discharge them, so the report can be handed to
+ * `patch staged-dependency --from` as is.
  */
 export async function writePerPatchLintReport(
   reportPath: string,
   subset: readonly PatchMetadata[],
-  results: readonly PerPatchReportResult[]
+  results: readonly PerPatchReportResult[],
+  config: Pick<FireForgeConfig, 'patchLint'>,
+  queueIssues: readonly PatchLintIssue[] = []
 ): Promise<void> {
+  const metric = config.patchLint?.patchSizeMetric ?? 'diff';
   const patches: LintReportPatch[] = [];
   let errors = 0;
   let warnings = 0;
@@ -74,12 +93,21 @@ export async function writePerPatchLintReport(
       filename: patch.filename,
       name: patch.name,
       status: result.status,
+      metric,
       lineCount: result.lineCount,
       filesAffected: patch.filesAffected.length,
       tier,
-      thresholds: getPatchSizeThresholds(tier.tier),
+      thresholds: getPatchSizeThresholds(tier.tier, config),
       issues: result.rawIssues,
       suppressedIssues: result.suppressedIssues,
+      lintIgnoreCeilings:
+        result.status === 'skipped'
+          ? []
+          : evaluateLintIgnoreCeilings(
+              patch.lintIgnore,
+              [...result.rawIssues, ...result.suppressedIssues],
+              { lines: result.lineCount, files: patch.filesAffected.length }
+            ),
     });
     if (result.status === 'skipped') skipped++;
     else linted++;
@@ -92,6 +120,7 @@ export async function writePerPatchLintReport(
     schemaVersion: LINT_REPORT_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
     patches,
+    queueIssues,
     totals: { linted, skipped, errors, warnings, suppressed },
   });
   info(`Per-patch lint report written to ${reportPath}.`);

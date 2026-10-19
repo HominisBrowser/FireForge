@@ -8,9 +8,12 @@
  *   every other theme resolves it to nothing.
  * - `token-undeclared`: a `var(--<prefix>…)` reference in the tokens CSS or
  *   in a CSS file the patch queue touches names a token no block of the
- *   tokens CSS declares. Same-file declarations, `furnace.json`
+ *   tokens CSS declares. Same-file declarations, declarations of a sheet
+ *   that loads beside it (see `token-sibling-sheets.ts`), `furnace.json`
  *   `tokenAllowlist` and `runtimeVariables` are exempt, matching the
- *   `token-prefix-violation` rule's notion of a runtime channel.
+ *   `token-prefix-violation` rule's notion of a runtime channel. A
+ *   reference with a fallback (`var(--x, 0)`) is optional by construction
+ *   (a host hook, a channel set from JS) and is not reported.
  *
  * Built on `token-category.ts`'s base-block and comment-mask primitives, so
  * this report and `token add` agree on which block is the base.
@@ -138,8 +141,9 @@ export function lintUndeclaredTokenReferences(
   const findings: TokenLintFinding[] = [];
   const seen = new Set<string>();
   for (const [index, line] of maskCommentLines(lines).entries()) {
-    for (const match of line.matchAll(/var\(\s*(--[A-Za-z0-9_-]+)/g)) {
+    for (const match of line.matchAll(/var\(\s*(--[A-Za-z0-9_-]+)\s*(,)?/g)) {
       const name = match[1] ?? '';
+      if (match[2] !== undefined) continue;
       if (!name.startsWith(tokenPrefix) || declared.has(name) || local.has(name)) continue;
       if (exempt.has(name) || seen.has(name)) continue;
       seen.add(name);

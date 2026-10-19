@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { join } from 'node:path';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../core/config.js', () => ({
@@ -38,7 +40,7 @@ describe('waitForBuildBrowserBeforeLock', () => {
       waitForBuildBrowserBeforeLock('/project', { waitBrowser: 300, ui: true })
     ).resolves.toEqual({ ui: true });
     expect(waitBeforeLock).toHaveBeenCalledWith(expect.any(Function), 300);
-    expect(ensureLaunchableBrowserNotRunning).toHaveBeenCalledWith(`/project/engine/${APP}`);
+    expect(ensureLaunchableBrowserNotRunning).toHaveBeenCalledWith(join('/project/engine', APP));
   });
 
   it('does nothing without --wait-browser', async () => {

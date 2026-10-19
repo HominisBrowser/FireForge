@@ -7,13 +7,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ValidationIssue } from '../../types/furnace.js';
 import {
+  parseMinComponents,
   parseOptInChecks,
+  parseTokenSiblingSheets,
   parseValidationExceptions,
 } from '../furnace-config-validate-exceptions.js';
 import { validateAccessibility } from '../furnace-validate-accessibility.js';
 import {
   applyValidationExceptions,
   countValidationSeverities,
+  EXCEPTION_ON_ERROR_CHECK,
   STALE_VALIDATION_EXCEPTION_CHECK,
 } from '../furnace-validate-exceptions.js';
 import { countUnlabelledIconButtons } from '../furnace-validate-icon-button.js';
@@ -83,9 +86,9 @@ describe('applyValidationExceptions', () => {
     });
   });
 
-  it('suppresses every finding of the excepted check on the component only', () => {
+  it('suppresses every warning of the excepted check on the component only', () => {
     const outcome = applyValidationExceptions(
-      [issue('a', 'x'), issue('a', 'x', 'error'), issue('b', 'x')],
+      [issue('a', 'x'), issue('a', 'x'), issue('b', 'x')],
       [{ component: 'a', check: 'x', reason: 'reviewed' }],
       () => true
     );
@@ -93,6 +96,52 @@ describe('applyValidationExceptions', () => {
     expect(outcome.excepted).toHaveLength(2);
     expect(outcome.excepted[0]?.reason).toBe('reviewed');
     expect(outcome.stale).toEqual([]);
+  });
+
+  it('never suppresses an error, and reports the exception that tried', () => {
+    const outcome = applyValidationExceptions(
+      [issue('a', 'x', 'error')],
+      [{ component: 'a', check: 'x', reason: 'reviewed' }],
+      () => true
+    );
+    expect(outcome.excepted).toEqual([]);
+    expect(outcome.stale).toEqual([]);
+    expect(outcome.issues).toEqual([
+      issue('a', 'x', 'error'),
+      expect.objectContaining({
+        component: 'a',
+        severity: 'error',
+        check: EXCEPTION_ON_ERROR_CHECK,
+      }),
+    ]);
+  });
+
+  it('suppresses a tagged finding only when its tag entries cover every tag', () => {
+    const tagged = (tags: string[]): ValidationIssue => ({
+      ...issue('a', 'no-keyboard-handler'),
+      tags,
+    });
+    const exceptions = [
+      { component: 'a', check: 'no-keyboard-handler', tag: 'panel-item', reason: 'menu row' },
+      { component: 'a', check: 'no-keyboard-handler', tag: 'li', reason: 'list row' },
+    ];
+    const covered = applyValidationExceptions(
+      [tagged(['panel-item', 'li'])],
+      exceptions,
+      () => true
+    );
+    expect(covered.issues).toEqual([]);
+    expect(covered.excepted[0]?.reason).toBe('menu row; list row');
+
+    const partial = applyValidationExceptions(
+      [tagged(['panel-item', 'div'])],
+      exceptions,
+      () => true
+    );
+    expect(partial.issues).toHaveLength(2);
+    expect(partial.issues[0]?.tags).toEqual(['panel-item', 'div']);
+    // The panel-item entry is in use; only the li entry is stale.
+    expect(partial.stale).toEqual([exceptions[1]]);
   });
 
   it('reports an unused exception as stale only when its component was judged', () => {
@@ -160,6 +209,18 @@ describe('countUnlabelledIconButtons', () => {
     ).toBe(0);
   });
 
+  it('reads only text outside tags as a visible label', () => {
+    expect(
+      countUnlabelledIconButtons(
+        module(
+          '<moz-button iconsrc="x.svg"><img src="x.svg"> </moz-button>' +
+            '<moz-button iconsrc="x.svg"><span class="icon" title="a > b"></span></moz-button>' +
+            '<moz-button iconsrc="x.svg"><span>Close</span></moz-button>'
+        )
+      )
+    ).toBe(2);
+  });
+
   it('ignores markup outside Lit templates', () => {
     expect(
       countUnlabelledIconButtons('const s = "<moz-button type=\\"icon\\"></moz-button>";')
@@ -197,5 +258,85 @@ describe('validateAccessibility icon-button-label opt-in', () => {
       message:
         '1 icon-only <moz-button> without an accessible name. Add data-l10n-id (with the label in its Fluent message) or aria-label.',
     });
+  });
+});
+
+describe('validateAccessibility judges the composed component', () => {
+  let dir: string;
+  const lit = 'import { html } from "lit";\n';
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'ff-composed-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('reads companion modules beside the host, and names the synthetic tags', async () => {
+    await writeFile(join(dir, 'moz-menu.mjs'), `${lit}export const host = 1;\n`);
+    await writeFile(
+      join(dir, 'moz-menu-row.mjs'),
+      `${lit}export const t = () => html\`<div @click=\${go}>Row</div>\`;\n`
+    );
+    await writeFile(
+      join(dir, 'moz-menu-row.test.mjs'),
+      `${lit}export const t = () => html\`<span @click=\${go}></span>\`;\n`
+    );
+    const finding = (await validateAccessibility(dir, 'moz-menu')).find(
+      (entry) => entry.check === 'no-keyboard-handler'
+    );
+    expect(finding?.tags).toEqual(['div']);
+    expect(finding?.message).toContain('on <div>');
+  });
+
+  it('counts a keyboard handler in a companion for a click in the host', async () => {
+    await writeFile(
+      join(dir, 'moz-menu.mjs'),
+      `${lit}export const t = () => html\`<div @click=\${go}>Row</div>\`;\n`
+    );
+    await writeFile(
+      join(dir, 'moz-menu-keys.mjs'),
+      `${lit}export const k = () => html\`<div @keydown=\${key}></div>\`;\n`
+    );
+    const issues = await validateAccessibility(dir, 'moz-menu');
+    expect(issues.some((entry) => entry.check === 'no-keyboard-handler')).toBe(false);
+  });
+
+  it('treats a toolkit panel-item as natively keyboard-activated', async () => {
+    await writeFile(
+      join(dir, 'moz-menu.mjs'),
+      `${lit}export const t = () => html\`<panel-list><panel-item @click=\${go}>Import</panel-item></panel-list>\`;\n`
+    );
+    const issues = await validateAccessibility(dir, 'moz-menu');
+    expect(issues.some((entry) => entry.check === 'no-keyboard-handler')).toBe(false);
+  });
+});
+
+describe('parseValidationExceptions tag', () => {
+  it('accepts a tag and keys duplicates by it', () => {
+    const entries = [
+      { component: 'moz-a', check: 'no-keyboard-handler', tag: 'li', reason: 'r' },
+      { component: 'moz-a', check: 'no-keyboard-handler', tag: 'div', reason: 'r' },
+    ];
+    expect(parseValidationExceptions(entries)).toEqual(entries);
+    expect(() => parseValidationExceptions([entries[0], entries[0]])).toThrow(/on <li>/);
+  });
+});
+
+describe('furnace.json minComponents and tokenSiblingSheets', () => {
+  it('parses a positive floor and refuses anything else', () => {
+    expect(parseMinComponents(3)).toBe(3);
+    for (const bad of [0, -1, 1.5, '2']) {
+      expect(() => parseMinComponents(bad)).toThrow(/"minComponents" must be a positive integer/);
+    }
+  });
+
+  it('parses sibling sheet partners and refuses empty lists and traversal', () => {
+    const raw = { 'browser/**/*.css': ['browser/base/host.css'] };
+    expect(parseTokenSiblingSheets(raw)).toEqual(raw);
+    expect(() => parseTokenSiblingSheets([])).toThrow(/must be an object/);
+    expect(() => parseTokenSiblingSheets({ 'a.css': [] })).toThrow(/non-empty list/);
+    expect(() => parseTokenSiblingSheets({ 'a.css': ['../x.css'] })).toThrow(/no "\.\."/);
   });
 });

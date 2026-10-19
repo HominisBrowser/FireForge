@@ -21,10 +21,11 @@ command, read the decision table at the bottom first.
    take the `.fireforge/engine-session.lock`, then subsystem locks such as
    build, furnace, or patch-directory locks. Furnace mutations serialize on a
    per-root lock, and patch directory mutations (filename allocation plus
-   manifest writes) on a per-directory lock. Dry runs hold the engine-session
-   lock too, because a `re-export --dry-run` over an untracked binary legally
-   touches the git index, and holding the lock serializes even "read-only"
-   previews against real writers.
+   manifest writes) on a per-directory lock. `re-export --dry-run` is the
+   exception: it writes nothing, runs its git plumbing on a private index
+   (so even the `--intent-to-add` staging an untracked binary needs never
+   reaches the shared `.git/index`), and serializes only against other dry
+   runs, so a preview no longer queues behind a peer's build or test run.
 
 3. **A furnace mutation that does not finish restores the engine or says
    so.** Both a signal (SIGINT or SIGTERM) and a thrown error trigger a
@@ -348,13 +349,14 @@ real-procfs `withFileLock` reap of a live-PID stale record.
 The project-wide engine-session lock under `.fireforge/`, stamped with PID,
 command, and start time metadata. CLI `build`, `test`, `export`, `re-export`,
 `furnace apply`, `furnace deploy` and `furnace sync` take it before subsystem
-locks, unconditionally, including dry runs: a `re-export --dry-run` over an
-untracked binary legally touches the git index (temporary `--intent-to-add`
-staging), so holding the lock serializes even "read-only" previews against
-real writers. Dry-run purity is separately enforced at runtime by
-`withDryRunPurityGuard` (`re-export-bulk-scan.ts`), which fingerprints the
-engine tree and every patch artifact around the dry run and fails hard on
-divergence.
+locks. `re-export --dry-run` does not: it runs inside `withPrivateGitIndex`,
+so its temporary `--intent-to-add` staging lands on a throwaway index, and it
+serializes only against other dry runs. Dry-run purity is enforced at runtime
+by `withDryRunPurityGuard` (`re-export-bulk-scan.ts`). For `re-export` it
+fingerprints what the dry run could touch (the engine HEAD and index, the
+selected patches' bodies, their `patches.json` rows and the engine files they
+own) and fails hard on divergence, naming a foreign writer when the history
+log or the engine-session lock shows one in the window (`re-export-purity-scope.ts`).
 
 Contention fails fast after about a second by default, with the fixed message
 "Another FireForge engine-mutating command is already running. Wait for it to

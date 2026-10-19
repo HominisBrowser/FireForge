@@ -50,6 +50,7 @@ import {
   resolveWaitLockSeconds,
 } from '../../utils/options.js';
 import { normalizePatchDisplayName, parsePositiveIntegerFlag } from '../../utils/validation.js';
+import { withDeclarationsReport } from '../declarations-report.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { placementPlansEqual, resolvePlacementPlan } from '../export-flow.js';
 import { runPatchLint } from '../export-shared.js';
@@ -61,6 +62,7 @@ import {
   mergeStagedForwardImports,
   projectSplitManifest,
   runProjectedSplitLint,
+  splitDeclarationRenamer,
   type SplitPlan,
 } from './split-plan.js';
 import {
@@ -395,12 +397,15 @@ export async function patchSplitCommand(
     patchTier: source.tier,
   });
 
-  const { conflicts, stagedDependencyAdditions, stagedMaintenance } = runProjectedSplitLint(
-    plan,
-    patchQueueCtx
-  );
-  plan.stagedDependencyAdditions = stagedDependencyAdditions;
-  plan.stagedMaintenance = stagedMaintenance;
+  const projected = runProjectedSplitLint(plan, patchQueueCtx);
+  plan.stagedDependencyAdditions = projected.stagedDependencyAdditions;
+  plan.stagedMaintenance = projected.stagedMaintenance;
+  const conflicts = await withDeclarationsReport(projected.conflicts, {
+    projectRoot,
+    regressions: projected.regressions,
+    out: options.declarationsOut,
+    rename: splitDeclarationRenamer(plan),
+  });
   const newMetadata = buildNewPatchMetadata(plan, config);
 
   const decision = await confirmDestructive({
@@ -450,7 +455,11 @@ export function registerPatchSplit(parent: Command, context: CommandContext): vo
     .option('--dry-run', 'Show what would happen without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
     .option('--force-unsafe', 'Bypass projected-lint refusals')
-    .option('--skip-lint', 'Skip per-patch lint of the projected bodies');
+    .option('--skip-lint', 'Skip per-patch lint of the projected bodies')
+    .option(
+      '--declarations-out <path>',
+      'Where a refusal writes its one --from-ready staged-declaration report (default: .fireforge/declarations/<timestamp>.json)'
+    );
   addWaitLockOption(command).action(
     withErrorHandling(
       async (
@@ -467,6 +476,7 @@ export function registerPatchSplit(parent: Command, context: CommandContext): vo
           yes?: boolean;
           forceUnsafe?: boolean;
           skipLint?: boolean;
+          declarationsOut?: string;
           waitLock?: number | boolean;
         }
       ) => {
@@ -483,6 +493,7 @@ export function registerPatchSplit(parent: Command, context: CommandContext): vo
             yes: options.yes,
             forceUnsafe: options.forceUnsafe,
             skipLint: options.skipLint,
+            declarationsOut: options.declarationsOut,
             waitLock: options.waitLock,
           }),
         });

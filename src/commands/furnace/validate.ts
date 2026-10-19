@@ -16,6 +16,7 @@ import {
   applyValidationExceptions,
   type ValidationExceptionOutcome,
 } from '../../core/furnace-validate-exceptions.js';
+import { createIssue } from '../../core/furnace-validate-helpers.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceValidateOptions } from '../../types/commands/index.js';
 import type { ComponentType, ValidationIssue } from '../../types/furnace.js';
@@ -263,6 +264,28 @@ function exceptRun(run: ValidationRun, config: FurnaceConfig): ValidationExcepti
 }
 
 /**
+ * The `furnace.json#minComponents` floor of a full run: an error when it
+ * judged fewer components, so a run over an emptied or moved components
+ * tree cannot pass by validating nothing. A run naming one component is
+ * not judged against it.
+ */
+function componentFloorIssue(
+  config: FurnaceConfig,
+  name: string | undefined,
+  judged: number
+): ValidationIssue | undefined {
+  if (name !== undefined || config.minComponents === undefined) return undefined;
+  if (judged >= config.minComponents) return undefined;
+  return createIssue(
+    'furnace.json',
+    'error',
+    'component-floor',
+    `Validated ${judged} component(s), under furnace.json minComponents ${config.minComponents}. ` +
+      'Check that the components tree is where furnace.json says, or lower the floor.'
+  );
+}
+
+/**
  * Runs the furnace validate command to perform static analysis on components.
  * @param projectRoot - Root directory of the project
  * @param name - Optional component name to validate (validates all if omitted)
@@ -299,24 +322,32 @@ async function runFurnaceValidate(
 
   const run = await runValidationPass(projectRoot, name, config, furnacePaths);
   if (run === undefined) {
+    const floor = componentFloorIssue(config, name, 0);
     if (options.json === true) {
       renderValidateJson({
         components: [],
-        outcome: { issues: [], excepted: [], stale: [] },
+        outcome: { issues: floor ? [floor] : [], excepted: [], stale: [] },
         maxWarnings: options.maxWarnings,
       });
+    }
+    if (floor !== undefined) {
+      renderValidateHuman([], [floor]);
+      throw new FurnaceError('Validation failed with 1 error(s).');
     }
     outro(name ? 'Validation complete' : 'Done');
     return;
   }
 
+  const floor = componentFloorIssue(config, name, run.results.size);
   const firstPass = exceptRun(run, config);
+  if (floor !== undefined) firstPass.issues.push(floor);
   renderValidateHuman([...run.results.keys()], firstPass.issues);
 
   let outcome = firstPass;
   if (options.fix && firstPass.issues.length > 0) {
     await applyAutoFix(projectRoot, config, furnacePaths, run, firstPass.issues);
     outcome = exceptRun(run, config);
+    if (floor !== undefined) outcome.issues.push(floor);
   }
 
   const report = {

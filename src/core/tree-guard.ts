@@ -45,6 +45,8 @@ export const TREE_COMMAND_VERDICTS: Readonly<
   export: 'conditional',
   'export-all': 'conditional',
   're-export': 'conditional',
+  // Parks live in the primary tree's .fireforge/ and rewrite engine files.
+  park: 'refused',
   patch: 'refused',
   rebase: 'refused',
   package: 'refused',

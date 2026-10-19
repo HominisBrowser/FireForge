@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.51.0
+
+### Test harness
+
+- `started=` counts start lines as the output streams, or reads the mozlog raw log when the run wrote one. A suite printing more than 2 MB, or any `--full-output` run, no longer reports files that ran as unstarted. A refusal names its evidence with `started-source=`.
+- Sharded runs print a `FIREFORGE-SHARD:` line per shard and `failed-shards=` on the verdict. New `--shard-size <n>` runs n files per mach invocation, judged per file. New `--results <path>` writes per-file JSON (status, expected, duration, log offset) from mozlog and adds `results=` to the verdict.
+- Negative controls accept a plain unified diff, and a `git diff --no-index` against an edited copy. A control on compiled source is refused without `--build`. With `--build` it goes in before the build and is restored afterwards (`control-build=compiled`). A build-less control on stale packaging is refused before the lock.
+- Mid-run engine edits the running browser cannot see no longer make a run inconclusive (`drift-tolerated=<n>`). A scoped `--build` of one file keeps its manifest siblings' coverage, and packaging refusals arrive before the lock.
+- `--furnace-apply all|reached|none` and `test.furnaceApply` scope the pre-test Furnace apply; components left out are named in `furnace-skipped=`. The default stays `all`.
+
+### Locks
+
+- New opt-in `--shared-lock` and `test.lockMode: "shared"` let build-less test runs with auto ports overlap on one objdir; builds, re-exports and every other writer stay exclusive. New `test --jobs <n>` runs a request's shards on n harness instances inside one hold, each on its own ports, with `[job i]`-prefixed output.
+- `--wait-lock` and `FIREFORGE_WAIT_LOCK` accept up to 86400 seconds.
+
+### Patch queue
+
+- Added `patch reserve <order>`, which holds a claimed order under `allowGaps: false`; default allocation skips it, and the export that takes it fills it. Added `patch stage <name>...`, which stages only the named patches' rows of `patches.json` (validated) and their patch files. Every writer emits one canonical `patches.json` key order, so the first full save may reorder keys once.
+- Added `re-export --hunks-from <diff>` and `--exclude-hunks <diff>`, which export a shared file hunk by hunk. Added `fireforge park`, which sets a session's edits to a patch's files aside and merges them back three-way, warning about Fluent ids and files still referenced outside the patch.
+- `re-export --dry-run` takes no engine lock and runs on a private git index. Its purity guard covers only the selected patches, their rows and the engine files they own, and names a concurrent writer instead of calling a peer's write a FireForge bug.
+- Refused `re-export --scan`, `patch move-files` and `patch split` write one `--from`-ready declaration report (`--declarations-out`) and name one `staged-dependency --add --from` call per holding patch. `--refuse-adjacent-unmanaged` combines with `--scan`.
+- `staged-dependency --remove` accepts `--creates` alone, matches registration lines regardless of whitespace, and exits 8 when nothing matches. Re-export drops a staged registration whose `creates` path no patch owns. An `--expect-removed` path owned by an unselected patch names that owner.
+- `patch delete` and `retire` name created files still on disk and gain `--delete-created`. A description-only `patch rename` needs no `--yes`.
+- An unscoped `verify`, and so `fireforge check`, also reads unexported engine files for imports of unregistered `resource:///modules` modules.
+
+### Lint and tokens
+
+- `lintIgnore` ceilings take a free-form `meta` object and `share: "test"|"product"`, and a notice no longer exceeds a ceiling. `lint --report` adds `lintIgnoreWaivers` for bare waivers. `patch lint-ignore` gains `--add <rule>=<max>`, `--share` and `--from <json|report>`.
+- `patchLint.tokenScales` skips `@font-face` and other descriptor at-rules. Each scale also takes a `prefix` list, `allowInCalc`, `offsetCap`, `exclude` globs and a `minFiles` floor (`token-scale-vacuous`). `token lint` treats a `var()` with a fallback as optional and resolves tokens declared by sibling sheets: from document links, from `@import`, or from `furnace.json#tokenSiblingSheets`.
+- A test script's per-patch checkJs resolves modules created by earlier patches. Opt-in `typecheck.litTypes` types `LitElement` and `MozLitElement`. A scoped `lint --per-patch --patches` keeps stale staged declarations. `discoverPatches` follows symlinked patch files.
+- The API exports `measurePatchSize`, `isPatchSizeRegistrationFile`, `codeLineMask` and `evaluatePatchPolicyContentForQueue`.
+
+### Gates
+
+- `fireforge check` gains `check.timeout` and `check.timeouts.<step>` for built-in steps, `check.failOnSkipped`, `check.lintReport` (passed to extra steps as `FIREFORGE_CHECK_LINT_REPORT`), and `extraSteps[].after`. The verdict line names `skipped-steps=`.
+
+### Furnace
+
+- `furnace validate`: an exception no longer suppresses an error (`validation-exception-on-error`), and an exception can name a `tag`. `minComponents` sets a floor (`component-floor`). `panel-item` counts as natively interactive, and the accessibility checks judge the host module together with its companion modules.
+- `furnace deploy` and `furnace rename` edit `jar.mn` lines in place instead of re-sorting the widget's block.
+- The `icon-button-label` check scans a button's content for text outside tags instead of stripping tags with a regex. A `>` inside a quoted attribute no longer ends the tag.
+
+### Other
+
+- Windows: when two commands race to migrate the legacy history log, the loser stands down instead of failing on a claim the other command holds. The `check` process test no longer assumes a POSIX shell, and the `build` and `test` pre-lock tests no longer assume POSIX paths.
+- Dev tooling: `@types/node` 26.6.5, `@vitest/coverage-v8` and `vitest` 5.0.5, `eslint-plugin-jsdoc` 65.3.6, `knip` 6.41.0, `prettier` 3.9.10, `typescript-eslint` 8.71.2 and `vite` 8.3.4. Runtime: `acorn` 8.19.0 and `magic-string` 1.4.3. CI: `actions/setup-node` 7.1.0 and `github/codeql-action` 4.38.3.
+
 ## 0.50.0
 
 ### Size budget

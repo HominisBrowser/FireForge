@@ -43,33 +43,94 @@ function basenameOf(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1);
 }
 
+/** Start and skip marker names seen in a run's output. */
+export interface StartMarkers {
+  started: string[];
+  skipped: string[];
+}
+
+/** Collects the start and skip marker names in `output`, line by line. */
+function scanStartMarkers(output: string): StartMarkers {
+  const markers: StartMarkers = { started: [], skipped: [] };
+  for (const line of output.split(/\r?\n/)) recordMarkerLine(line, markers);
+  return markers;
+}
+
+function recordMarkerLine(line: string, markers: StartMarkers): void {
+  const start = START_MARKER_PATTERN.exec(line)?.[1];
+  if (start !== undefined) {
+    markers.started.push(start);
+    return;
+  }
+  const skip = SKIP_MARKER_PATTERN.exec(line)?.[1];
+  if (skip !== undefined) markers.skipped.push(skip);
+}
+
+/**
+ * Collects start and skip markers from a dispatch's output as it streams.
+ *
+ * The capture `runMachCapture` hands back keeps only the last 2 MB of each
+ * stream, so a suite that prints more than that (a large browser directory,
+ * or any run under `--full-output`) loses its first files' start lines from
+ * the capture, and counting from that tail named files that ran and passed
+ * as never started. The tracker sees every chunk, splits it into whole lines
+ * per stream, and keeps only the marker names, so it grows with the file
+ * count, not the output size.
+ */
+export interface StartMarkerTracker {
+  /** Feeds one output chunk; wire it to `MachOptions.onOutputChunk`. */
+  onChunk(stream: 'stdout' | 'stderr', chunk: string): void;
+  /** The markers seen so far, including any unterminated last line. */
+  markers(): StartMarkers;
+}
+
+/** Markers collected outside the capped capture, and where they came from. */
+export interface TrackedStartMarkers {
+  markers: StartMarkers;
+  /** `stream`: every output chunk; `raw`: the mozlog structured log. */
+  source: 'stream' | 'raw';
+}
+
+/** Creates a {@link StartMarkerTracker}. */
+export function createStartMarkerTracker(): StartMarkerTracker {
+  const collected: StartMarkers = { started: [], skipped: [] };
+  const pending = { stdout: '', stderr: '' };
+  return {
+    onChunk(stream, chunk) {
+      const lines = `${pending[stream]}${chunk}`.split(/\r?\n/);
+      pending[stream] = lines.pop() ?? '';
+      for (const line of lines) recordMarkerLine(line, collected);
+    },
+    markers() {
+      const tail: StartMarkers = { started: [], skipped: [] };
+      recordMarkerLine(pending.stdout, tail);
+      recordMarkerLine(pending.stderr, tail);
+      return {
+        started: [...collected.started, ...tail.started],
+        skipped: [...collected.skipped, ...tail.skipped],
+      };
+    },
+  };
+}
+
 /**
  * Counts the requested test files that produced a start or skip marker.
  * Returns undefined when nothing can be counted: no test-file-shaped
  * request, or no start line that names any requested file.
  *
- * @param output - Captured mach stdout and stderr
+ * @param evidence - Captured mach stdout and stderr, or the markers
+ *   collected from the complete stream
  * @param requestedPaths - Dispatched paths, in dispatch order
  */
 export function countStartedFiles(
-  output: string,
+  evidence: string | StartMarkers,
   requestedPaths: readonly string[]
 ): { started: number; requested: number; firstUnstarted?: string } | undefined {
   const requested = requestedPaths.filter((path) =>
     TEST_FILE_BASENAME_PATTERN.test(basenameOf(path))
   );
   if (requested.length === 0) return undefined;
-  const started: string[] = [];
-  const skipped: string[] = [];
-  for (const line of output.split(/\r?\n/)) {
-    const start = START_MARKER_PATTERN.exec(line)?.[1];
-    if (start !== undefined) {
-      started.push(start);
-      continue;
-    }
-    const skip = SKIP_MARKER_PATTERN.exec(line)?.[1];
-    if (skip !== undefined) skipped.push(skip);
-  }
+  const { started, skipped } = typeof evidence === 'string' ? scanStartMarkers(evidence) : evidence;
   const names = (path: string, list: readonly string[]): boolean => {
     const base = basenameOf(path);
     return list.some((name) => name.includes(base));
@@ -95,18 +156,25 @@ export function countStartedFiles(
  * @param verdict - The classifier's verdict
  * @param output - Captured mach stdout and stderr
  * @param requestedPaths - Dispatched paths, in dispatch order
+ * @param tracked - Start markers collected from the complete stream (or
+ *   the structured raw log); without them the capped capture is scanned
  */
 export function vetoIncompletePass(
   verdict: HarnessRunVerdict,
   output: string,
-  requestedPaths: readonly string[]
+  requestedPaths: readonly string[],
+  tracked?: TrackedStartMarkers
 ): HarnessRunVerdict {
   if (verdict.kind !== 'tests-ran-ok') return verdict;
   const shutdownLine = output
     .split(/\r?\n/)
     .find((line) => SHUTDOWN_REENTRY_PATTERN.test(line))
     ?.trim();
-  const counted = countStartedFiles(output, requestedPaths);
+  // Tracked markers win whenever they saw a start line at all. An empty
+  // tracker means nothing was streamed through it, and the capture is then
+  // the only evidence there is.
+  const useTracked = tracked !== undefined && tracked.markers.started.length > 0;
+  const counted = countStartedFiles(useTracked ? tracked.markers : output, requestedPaths);
   const unexpected = verdict.unexpected ?? 0;
   const truncated = counted?.firstUnstarted !== undefined;
   if (unexpected === 0 && shutdownLine === undefined && !truncated) return verdict;
@@ -114,7 +182,12 @@ export function vetoIncompletePass(
   const evidence: IncompleteRunEvidence = {
     started: counted?.started ?? 0,
     requested: counted?.requested ?? 0,
-    ...(counted?.firstUnstarted !== undefined ? { firstUnstarted: counted.firstUnstarted } : {}),
+    ...(counted?.firstUnstarted !== undefined
+      ? {
+          firstUnstarted: counted.firstUnstarted,
+          startedSource: useTracked ? tracked.source : 'capture',
+        }
+      : {}),
     ...(shutdownLine !== undefined ? { shutdownLine } : {}),
     ...(unexpected > 0 ? { unexpected } : {}),
   };

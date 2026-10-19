@@ -14,6 +14,7 @@ import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js'
 import type { FireForgeConfig } from '../types/config.js';
 import { formatPatchOrder } from './patch-parse.js';
 import { evaluatePatchPolicy, type PatchPolicyIssueCode } from './patch-policy.js';
+import { reservedOrderSet } from './patch-retired.js';
 
 /** Policy codes an order choice alone can trip. */
 const ORDER_CODES: ReadonlySet<PatchPolicyIssueCode> = new Set([
@@ -56,7 +57,8 @@ function orderIssueKeys(
  * Smallest order strictly greater than `after` that no patch occupies and
  * that adds no order-related `patchPolicy` finding (collision, category
  * range, reserved range, numeric gap) for a `category` patch. A retired
- * slot counts as free, since a patch may fill it. Returns null when no such
+ * slot counts as free, since a patch may fill it; a reservation does not,
+ * since it is held for its owner's export. Returns null when no such
  * order exists inside the category's configured ranges.
  *
  * @param config - Project config (only `patchPolicy` is read)
@@ -70,7 +72,10 @@ export function earliestLegalOrderAfter(
   category: string,
   after: number
 ): number | null {
-  const occupied = new Set(manifest.patches.map((patch) => patch.order));
+  const occupied = new Set([
+    ...manifest.patches.map((patch) => patch.order),
+    ...reservedOrderSet(manifest),
+  ]);
   const ranges = config.patchPolicy?.ranges.filter((range) => range.category === category) ?? [];
   const limit =
     ranges.length > 0 ? Math.max(...ranges.map((range) => range.to)) : after + UNBOUNDED_SEARCH;

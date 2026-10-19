@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Validators for the two `furnace validate` policy fields of furnace.json:
- * `validationExceptions[]` and `optInChecks[]`.
+ * Validators for the `furnace validate` and `token lint` policy fields of
+ * furnace.json: `validationExceptions[]`, `optInChecks[]`, `minComponents`
+ * and `tokenSiblingSheets`.
  *
  * Strict on purpose, like `buildAudit.unpackaged`: every exception is a
  * standing suppression of a finding, so a malformed one must fail at load
@@ -15,7 +16,7 @@ import {
 } from '../types/furnace.js';
 import { isArray, isObject, isString } from '../utils/validation.js';
 
-const EXCEPTION_KEYS = new Set(['component', 'check', 'reason']);
+const EXCEPTION_KEYS = new Set(['component', 'check', 'tag', 'reason']);
 
 function requireNonEmptyString(entry: Record<string, unknown>, key: string, field: string): string {
   const value = entry[key];
@@ -26,9 +27,9 @@ function requireNonEmptyString(entry: Record<string, unknown>, key: string, fiel
 }
 
 /**
- * Parses `validationExceptions[]`: `{ component, check, reason }` objects,
- * no other keys, every field a non-empty string, and no two entries for the
- * same component and check.
+ * Parses `validationExceptions[]`: `{ component, check, tag?, reason }`
+ * objects, no other keys, every field a non-empty string, and no two
+ * entries for the same component, check and tag.
  */
 export function parseValidationExceptions(raw: unknown): FurnaceValidationException[] {
   if (!isArray(raw)) {
@@ -52,10 +53,12 @@ export function parseValidationExceptions(raw: unknown): FurnaceValidationExcept
       check: requireNonEmptyString(entry, 'check', field),
       reason: requireNonEmptyString(entry, 'reason', field),
     };
-    const identity = `${exception.component}\u0000${exception.check}`;
+    if (entry['tag'] !== undefined) exception.tag = requireNonEmptyString(entry, 'tag', field);
+    const identity = `${exception.component}\u0000${exception.check}\u0000${exception.tag ?? ''}`;
     if (seen.has(identity)) {
+      const on = exception.tag !== undefined ? ` on <${exception.tag}>` : '';
       throw new FurnaceError(
-        `Furnace config: "${field}" repeats the exception for ${exception.component} [${exception.check}]`
+        `Furnace config: "${field}" repeats the exception for ${exception.component} [${exception.check}]${on}`
       );
     }
     seen.add(identity);
@@ -65,6 +68,38 @@ export function parseValidationExceptions(raw: unknown): FurnaceValidationExcept
 
 function isOptInCheck(value: string): value is FurnaceOptInCheck {
   return (FURNACE_OPT_IN_CHECKS as readonly string[]).includes(value);
+}
+
+/**
+ * Parses `tokenSiblingSheets`: an object from a sheet glob to a non-empty
+ * list of partner paths or globs.
+ */
+export function parseTokenSiblingSheets(raw: unknown): Record<string, string[]> {
+  if (!isObject(raw)) {
+    throw new FurnaceError('Furnace config: "tokenSiblingSheets" must be an object');
+  }
+  const out: Record<string, string[]> = {};
+  for (const [pattern, partners] of Object.entries(raw)) {
+    const valid =
+      isArray(partners) &&
+      partners.length > 0 &&
+      partners.every((partner) => isString(partner) && partner.trim() !== '');
+    if (pattern.includes('..') || !valid || partners.some((p) => String(p).includes('..'))) {
+      throw new FurnaceError(
+        `Furnace config: "tokenSiblingSheets.${pattern}" must be a non-empty list of engine-relative paths or globs (no "..")`
+      );
+    }
+    out[pattern] = partners as string[];
+  }
+  return out;
+}
+
+/** Parses `minComponents`: a positive integer. */
+export function parseMinComponents(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
+    throw new FurnaceError('Furnace config: "minComponents" must be a positive integer');
+  }
+  return raw;
 }
 
 /** Parses `optInChecks[]`: names from {@link FURNACE_OPT_IN_CHECKS}. */

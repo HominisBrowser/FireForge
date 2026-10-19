@@ -4,6 +4,8 @@
  * engine session lock is requested, and what is left for the single
  * re-check under it.
  */
+import { join } from 'node:path';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
@@ -42,6 +44,12 @@ vi.mock('../../core/preflight-wait.js', () => ({
 vi.mock('../test-checkjs.js', () => ({
   checkRequestedTestTypes: vi.fn(() => Promise.resolve()),
 }));
+vi.mock('../test-stale-gate.js', () => ({
+  enforceStaleBuildGate: vi.fn(() => Promise.resolve()),
+}));
+vi.mock('../../core/negative-control.js', () => ({
+  planNegativeControl: vi.fn(() => Promise.resolve({ diffFile: 'c.diff', targets: [] })),
+}));
 vi.mock('../test-modes.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../test-modes.js')>()),
   classifyBeforeDispatch: vi.fn(() =>
@@ -50,17 +58,21 @@ vi.mock('../test-modes.js', async (importOriginal) => ({
 }));
 
 import { readBuildRunState } from '../../core/build-run-record.js';
+import { loadConfig } from '../../core/config.js';
 import { hasBuildArtifacts, hasRunnableBundle } from '../../core/mach.js';
 import {
   assertMarionettePortAvailable,
   ensureLaunchableBrowserNotRunning,
 } from '../../core/marionette-port.js';
 import { ensureMochitestServerPortAvailable } from '../../core/mochitest-server-port.js';
+import { planNegativeControl } from '../../core/negative-control.js';
 import { waitBeforeLock } from '../../core/preflight-wait.js';
 import { PreflightRefusalError } from '../../errors/base.js';
+import { info } from '../../utils/logger.js';
 import { checkRequestedTestTypes } from '../test-checkjs.js';
 import { classifyBeforeDispatch } from '../test-modes.js';
 import { resolveLaunchablePathForTests, runTestPreLockPreflight } from '../test-prelock.js';
+import { enforceStaleBuildGate } from '../test-stale-gate.js';
 
 const ROOT = '/project';
 const APP = 'obj-debug/dist/MyBrowser.app/Contents/MacOS/mybrowser';
@@ -175,7 +187,7 @@ describe('runTestPreLockPreflight', () => {
     expect(waitBeforeLock).toHaveBeenNthCalledWith(1, expect.any(Function), 120, []);
     expect(waitBeforeLock).toHaveBeenNthCalledWith(2, expect.any(Function), 60);
     expect(waitBeforeLock).toHaveBeenNthCalledWith(3, expect.any(Function), 60);
-    expect(ensureLaunchableBrowserNotRunning).toHaveBeenCalledWith(`${ROOT}/engine/${APP}`);
+    expect(ensureLaunchableBrowserNotRunning).toHaveBeenCalledWith(join(`${ROOT}/engine`, APP));
     expect(ensureMochitestServerPortAvailable).toHaveBeenCalledWith(undefined, {
       engineDir: `${ROOT}/engine`,
     });
@@ -214,5 +226,70 @@ describe('runTestPreLockPreflight', () => {
     const options = { waitBrowser: 10, waitPort: 10 };
     await expect(runTestPreLockPreflight(ROOT, [FILE], options)).resolves.toBe(options);
     expect(waitBeforeLock).not.toHaveBeenCalled();
+  });
+});
+
+describe('packaging and control refusals before the lock', () => {
+  it('runs the stale gate quietly for a build-less run, and never for a build', async () => {
+    await runTestPreLockPreflight(ROOT, [FILE], {});
+    expect(enforceStaleBuildGate).toHaveBeenCalledWith(ROOT, `${ROOT}/engine`, {}, [FILE], {
+      quiet: true,
+    });
+    vi.mocked(enforceStaleBuildGate).mockClear();
+    await runTestPreLockPreflight(ROOT, [FILE], { build: true });
+    await runTestPreLockPreflight(ROOT, [FILE], { allowStaleBuild: true });
+    vi.mocked(readBuildRunState).mockResolvedValueOnce({ kind: 'running' } as never);
+    await runTestPreLockPreflight(ROOT, [FILE], {});
+    expect(enforceStaleBuildGate).not.toHaveBeenCalled();
+  });
+
+  it('tells a build-less --negative-control to add --build', async () => {
+    vi.mocked(enforceStaleBuildGate).mockRejectedValueOnce(
+      new PreflightRefusalError('Stale build.', 'stale-build')
+    );
+    await expect(
+      runTestPreLockPreflight(ROOT, [FILE], { negativeControl: 'c.diff' })
+    ).rejects.toMatchObject({
+      note: 'stale-build',
+      message: expect.stringContaining('Add --build') as string,
+    });
+    const plain = new PreflightRefusalError('Stale build.', 'stale-build');
+    vi.mocked(enforceStaleBuildGate).mockRejectedValueOnce(plain);
+    await expect(runTestPreLockPreflight(ROOT, [FILE], {})).rejects.toBe(plain);
+  });
+
+  it('refuses a build-less control on compiled source, and leaves other plan errors to the lock', async () => {
+    vi.mocked(planNegativeControl).mockResolvedValueOnce({
+      diffFile: 'c.diff',
+      targets: [],
+      compiled: ['gfx/x.cpp'],
+    });
+    await expect(
+      runTestPreLockPreflight(ROOT, [FILE], { negativeControl: 'c.diff' })
+    ).rejects.toThrow(/edits compiled source \(engine\/gfx\/x\.cpp\)/);
+    vi.mocked(planNegativeControl).mockRejectedValueOnce(new Error('pending journal'));
+    await expect(
+      runTestPreLockPreflight(ROOT, [FILE], { negativeControl: 'c.diff' })
+    ).resolves.toEqual({ negativeControl: 'c.diff' });
+  });
+});
+
+describe('lock mode', () => {
+  it('holds the lock shared only for a build-less auto-ports run that asked for it', async () => {
+    await expect(
+      runTestPreLockPreflight(ROOT, [FILE], { sharedLock: true, autoPorts: true })
+    ).resolves.toEqual({ sharedLock: true, autoPorts: true });
+    await expect(
+      runTestPreLockPreflight(ROOT, [FILE], { sharedLock: true, autoPorts: true, build: true })
+    ).resolves.toEqual({ autoPorts: true, build: true });
+    await expect(runTestPreLockPreflight(ROOT, [FILE], { sharedLock: true })).resolves.toEqual({});
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('does not use auto ports'));
+    vi.mocked(loadConfig).mockResolvedValueOnce({
+      binaryName: 'mybrowser',
+      test: { lockMode: 'shared', mochitestPorts: 'auto' },
+    } as never);
+    await expect(runTestPreLockPreflight(ROOT, [FILE], {})).resolves.toEqual({ sharedLock: true });
+    vi.mocked(hasBuildArtifacts).mockResolvedValueOnce({ exists: true });
+    await expect(runTestPreLockPreflight(ROOT, [FILE], { sharedLock: true })).resolves.toEqual({});
   });
 });

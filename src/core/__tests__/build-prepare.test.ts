@@ -262,6 +262,39 @@ describe('prepareBuildEnvironment', () => {
     expect(skipped).toMatchObject({ furnaceApplied: 0, furnaceAppliedNames: [] });
   });
 
+  it('applies only the named components, one mutation each, and none for an empty list', async () => {
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig.mockResolvedValue({
+      overrides: { 'moz-button': {}, 'moz-card': {} },
+      custom: {},
+      stock: [],
+    } as never);
+    mockApplyAllComponents
+      .mockResolvedValueOnce({
+        applied: [{ name: 'moz-button' }],
+        errors: [],
+        skipped: [],
+        warnings: ['w1'],
+      } as never)
+      .mockResolvedValueOnce({ applied: [], errors: [], skipped: ['moz-card'] } as never);
+
+    const scoped = await prepareBuildEnvironment('/project', paths, config, {
+      furnaceComponents: ['moz-button', 'moz-card'],
+    });
+    expect(mockApplyAllComponents.mock.calls.map((call) => call[2]?.componentName)).toEqual([
+      'moz-button',
+      'moz-card',
+    ]);
+    expect(scoped.furnaceAppliedNames).toEqual(['moz-button']);
+
+    mockApplyAllComponents.mockClear();
+    const none = await prepareBuildEnvironment('/project', paths, config, {
+      furnaceComponents: [],
+    });
+    expect(mockApplyAllComponents).not.toHaveBeenCalled();
+    expect(none.furnaceAppliedNames).toEqual([]);
+  });
+
   it('skips Furnace when furnace.json does not exist', async () => {
     mockFurnaceConfigExists.mockResolvedValue(false);
 

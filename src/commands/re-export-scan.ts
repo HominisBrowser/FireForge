@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { confirm } from '@clack/prompts';
 
@@ -28,6 +28,7 @@ import {
   normalizePathSlashes,
   stripEnginePrefix,
 } from '../utils/paths.js';
+import { formatDeclarationsReport, writeDeclarationsReport } from './declarations-report.js';
 import { formatForwardImportRemedy } from './forward-import-remedy.js';
 import { joinScanFileOwner, splitScanFileOwner } from './re-export-scan-owner.js';
 
@@ -281,6 +282,8 @@ export async function assertScanAdoptionsHaveNoForwardImports(args: {
    * too, and `patchPolicy`, so the remedy names a legal order.
    */
   config?: FireForgeConfig;
+  /** `--declarations-out`: where the one `--from`-ready report goes. */
+  declarationsOut?: string | undefined;
 }): Promise<void> {
   const { patchesDir, engineDir, patchFilename, added, config } = args;
   if (added.length === 0) return;
@@ -336,8 +339,14 @@ export async function assertScanAdoptionsHaveNoForwardImports(args: {
       `${registrations.length} forward registration${registrations.length === 1 ? '' : 's'} the adoption would leave dangling:\n${registrationDetails}`
     );
   }
+  const report = await writeDeclarationsReport(
+    dirname(resolve(patchesDir)),
+    [...offending, ...registrations],
+    args.declarationsOut
+  );
   throw new GeneralError(
     `Refusing to adopt scanned files into ${patchFilename}: ${parts.join('\n')}\n` +
+      (report !== undefined ? `${formatDeclarationsReport(report).join('\n')}\n` : '') +
       formatForwardImportRemedy({
         reRunHint: 're-running the scan',
         issues: [...offending, ...registrations],

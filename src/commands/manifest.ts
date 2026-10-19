@@ -26,6 +26,7 @@ import { registerFurnace } from './furnace/index.js';
 import { registerImport } from './import.js';
 import { registerLint } from './lint.js';
 import { registerPackage } from './package.js';
+import { registerPark } from './park.js';
 import { registerPatch } from './patch/index.js';
 import { registerReExport } from './re-export-register.js';
 import { registerRebase } from './rebase/index.js';
@@ -83,6 +84,7 @@ export const COMMAND_MANIFEST: readonly CommandManifestEntry[] = [
   { name: 'export', group: 'workflow', register: registerExport },
   { name: 'export-all', group: 'workflow', register: registerExportAll },
   { name: 're-export', group: 'workflow', register: registerReExport },
+  { name: 'park', group: 'workflow', register: registerPark },
   { name: 'patch', group: 'workflow', register: registerPatch },
   { name: 'rebase', group: 'workflow', register: registerRebase },
   { name: 'package', group: 'workflow', register: registerPackage },

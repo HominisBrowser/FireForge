@@ -150,6 +150,23 @@ describe('parseTestBlock', () => {
     });
   });
 
+  describe('lockMode and furnaceApply', () => {
+    it('accepts their values', () => {
+      const config = makeConfig();
+      parseTestBlock(rec({ test: { lockMode: 'shared', furnaceApply: 'reached' } }), config);
+      expect(config.test).toEqual({ lockMode: 'shared', furnaceApply: 'reached' });
+    });
+
+    it('rejects anything else', () => {
+      expect(() => {
+        parseTestBlock(rec({ test: { lockMode: 'read' } }), makeConfig());
+      }).toThrow(/"test\.lockMode" must be "exclusive" or "shared"/);
+      expect(() => {
+        parseTestBlock(rec({ test: { furnaceApply: false } }), makeConfig());
+      }).toThrow(/"test\.furnaceApply" must be "all", "reached" or "none"/);
+    });
+  });
+
   it('carries both fields together', () => {
     const config = makeConfig();
     parseTestBlock(rec({ test: { canaryPath: 'a/b.js', canaryTimeoutSeconds: 90 } }), config);

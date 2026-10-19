@@ -310,7 +310,7 @@ describe('testCommand harness resilience', () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('Tests failed with exit code 1'));
       // The FAIL aggregate verdict is emitted before the throw.
       expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
-        'FIREFORGE-VERDICT: FAIL reason=test-failures shards=1/2 host-load=0.00\n'
+        'FIREFORGE-VERDICT: FAIL reason=test-failures shards=1/2 failed-shards=browser/components/b/test/browser_b.js host-load=0.00\n'
       );
     } finally {
       writeSpy.mockRestore();

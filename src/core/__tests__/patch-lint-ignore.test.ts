@@ -6,6 +6,7 @@ import {
   addedLintIgnoreEntries,
   buildLintIgnoreChecks,
   evaluateLintIgnoreCeilings,
+  evaluateLintIgnoreWaivers,
   formatLintIgnoreList,
   isLintIgnored,
   lintIgnoreCacheTokens,
@@ -204,5 +205,176 @@ describe('evaluateLintIgnoreCeilings', () => {
       'fireforge patch lint-ignore 001-ui-x.patch --remove large-patch-lines'
     );
     expect(evaluateLintIgnoreCeilings(undefined, [], measurements)).toEqual([]);
+  });
+});
+
+describe('share-scoped ceilings, meta and notices', () => {
+  const shared = (share: 'test' | 'product', max: number): LintIgnoreEntry => ({
+    rule: 'large-patch-lines',
+    max,
+    reason: 'reviewed',
+    share,
+  });
+  const sized = (
+    measurement: number,
+    share: 'test' | 'product',
+    severity: PatchLintIssue['severity'] = 'warning'
+  ): PatchLintIssue => ({ ...issue('large-patch-lines', measurement, severity), share });
+
+  it('accepts one ceiling per share and preserves meta verbatim', () => {
+    const meta = { kind: 'structural', owner: 'tiles', exit: { when: 'split' } };
+    const entries = parseLintIgnoreEntries(
+      [
+        { rule: 'large-patch-lines', max: 900, reason: 'r', share: 'product', meta },
+        { rule: 'large-patch-lines', max: 4000, reason: 'r', share: 'test' },
+      ],
+      'lintIgnore'
+    );
+    expect(entries[0]).toEqual({
+      rule: 'large-patch-lines',
+      max: 900,
+      reason: 'r',
+      share: 'product',
+      meta,
+    });
+    expect(formatLintIgnoreList(entries)).toBe(
+      'large-patch-lines[product]<=900, large-patch-lines[test]<=4000'
+    );
+  });
+
+  it('refuses share on other rules, a bad share or meta, and share clashes', () => {
+    const parse = (raw: unknown[]): unknown => parseLintIgnoreEntries(raw, 'lintIgnore');
+    expect(() => parse([{ rule: 'file-too-large', max: 1, reason: 'r', share: 'test' }])).toThrow(
+      /share must be/
+    );
+    expect(() =>
+      parse([{ rule: 'large-patch-lines', max: 1, reason: 'r', share: 'docs' }])
+    ).toThrow(/share must be/);
+    expect(() => parse([{ rule: 'file-too-large', max: 1, reason: 'r', meta: [] }])).toThrow(
+      /meta must be a JSON object/
+    );
+    expect(() =>
+      parse([
+        { rule: 'large-patch-lines', max: 1, reason: 'r' },
+        { rule: 'large-patch-lines', max: 1, reason: 'r', share: 'test' },
+      ])
+    ).toThrow(/one ceiling per share/);
+    expect(() =>
+      parse([
+        { rule: 'large-patch-lines', max: 1, reason: 'r', share: 'test' },
+        { rule: 'large-patch-lines', max: 2, reason: 'r', share: 'test' },
+      ])
+    ).toThrow(/more than once/);
+  });
+
+  it('matches each finding to its share, falling back to a share-less ceiling', () => {
+    const checks = buildLintIgnoreChecks([shared('product', 900), shared('test', 4000)]);
+    const { kept, suppressed } = partitionLintIgnoredIssues(
+      [sized(850, 'product'), sized(3500, 'test'), sized(950, 'product')],
+      checks
+    );
+    expect(suppressed.map((entry) => entry.measurement)).toEqual([850, 3500]);
+    expect(kept[0]?.message).toContain('ceiling for large-patch-lines (product share)');
+
+    const plain = buildLintIgnoreChecks([ceiling('large-patch-lines', 1000)]);
+    expect(isLintIgnored(sized(900, 'test'), plain)).toBe(true);
+  });
+
+  it('never counts a notice past the ceiling as exceeding it', () => {
+    const checks = buildLintIgnoreChecks([ceiling('large-patch-lines', 500)]);
+    const notice = sized(800, 'test', 'notice');
+    expect(partitionLintIgnoredIssues([notice], checks).kept).toEqual([notice]);
+    expect(
+      evaluateLintIgnoreCeilings(
+        [ceiling('large-patch-lines', 500)],
+        [sized(450, 'product'), notice],
+        { lines: 1250, files: 3 }
+      )
+    ).toEqual([
+      {
+        rule: 'large-patch-lines',
+        max: 500,
+        reason: 'reviewed',
+        measurement: 800,
+        state: 'within',
+      },
+    ]);
+  });
+
+  it('evaluates share ceilings on their own share and reports every waiver', () => {
+    const entries: LintIgnoreEntry[] = [
+      'raw-color-value',
+      { rule: 'large-patch-lines', max: 4000, reason: 'reviewed', share: 'test', meta: { k: 1 } },
+      shared('product', 900),
+    ];
+    const findings = [
+      sized(3500, 'test'),
+      sized(950, 'product'),
+      issue('raw-color-value', undefined),
+    ];
+    const measurements = { lines: 4450, files: 9 };
+    expect(evaluateLintIgnoreCeilings(entries, findings, measurements)).toEqual([
+      {
+        rule: 'large-patch-lines',
+        max: 4000,
+        reason: 'reviewed',
+        share: 'test',
+        meta: { k: 1 },
+        measurement: 3500,
+        state: 'within',
+      },
+      {
+        rule: 'large-patch-lines',
+        max: 900,
+        reason: 'reviewed',
+        share: 'product',
+        measurement: 950,
+        state: 'exceeded',
+      },
+    ]);
+    expect(evaluateLintIgnoreWaivers(entries, findings, measurements)[0]).toEqual({
+      kind: 'bare',
+      rule: 'raw-color-value',
+      max: null,
+      reason: null,
+      measurement: null,
+      state: 'within',
+    });
+    expect(evaluateLintIgnoreWaivers(['large-patch-lines'], [], measurements)[0]).toMatchObject({
+      kind: 'bare',
+      measurement: 4450,
+      state: 'removable',
+    });
+    expect(evaluateLintIgnoreWaivers(entries, findings, measurements)[2]).toMatchObject({
+      kind: 'ceiling',
+      share: 'product',
+      state: 'exceeded',
+    });
+  });
+
+  it('upserts a share ceiling beside the other share and over a bare entry', () => {
+    expect(
+      upsertLintIgnoreEntries(['large-patch-lines', shared('test', 1)], [shared('product', 900)])
+    ).toEqual([shared('product', 900), shared('test', 1)]);
+    expect(upsertLintIgnoreEntries([shared('test', 1)], [shared('test', 2)])).toEqual([
+      shared('test', 2),
+    ]);
+    expect(
+      upsertLintIgnoreEntries([shared('test', 1), shared('product', 2)], ['large-patch-lines'])
+    ).toEqual(['large-patch-lines']);
+    expect(
+      mergeLintIgnoreIds([shared('test', 1), shared('product', 2)], ['large-patch-lines'])
+    ).toEqual([shared('test', 1), shared('product', 2)]);
+  });
+
+  it('treats a changed meta as a new entry', () => {
+    const before: LintIgnoreEntry[] = [
+      { rule: 'file-too-large', max: 9, reason: 'r', meta: { a: 1 } },
+    ];
+    const after: LintIgnoreEntry[] = [
+      { rule: 'file-too-large', max: 9, reason: 'r', meta: { a: 2 } },
+    ];
+    expect(addedLintIgnoreEntries(before, after)).toEqual(after);
+    expect(addedLintIgnoreEntries(before, before)).toEqual([]);
   });
 });

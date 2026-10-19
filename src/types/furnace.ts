@@ -115,6 +115,12 @@ export interface FurnaceValidationException {
   component: string;
   /** The finding's check name, as `furnace validate` prints it in brackets. */
   check: string;
+  /**
+   * Narrows the exception to the findings on this element tag (a finding's
+   * `tags`): a `panel-item` menu row can be accepted without muting the
+   * check for every other element of the component.
+   */
+  tag?: string;
   /** Why the finding is accepted. Required: the entry is the review record. */
   reason: string;
 }
@@ -170,6 +176,12 @@ export interface FurnaceConfig {
    */
   tokenHostDocuments?: string[];
   /**
+   * Stylesheets that load beside others in a document no queue link shows,
+   * for `token lint`: `{ "<glob>": ["<path or glob>", …] }`. A sheet the key
+   * matches may reference the tokens its partners declare.
+   */
+  tokenSiblingSheets?: Record<string, string[]>;
+  /**
    * Override the default Fluent (.ftl) base path within the engine.
    * Defaults to `toolkit/locales/en-US/toolkit/global` when not set.
    */
@@ -194,6 +206,12 @@ export interface FurnaceConfig {
    * entry that no longer matches anything as a stale-exception warning.
    */
   validationExceptions?: FurnaceValidationException[];
+  /**
+   * The fewest components a full `furnace validate` must judge. A run under
+   * it fails with `component-floor`, so a moved or emptied components tree
+   * cannot pass by validating nothing.
+   */
+  minComponents?: number;
   /**
    * Opt-in `furnace validate` checks (see {@link FURNACE_OPT_IN_CHECKS}).
    * Unset runs only the default checks.
@@ -392,6 +410,8 @@ export interface ValidationIssue {
   check: string;
   /** Human-readable description of the issue */
   message: string;
+  /** Element tags the finding is about, when it is about particular elements. */
+  tags?: string[];
 }
 
 /** Resolved test-harness selection for a `furnace create` run. */

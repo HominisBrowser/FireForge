@@ -24,11 +24,12 @@ import { rewriteStagedDependencyOwners } from '../../core/patch-manifest.js';
 import { applyRenameMapToManifest, buildProjectedManifest } from '../../core/patch-policy.js';
 import { buildPatchSourceMetadata } from '../../core/patch-source-metadata.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
-import type { PatchStagedForwardImport } from '../../types/commands/index.js';
+import type { PatchLintIssue, PatchStagedForwardImport } from '../../types/commands/index.js';
 import type { PatchCategory, PatchesManifest, PatchMetadata } from '../../types/commands/index.js';
 import type { FireForgeConfig } from '../../types/config.js';
 import { pathExists } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
+import type { DeclarationRenamer } from '../declarations-report.js';
 import { type PlacementPlan } from '../export-flow.js';
 import { projectEntryBody } from './entry-projection.js';
 import {
@@ -271,6 +272,7 @@ export function runProjectedSplitLint(
   baseCtx: PatchQueueContext
 ): {
   conflicts: ConflictReport | null;
+  regressions: PatchLintIssue[];
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
   stagedMaintenance: SplitStagedMaintenance;
 } {
@@ -327,7 +329,7 @@ export function runProjectedSplitLint(
           reason: `split would introduce ${regressions.length} cross-patch lint error(s)`,
           details: regressions.map(formatPatchLintIssue),
         };
-  return { conflicts, stagedDependencyAdditions, stagedMaintenance };
+  return { conflicts, regressions, stagedDependencyAdditions, stagedMaintenance };
 }
 
 /** Builds the projected manifest for policy enforcement. */
@@ -405,4 +407,22 @@ export function buildSplitSummary(plan: SplitPlan): string[] {
     )
   );
   return summary;
+}
+
+/**
+ * Maps a declaration the split projection proposes back onto the queue as
+ * it stands: renumbered patches take their current names, and an owner
+ * that is the patch the split would create is dropped (it does not exist
+ * until the split runs).
+ */
+export function splitDeclarationRenamer(plan: SplitPlan): DeclarationRenamer {
+  const oldNameByNew = new Map(
+    [...plan.placement.renameMap].map(([oldName, entry]) => [entry.newFilename, oldName] as const)
+  );
+  const current = (name: string): string => oldNameByNew.get(name) ?? name;
+  return ({ owner, ...declaration }) => ({
+    ...declaration,
+    patch: current(declaration.patch),
+    ...(owner !== plan.placement.newFilename ? { owner: current(owner) } : {}),
+  });
 }

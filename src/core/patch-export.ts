@@ -10,7 +10,7 @@ import type {
 import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
-import { warn } from '../utils/logger.js';
+import { info, warn } from '../utils/logger.js';
 import { discoverPatches, withPatchDirectoryLock } from './patch-apply.js';
 import {
   findAllPatchesForFilesWithDetails,
@@ -25,7 +25,7 @@ import {
 } from './patch-manifest.js';
 import { formatPatchOrder, requirePatchOrder } from './patch-parse.js';
 import { allocatePolicyOrder, enforcePatchPolicy } from './patch-policy.js';
-import { manifestWithRetiredSlots } from './patch-retired.js';
+import { manifestWithRetiredSlots, reservationAt, reservedOrderSet } from './patch-retired.js';
 
 export {
   findAllPatchesForFiles,
@@ -63,19 +63,19 @@ export function buildPlanExportInput(input: PlanExportInput): PlanExportInput {
 /**
  * Gets the next patch number for a new patch.
  * @param patchesDir - Path to the patches directory
+ * @param reserved - Orders held by `patch reserve`, skipped
  * @returns Next patch number (e.g., "005" for 4 existing patches)
  */
-export async function getNextPatchNumber(patchesDir: string): Promise<string> {
+export async function getNextPatchNumber(
+  patchesDir: string,
+  reserved: ReadonlySet<number> = new Set()
+): Promise<string> {
   const patches = await discoverPatches(patchesDir);
 
-  if (patches.length === 0) {
-    return '001';
-  }
-
   const finitePatches = patches.filter((p) => Number.isFinite(p.order));
-  if (finitePatches.length === 0) return '001';
   const maxOrder = finitePatches.reduce((max, p) => Math.max(max, p.order), 0);
-  const nextNumber = maxOrder + 1;
+  let nextNumber = maxOrder + 1;
+  while (reserved.has(nextNumber)) nextNumber++;
 
   return String(nextNumber).padStart(Math.max(3, String(nextNumber).length), '0');
 }
@@ -150,9 +150,10 @@ export function patchNameSlug(name: string, category: string): string {
 export async function getNextPatchFilename(
   patchesDir: string,
   category: PatchCategory,
-  name: string
+  name: string,
+  reserved: ReadonlySet<number> = new Set()
 ): Promise<string> {
-  const patchNumber = await getNextPatchNumber(patchesDir);
+  const patchNumber = await getNextPatchNumber(patchesDir, reserved);
   const sanitizedName = patchNameSlug(name, category);
 
   return `${patchNumber}-${category}-${sanitizedName}.patch`;
@@ -389,14 +390,17 @@ async function computeExportPlanUnderLock(input: PlanExportInput): Promise<Compu
   // wipes the queue metadata, and the rollback path would then delete
   // patches.json entirely because manifestBefore looked absent.
   const manifestBefore = await loadPatchesManifestForWrite(input.patchesDir);
+  // A default allocation never lands on a reservation; only an explicit
+  // `--order` placement fills one.
+  const reserved = reservedOrderSet(manifestBefore ?? {});
   const policyOrder =
     input.config !== undefined
-      ? allocatePolicyOrder(input.config, manifestBefore?.patches ?? [], input.category)
+      ? allocatePolicyOrder(input.config, manifestBefore?.patches ?? [], input.category, reserved)
       : null;
   const patchFilename =
     policyOrder !== null
       ? `${formatPatchOrder(policyOrder)}-${input.category}-${patchNameSlug(input.name, input.category)}.patch`
-      : await getNextPatchFilename(input.patchesDir, input.category, input.name);
+      : await getNextPatchFilename(input.patchesDir, input.category, input.name, reserved);
   const patchPath = join(input.patchesDir, patchFilename);
 
   const metadata: PatchMetadata = {
@@ -434,6 +438,15 @@ async function computeExportPlanUnderLock(input: PlanExportInput): Promise<Compu
   afterPatches.push(metadata);
   afterPatches.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
 
+  const reservation = reservationAt(manifestBefore, metadata.order);
+  if (reservation !== undefined) {
+    info(
+      `Order ${formatPatchOrder(metadata.order)} was reserved by ${reservation.owner}` +
+        `${reservation.reason !== undefined ? ` (${reservation.reason})` : ''}; ` +
+        'this export fills the reservation.'
+    );
+  }
+
   return {
     patchFilename,
     patchPath,
@@ -441,7 +454,7 @@ async function computeExportPlanUnderLock(input: PlanExportInput): Promise<Compu
     supersededDetails,
     supersededPatches,
     manifestBefore: manifestBefore ?? null,
-    // A patch landing on a retired order fills that slot.
+    // A patch landing on a retired or reserved order fills that slot.
     manifestAfter: manifestWithRetiredSlots(manifestBefore, afterPatches),
   };
 }

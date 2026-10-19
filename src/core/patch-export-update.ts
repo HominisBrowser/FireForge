@@ -37,6 +37,8 @@ export interface UpdatePatchAndMetadataOptions {
   newContent: string;
   /** Manifest-row fields to merge into the patch's metadata. */
   updates: Partial<PatchMetadata>;
+  /** Manifest-row fields to delete, e.g. a staged block left empty. */
+  unset?: readonly (keyof PatchMetadata)[] | undefined;
   /** Hook run under the lock after the mutation succeeds. */
   onCommitted?: UpdatePatchCommittedHook | undefined;
   /** Policy gate run against the under-lock projected manifest. */
@@ -70,6 +72,7 @@ export async function updatePatchAndMetadata(
     filename,
     newContent,
     updates,
+    unset = [],
     onCommitted,
     policyGate,
     lockOptions = {},
@@ -100,7 +103,7 @@ export async function updatePatchAndMetadata(
 
       const originalContent = await readText(patchPath);
       const existingPatch = manifest.patches[patchIndex] as PatchMetadata;
-      manifest.patches[patchIndex] = { ...existingPatch, ...updates };
+      manifest.patches[patchIndex] = withoutFields({ ...existingPatch, ...updates }, unset);
 
       if (policyGate !== undefined) {
         enforcePatchPolicy({
@@ -121,7 +124,7 @@ export async function updatePatchAndMetadata(
           await writeText(patchPath, normalized);
           patchWritten = true;
         }
-        await mutatePatchRowsInManifest(patchesDir, [filename], () => ({ set: updates }));
+        await mutatePatchRowsInManifest(patchesDir, [filename], () => ({ set: updates, unset }));
       } catch (error: unknown) {
         if (patchWritten) {
           try {
@@ -150,4 +153,15 @@ export async function updatePatchAndMetadata(
     },
     lockOptions
   );
+}
+
+/** A copy of `row` without `fields`. */
+export function withoutFields(
+  row: PatchMetadata,
+  fields: readonly (keyof PatchMetadata)[]
+): PatchMetadata {
+  if (fields.length === 0) return row;
+  const copy = { ...row };
+  for (const field of fields) Reflect.deleteProperty(copy, field);
+  return copy;
 }

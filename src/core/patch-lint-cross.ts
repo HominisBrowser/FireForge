@@ -18,7 +18,7 @@ import type {
   PatchMetadata,
   PatchStagedForwardImport,
 } from '../types/commands/index.js';
-import type { FireForgeConfig, PatchPolicyConfig } from '../types/config.js';
+import type { FireForgeConfig, PatchLintTokenScale, PatchPolicyConfig } from '../types/config.js';
 import { readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { stripJsComments } from '../utils/regex.js';
@@ -38,6 +38,7 @@ import {
   STAGED_DEPENDENCY_REASON_PLACEHOLDER,
   stagedDependencyUnusedFingerprint,
 } from './patch-lint-staged-registration.js';
+import { lintTokenScaleFloors } from './patch-lint-token-scale.js';
 import { loadPatchesManifest } from './patch-manifest-io.js';
 import { categoryRangeForOrder, categoryRangeLabel } from './patch-policy.js';
 import { extractNewFileContentsFromDiff } from './patch-transform.js';
@@ -113,6 +114,8 @@ export interface PatchQueueContext {
    * `patchLint.forwardRegistration`. Absent = `support-files` only.
    */
   forwardRegistration?: ForwardRegistrationScope;
+  /** `patchLint.tokenScales`, for the scales' `minFiles` floors. */
+  tokenScales?: PatchLintTokenScale[];
 }
 
 /**
@@ -187,6 +190,9 @@ export async function buildPatchQueueContext(
     ...(config?.patchPolicy ? { patchPolicy: config.patchPolicy } : {}),
     ...(config?.patchLint?.forwardRegistration !== undefined
       ? { forwardRegistration: config.patchLint.forwardRegistration }
+      : {}),
+    ...(config?.patchLint?.tokenScales !== undefined
+      ? { tokenScales: config.patchLint.tokenScales }
       : {}),
   };
 }
@@ -804,5 +810,9 @@ export function lintPatchQueue(ctx: PatchQueueContext): PatchLintIssue[] {
     ...lintPatchQueueModuleRegistrations(ctx),
     ...lintPatchQueueForwardRegistrations(ctx),
     ...lintPatchQueueBinaryBodies(ctx),
+    ...lintTokenScaleFloors(
+      ctx.entries.flatMap((entry) => [...entry.newFiles]),
+      ctx.tokenScales ?? []
+    ),
   ];
 }

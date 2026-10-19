@@ -148,6 +148,7 @@ export function createRunLogMock(): RunLogModule {
     ),
     setActiveRunLog: vi.fn(),
     getActiveRunLogPath: vi.fn(() => undefined),
+    activeRunLogLine: vi.fn(() => 1),
     writeToActiveRunLog: vi.fn(),
     closeActiveRunLog: vi.fn(() => Promise.resolve()),
     teeToRunLog: vi.fn((base: NodeJS.WritableStream) => base),

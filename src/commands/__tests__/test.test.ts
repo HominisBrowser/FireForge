@@ -122,7 +122,7 @@ import { findNearestXpcshellManifest } from '../../core/xpcshell-appdir.js';
 import { GeneralError } from '../../errors/base.js';
 import { AmbiguousBuildArtifactsError, BuildError } from '../../errors/build.js';
 import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
-import { info, notice, outro, success } from '../../utils/logger.js';
+import { info, notice, outro, success, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 import { removePgidFile } from '../test-harness-teardown.js';
 
@@ -168,6 +168,38 @@ describe('testCommand', () => {
     ).rejects.toThrow(/run "fireforge import" first/i);
 
     expect(runMachTestSuite).not.toHaveBeenCalled();
+  });
+
+  it('--results adds a raw log per dispatch, stamps results=, and warns when it cannot write', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue({
+      exitCode: 0,
+      stdout: 'TEST-START | browser_x.js\nTEST-OK | browser_x.js\nUnexpected results: 0\n',
+      stderr: '',
+    });
+    const writes: string[] = [];
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    const underLock = vi.fn((body: () => Promise<void>) => body());
+    try {
+      await testCommand(
+        '/project',
+        ['browser/base/content/test/x/browser_x.js'],
+        { results: 'out/results.json' },
+        underLock
+      );
+    } finally {
+      writeSpy.mockRestore();
+    }
+    expect(underLock).toHaveBeenCalledWith(expect.any(Function), 'exclusive');
+    expect(vi.mocked(runMachTestSuite).mock.calls[0]?.[1].args).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^--log-raw=/) as string])
+    );
+    expect(writes.find((line) => line.startsWith('FIREFORGE-VERDICT:'))).toContain(
+      'results=/project/out/results.json'
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Could not write --results'));
   });
 
   it('surfaces UNKNOWN TEST as a discovery error instead of a generic build failure', async () => {

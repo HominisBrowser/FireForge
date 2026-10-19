@@ -25,6 +25,7 @@ import { validateExportJsDoc } from './patch-lint-jsdoc.js';
 import { lintMozBuildSortedLists } from './patch-lint-mozbuild.js';
 import { lintObserverTopics } from './patch-lint-observer.js';
 import {
+  resolvableModulesForTests,
   resolvePatchOwnedChromeScripts,
   resolvePatchOwnedSysMjs,
   resolvePatchOwnedTestScripts,
@@ -694,7 +695,9 @@ export async function lintExportedPatch(
         repoDir,
         resolvePatchOwnedTestScripts(newFiles, patchQueueCtx),
         config.patchLint,
-        dirname(repoDir)
+        dirname(repoDir),
+        undefined,
+        patchQueueCtx ? resolvableModulesForTests(patchQueueCtx) : undefined
       );
       issues.push(...testGrouped.global);
       for (const [rel, list] of testGrouped.byFile) {

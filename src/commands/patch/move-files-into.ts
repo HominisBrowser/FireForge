@@ -15,7 +15,7 @@
  * the worktree.
  */
 
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import {
   assertConfirmationAvailable,
@@ -41,6 +41,7 @@ import {
 } from '../../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type {
+  PatchLintIssue,
   PatchMetadata,
   PatchMoveFilesOptions,
   PatchStagedForwardImport,
@@ -50,6 +51,7 @@ import { toError } from '../../utils/errors.js';
 import { readText, writeText } from '../../utils/fs.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
 import { resolveWaitLockSeconds } from '../../utils/options.js';
+import { withDeclarationsReport } from '../declarations-report.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { runPatchLint } from '../export-shared.js';
 import { projectEntryBody } from './entry-projection.js';
@@ -82,6 +84,7 @@ function runProjectedMoveLint(
   baseCtx: PatchQueueContext
 ): {
   conflicts: ConflictReport | null;
+  regressions: PatchLintIssue[];
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
 } {
   const movedSet = new Set(plan.movedFiles);
@@ -145,7 +148,7 @@ function runProjectedMoveLint(
           reason: `move would introduce ${regressions.length} cross-patch lint error(s)`,
           details: regressions.map(formatPatchLintIssue),
         };
-  return { conflicts, stagedDependencyAdditions };
+  return { conflicts, regressions, stagedDependencyAdditions };
 }
 
 /**
@@ -324,8 +327,13 @@ export async function runMoveFilesInto(args: {
     stagedDependencyAdditions: new Map(),
   };
 
-  const { conflicts, stagedDependencyAdditions } = runProjectedMoveLint(plan, patchQueueCtx);
-  plan.stagedDependencyAdditions = stagedDependencyAdditions;
+  const projected = runProjectedMoveLint(plan, patchQueueCtx);
+  plan.stagedDependencyAdditions = projected.stagedDependencyAdditions;
+  const conflicts = await withDeclarationsReport(projected.conflicts, {
+    projectRoot: dirname(resolve(patchesDir)),
+    regressions: projected.regressions,
+    out: options.declarationsOut,
+  });
 
   const decision = await confirmDestructive({
     operation: 'patch-move-files',

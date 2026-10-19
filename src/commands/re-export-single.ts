@@ -6,11 +6,14 @@
  * patch.
  */
 
+import { join } from 'node:path';
+
 import { stdioIsInteractive } from '../core/destructive.js';
 import { enforceFreshFurnaceSources } from '../core/furnace-stale-export.js';
 import { getDiffForFilesAgainstHead } from '../core/git-diff.js';
 import { listTrackedInHead } from '../core/git-file-ops.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
+import { withoutFields } from '../core/patch-export-update.js';
 import {
   buildLintIgnoreChecks,
   type LintIgnoreChecks,
@@ -21,12 +24,14 @@ import { buildProjectedManifest, enforcePatchPolicy } from '../core/patch-policy
 import { isGitIndexLockConflict } from '../errors/git.js';
 import type { PatchesManifest, PatchMetadata, ReExportOptions } from '../types/commands/index.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
+import { readText } from '../utils/fs.js';
 import { info, success, warn } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
 import type { AdjacentUnmanagedContext } from './re-export-adjacent.js';
 import { findMissingFiles, reportAdjacentUnmanagedFiles } from './re-export-adjacent.js';
 import type { ForeignDriftContext } from './re-export-drift.js';
 import { reportForeignDrift } from './re-export-drift.js';
+import { buildHunkSelectedDiff, hunkSelectionOf } from './re-export-hunks.js';
 import {
   assertRefreshedBodyHasNoNewQueueErrors,
   lintReExportedPatch,
@@ -41,6 +46,12 @@ import {
   confirmBroadScanAdditions,
   scanPatchFilesForReExport,
 } from './re-export-scan.js';
+import {
+  planStaleRegistrationDrop,
+  recordStaleRegistrationDrop,
+  reportStaleRegistrationDrop,
+  type StaleRegistrationPlan,
+} from './re-export-stale-registrations.js';
 
 const GIT_INDEX_LOCK_RETRY_MS = 300;
 
@@ -89,6 +100,63 @@ export async function reExportSinglePatchWithIndexLockRetry(
   }
 }
 
+/**
+ * The `--scan` branch: scans, gates the adoption on forward imports,
+ * confirms a broad scan and, under `--refuse-adjacent-unmanaged`, judges
+ * the neighbours the scan left. Undefined means the patch is not written.
+ */
+async function adoptScannedFiles(
+  args: ReExportSinglePatchArgs,
+  currentFilesAffected: string[]
+): Promise<{ updated: string[]; added: string[] } | undefined> {
+  const { patch, paths, manifest, options, isDryRun, config, adjacentCtx } = args;
+  const scanResult = await scanPatchFilesForReExport({
+    currentFilesAffected,
+    engineDir: paths.engine,
+    manifest,
+    patchFilename: patch.filename,
+    isDryRun,
+    ...(options.scanFiles !== undefined ? { scanFiles: options.scanFiles } : {}),
+  });
+
+  // Forward-import gate at adoption time (runs in dry-run too): refuse
+  // to adopt unmanaged files that import modules created by later
+  // patches, because the after-the-fact lint failure this leaves behind
+  // is the field-reported footgun. Applies to broad --scan, --scan-file,
+  // and the --scan-files bulk assignments alike.
+  await assertScanAdoptionsHaveNoForwardImports({
+    patchesDir: paths.patches,
+    engineDir: paths.engine,
+    patchFilename: patch.filename,
+    added: scanResult.added,
+    config,
+    declarationsOut: options.declarationsOut,
+  });
+
+  if (options.scanFiles === undefined) {
+    const proceed = await confirmBroadScanAdditions({
+      patchFilename: patch.filename,
+      added: scanResult.added,
+      isDryRun,
+      yes: options.yes === true,
+      isInteractive: stdioIsInteractive(),
+    });
+    if (!proceed) return undefined;
+  }
+  if (adjacentCtx.refuseAdjacentUnmanaged) {
+    const adjacentArgs = {
+      patch,
+      paths,
+      manifest,
+      currentFilesAffected: scanResult.updated,
+      ctx: adjacentCtx,
+      afterScan: true,
+    };
+    if (await reportAdjacentUnmanagedFiles(adjacentArgs)) return undefined;
+  }
+  return { updated: scanResult.updated, added: scanResult.added };
+}
+
 async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boolean> {
   const { patch, paths, manifest, options, isDryRun, config, adjacentCtx, driftCtx, lintCtx } =
     args;
@@ -101,43 +169,10 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
 
   // --- Scan for new/removed files ---
   if (options.scan) {
-    const scanResult = await scanPatchFilesForReExport({
-      currentFilesAffected,
-      engineDir: paths.engine,
-      manifest,
-      patchFilename: patch.filename,
-      isDryRun,
-      ...(options.scanFiles !== undefined ? { scanFiles: options.scanFiles } : {}),
-    });
-
-    // Forward-import gate at adoption time (runs in dry-run too): refuse
-    // to adopt unmanaged files that import modules created by later
-    // patches, because the after-the-fact lint failure this leaves behind
-    // is the field-reported footgun. Applies to broad --scan, --scan-file,
-    // and the --scan-files bulk assignments alike.
-    await assertScanAdoptionsHaveNoForwardImports({
-      patchesDir: paths.patches,
-      engineDir: paths.engine,
-      patchFilename: patch.filename,
-      added: scanResult.added,
-      config,
-    });
-
-    if (options.scanFiles === undefined) {
-      const isInteractive = stdioIsInteractive();
-      const proceed = await confirmBroadScanAdditions({
-        patchFilename: patch.filename,
-        added: scanResult.added,
-        isDryRun,
-        yes: options.yes === true,
-        isInteractive,
-      });
-      if (!proceed) {
-        return false;
-      }
-    }
-    currentFilesAffected = scanResult.updated;
-    adoptedFiles = scanResult.added;
+    const adopted = await adoptScannedFiles(args, currentFilesAffected);
+    if (adopted === undefined) return false;
+    currentFilesAffected = adopted.updated;
+    adoptedFiles = adopted.added;
   } else if (options.files === undefined) {
     // When neither `--scan` nor `--files` is set and some of the manifest's
     // claimed files no longer exist on disk, the re-export silently writes a
@@ -204,7 +239,17 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
   const untrackedSet = new Set(untrackedAbsent);
   const existingFiles = currentFilesAffected.filter((f) => !untrackedSet.has(f));
 
-  const diffContent = await getDiffForFilesAgainstHead(paths.engine, existingFiles);
+  let diffContent = await getDiffForFilesAgainstHead(paths.engine, existingFiles);
+  const selection = hunkSelectionOf(options);
+  if (selection !== undefined) {
+    diffContent = await buildHunkSelectedDiff({
+      engineDir: paths.engine,
+      selection,
+      oldBody: await readText(join(paths.patches, patch.filename)),
+      normalDiff: diffContent,
+      files: existingFiles,
+    });
+  }
   assertScanFileAdditionsHaveDiffHunks({
     diffContent,
     patchFilename: patch.filename,
@@ -240,6 +285,9 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
 
   const { updates, ignoreChecks, effectiveTier, existingIgnoreSet, flagIgnoreSet } =
     computeReExportUpdates(patch, options, currentFilesAffected);
+  const stalePlan = planStaleRegistrationDrop(manifest, patch, currentFilesAffected);
+  if (stalePlan !== undefined) reportStaleRegistrationDrop(patch.filename, stalePlan, isDryRun);
+  const unset = applyStaleRegistrationDrop(stalePlan, updates);
 
   enforceProjectedManifestPolicy({ config, manifest, patch, updates, options });
 
@@ -258,7 +306,7 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
   // Lint against the once-per-invocation hoisted context (queue context +
   // queue-wide checkJs program + per-patch result cache) instead of
   // rebuilding ~37 s of setup for every patch in the loop.
-  const projectedMetadata = { ...patch, ...updates };
+  const projectedMetadata = withoutFields({ ...patch, ...updates }, unset);
   const lintResult = await lintReExportedPatch({
     lintCtx,
     patch,
@@ -292,6 +340,8 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
       lintCtx,
       diffContent,
       updates,
+      unset,
+      stalePlan,
       projectedMetadata,
       existingFiles,
       lintResult,
@@ -349,6 +399,8 @@ async function commitRefreshedPatch(args: {
   lintCtx: ReExportLintContext;
   diffContent: string;
   updates: Partial<PatchMetadata>;
+  unset: readonly (keyof PatchMetadata)[];
+  stalePlan: StaleRegistrationPlan | undefined;
   projectedMetadata: PatchMetadata;
   existingFiles: string[];
   lintResult: ReExportLintResult | null;
@@ -359,7 +411,8 @@ async function commitRefreshedPatch(args: {
     filename: patch.filename,
     newContent: diffContent,
     updates,
-    onCommitted: undefined,
+    ...(args.unset.length > 0 ? { unset: args.unset } : {}),
+    onCommitted: staleRecorder(paths.patches, patch.filename, args.stalePlan),
     policyGate: {
       config,
       command: 're-export',
@@ -383,10 +436,7 @@ async function commitRefreshedPatch(args: {
   if (patchIndex !== -1) {
     const existingEntry = manifest.patches[patchIndex];
     if (existingEntry) {
-      manifest.patches[patchIndex] = {
-        ...existingEntry,
-        ...updates,
-      };
+      manifest.patches[patchIndex] = withoutFields({ ...existingEntry, ...updates }, args.unset);
     }
   }
 
@@ -398,6 +448,30 @@ async function commitRefreshedPatch(args: {
   } else {
     info(`Unchanged ${patch.filename}`);
   }
+}
+
+/** The history hook for a write that drops stale registrations, if any. */
+function staleRecorder(
+  patchesDir: string,
+  patchFilename: string,
+  plan: StaleRegistrationPlan | undefined
+): (() => Promise<void>) | undefined {
+  if (plan === undefined) return undefined;
+  return () => recordStaleRegistrationDrop(patchesDir, patchFilename, plan);
+}
+
+/**
+ * Folds the stale-registration drop into `updates`: the kept staged block
+ * is set, or the field is returned for unsetting when nothing is left.
+ */
+function applyStaleRegistrationDrop(
+  plan: StaleRegistrationPlan | undefined,
+  updates: Partial<PatchMetadata>
+): (keyof PatchMetadata)[] {
+  if (plan === undefined) return [];
+  if (plan.stagedDependencies === undefined) return ['stagedDependencies'];
+  updates.stagedDependencies = plan.stagedDependencies;
+  return [];
 }
 
 /** The projected metadata + lint inputs for one patch's refresh. */

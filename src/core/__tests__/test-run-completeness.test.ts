@@ -5,6 +5,7 @@ import { formatFireforgeVerdictLine } from '../test-harness-crash.js';
 import {
   buildIncompleteRunMessage,
   countStartedFiles,
+  createStartMarkerTracker,
   vetoIncompletePass,
 } from '../test-run-completeness.js';
 
@@ -13,6 +14,43 @@ const FILES = [`${DIR}/browser_a.js`, `${DIR}/browser_b.js`, `${DIR}/browser_c.j
 
 const SHUTDOWN =
   'TEST-UNEXPECTED-FAIL | browser/base/content/test/tiles/browser_b.js | Application shut down (without crashing) in the middle of a test!';
+
+describe('createStartMarkerTracker', () => {
+  it('joins lines split across chunks per stream and keeps an unterminated tail', () => {
+    const tracker = createStartMarkerTracker();
+    tracker.onChunk('stdout', `TEST-STA`);
+    tracker.onChunk('stderr', `TEST-SKIP | ${FILES[1]}\n`);
+    tracker.onChunk('stdout', `RT | ${FILES[0]}\nTEST-OK\n TEST_START: ${FILES[2]}`);
+    expect(tracker.markers()).toEqual({
+      started: [FILES[0], FILES[2]],
+      skipped: [FILES[1]],
+    });
+  });
+
+  it('counts the files the capture tail lost (a 2 MB-tail suite read 10/17 before)', () => {
+    const tracker = createStartMarkerTracker();
+    for (const file of FILES) tracker.onChunk('stdout', `TEST-START | ${file}\nTEST-OK\n`);
+    // The capped capture kept only the last file's lines.
+    const tail = `TEST-START | ${FILES[2]}\nTEST-OK\nUnexpected results: 0\n`;
+    const verdict = vetoIncompletePass({ kind: 'tests-ran-ok', unexpected: 0 }, tail, FILES, {
+      markers: tracker.markers(),
+      source: 'stream',
+    });
+    expect(verdict.kind).toBe('tests-ran-ok');
+    expect(
+      vetoIncompletePass({ kind: 'tests-ran-ok', unexpected: 0 }, tail, FILES).incomplete
+    ).toMatchObject({ started: 1, firstUnstarted: FILES[0], startedSource: 'capture' });
+  });
+
+  it('falls back to the capture when nothing was streamed through the tracker', () => {
+    const output = `TEST-START | ${FILES[0]}\nTEST-OK\n`;
+    const verdict = vetoIncompletePass({ kind: 'tests-ran-ok' }, output, FILES, {
+      markers: { started: [], skipped: [] },
+      source: 'stream',
+    });
+    expect(verdict.incomplete).toMatchObject({ started: 1, startedSource: 'capture' });
+  });
+});
 
 describe('countStartedFiles', () => {
   it('counts requested files with a start marker and names the first that never started', () => {
@@ -74,7 +112,7 @@ describe('vetoIncompletePass', () => {
       },
     });
     expect(formatFireforgeVerdictLine(verdict)).toBe(
-      `FIREFORGE-VERDICT: FAIL reason=test-failures checks=7919 unexpected=1 started=2/3 first-unstarted=${FILES[2]}`
+      `FIREFORGE-VERDICT: FAIL reason=test-failures checks=7919 unexpected=1 started=2/3 first-unstarted=${FILES[2]} started-source=capture`
     );
   });
 

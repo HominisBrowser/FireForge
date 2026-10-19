@@ -33,6 +33,24 @@ describe('readLockStatus', () => {
     expect(formatEngineSessionLockStatus(snapshot)[0]).toContain('free');
   });
 
+  it('names shared holders, with or without an exclusive holder', () => {
+    expect(formatEngineSessionLockStatus({ held: false, queueDepth: 0, sharedHolders: 2 })).toEqual(
+      [
+        'Engine session lock: no exclusive holder.',
+        'Shared holders: 2 build-less test run(s) under a shared lock.',
+      ]
+    );
+    expect(
+      formatEngineSessionLockStatus({
+        held: true,
+        holder: { pid: 1, alive: true, metadata: [] },
+        heldForMs: 1000,
+        queueDepth: 0,
+        sharedHolders: 1,
+      })
+    ).toContain('Shared holders: 1 build-less test run(s) under a shared lock.');
+  });
+
   it('names the holder, its command, and the hold duration while held', async () => {
     await withFileLock(
       lockPath,

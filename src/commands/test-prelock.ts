@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { describeBuildRunState, readBuildRunState } from '../core/build-run-record.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
+import { autoPortsRequested } from '../core/harness-port-fallback.js';
 import { hasBuildArtifacts, hasRunnableBundle } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import {
@@ -32,6 +33,8 @@ import {
   extractForwardedMarionettePort,
 } from '../core/marionette-port.js';
 import { ensureMochitestServerPortAvailable } from '../core/mochitest-server-port.js';
+import { planNegativeControl } from '../core/negative-control.js';
+import { formatCompiledControlRefusal } from '../core/negative-control-compiled.js';
 import { waitBeforeLock } from '../core/preflight-wait.js';
 import { PreflightRefusalError } from '../errors/base.js';
 import type { TestOptions } from '../types/commands/index.js';
@@ -41,6 +44,7 @@ import { resolveWaitLockSeconds } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { checkRequestedTestTypes } from './test-checkjs.js';
 import { assertPathlessTestMode, classifyBeforeDispatch, resolveCanaryPath } from './test-modes.js';
+import { enforceStaleBuildGate } from './test-stale-gate.js';
 
 /**
  * Resolves the launchable binary a test run needs, or refuses naming why
@@ -121,9 +125,10 @@ export async function runTestPreLockPreflight(
   testPaths: string[],
   options: TestOptions
 ): Promise<TestOptions> {
-  const context = await loadPreLockContext(projectRoot, testPaths, options);
-  if (context === undefined) return options;
-  const { paths, config, objDir } = context;
+  const loaded = await loadPreLockContext(projectRoot, testPaths, options);
+  if (loaded === undefined) return withLockMode(options, 'exclusive');
+  const { paths, config, objDir } = loaded;
+  options = withLockMode(options, resolveTestLockMode(options, config));
 
   let launchablePath: string | undefined;
   try {
@@ -146,12 +151,116 @@ export async function runTestPreLockPreflight(
   );
   if (options.build === true || options.buildOnly === true) {
     await checkRequestedTestTypes(paths, config, normalizedPaths);
+  } else {
+    await refuseCompiledControlBeforeLock(projectRoot, paths.engine, options);
+    await refuseStalePackagingBeforeLock(projectRoot, paths.engine, options, normalizedPaths);
   }
 
   return waitForResourcesBeforeLock(paths.engine, config, options, {
     launchablePath,
     normalizedPaths,
   });
+}
+
+/** `options` with `sharedLock` set to the resolved decision. */
+function withLockMode(options: TestOptions, mode: 'exclusive' | 'shared'): TestOptions {
+  if (mode === 'exclusive' && options.sharedLock === undefined) return options;
+  const rest = { ...options };
+  delete rest.sharedLock;
+  return mode === 'shared' ? { ...rest, sharedLock: true } : rest;
+}
+
+/**
+ * How this run holds the engine session lock. Shared only on request
+ * (`--shared-lock` or `test.lockMode: "shared"`), and only for a run that
+ * writes nothing into engine/ or the objdir and can move its ports: no
+ * build, no negative control, auto ports. Every other run stays exclusive,
+ * so a shared holder can never overlap a build or a re-export.
+ */
+function resolveTestLockMode(
+  options: TestOptions,
+  config: FireForgeConfig
+): 'exclusive' | 'shared' {
+  const requested = options.sharedLock === true || config.test?.lockMode === 'shared';
+  if (!requested) return 'exclusive';
+  const writes =
+    options.build === true ||
+    options.buildOnly === true ||
+    options.negativeControl !== undefined ||
+    options.canary !== undefined ||
+    options.doctor === true;
+  if (writes || !autoPortsRequested(options, config)) {
+    info(
+      'Shared test lock requested, but this run ' +
+        (writes
+          ? 'builds, applies a negative control, or runs a canary/doctor preflight'
+          : 'does not use auto ports (--auto-ports or test.mochitestPorts: "auto")') +
+        ', so it holds the engine lock exclusively.'
+    );
+    return 'exclusive';
+  }
+  return 'shared';
+}
+
+/**
+ * Refuses a build-less `--negative-control` on compiled source before the
+ * lock: applied after the build it is never compiled, so the run could only
+ * report `control=missed` against the unmutated binary.
+ */
+async function refuseCompiledControlBeforeLock(
+  projectRoot: string,
+  engineDir: string,
+  options: TestOptions
+): Promise<void> {
+  if (options.negativeControl === undefined) return;
+  let plan;
+  try {
+    plan = await planNegativeControl(projectRoot, engineDir, options.negativeControl);
+  } catch {
+    // Any other refusal (including a control a killed run left applied,
+    // which only the in-lock recovery may undo) is the in-lock pass's.
+    return;
+  }
+  if (plan.compiled === undefined) return;
+  throw new PreflightRefusalError(formatCompiledControlRefusal(plan.compiled), 'negative-control');
+}
+
+/**
+ * Runs the build-less run's packaging gates (coverage, stale content,
+ * StaticComponents) before the lock, so a refusal surfaces before the run
+ * queues instead of after it reached the head of the queue. The same gate
+ * runs again under the lock, where a peer's build may since have changed
+ * the answer; this pass only refuses early what would refuse anyway.
+ *
+ * Skipped while a build runs (it will rewrite the record this reads) and
+ * under `--allow-stale-build`/`--allow-stale-components`, whose warnings
+ * belong to the in-lock pass alone. A `--negative-control` refusal says to
+ * add `--build`: without it the control has nothing current to run on, and
+ * the invocation used to end `control=inconclusive` after a full queue.
+ */
+async function refuseStalePackagingBeforeLock(
+  projectRoot: string,
+  engineDir: string,
+  options: TestOptions,
+  normalizedPaths: readonly string[]
+): Promise<void> {
+  if (options.allowStaleBuild === true || options.allowStaleComponents === true) return;
+  if ((await readBuildRunState(projectRoot)).kind === 'running') return;
+  try {
+    await enforceStaleBuildGate(projectRoot, engineDir, options, normalizedPaths, {
+      quiet: true,
+    });
+  } catch (error: unknown) {
+    if (options.negativeControl === undefined || !(error instanceof PreflightRefusalError)) {
+      throw error;
+    }
+    throw new PreflightRefusalError(
+      `${error.message}\n\nThis --negative-control run has no --build, so its control would ` +
+        'run on this packaging and end inconclusive. Add --build: the control is then planned ' +
+        'against a fresh build of the requested paths.',
+      error.note
+    );
+  }
 }
 
 /** `options` without one wait budget, which this pass already spent. */

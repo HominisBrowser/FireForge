@@ -589,6 +589,11 @@ function parseTypecheckBlock(rec: ParsedRecord): TypecheckConfig {
   if (undefinedIdentifiers !== undefined) {
     out.undefinedIdentifiers = undefinedIdentifiers;
   }
+  const litTypes = rec.raw('litTypes');
+  if (litTypes !== undefined && typeof litTypes !== 'boolean') {
+    throw new ConfigError('Config field "typecheck.litTypes" must be a boolean');
+  }
+  if (litTypes !== undefined) out.litTypes = litTypes;
 
   return out;
 }

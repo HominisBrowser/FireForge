@@ -7,6 +7,7 @@ import type {
   PatchCategory,
   PatchesManifest,
   PatchMetadata,
+  PatchReservedSlot,
   PatchRetiredSlot,
   PatchStagedDependencies,
   PatchStagedForwardImport,
@@ -22,6 +23,7 @@ import {
   PATCH_CATEGORIES,
 } from '../utils/validation.js';
 import { parseLintIgnoreEntries } from './patch-lint-ignore.js';
+import { canonicalizePatchRow } from './patch-manifest-key-order.js';
 import { checkDocumentVersion, describeNewerDocument } from './state-file.js';
 
 function parseForwardImports(data: unknown, label: string): PatchStagedForwardImport[] {
@@ -166,7 +168,7 @@ function validatePatchMetadata(data: unknown, index: number): PatchMetadata {
       `patches[${index}].stagedDependencies`
     );
   }
-  return result;
+  return canonicalizePatchRow(result);
 }
 
 /**
@@ -190,6 +192,33 @@ function parseRetiredSlots(data: unknown): PatchRetiredSlot[] {
       ),
       filename: rec.string('filename'),
       retiredAt: rec.string('retiredAt'),
+    };
+    const reason = rec.optionalString('reason');
+    if (reason !== undefined) slot.reason = reason;
+    return slot;
+  });
+}
+
+/**
+ * Validates the `reserved` placeholders `patch reserve` writes. Same
+ * survival rule as {@link parseRetiredSlots}: dropping one on a round trip
+ * would reopen the gap a peer reserved the order to close.
+ */
+function parseReservedSlots(data: unknown): PatchReservedSlot[] {
+  if (!isArray(data)) {
+    throw new Error('patches.json field "reserved" must be an array');
+  }
+  return data.map((entry, index) => {
+    const rec = parseObject(entry, `reserved[${index}]`);
+    const slot: PatchReservedSlot = {
+      order: rec.nonNegativeInteger('order'),
+      category: rec.validatedString(
+        'category',
+        (value) => /^[a-z][a-z0-9-]*$/.test(value),
+        'a lowercase category identifier (letters, numbers, hyphens)'
+      ),
+      owner: rec.validatedString('owner', (value) => value.trim() !== '', 'a non-empty label'),
+      reservedAt: rec.string('reservedAt'),
     };
     const reason = rec.optionalString('reason');
     if (reason !== undefined) slot.reason = reason;
@@ -233,6 +262,7 @@ export function validatePatchesManifest(data: unknown): PatchesManifest {
     patches: data['patches'].map((patch, index) => validatePatchMetadata(patch, index)),
   };
   if (data['retired'] !== undefined) manifest.retired = parseRetiredSlots(data['retired']);
+  if (data['reserved'] !== undefined) manifest.reserved = parseReservedSlots(data['reserved']);
   return manifest;
 }
 

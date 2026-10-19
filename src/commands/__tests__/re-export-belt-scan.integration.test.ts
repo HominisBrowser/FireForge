@@ -457,3 +457,47 @@ describe('forward jar.mn registrations in the re-export refusals', () => {
     await expect(readProjectText(projectRoot, 'patches/patches.json')).resolves.toBe(before);
   });
 });
+
+describe('--refuse-adjacent-unmanaged beside --scan', () => {
+  const OWNED = 'comp/mod.js';
+
+  beforeEach(async () => {
+    await seed(
+      [{ filename: '001-ui-mod.patch', files: [OWNED] }],
+      { [OWNED]: BASE },
+      {
+        [OWNED]: `${BASE}patched\n`,
+      }
+    );
+    await writeFiles(join(projectRoot, 'engine'), {
+      'comp/widget.js': 'new widget\n',
+      'comp/peer.js': 'a peer session file\n',
+    });
+  });
+
+  it('adopts the --scan-file path and still refuses the neighbour it did not name', async () => {
+    const before = await readProjectText(projectRoot, 'patches/patches.json');
+    await expect(
+      reExportCommand(projectRoot, ['001'], {
+        scan: true,
+        scanFiles: ['comp/widget.js'],
+        refuseAdjacentUnmanaged: true,
+      })
+    ).rejects.toThrow(/comp\/peer\.js/);
+    expect(await readProjectText(projectRoot, 'patches/patches.json')).toBe(before);
+  });
+
+  it('writes when every remaining neighbour is admitted', async () => {
+    await reExportCommand(projectRoot, ['001'], {
+      skipLint: true,
+      scan: true,
+      scanFiles: ['comp/widget.js'],
+      refuseAdjacentUnmanaged: true,
+      expectUnmanaged: ['comp/peer.js'],
+    });
+    expect(
+      filesAffected(await readProjectText(projectRoot, 'patches/patches.json'), '001-ui-mod.patch')
+    ).toEqual(['comp/mod.js', 'comp/widget.js']);
+    expect(warnLines().join('\n')).not.toContain('no longer exist on disk');
+  });
+});

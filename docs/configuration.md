@@ -253,10 +253,34 @@ lint instead of throwing at runtime (since 0.50.0). The same shim backs
   is a wildcard), or a CSS-wide keyword (`inherit`, `initial`, `unset`,
   `revert`, `revert-layer`). A `var()` fallback is held to the same scale,
   so `var(--mybrowser-gap, 7px)` fails on `7px`. `calc()`, `min()`, `max()`
-  and `clamp()` are transparent, so a unitless multiplier inside one needs
-  an `allowLiterals` entry. Files the patch modifies rather than creates are
-  not checked, and a line carrying `fireforge-ignore: token-scale` is
-  skipped.
+  and `clamp()` are transparent. Files the patch modifies rather than
+  creates are not checked, and a line carrying
+  `fireforge-ignore: token-scale` is skipped. Declarations inside
+  descriptor at-rules (`@font-face`, `@counter-style`, `@property`,
+  `@font-feature-values`, `@font-palette-values`, `@page` and its margin
+  boxes) are descriptors, not properties, and are not judged.
+
+  Since 0.51.0 a scale also takes:
+
+  - `prefix` as a list (`["--mybrowser-space-", "--mybrowser-gap-"]`) for a
+    scale whose steps are spelled more than one way.
+  - `allowInCalc`: literals legal only inside a math function, such as the
+    unitless multiplier in `calc(var(--mybrowser-space-2) * 2)`, without
+    also passing a bare `2`. Same wildcard syntax as `allowLiterals`.
+  - `offsetCap`: the px a declaration may subtract from the scale's tokens
+    inside a math function (`calc(var(--mybrowser-space-4) - 1px)`), summed
+    over the declaration. A px value anywhere else still fails.
+  - `exclude`: engine-relative globs of files the scale does not govern,
+    such as a vendored minified sheet, so its patch needs no patch-wide
+    waiver.
+  - `minFiles`: the fewest patch-created stylesheets (outside `exclude`)
+    that must declare one of the scale's properties. Under it the queue
+    fails `token-scale-vacuous` (an error on `fireforge.json` in
+    `lint --per-patch`), so a scale that matches nothing, or a scan set a
+    move emptied, cannot pass by judging nothing. A `--patches` run does
+    not judge the floor.
+
+  An unknown key in a scale is refused.
 
 ## `typecheck`
 
@@ -275,6 +299,26 @@ program: prior incremental diagnostic state is never restored. Cached and
 also disables build-info writes. A jsconfig's own `incremental` and
 `tsBuildInfoFile` remain ignored.
 
+`typecheck.litTypes: true` (since 0.51.0, default off) types Lit in the
+shim: `LitElement` and the helpers of
+`chrome://global/content/vendor/lit.all.mjs`, and `MozLitElement` of
+`chrome://global/content/lit-utils.mjs`. The element classes carry closed
+member lists, as `Cu` does, so a misspelt member of a widget host is an
+error rather than `any`. Template helpers and directives stay loose. It is
+off by default because a reactive property declared only in
+`static properties` or `static queries` then needs a constructor
+assignment or a JSDoc declaration to be known. A project shim can add
+members by merging `interface LitElementShimMembers`; a jsconfig `paths`
+entry that maps these URLs to real sources takes precedence.
+
+Per-patch checkJs gives each test script its own program. Since 0.51.0 a
+test's `resource:///` and `chrome://` imports (including a
+`typeof import("…")` cast) resolve to the modules the queue creates up to
+the test's own patch, so a test of an earlier patch's module is checked
+against its real types. A module a later patch creates, an upstream module
+and a basename two patches create still type as `any`, and an implicit-any
+finding on such an import names it.
+
 Both project and per-patch checkJs provide Gecko DOM constructor
 `isInstance(value)` predicates with instance narrowing, plus
 `MouseEvent.MOZ_SOURCE_PEN`. These declarations retain normal DOM member
@@ -288,8 +332,10 @@ gaps does not move a patch out of the band its category owns.
 With `patchPolicy.allowGaps: false`, orders are contiguous within a range:
 a new patch must fill an existing gap or take the number right after the
 range's last patch. A patch that has to leave the queue without opening a
-gap is removed with `patch retire`, which keeps its order as a retired slot
-(see [`patch-workflow.md`](patch-workflow.md#queue-maintenance)).
+gap is removed with `patch retire`, which keeps its order as a retired slot.
+An order a peer has claimed but not exported yet is held with `patch
+reserve`, so a later order can be exported without a gap in between (see
+[`patch-workflow.md`](patch-workflow.md#queue-maintenance)).
 
 ### Registration-only rules
 
@@ -355,6 +401,18 @@ something that is not this checkout's own, relying on the engine
 harness's own busy-port fallback, so sibling checkouts can run browser suites
 at once. `--auto-ports` does the same for one invocation. See
 [`testing.md`](testing.md#shared-browsers-ports-and-host-state).
+
+`test.lockMode` is `"exclusive"` (default) or `"shared"`. `"shared"` lets a
+build-less run that applies no negative control and uses auto ports hold the
+engine-session lock shared, so peers' build-less runs on the same objdir
+overlap while builds, re-exports and every other writer still hold it alone.
+`--shared-lock` does the same for one invocation. See
+[`testing.md`](testing.md#concurrency).
+
+`test.furnaceApply` is `"all"` (default), `"reached"` or `"none"`: which
+components a `test --build` deploys before building. `--furnace-apply` does
+the same for one invocation. See
+[`testing.md`](testing.md#furnace-components-in-a-pre-test-build).
 
 ## `history`
 
@@ -457,6 +515,24 @@ one that dismissed four unregistered sources.
   `/bin/sh -c` (`cmd.exe /c` on Windows) from the project root, or from the
   project-relative `cwd`. `timeout` is in seconds: past it the step's whole
   process tree is killed and the step fails. A step passes when it exits 0.
+  `after` lists steps, built-in or extra, that must finish before it starts
+  (whatever their outcome); a name that is not a step, or an ordering cycle,
+  is refused.
+- `timeout` bounds every built-in step, in seconds, and `timeouts` sets it
+  per step (`{ "typecheck": 600 }`). A step past its budget is killed and
+  fails. Unset, built-in steps are unbounded.
+- `failOnSkipped: true` fails the check (`reason=skipped-steps`) when a
+  built-in step is skipped because the project has nothing for it to run
+  (no `typecheck` block, no `furnace.json`). A step named in `skip` is a
+  decision and never fails it.
+- `lintReport` is a project-relative path the lint step writes its
+  `lint --per-patch --report` JSON to. Every extra step receives the
+  absolute path as `FIREFORGE_CHECK_LINT_REPORT`, so an audit that runs
+  `after: ["lint"]` can read the run's lint report instead of linting the
+  queue a second time.
+
+The verdict line names the skipped steps with an additive
+`skipped-steps=<a,b>` key beside `skipped=<n>`.
 
 ## Design tokens
 
@@ -519,7 +595,16 @@ The dark and variant blocks mirror it and appear in `token show`.
 - `token-undeclared`: a `var(--<prefix>…)` in the tokens CSS, or in any CSS
   file a patch in the queue touches, names a token no block of the tokens
   CSS declares. A property declared in the same file, and the `furnace.json`
-  `tokenAllowlist` and `runtimeVariables` names, are exempt.
+  `tokenAllowlist` and `runtimeVariables` names, are exempt. Since 0.51.0 a
+  reference with a fallback (`var(--x, 0)`) is optional and not reported,
+  and a token a sibling sheet declares counts as declared. Sheets are
+  siblings when one queue document links both (`<link rel="stylesheet">`,
+  `<html:link>` or `<?xml-stylesheet?>`, in markup or a Lit template; a
+  `chrome://` URL resolves through the queue's jar.mn lines, a relative
+  one beside the document), when one `@import`s the other, or when
+  `furnace.json` `tokenSiblingSheets` pairs them:
+  `{ "browser/themes/**/panel*.css": ["browser/base/content/host.css"] }`
+  (a partner is a path or a glob over the queue's sheets).
 
 The prefix is `furnace.json` `tokenPrefix`, else `--<binaryName>-`.
 
@@ -585,7 +670,7 @@ Every FireForge command that mutates the engine takes the engine-session
 lock, and some take a second subsystem lock as well. Contention fails fast
 after about a second by default.
 
-`--wait-lock [seconds]` (bare flag means 60, valid range 1 to 3600) replaces
+`--wait-lock [seconds]` (bare flag means 60, valid range 1 to 86400, a day) replaces
 that with a bounded wait, and the budget covers every lock the command takes.
 For `furnace apply`, `deploy` and `sync` that means the furnace lock as well
 as the engine-session lock. The furnace leaves that take only the furnace lock
@@ -614,7 +699,7 @@ instead of blocking it.
 
 | Variable                             | Effect                                                                                                                                  |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `FIREFORGE_WAIT_LOCK`                | Session-wide lock wait budget in seconds (1 to 3600). See above.                                                                        |
+| `FIREFORGE_WAIT_LOCK`                | Session-wide lock wait budget in seconds (1 to 86400). See above.                                                                       |
 | `FIREFORGE_SESSION_ID`               | Recorded as `sessionId` on every patch history log record this process writes. See `history` above.                                     |
 | `FIREFORGE_LOG_KEEP`                 | Also write every `test`/`build` run log here, outside retention (a directory collects one file per run). See `run-logs.md`.             |
 | `FIREFORGE_MAX_UNTRACKED_FILES`      | Per-directory cap when expanding collapsed untracked directories in `status` (default 5000). A non-positive value warns and is ignored. |

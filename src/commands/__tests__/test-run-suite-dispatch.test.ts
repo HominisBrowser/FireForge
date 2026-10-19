@@ -7,12 +7,17 @@
  * budget. `--generic-mach-test` opts back into the generic command.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runMachTestSuite } from '../../core/mach.js';
 import { parentExited, startParentExitWatchdog } from '../../core/parent-exit-watchdog.js';
 import { TestFailureError } from '../../errors/build.js';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
+import { collectedTestResults, resetTestResults } from '../test-results.js';
 import { runTestsWithRetries, type TestRunContext, type TestSuite } from '../test-run.js';
 
 // Every dispatch carries its kill-path hooks (helper-pid tracking, process
@@ -256,6 +261,108 @@ describe('runTestsWithRetries under a parent exit', () => {
     expect(outcome.verdict).toMatchObject({
       kind: 'test-failures',
       incomplete: { started: 1, requested: 2, firstUnstarted: 'dir/browser_b.js' },
+    });
+  });
+});
+
+describe('per-file results from the mozlog raw log', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'ff-raw-dispatch-'));
+    resetTestResults();
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const RAW = [
+    { action: 'test_start', test: 'd/browser_a.js', time: 1 },
+    { action: 'test_end', test: 'd/browser_a.js', status: 'OK', time: 3 },
+    { action: 'test_start', test: 'd/browser_b.js', time: 4 },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join('\n');
+
+  it('adds --log-raw, reads per-file results, and judges starts from the raw log', async () => {
+    vi.mocked(runMachTestSuite).mockImplementation(async (_kind, options) => {
+      const arg = (options.args ?? []).find((value) => value.startsWith('--log-raw='));
+      await writeFile(arg?.slice('--log-raw='.length) ?? '', RAW);
+      // The capture names no start at all; only the raw log can count.
+      return { exitCode: 0, stdout: 'Ran 2 checks\nUnexpected results: 0\n', stderr: '' };
+    });
+
+    const outcome = await runTestsWithRetries(
+      { ...makeCtx('mochitest'), rawLogDir: dir, repetition: 2 },
+      ['d/browser_a.js', 'd/browser_b.js', 'd/browser_c.js'],
+      'd/'
+    );
+
+    expect(vi.mocked(runMachTestSuite).mock.calls[0]?.[1].args).toEqual([
+      expect.stringMatching(/^--log-raw=.*dispatch-\d+\.raw\.jsonl$/) as string,
+    ]);
+    expect(outcome.fileResults?.map((result) => result.test)).toEqual(['d/browser_a.js']);
+    expect(outcome.verdict).toMatchObject({
+      kind: 'test-failures',
+      incomplete: { started: 2, requested: 3, startedSource: 'raw' },
+    });
+    expect(collectedTestResults()).toMatchObject({
+      files: [{ test: 'd/browser_a.js', run: 2, shard: 'd/', durationMs: 2 }],
+      unfinished: [{ test: 'd/browser_b.js', run: 2, shard: 'd/' }],
+    });
+  });
+
+  it("reads an operator's forwarded --log-raw instead of adding a second one", async () => {
+    const own = join(dir, 'own.jsonl');
+    vi.mocked(runMachTestSuite).mockImplementation(async () => {
+      await writeFile(own, RAW);
+      return GREEN;
+    });
+    const outcome = await runTestsWithRetries(
+      { ...makeCtx('mochitest'), rawLogDir: dir, baseExtraArgs: [`--log-raw=${own}`] },
+      ['d/browser_a.js']
+    );
+    expect(vi.mocked(runMachTestSuite).mock.calls[0]?.[1].args).toEqual([`--log-raw=${own}`]);
+    expect(outcome.fileResults).toHaveLength(1);
+  });
+});
+
+describe('start counting past the 2 MB capture tail', () => {
+  const FILES = Array.from(
+    { length: 4 },
+    (_, index) => `browser/base/content/test/big/browser_${index}.js`
+  );
+  const START = (file: string): string => `TEST-START | ${file}\nTEST-OK | ${file}\n`;
+
+  it('counts the streamed start lines the capped capture dropped (a pass stays a pass)', async () => {
+    vi.mocked(runMachTestSuite).mockImplementation((_kind, options) => {
+      // The full stream reaches the chunk hook, split mid-line; the capture
+      // handed back keeps only the tail (the last two files and the summary).
+      const full = `${FILES.map(START).join('')}Ran 40 checks\nUnexpected results: 0\n`;
+      const cut = Math.floor(full.length / 3);
+      options.teardown?.onOutputChunk?.('stdout', full.slice(0, cut));
+      options.teardown?.onOutputChunk?.('stdout', full.slice(cut));
+      const tail = `${FILES.slice(2).map(START).join('')}Ran 40 checks\nUnexpected results: 0\n`;
+      return Promise.resolve({ exitCode: 0, stdout: tail, stderr: '' });
+    });
+
+    const outcome = await runTestsWithRetries(makeCtx('mochitest'), FILES);
+
+    expect(outcome.verdict.kind).toBe('tests-ran-ok');
+    expect(outcome.verdict.incomplete).toBeUndefined();
+  });
+
+  it('still fails a stream that really stopped early, naming the stream as evidence', async () => {
+    vi.mocked(runMachTestSuite).mockImplementation((_kind, options) => {
+      const ran = `${FILES.slice(0, 2).map(START).join('')}Ran 20 checks\nUnexpected results: 0\n`;
+      options.teardown?.onOutputChunk?.('stdout', ran);
+      return Promise.resolve({ exitCode: 0, stdout: ran, stderr: '' });
+    });
+
+    const outcome = await runTestsWithRetries(makeCtx('mochitest'), FILES);
+
+    expect(outcome.verdict).toMatchObject({
+      kind: 'test-failures',
+      incomplete: { started: 2, requested: 4, firstUnstarted: FILES[2], startedSource: 'stream' },
     });
   });
 });

@@ -97,6 +97,41 @@ describe('planExport agrees with commitExportedPatch', () => {
     expect(plan.patchFilename).toBe('201-ui-beta.patch');
   });
 
+  it('allocates past reserved orders, with or without a patchPolicy', async () => {
+    await seed(patchesDir, [
+      { filename: '200-ui-alpha.patch', order: 200, body: 'alpha', filesAffected: ['a.js'] },
+    ]);
+    const manifest = await loadPatchesManifest(patchesDir);
+    await savePatchesManifest(patchesDir, {
+      ...(manifest as PatchesManifest),
+      reserved: [
+        { order: 201, category: 'ui', owner: 'peer', reservedAt: '2026-01-01' },
+        { order: 202, category: 'ui', owner: 'peer', reservedAt: '2026-01-01' },
+      ],
+    });
+    const input = {
+      patchesDir,
+      category: 'ui' as const,
+      name: 'beta',
+      description: 'new patch',
+      filesAffected: ['b.js'],
+      sourceEsrVersion: '140.9.0esr',
+    };
+
+    expect((await planExport(input)).patchFilename).toBe('203-ui-beta.patch');
+    const config: FireForgeConfig = {
+      name: 'MyBrowser',
+      vendor: 'Acme',
+      appId: 'org.acme.browser',
+      binaryName: 'mybrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      patchPolicy: { ranges: [{ from: 200, to: 299, category: 'ui' }] },
+    };
+    const plan = await planExport({ ...input, config });
+    expect(plan.patchFilename).toBe('203-ui-beta.patch');
+    expect(plan.manifestAfter.reserved?.map((slot) => slot.order)).toEqual([201, 202]);
+  });
+
   afterEach(async () => {
     await removeTempProject(projectRoot);
   });

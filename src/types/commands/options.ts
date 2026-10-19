@@ -4,7 +4,7 @@
  */
 
 import type { FirefoxProduct, ProjectLicense } from '../config.js';
-import type { PatchCategory } from './patches.js';
+import type { PatchCategory, PatchSizeShare } from './patches.js';
 
 /**
  * `--dry-run`: print the planned change and exit without writing anything.
@@ -351,8 +351,8 @@ export interface ReExportOptions extends EngineLockWaitable {
    * unmanaged files exist adjacent to the patch's ownership, instead of
    * warning. Gate-driven workflows use this so a freshly created file
    * beside a patch's owned files cannot be silently left out of the
-   * refreshed body. Only meaningful on the plain path, and mutually
-   * exclusive with `--scan` and `--files`, which set filesAffected
+   * refreshed body. Beside `--scan` it judges the neighbours the scan did
+   * not adopt. Mutually exclusive with `--files`, which sets filesAffected
    * explicitly.
    */
   refuseAdjacentUnmanaged?: boolean;
@@ -414,6 +414,23 @@ export interface ReExportOptions extends EngineLockWaitable {
    * back at HEAD.
    */
   expectRemoved?: string[];
+  /**
+   * Where a refused `--scan` adoption writes its one `--from`-ready
+   * declaration report (`--declarations-out`). Defaults to
+   * `.fireforge/declarations/`.
+   */
+  declarationsOut?: string;
+  /**
+   * `--hunks-from <diff>`: export each named file as the patch's current
+   * body plus only the hunks in this diff, leaving every other session's
+   * edits in the file out.
+   */
+  hunksFrom?: string;
+  /**
+   * `--exclude-hunks <diff>`: export each named file as the working tree
+   * minus the hunks in this diff.
+   */
+  excludeHunks?: string;
 }
 
 /**
@@ -445,8 +462,15 @@ export interface PatchLintIgnoreOptions extends Confirmable, DryRunnable, PatchL
    * bare IDs. Only the measured size rules accept one. Requires `reason`.
    */
   max?: number;
-  /** Why the ceiling exists. Required with `max`. */
+  /** Why the ceiling exists. Required with `max` or a `<rule>=<max>` add. */
   reason?: string;
+  /** With a ceiling on `large-patch-lines`: the share it bounds. */
+  share?: PatchSizeShare;
+  /**
+   * Add every entry in a JSON file under one lock hold: an array of
+   * entries, or a lint report whose ceilings for the patch are rebaselined.
+   */
+  from?: string;
 }
 
 /**
@@ -511,6 +535,8 @@ export interface PatchSplitOptions extends Confirmable, PatchLockWaitable, Unsaf
   dryRun?: boolean;
   /** Skip per-patch lint of the projected bodies. */
   skipLint?: boolean;
+  /** Where a refusal writes its one `--from`-ready declaration report. */
+  declarationsOut?: string;
 }
 
 /**
@@ -535,6 +561,8 @@ export interface PatchMoveFilesOptions extends Confirmable, PatchLockWaitable, U
   dryRun?: boolean;
   /** Skip per-patch lint of the projected bodies. */
   skipLint?: boolean;
+  /** Where a refusal writes its one `--from`-ready declaration report. */
+  declarationsOut?: string;
 }
 
 /**
@@ -675,11 +703,12 @@ export interface TestOptions extends EngineLockWaitable {
    */
   refuseUnexportedDrift?: boolean;
   /**
-   * `false` under `--no-furnace-apply`: the pre-test build skips the Furnace
-   * apply and packages engine/ as it stands. Valid only with
+   * Which components the pre-test build deploys: `all` (default), `reached`
+   * (only those a requested test reaches) or `none`. `false` is
+   * `--no-furnace-apply`, the same as `none`. Valid only with
    * `--build`/`--build-only`.
    */
-  furnaceApply?: boolean;
+  furnaceApply?: boolean | 'all' | 'reached' | 'none';
   /** Forward mach's pathless auto-selection mode. Valid only with no explicit paths. */
   auto?: boolean;
   /**
@@ -793,6 +822,17 @@ export interface TestOptions extends EngineLockWaitable {
    * engine harness's busy-port fallback. Same as `test.mochitestPorts: "auto"`.
    */
   autoPorts?: boolean;
+  /**
+   * Hold the engine session lock shared for a build-less run with auto
+   * ports, so peers' build-less runs overlap. Same as `test.lockMode: "shared"`.
+   */
+  sharedLock?: boolean;
+  /** Run shards on this many harness instances at once (requires auto ports). */
+  jobs?: number;
+  /** Dispatch n files per mach invocation, judged per file from the raw log. */
+  shardSize?: number;
+  /** Write per-file results (mozlog raw log) as JSON to this path. */
+  results?: string;
 }
 
 /**
@@ -1021,6 +1061,8 @@ export interface RegisterOptions {
 export interface PatchDeleteOptions extends Confirmable, DryRunnable, PatchLockWaitable {
   /** Bypass the hard refusal when later patches depend on the target. */
   forceUnsafe?: boolean;
+  /** Also delete the engine files the patch creates that are still on disk. */
+  deleteCreated?: boolean;
 }
 
 /**
@@ -1030,6 +1072,27 @@ export interface PatchDeleteOptions extends Confirmable, DryRunnable, PatchLockW
 export interface PatchRetireOptions extends PatchDeleteOptions {
   /** Optional human-readable rationale stored on the retired slot. */
   reason?: string;
+}
+
+/**
+ * Options for the `fireforge patch stage` subcommand: stage the named
+ * patches' files and only their `patches.json` rows in the project index.
+ */
+export type PatchStageOptions = DryRunnable & PatchLockWaitable;
+
+/**
+ * Options for the `fireforge patch reserve` subcommand: hold an order
+ * number for a patch not exported yet, or release the hold.
+ */
+export interface PatchReserveOptions extends DryRunnable, PatchLockWaitable {
+  /** Category the reserved patch will carry (required to reserve). */
+  category?: string;
+  /** Who holds the reservation (required to reserve). */
+  owner?: string;
+  /** Optional human-readable rationale stored on the reserved slot. */
+  reason?: string;
+  /** Release the reservation at the order instead of creating one. */
+  release?: boolean;
 }
 
 /**

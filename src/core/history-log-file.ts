@@ -18,7 +18,7 @@ import { appendFile, link, readFile, rename, rm, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 import { getNodeErrorCode, toError } from '../utils/errors.js';
-import { ensureDir } from '../utils/fs.js';
+import { ensureDir, pathExists } from '../utils/fs.js';
 import { info, verbose } from '../utils/logger.js';
 import { FIREFORGE_DIR } from './config-paths.js';
 import { isValidHistoryPath } from './config-validate-history.js';
@@ -143,6 +143,13 @@ export async function migrateLegacyHistoryLog(patchesDir: string, target: string
   try {
     await link(claimed, target);
   } catch (error: unknown) {
+    // Windows can report two racing renames of one file as both
+    // succeeding, the file ending under the other claimant's name. That
+    // claimant holds the records and moves them, so this one stands down.
+    if (getNodeErrorCode(error) === 'ENOENT' && !(await pathExists(claimed))) {
+      verbose('History log migration lost the claim to a concurrent command');
+      return;
+    }
     // EEXIST: both logs exist. Anything else (a filesystem without hard
     // links, a target on another device): the append below creates the
     // target when it is missing, so it covers that case too.

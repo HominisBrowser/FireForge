@@ -81,14 +81,22 @@ describe('--expect-unmanaged', () => {
     }).not.toThrow();
   });
 
-  it('inherits the scan-less restriction from its parent flag', () => {
+  it('is accepted beside --scan and inherits the --files restriction from its parent flag', () => {
+    const expectUnmanaged = ['browser/themes/shared/hominis/fonts/nebula-sans-regular.woff2'];
     expect(() => {
       validateReExportOptionCombinations(['101-fonts.patch'], {
         refuseAdjacentUnmanaged: true,
         scan: true,
-        expectUnmanaged: ['browser/themes/shared/hominis/fonts/nebula-sans-regular.woff2'],
+        expectUnmanaged,
       });
-    }).toThrow(/--refuse-adjacent-unmanaged applies to the scan-less path only/);
+    }).not.toThrow();
+    expect(() => {
+      validateReExportOptionCombinations(['101-fonts.patch'], {
+        refuseAdjacentUnmanaged: true,
+        files: ['a.css'],
+        expectUnmanaged,
+      });
+    }).toThrow(/--refuse-adjacent-unmanaged cannot be combined with --files/);
   });
 });
 

@@ -260,6 +260,31 @@ describe('patch rename', () => {
     expect(manifest.patches[0]?.description).toBe('new description');
   });
 
+  it('changes only the description without --yes outside a TTY', async () => {
+    await seed(patchesDir, [
+      makeMetadata('0044-ui-foo.patch', 44, ['a.js'], { description: 'old description' }),
+    ]);
+
+    await patchRenameCommand(projectRoot, '0044-ui-foo.patch', {
+      description: 'scripted description',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.description).toBe('scripted description');
+    expect(manifest.patches[0]?.filename).toBe('0044-ui-foo.patch');
+  });
+
+  it('still asks for confirmation when a description edit also renames', async () => {
+    await seed(patchesDir, [makeMetadata('0044-ui-foo.patch', 44, ['a.js'])]);
+
+    await expect(
+      patchRenameCommand(projectRoot, '0044-ui-foo.patch', {
+        to: 'bar',
+        description: 'new description',
+      })
+    ).rejects.toThrow(/Interactive confirmation not available/);
+  });
+
   it('rejects empty descriptions when patchPolicy requires descriptions', async () => {
     await writeFireForgeConfig(projectRoot, {
       patchPolicy: {

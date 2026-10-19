@@ -27,7 +27,8 @@ import { normalizeEngineRelativeInput } from './re-export-scan.js';
 export async function validateExpectedRemovals(
   paths: ProjectPaths,
   patches: PatchMetadata[],
-  options: ReExportOptions
+  options: ReExportOptions,
+  queue: readonly PatchMetadata[] = patches
 ): Promise<string[]> {
   const removed = [
     ...new Set(
@@ -44,7 +45,8 @@ export async function validateExpectedRemovals(
     const owner = owners[0];
     if (owners.length !== 1 || owner === undefined) {
       throw new InvalidArgumentError(
-        `--expect-removed ${file} must be owned by exactly one selected patch.`,
+        `--expect-removed ${file} must be owned by exactly one selected patch.` +
+          unselectedOwnerHint(file, patches, queue),
         '--expect-removed'
       );
     }
@@ -64,6 +66,24 @@ export async function validateExpectedRemovals(
     }
   }
   return removed;
+}
+
+/**
+ * Each path retires from its own owner, so one run may retire paths from
+ * several selected patches. A path whose owner was left out of the
+ * selection names that owner, since adding it is the usual fix.
+ */
+function unselectedOwnerHint(
+  file: string,
+  selected: readonly PatchMetadata[],
+  queue: readonly PatchMetadata[]
+): string {
+  const selectedNames = new Set(selected.map((patch) => patch.filename));
+  const outside = queue
+    .filter((patch) => !selectedNames.has(patch.filename) && patch.filesAffected.includes(file))
+    .map((patch) => patch.filename);
+  if (outside.length === 0) return '';
+  return ` It is owned by ${outside.join(', ')}, which this run did not select; add it to the selection to retire both in one run.`;
 }
 
 async function assertCreatedFileAbsent(

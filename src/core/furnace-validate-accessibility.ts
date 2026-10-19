@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type {
@@ -12,8 +13,36 @@ import { countUnlabelledIconButtons } from './furnace-validate-icon-button.js';
 import { collectLitTemplateRegions, parseTemplateAttributes } from './lit-template-regions.js';
 
 /**
- * Validates accessibility patterns in a component's .mjs file.
- * Checks for ARIA roles, keyboard handlers, l10n, and focus delegation.
+ * Reads the composed component: `<tagName>.mjs` followed by its companion
+ * modules (`<tagName>-*.mjs`, tests and stories left out), so a template's
+ * findings do not depend on which of the component's modules it lives in.
+ * Returns undefined when the host module is missing.
+ */
+async function readComposedComponentSource(
+  componentDir: string,
+  tagName: string
+): Promise<string | undefined> {
+  const hostPath = join(componentDir, `${tagName}.mjs`);
+  if (!(await pathExists(hostPath))) return undefined;
+  const entries = await readdir(componentDir).catch((): string[] => []);
+  const companions = entries
+    .filter(
+      (name) =>
+        name.startsWith(`${tagName}-`) &&
+        name.endsWith('.mjs') &&
+        !/\.(test|spec|stories)\./.test(name)
+    )
+    .sort();
+  const sources = [await readText(hostPath)];
+  for (const name of companions) sources.push(await readText(join(componentDir, name)));
+  return sources.join('\n');
+}
+
+/**
+ * Validates accessibility patterns in a component's composed source: its
+ * host module and every companion module (see
+ * {@link readComposedComponentSource}). Checks for ARIA roles, keyboard
+ * handlers, l10n, and focus delegation.
  *
  * @param componentDir - Directory holding the component's sources
  * @param tagName - Custom element tag name, used to locate `<tagName>.mjs`
@@ -32,10 +61,8 @@ export async function validateAccessibility(
   customConfig?: CustomComponentConfig,
   optInChecks: readonly FurnaceOptInCheck[] = []
 ): Promise<ValidationIssue[]> {
-  const mjsPath = join(componentDir, `${tagName}.mjs`);
-  if (!(await pathExists(mjsPath))) return [];
-
-  const content = await readText(mjsPath);
+  const content = await readComposedComponentSource(componentDir, tagName);
+  if (content === undefined) return [];
   const issues: ValidationIssue[] = [];
 
   if (!hasAriaRole(content) && hasGenericInteractiveElement(content)) {
@@ -62,17 +89,18 @@ export async function validateAccessibility(
   // activation flows through the inner element and a duplicate handler on
   // the wrapper would either no-op or fire twice alongside the child's
   // built-in keyboard path.
-  const hasClickOnSynthetic = hasTemplateClickOnSyntheticInteractive(content);
+  const syntheticTags = syntheticClickTags(content);
   const keyboardCovered = isKeyboardCoveredByComposition(customConfig);
-  if (hasClickOnSynthetic && !hasKeyboardHandler && !keyboardCovered) {
-    issues.push(
-      createIssue(
+  if (syntheticTags.length > 0 && !hasKeyboardHandler && !keyboardCovered) {
+    issues.push({
+      ...createIssue(
         tagName,
         'warning',
         'no-keyboard-handler',
-        'Interactive element has @click but no keyboard event handler (@keydown/@keypress/@keyup).'
-      )
-    );
+        `Interactive element has @click but no keyboard event handler (@keydown/@keypress/@keyup), on ${syntheticTags.map((tag) => `<${tag}>`).join(', ')}.`
+      ),
+      tags: syntheticTags,
+    });
   }
 
   if (containsHardcodedTemplateText(content)) {
@@ -246,6 +274,9 @@ const NATIVE_CLICK_INTERACTIVE_TAGS = new Set([
   'moz-radio',
   'moz-radio-group',
   'moz-menulist',
+  // Toolkit's panel-list row renders a button that takes Enter and Space
+  // and dispatches click.
+  'panel-item',
 ]);
 
 /**
@@ -267,29 +298,34 @@ function isKeyboardCoveredByComposition(customConfig: CustomComponentConfig | un
 }
 
 /**
- * Returns true when `content` has at least one `@click=${...}` handler on a
- * *synthetic* interactive element (e.g. `<div @click>`), which lacks native
- * keyboard activation and therefore needs an explicit key handler for
- * Enter/Space. Returns false when every `@click` handler sits on a native
- * interactive element. Those already fire `click` on keyboard activation.
+ * Returns the tags (in first-seen order) of every *synthetic* interactive
+ * element carrying an `@click=${...}` handler (e.g. `<div @click>`), which
+ * lacks native keyboard activation and therefore needs an explicit key
+ * handler for Enter/Space. Empty when every `@click` handler sits on a
+ * native interactive element. Those already fire `click` on keyboard
+ * activation.
  */
-function hasTemplateClickOnSyntheticInteractive(content: string): boolean {
+function syntheticClickTags(content: string): string[] {
   const pattern = /@click\s*=\s*\$\{/g;
+  const tags: string[] = [];
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(content)) !== null) {
-    if (isClickOnSyntheticInteractive(content, match.index)) {
-      return true;
-    }
+    const tag = syntheticClickTag(content, match.index);
+    if (tag !== undefined && !tags.includes(tag)) tags.push(tag);
   }
-  return false;
+  return tags;
 }
+
+/** The tag a synthetic-element `@click` sits on, `?` when it cannot be told. */
+const UNKNOWN_TAG = '?';
 
 /**
  * Given the offset of an `@click=${...}` occurrence, walks backwards to find
- * the opening `<tag` that owns it and decides whether that tag is a native
- * interactive element (no warning needed) or a synthetic one (warning needed).
+ * the opening `<tag` that owns it and returns that tag when it is a
+ * synthetic interactive element (warning needed), or undefined when it is a
+ * native one (no warning needed).
  */
-function isClickOnSyntheticInteractive(content: string, clickIndex: number): boolean {
+function syntheticClickTag(content: string, clickIndex: number): string | undefined {
   // Find the nearest preceding `<` that starts a tag (skip `</` closers).
   let i = clickIndex - 1;
   let tagOpenIndex = -1;
@@ -302,14 +338,14 @@ function isClickOnSyntheticInteractive(content: string, clickIndex: number): boo
     // which shouldn't happen for a well-formed template but we defensively
     // treat it as synthetic to preserve the prior-behaviour warning.
     if (content[i] === '>') {
-      return true;
+      return UNKNOWN_TAG;
     }
     i--;
   }
-  if (tagOpenIndex < 0) return true;
+  if (tagOpenIndex < 0) return UNKNOWN_TAG;
 
   const tagMatch = /^<([a-zA-Z][a-zA-Z0-9-]*)/.exec(content.slice(tagOpenIndex));
-  if (!tagMatch?.[1]) return true;
+  if (!tagMatch?.[1]) return UNKNOWN_TAG;
   const tagName = tagMatch[1].toLowerCase();
 
   if (tagName === 'a') {
@@ -317,12 +353,12 @@ function isClickOnSyntheticInteractive(content: string, clickIndex: number): boo
     // Look forward from the tag open for the closing `>` and scan the
     // attribute text in between for an href attribute.
     const tagEnd = content.indexOf('>', tagOpenIndex);
-    if (tagEnd < 0) return true;
+    if (tagEnd < 0) return 'a';
     const attrs = content.slice(tagOpenIndex, tagEnd);
-    return !/\shref\s*=/.test(attrs);
+    return /\shref\s*=/.test(attrs) ? undefined : 'a';
   }
 
-  return !NATIVE_CLICK_INTERACTIVE_TAGS.has(tagName);
+  return NATIVE_CLICK_INTERACTIVE_TAGS.has(tagName) ? undefined : tagName;
 }
 
 /** ASCII punctuation that reads as decoration rather than localizable text. */

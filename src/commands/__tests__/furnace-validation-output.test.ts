@@ -220,11 +220,11 @@ describe('runDeployValidation', () => {
   it('does not count findings furnace.json records as validationExceptions', async () => {
     const results = new Map<string, ValidationIssue[]>();
     results.set('moz-panel', [
-      { component: 'moz-panel', check: 'no-aria-role', severity: 'error', message: 'Reviewed' },
+      { component: 'moz-panel', check: 'no-aria-role', severity: 'warning', message: 'Reviewed' },
     ]);
     vi.mocked(validateAllComponents).mockResolvedValue(results);
     vi.mocked(validateComponent).mockResolvedValue([
-      { component: 'moz-panel', check: 'no-aria-role', severity: 'error', message: 'Reviewed' },
+      { component: 'moz-panel', check: 'no-aria-role', severity: 'warning', message: 'Reviewed' },
     ]);
     const config: FurnaceConfig = {
       ...baseConfig,

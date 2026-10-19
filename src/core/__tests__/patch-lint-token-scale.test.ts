@@ -6,7 +6,11 @@ import type { FireForgeConfig, PatchLintTokenScale } from '../../types/config.js
 import { pathExists, readText } from '../../utils/fs.js';
 import { loadFurnaceConfig } from '../furnace-config.js';
 import { lintPatchedCss } from '../patch-lint-css.js';
-import { findOffScaleAtom, lintTokenScales } from '../patch-lint-token-scale.js';
+import {
+  findOffScaleAtom,
+  lintTokenScaleFloors,
+  lintTokenScales,
+} from '../patch-lint-token-scale.js';
 
 vi.mock('../../utils/fs.js', () => createFsMock());
 vi.mock('../furnace-config.js', () => ({ loadFurnaceConfig: vi.fn() }));
@@ -97,5 +101,78 @@ describe('lintPatchedCss token scales', () => {
 
     expect(onCreated.map((issue) => issue.check)).toEqual(['token-scale']);
     expect(onModified.filter((issue) => issue.check === 'token-scale')).toEqual([]);
+  });
+});
+
+describe('token scale extensions', () => {
+  const tight: PatchLintTokenScale = {
+    properties: ['gap', 'padding*', 'margin*'],
+    prefix: ['--tb-space-', '--tb-gap-'],
+    allowLiterals: ['0'],
+    allowInCalc: ['2', '0.5'],
+    offsetCap: 2,
+  };
+
+  it.each([
+    ['var(--tb-gap-4)', undefined],
+    ['calc(var(--tb-space-4) * 2)', undefined],
+    ['2', '2'],
+    ['calc(var(--tb-space-4) - 1px)', undefined],
+    ['calc(var(--tb-space-4) - 1px - 1px)', undefined],
+    ['calc(var(--tb-space-4) - 1px - 2px)', '2px'],
+    ['calc(var(--tb-space-4) - 3px)', '3px'],
+    ['calc(var(--tb-space-4) + 1px)', '1px'],
+    ['calc(1px - var(--tb-space-4))', '1px'],
+    ['calc(var(--tb-space-4)/2)', undefined],
+    ['1px', '1px'],
+  ])('%s → %s', (value, expected) => {
+    expect(findOffScaleAtom(value, tight)).toBe(expected);
+  });
+
+  it('names every prefix of a listed scale in its message', () => {
+    const [issue] = lintTokenScales('a.css', '.a { gap: 7px; }', [tight]);
+    expect(issue?.message).toContain('off the --tb-space-* / --tb-gap-* scale');
+  });
+
+  it('skips descriptors inside descriptor at-rules, nested blocks included', () => {
+    const typeScale: PatchLintTokenScale = {
+      properties: ['font-weight', 'margin*'],
+      prefix: '--tb-type-',
+    };
+    const css = [
+      '@font-face {',
+      '  font-family: X;',
+      '  font-weight: 400;',
+      '}',
+      '@page { margin: 1in; @top-left { margin: 2px; } }',
+      '.a { font-weight: 700; }',
+    ].join('\n');
+    const issues = lintTokenScales('a.css', css, [typeScale]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toMatch(/^Line 6: font-weight: 700/);
+  });
+
+  it('does not judge a file a scale excludes', () => {
+    const scale: PatchLintTokenScale = { ...spacing, exclude: ['**/vendor/*.css'] };
+    expect(lintTokenScales('browser/vendor/tw.css', '.a { gap: 7px; }', [scale])).toEqual([]);
+    expect(lintTokenScales('browser/own.css', '.a { gap: 7px; }', [scale])).toHaveLength(1);
+  });
+
+  it('fails a scale whose created stylesheets fall under minFiles', () => {
+    const scale: PatchLintTokenScale = { ...spacing, minFiles: 2, exclude: ['skip/**'] };
+    const files: [string, string][] = [
+      ['a.css', '.a { gap: var(--tb-space-1); }'],
+      ['skip/b.css', '.b { gap: var(--tb-space-1); }'],
+      ['c.css', '.c { color: red; }'],
+      ['d.js', 'gap: 1'],
+    ];
+    const issues = lintTokenScaleFloors(files, [scale, spacing]);
+    expect(issues).toEqual([
+      expect.objectContaining({ check: 'token-scale-vacuous', severity: 'error' }),
+    ]);
+    expect(issues[0]?.message).toContain(
+      'governs 1 patch-created stylesheet(s), under its minFiles 2'
+    );
+    expect(lintTokenScaleFloors([...files, ['e.css', '.e { padding: 0 }']], [scale])).toEqual([]);
   });
 });

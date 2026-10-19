@@ -12,8 +12,12 @@ export const SYNTHETIC_FIREFOX_PATHS = {
   machLog: '.mach-state/commands.jsonl',
 } as const;
 
+// The upper bound is deliberately wider than real mach's: this stub runs on
+// whatever python3 the host has (CI images ship 3.13+), and FireForge
+// rejects every interpreter outside the declared range. It stays finite
+// because each minor in the range costs one PATH probe.
 const MACH_SCRIPT = `MIN_PYTHON_VERSION = (3, 8)
-MAX_PYTHON_VERSION_TO_CONSIDER = (3, 12)
+MAX_PYTHON_VERSION_TO_CONSIDER = (3, 20)
 
 import json
 import sys

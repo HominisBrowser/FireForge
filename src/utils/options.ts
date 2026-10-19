@@ -79,9 +79,14 @@ const DEFAULT_WAIT_LOCK_SECONDS = 60;
 /** Environment variable naming a standing wait budget for the whole session. */
 export const WAIT_LOCK_ENV_VAR = 'FIREFORGE_WAIT_LOCK';
 
-/** Bounds shared by the flag and the environment variable. */
+/**
+ * Bounds shared by the flag and the environment variable. The ceiling is a
+ * day: on a shared engine a re-export or `test --build` queued behind a
+ * peer's long series can need more than the hour the cap used to be, and a
+ * longer wait then had to be a requeue after exit 15.
+ */
 const MIN_WAIT_LOCK_SECONDS = 1;
-const MAX_WAIT_LOCK_SECONDS = 3600;
+export const MAX_WAIT_LOCK_SECONDS = 86_400;
 
 /**
  * Parses a wait budget from text, or undefined when it is not an integer in
@@ -132,7 +137,7 @@ function waitLockSecondsFromEnv(): number | undefined {
  * - absent (`undefined`) → {@link WAIT_LOCK_ENV_VAR} if set, else `undefined`
  *   (the ~1 s fail-fast),
  * - bare flag (`true`) → {@link DEFAULT_WAIT_LOCK_SECONDS},
- * - explicit value → integer validated into 1..3600.
+ * - explicit value → integer validated into 1..86400.
  *
  * The flag always wins over the environment: the environment expresses a
  * default for a session, and an invocation that names a budget has said
@@ -267,7 +272,7 @@ export function isPathShapedArgument(token: string): boolean {
  *
  * Commander binds the next non-dash token to an optional value, so
  * `fireforge test --build --wait-lock browser_x.js` failed with
- * "--wait-lock must be an integer in 1..3600 (got "browser_x.js")": the
+ * "--wait-lock must be an integer in 1..86400 (got "browser_x.js")": the
  * help says the value is optional, and the obvious spelling refused. The
  * released flag moves to the end of the option section (before any `--`),
  * where nothing follows it, so commander reads it bare. Operands keep their

@@ -19,6 +19,12 @@
  * no owned file is an upstream Firefox module, which FireForge does not
  * police and cannot cheaply enumerate. Policing only what the fork owns is
  * both the actionable set and the one that produces real incidents.
+ *
+ * An unscoped `verify` widens that set with the engine worktree: changed
+ * files import, and untracked files are targets. A chrome script's lazy
+ * getter for a new, not yet exported `.sys.mjs` with no moz.build line
+ * SIGSEGVed every start of a shared objdir, and neither file was in the
+ * queue yet, so the queue-only scan could not see it.
  */
 
 import { dirname, join } from 'node:path';
@@ -27,6 +33,7 @@ import { toError } from '../utils/errors.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { escapeRegex } from '../utils/regex.js';
+import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from './git-status.js';
 import {
   extractResourceModuleSpecifiers,
   moduleSourceSuffix,
@@ -101,24 +108,48 @@ async function isRegisteredInAncestorMozBuild(
   }
 }
 
+/** Engine worktree files the preflight also judges, beside the queue's. */
+export interface WorktreeModuleFiles {
+  /** Changed or untracked files: scanned for imports. */
+  changed: readonly string[];
+  /** Untracked files: new modules the fork has not exported yet. */
+  untracked: readonly string[];
+}
+
+/** Lists the engine's changed and untracked files for the worktree scan. */
+export async function collectWorktreeModuleFiles(engineDir: string): Promise<WorktreeModuleFiles> {
+  const entries = await expandUntrackedDirectoryEntries(
+    engineDir,
+    await getWorkingTreeStatus(engineDir)
+  );
+  const present = entries.filter((entry) => entry.worktreeStatus !== 'D');
+  return {
+    changed: present.map((entry) => entry.file),
+    untracked: present.filter((entry) => entry.status === '??').map((entry) => entry.file),
+  };
+}
+
 /**
  * Resolves every `resource://` system-module import made by the
- * queue-owned files and reports the ones a packaged browser could not
- * load.
+ * queue-owned files (and, given `worktree`, by changed engine files) and
+ * reports the ones a packaged browser could not load.
  *
  * @param engineDir - Path to the engine checkout
  * @param ownedFiles - Engine-relative paths the patch queue owns
+ * @param worktree - Changed and untracked engine files to judge as well
  * @returns Findings sorted by module path. Empty when everything resolves
  */
 export async function findUnresolvedSystemModuleImports(
   engineDir: string,
-  ownedFiles: readonly string[]
+  ownedFiles: readonly string[],
+  worktree?: WorktreeModuleFiles
 ): Promise<UnresolvedModuleImport[]> {
-  const owned = [...new Set(ownedFiles)];
+  const owned = [...new Set([...ownedFiles, ...(worktree?.untracked ?? [])])];
+  const importing = [...new Set([...owned, ...(worktree?.changed ?? [])])];
 
-  /** specifier → importing owned files. */
+  /** specifier → importing files. */
   const importersBySpecifier = new Map<string, Set<string>>();
-  for (const file of owned) {
+  for (const file of importing) {
     if (!IMPORTABLE_EXTENSIONS.some((extension) => file.endsWith(extension))) continue;
     const content = await readIfPresent(join(engineDir, file));
     if (content === undefined) continue;

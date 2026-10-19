@@ -30,6 +30,7 @@ import {
 import type { PatchQueueContext } from '../core/patch-lint-cross.js';
 import {
   isTestScriptFile,
+  resolvableModulesForTests,
   resolvePatchOwnedSysMjs,
   resolvePatchOwnedTestScripts,
 } from '../core/patch-lint-ownership.js';
@@ -130,7 +131,8 @@ export function buildPerRunCheckJs(
       resolvePatchOwnedTestScripts(new Set(), ctx),
       patchLint,
       projectRoot,
-      scopedRoots
+      scopedRoots,
+      resolvableModulesForTests(ctx)
     );
     const byFile = new Map(sys.byFile);
     for (const [rel, list] of tests.byFile) {

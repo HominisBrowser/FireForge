@@ -53,6 +53,16 @@ function isCoverageRecordMap(value: unknown): boolean {
   );
 }
 
+/** A `recorder` stamp: an integer pid, an invocation id and an optional session id. */
+function isBaselineRecorder(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    Number.isInteger(value['pid']) &&
+    typeof value['invocationId'] === 'string' &&
+    (value['sessionId'] === undefined || typeof value['sessionId'] === 'string')
+  );
+}
+
 /** Validates persisted fields without converting malformed coverage into a full claim. */
 export function isBuildBaseline(value: unknown): value is BuildBaseline {
   if (!isObject(value)) return false;
@@ -81,6 +91,7 @@ export function isBuildBaseline(value: unknown): value is BuildBaseline {
     return false;
   if (value['mozconfigHash'] !== undefined && !isFingerprint(value['mozconfigHash'])) return false;
   if (value['recordedBy'] !== undefined && typeof value['recordedBy'] !== 'string') return false;
+  if (value['recorder'] !== undefined && !isBaselineRecorder(value['recorder'])) return false;
   if (
     value['testCoverageRecords'] !== undefined &&
     !isCoverageRecordMap(value['testCoverageRecords'])

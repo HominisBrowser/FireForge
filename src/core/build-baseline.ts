@@ -33,6 +33,7 @@ import {
   isXpcomManifestPath,
 } from './build-audit.js';
 import {
+  type BaselineRecorder,
   type BuildBaseline,
   type CoverageAnchor,
   type CoverageRecord,
@@ -46,6 +47,7 @@ import { hashEngineFile } from './coverage-extend.js';
 import { getHead, hasChanges, isMissingHeadError } from './git.js';
 import { git } from './git-base.js';
 import { getUntrackedFiles } from './git-status.js';
+import { historyRecordIdentity } from './history-log-file.js';
 
 /*
  * Keep the IO fan-out bounded: a patched Firefox checkout can carry hundreds
@@ -152,6 +154,12 @@ export interface WriteBuildBaselineOptions {
   buildKind?: BaselineBuildKind | undefined;
 }
 
+/** This process's {@link BuildBaseline.recorder} stamp. */
+function baselineRecorder(): BaselineRecorder {
+  const { pid, invocationId, sessionId } = historyRecordIdentity();
+  return { pid, invocationId, ...(sessionId !== undefined ? { sessionId } : {}) };
+}
+
 /**
  * Records a successful build by writing a fresh baseline marker. Captures
  * engine HEAD SHA (or an empty string when the engine has no HEAD yet) and
@@ -224,6 +232,7 @@ export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Pr
     ...(mozconfigHash !== undefined ? { mozconfigHash } : {}),
     ...(staticComponentsBaseline !== undefined ? { staticComponentsBaseline } : {}),
     ...(recordedBy !== undefined ? { recordedBy } : {}),
+    recorder: baselineRecorder(),
   };
   await writeJson(getBuildBaselinePath(projectRoot), baseline);
 }

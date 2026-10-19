@@ -16,7 +16,7 @@ import {
 } from '../types/furnace.js';
 import { isArray, isObject, isString } from '../utils/validation.js';
 
-const EXCEPTION_KEYS = new Set(['component', 'check', 'tag', 'reason']);
+const EXCEPTION_KEYS = new Set(['component', 'check', 'tag', 'file', 'reason']);
 
 function requireNonEmptyString(entry: Record<string, unknown>, key: string, field: string): string {
   const value = entry[key];
@@ -27,9 +27,10 @@ function requireNonEmptyString(entry: Record<string, unknown>, key: string, fiel
 }
 
 /**
- * Parses `validationExceptions[]`: `{ component, check, tag?, reason }`
- * objects, no other keys, every field a non-empty string, and no two
- * entries for the same component, check and tag.
+ * Parses `validationExceptions[]`: `{ component, check, tag?, file?, reason }`
+ * objects, no other keys, every field a non-empty string, at most one of
+ * `tag` and `file` (a bare file name of the component), and no two entries
+ * for the same component, check and scope.
  */
 export function parseValidationExceptions(raw: unknown): FurnaceValidationException[] {
   if (!isArray(raw)) {
@@ -54,9 +55,32 @@ export function parseValidationExceptions(raw: unknown): FurnaceValidationExcept
       reason: requireNonEmptyString(entry, 'reason', field),
     };
     if (entry['tag'] !== undefined) exception.tag = requireNonEmptyString(entry, 'tag', field);
-    const identity = `${exception.component}\u0000${exception.check}\u0000${exception.tag ?? ''}`;
+    if (entry['file'] !== undefined) {
+      if (exception.tag !== undefined) {
+        throw new FurnaceError(`Furnace config: "${field}" may name a "tag" or a "file", not both`);
+      }
+      const file = requireNonEmptyString(entry, 'file', field);
+      if (/[\\/]/.test(file) || file === '.' || file === '..') {
+        throw new FurnaceError(
+          `Furnace config: "${field}.file" must be a file name in the component's directory, not a path`
+        );
+      }
+      exception.file = file;
+    }
+    const scope =
+      exception.tag !== undefined
+        ? `tag:${exception.tag}`
+        : exception.file !== undefined
+          ? `file:${exception.file}`
+          : '';
+    const identity = `${exception.component}\u0000${exception.check}\u0000${scope}`;
     if (seen.has(identity)) {
-      const on = exception.tag !== undefined ? ` on <${exception.tag}>` : '';
+      const on =
+        exception.tag !== undefined
+          ? ` on <${exception.tag}>`
+          : exception.file !== undefined
+            ? ` in ${exception.file}`
+            : '';
       throw new FurnaceError(
         `Furnace config: "${field}" repeats the exception for ${exception.component} [${exception.check}]${on}`
       );

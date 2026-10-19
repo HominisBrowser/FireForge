@@ -268,7 +268,13 @@ export function renderTestCoverageStatus(baseline: BuildBaseline | undefined): v
     `Last build: ${baseline.builtAt}  (binary: ${baseline.binaryName}, ` +
       `engine HEAD: ${baseline.engineHeadSha || '(unborn)'})`
   );
-  info(`Recorded by: ${baseline.recordedBy ?? 'unknown'}`);
+  const recorder = baseline.recorder;
+  info(
+    `Recorded by: ${baseline.recordedBy ?? 'unknown'}` +
+      (recorder === undefined
+        ? ''
+        : ` (pid ${recorder.pid}${recorder.sessionId !== undefined ? `, session ${recorder.sessionId}` : ''})`)
+  );
 
   const coverage = baseline.testPackagingCoverage;
   if (coverage === undefined) {

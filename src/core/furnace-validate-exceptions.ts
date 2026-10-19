@@ -3,7 +3,8 @@
  * Applies `furnace.json#validationExceptions[]` to a `furnace validate`
  * result. An exception suppresses every finding of its check on its
  * component, or with `tag`, a finding whose element tags it (and its
- * sibling tag entries) cover. One that suppresses nothing is stale: the
+ * sibling tag entries) cover, or with `file`, a finding whose module files
+ * it (and its sibling file entries) cover. One that suppresses nothing is stale: the
  * finding was fixed (or renamed) and the review record outlived it, so it
  * is reported as a warning naming the entry to delete, which keeps the
  * list honest under `--max-warnings 0`.
@@ -41,20 +42,37 @@ function matches(exception: FurnaceValidationException, issue: ValidationIssue):
   return exception.component === issue.component && exception.check === issue.check;
 }
 
+/** An exception's narrowing: the finding field it reads and its value. */
+function scopeOf(
+  entry: FurnaceValidationException
+): { key: 'tags' | 'files'; value: string } | undefined {
+  if (entry.tag !== undefined) return { key: 'tags', value: entry.tag };
+  if (entry.file !== undefined) return { key: 'files', value: entry.file };
+  return undefined;
+}
+
 /**
- * The exceptions that suppress a warning: an untagged one alone, or tagged
- * ones that together cover every tag the finding names.
+ * The exceptions that suppress a warning: an unscoped one alone, or scoped
+ * ones that together cover every tag (or every file) the finding names.
  */
 function coveringExceptions(
   issue: ValidationIssue,
   candidates: readonly FurnaceValidationException[]
 ): FurnaceValidationException[] {
-  const untagged = candidates.find((entry) => entry.tag === undefined);
-  if (untagged !== undefined) return [untagged];
-  const tags = issue.tags ?? [];
-  if (tags.length === 0) return [];
-  const covering = tags.map((tag) => candidates.find((entry) => entry.tag === tag));
-  return covering.every((entry) => entry !== undefined) ? [...new Set(covering)] : [];
+  const unscoped = candidates.find((entry) => scopeOf(entry) === undefined);
+  if (unscoped !== undefined) return [unscoped];
+  for (const key of ['tags', 'files'] as const) {
+    const named = issue[key] ?? [];
+    if (named.length === 0) continue;
+    const covering = named.map((value) =>
+      candidates.find((entry) => {
+        const scope = scopeOf(entry);
+        return scope?.key === key && scope.value === value;
+      })
+    );
+    if (covering.every((entry) => entry !== undefined)) return [...new Set(covering)];
+  }
+  return [];
 }
 
 /**
@@ -88,10 +106,14 @@ export function applyValidationExceptions(
     }
     const covering = coveringExceptions(issue, candidates);
     if (covering.length === 0) {
-      // A tagged exception that covers some of the tags is not stale: its
-      // element still carries the finding, beside one it does not cover.
+      // A scoped exception that covers some of the tags (or files) is not
+      // stale: its element still carries the finding, beside one it does
+      // not cover.
       for (const entry of candidates) {
-        if (entry.tag !== undefined && issue.tags?.includes(entry.tag) === true) used.add(entry);
+        const scope = scopeOf(entry);
+        if (scope !== undefined && issue[scope.key]?.includes(scope.value) === true) {
+          used.add(entry);
+        }
       }
       outcome.issues.push(issue);
       continue;

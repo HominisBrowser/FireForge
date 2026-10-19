@@ -366,6 +366,28 @@ describe('formatTestCoverageRefusal', () => {
     expect(message).toContain('not missing coverage');
   });
 
+  it('names who wrote the coverage record, and whether that process still runs', () => {
+    const message = formatTestCoverageRefusal(
+      ['browser/components/history/test/browser/browser_hist.js'],
+      ['browser/components/tiles/test/browser/browser_a.js'],
+      [],
+      {
+        recordedBy: 'fireforge test --build browser/components/tiles/test/browser/browser_a.js',
+        builtAt: '2026-10-20T08:00:00.000Z',
+        recorder: { pid: 4242, invocationId: 'inv-1', sessionId: 'lane-b' },
+        recorderAlive: true,
+      }
+    );
+    expect(message).toContain(
+      'The current record was written by "fireforge test --build browser/components/tiles/test/browser/browser_a.js" ' +
+        'at 2026-10-20T08:00:00.000Z (pid 4242, still running, session lane-b, invocation inv-1).'
+    );
+    // A record from before 0.52.0 carries no recorder: nothing is invented.
+    expect(
+      formatTestCoverageRefusal(['a/test/browser_x.js'], ['b/test/browser_y.js'])
+    ).not.toContain('The current record was written by');
+  });
+
   it('says a scoped rebuild of the uncovered paths keeps every other unchanged claim', () => {
     // Per-path retention is the default since 0.50.0: rebuilding only the
     // uncovered paths costs nobody else's coverage, and the refusal says so

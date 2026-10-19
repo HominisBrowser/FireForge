@@ -112,7 +112,11 @@ install manifest ships) can only reach the binary through a build. Without
 `--build` it is refused before the lock. With `--build` it is applied before
 the pre-test build, so the binary under test carries it, stays applied for
 every `--repeat` run, and is restored with a fresh mtime so the next build
-recompiles the original. The verdict adds `control-build=compiled`. A
+recompiles the original. Since 0.52.0 that pre-test build is a full
+`mach build`, with a notice naming the control's files: the default
+`mach build faster` compiles nothing, so before, the control still tested
+the previous binary and reported `missed`. The verdict adds
+`control-build=compiled`. A
 build-less control whose packaging is not current is refused before the
 lock with the advice to add `--build`, instead of ending `inconclusive`
 after a full queue.
@@ -219,7 +223,12 @@ A scoped build after a full build keeps the claim full while nothing outside
 its scope moved. Otherwise it carries the full build's anchor forward, and a
 later build-less run over any path stays covered while that path's own
 staging inputs are unchanged since the full build. A refusal names the inputs
-that did change.
+that did change, and since 0.52.0 who wrote the coverage record: its
+invocation, when, and the writing process's pid (marked `still running`
+while it is), `FIREFORGE_SESSION_ID` and invocation id, the id its history
+records carry. `status --test-coverage` shows the pid and session too. A
+peer whose run a scoped build or a test-file edit refused can tell whose
+build to wait for.
 
 `--extend-coverage` remains accepted. Retention is now the default, so the
 flag only turns a drop into a refusal before the build. Before 0.50.0 a
@@ -582,10 +591,16 @@ helpers.
 `--jobs <n>` runs a request's shards on n harness instances inside one lock
 hold. Each instance has its own profile and its own Marionette port, and
 auto ports (required) move each instance's mochitest server ports; output
-lines carry a `[job <i>]` prefix in the terminal and the run log. With
-`--no-shard`, or a single directory argument, the files are split in order
-into n contiguous chunks. Parallel browsers raise host load, so measure
-before relying on it.
+lines carry a `[job <i>]` prefix in the terminal and the run log. Since
+0.52.0 each instance also writes its own mochitest test list
+(`--testrun-manifest-file`): on the harness's shared default
+`_tests/testing/mochitest/tests.json`, the second instance ran the first
+shard's file and passed, or found none. A `--jobs` run always reads each
+dispatch's mozlog raw log, and a dispatch whose raw log starts none of its
+requested files fails with `started=0/<m>` instead of passing on another
+shard's results. With `--no-shard`, or a single directory argument, the
+files are split in order into n contiguous chunks. Parallel browsers raise
+host load, so measure before relying on it.
 
 `--shard-size <n>` dispatches n files per mach invocation (mochitest restarts
 the browser between files), paying the harness start once per chunk instead

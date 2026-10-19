@@ -303,8 +303,13 @@ export const UNDEFINED_IDENTIFIER_CODES: ReadonlySet<number> = new Set([
  * `chrome:*` wildcard as `any`: `LitElement` (with `ReactiveElement`'s
  * lifecycle) and `MozLitElement` carry closed member lists, so a misspelt
  * member of a widget host is TS2339, as `Cu` is in the built-in shim.
- * Template helpers and directives stay loose. A project shim can merge
- * members into `LitElementShimMembers`; a project whose jsconfig `paths`
+ * Template helpers and directives stay loose. The global
+ * `MozLitElementWith<Extra>` types a widget's query getters and
+ * `static properties` members: the widget casts its `MozLitElement` import
+ * to it before extending ({@link LOOSE_LIT_SHIM} keeps it `any` without
+ * typed Lit). A project
+ * shim can merge members into `LitElementShimMembers`; a project whose
+ * jsconfig `paths`
  * maps these URLs to the real sources gets those instead, since a resolved
  * file wins over an ambient module.
  */
@@ -407,6 +412,25 @@ declare module 'chrome://global/content/lit-utils.mjs' {
   export const SelectControlBaseElement: any;
   export const SelectControlItemMixin: any;
 }
+// MozLitElement with instance members Extra: what a widget casts its base
+// to for the getters static queries installs (and properties it declares
+// only in static properties). A class field would redefine a query getter
+// and throw, and a constructor declaration reads it before renderRoot.
+type MozLitElementWith<Extra> = Pick<
+  typeof import('chrome://global/content/lit-utils.mjs').MozLitElement,
+  keyof typeof import('chrome://global/content/lit-utils.mjs').MozLitElement
+> &
+  (new () => import('chrome://global/content/lit-utils.mjs').MozLitElement & Extra);
+`;
+
+/**
+ * Without typed Lit, `MozLitElementWith<Extra>` is `any`, as the base it
+ * casts is: the same widget source checks under per-patch checkJs and a
+ * project typecheck that leaves `litTypes` off.
+ */
+const LOOSE_LIT_SHIM = `
+// FireForge loose Lit (typecheck.litTypes off): see typecheck-shim.ts.
+type MozLitElementWith<Extra> = any;
 `;
 
 /** Hint appended to reported undefined-identifier diagnostics. */
@@ -488,15 +512,15 @@ async function inlineTripleSlashReferences(
  *   shim path
  * @param extraShimPath - Optional project-relative path to an extra `.d.ts`
  * @param options - `litTypes` appends {@link LIT_TYPES_SHIM} after the
- *   built-in shim (before the extra shim, which can still merge into it)
+ *   built-in shim (before the extra shim, which can still merge into it),
+ *   and {@link LOOSE_LIT_SHIM} otherwise
  */
 export async function composeShimSource(
   projectRoot: string,
   extraShimPath: string | undefined,
   options: { litTypes?: boolean | undefined } = {}
 ): Promise<ComposedShim> {
-  const base =
-    options.litTypes === true ? `${FIREFOX_GLOBALS_SHIM}\n${LIT_TYPES_SHIM}` : FIREFOX_GLOBALS_SHIM;
+  const base = `${FIREFOX_GLOBALS_SHIM}\n${options.litTypes === true ? LIT_TYPES_SHIM : LOOSE_LIT_SHIM}`;
   if (!extraShimPath) {
     return { source: base, extraShimAppended: false };
   }

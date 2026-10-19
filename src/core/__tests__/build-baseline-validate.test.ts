@@ -19,6 +19,7 @@ describe('isBuildBaseline per-path coverage fields', () => {
         testPackagingCoverage: ['a/test'],
         testCoverageRecords: { 'a/test': { ...ANCHOR, inputs: ['a/test', 'shared/head.js'] } },
         fullCoverageAnchor: ANCHOR,
+        recorder: { pid: 42, invocationId: 'id', sessionId: 'lane-a' },
       })
     ).toBe(true);
   });
@@ -45,6 +46,8 @@ describe('isBuildBaseline per-path coverage fields', () => {
       { fullCoverageAnchor: { ...ANCHOR, engineHeadSha: 1 } },
     ],
     ['a full anchor that is not an object', { fullCoverageAnchor: 'full' }],
+    ['a recorder without an invocation id', { recorder: { pid: 1 } }],
+    ['a recorder with a non-integer pid', { recorder: { pid: '1', invocationId: 'x' } }],
   ])('rejects %s', (_label, fields) => {
     expect(isBuildBaseline({ ...BASE, ...fields })).toBe(false);
   });

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.52.0
+
+### Test harness
+
+- `test --jobs` gives each harness instance its own mochitest test list (`--testrun-manifest-file`). On the shared default `tests.json` the second instance ran the first shard's file and the verdict passed, or it found no file at all. A `--jobs` run now always reads each dispatch's mozlog raw log, and a dispatch whose raw log starts none of its requested files fails with `started=0/<m>` instead of passing on another shard's results.
+- A negative control on compiled source escalates its pre-test build to a full `mach build`, with a notice that names the control's files. `mach build faster` compiles nothing, so under `--build` such a control still tested the previous binary and reported `control=missed`.
+- A `coverage-replaced` refusal names who wrote the coverage record: its invocation, when, and the writing process's pid (marked `still running` while it is), `FIREFORGE_SESSION_ID` and invocation id. Every build baseline now records that `recorder`, and `status --test-coverage` shows it.
+
+### Furnace
+
+- A `validationExceptions` entry can name a `file` of the component, as one can name a `tag`. `hardcoded-text` judges each module on its own and lists the modules in `files`, so a vendored bundle whose bytes are pinned can be accepted while the authored modules beside it keep the check. A `furnace-ignore: hardcoded-text` comment now covers only the file it is in.
+
+### Typecheck
+
+- `typecheck.litTypes` declares the global type `MozLitElementWith<Extra>`. A widget casts its `MozLitElement` base to it to type query getters and members declared only in `static properties`. Without `litTypes`, and under per-patch checkJs, the type is `any`, so the same source checks in both.
+
+### Other
+
+- CI: `github/codeql-action` 4.39.0.
+
 ## 0.51.0
 
 ### Test harness

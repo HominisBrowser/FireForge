@@ -12,17 +12,24 @@ import { createIssue } from './furnace-validate-helpers.js';
 import { countUnlabelledIconButtons } from './furnace-validate-icon-button.js';
 import { collectLitTemplateRegions, parseTemplateAttributes } from './lit-template-regions.js';
 
+/** One module of a composed component: its file name and contents. */
+interface ComponentModule {
+  name: string;
+  content: string;
+}
+
 /**
  * Reads the composed component: `<tagName>.mjs` followed by its companion
  * modules (`<tagName>-*.mjs`, tests and stories left out), so a template's
  * findings do not depend on which of the component's modules it lives in.
  * Returns undefined when the host module is missing.
  */
-async function readComposedComponentSource(
+async function readComposedComponentModules(
   componentDir: string,
   tagName: string
-): Promise<string | undefined> {
-  const hostPath = join(componentDir, `${tagName}.mjs`);
+): Promise<ComponentModule[] | undefined> {
+  const hostName = `${tagName}.mjs`;
+  const hostPath = join(componentDir, hostName);
   if (!(await pathExists(hostPath))) return undefined;
   const entries = await readdir(componentDir).catch((): string[] => []);
   const companions = entries
@@ -33,9 +40,11 @@ async function readComposedComponentSource(
         !/\.(test|spec|stories)\./.test(name)
     )
     .sort();
-  const sources = [await readText(hostPath)];
-  for (const name of companions) sources.push(await readText(join(componentDir, name)));
-  return sources.join('\n');
+  const modules = [{ name: hostName, content: await readText(hostPath) }];
+  for (const name of companions) {
+    modules.push({ name, content: await readText(join(componentDir, name)) });
+  }
+  return modules;
 }
 
 /**
@@ -61,8 +70,9 @@ export async function validateAccessibility(
   customConfig?: CustomComponentConfig,
   optInChecks: readonly FurnaceOptInCheck[] = []
 ): Promise<ValidationIssue[]> {
-  const content = await readComposedComponentSource(componentDir, tagName);
-  if (content === undefined) return [];
+  const modules = await readComposedComponentModules(componentDir, tagName);
+  if (modules === undefined) return [];
+  const content = modules.map((module) => module.content).join('\n');
   const issues: ValidationIssue[] = [];
 
   if (!hasAriaRole(content) && hasGenericInteractiveElement(content)) {
@@ -103,15 +113,21 @@ export async function validateAccessibility(
     });
   }
 
-  if (containsHardcodedTemplateText(content)) {
-    issues.push(
-      createIssue(
+  // Judged per module, so the finding names its files and an exception can
+  // accept one module (a vendored bundle) without muting the others.
+  const textFiles = modules
+    .filter((module) => containsHardcodedTemplateText(module.content))
+    .map((module) => module.name);
+  if (textFiles.length > 0) {
+    issues.push({
+      ...createIssue(
         tagName,
         'warning',
         'hardcoded-text',
-        'Possible hardcoded string found. Use data-l10n-id for localization.'
-      )
-    );
+        `Possible hardcoded string found in ${textFiles.join(', ')}. Use data-l10n-id for localization.`
+      ),
+      files: textFiles,
+    });
   }
 
   const isInteractive = hasClick || hasKeyboardHandler;
@@ -425,7 +441,7 @@ function isWithinLocalizedElement(content: string, matchIndex: number): boolean 
  *      `title=`, or `tooltiptext=` attribute when constructing DOM in JS.
  *
  * A file-wide `// furnace-ignore: hardcoded-text` comment suppresses all
- * findings (matches the pre-existing escape hatch).
+ * findings in that file (matches the pre-existing escape hatch).
  */
 export function containsHardcodedTemplateText(content: string): boolean {
   if (/furnace-ignore:\s*hardcoded-text/.test(content)) {

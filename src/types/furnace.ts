@@ -121,6 +121,13 @@ export interface FurnaceValidationException {
    * check for every other element of the component.
    */
   tag?: string;
+  /**
+   * Narrows the exception to the findings in this module file of the
+   * component (a finding's `files`), by file name: a vendored bundle whose
+   * bytes are pinned can be accepted without muting the check for the
+   * authored modules beside it.
+   */
+  file?: string;
   /** Why the finding is accepted. Required: the entry is the review record. */
   reason: string;
 }
@@ -412,6 +419,8 @@ export interface ValidationIssue {
   message: string;
   /** Element tags the finding is about, when it is about particular elements. */
   tags?: string[];
+  /** Component module files the finding is in (`hardcoded-text`), by file name. */
+  files?: string[];
 }
 
 /** Resolved test-harness selection for a `furnace create` run. */

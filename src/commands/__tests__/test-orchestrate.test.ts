@@ -334,6 +334,12 @@ describe('--negative-control', () => {
       const seen: string[] = [];
       const body = vi.fn<TestRunBody>(async (_paths, _options, hooks) => {
         seen.push(hooks.beforeBuild === undefined ? 'dispatch' : 'build');
+        // Only the first run builds, and it must be a full mach build:
+        // `mach build faster` compiles nothing.
+        expect(hooks.fullBuildReason !== undefined).toBe(hooks.beforeBuild !== undefined);
+        if (hooks.fullBuildReason !== undefined) {
+          expect(hooks.fullBuildReason).toContain(`engine/${CPP}`);
+        }
         await hooks.beforeBuild?.();
         await hooks.beforeDispatch?.();
         expect(await cppFile()).toBe(NEUTERED);

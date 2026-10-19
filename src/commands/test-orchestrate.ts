@@ -26,7 +26,10 @@ import {
   recoverPendingNegativeControl,
   restoreNegativeControl,
 } from '../core/negative-control.js';
-import { formatCompiledControlRefusal } from '../core/negative-control-compiled.js';
+import {
+  formatCompiledControlBuildNotice,
+  formatCompiledControlRefusal,
+} from '../core/negative-control-compiled.js';
 import { getActiveRunLogPath, writeToActiveRunLog } from '../core/run-log.js';
 import { GeneralError, InvalidArgumentError, PreflightRefusalError } from '../errors/base.js';
 import { TestFailureError } from '../errors/build.js';
@@ -68,6 +71,11 @@ export interface TestRunHooks {
    * source, which only reaches the binary when the build compiles it.
    */
   beforeBuild?: () => Promise<void>;
+  /**
+   * Why the pre-test build must be a full `mach build`: `mach build faster`
+   * compiles nothing, so a compiled control's binary needs the full one.
+   */
+  fullBuildReason?: string;
   /** `--repeat` run this sub-run is (1-based), for `--results`. */
   repetition?: number;
   /** Where dispatches write their mozlog raw logs (`--results`, `--shard-size`). */
@@ -300,7 +308,10 @@ export async function orchestrateTestRuns(
         ...(plan === undefined
           ? {}
           : compiledControl && index === 0
-            ? { beforeBuild: controlHook(controlPaths, plan, slot) }
+            ? {
+                beforeBuild: controlHook(controlPaths, plan, slot),
+                fullBuildReason: formatCompiledControlBuildNotice(compiled),
+              }
             : { beforeDispatch: controlHook(controlPaths, plan, slot) }),
       });
     } catch (caught: unknown) {

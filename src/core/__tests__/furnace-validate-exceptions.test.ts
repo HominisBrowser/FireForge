@@ -144,6 +144,40 @@ describe('applyValidationExceptions', () => {
     expect(partial.stale).toEqual([exceptions[1]]);
   });
 
+  it('suppresses a file-scoped finding only when its file entries cover every file', () => {
+    const inFiles = (files: string[]): ValidationIssue => ({
+      ...issue('a', 'hardcoded-text'),
+      files,
+    });
+    const vendor = {
+      component: 'a',
+      check: 'hardcoded-text',
+      file: 'a-vendor.mjs',
+      reason: 'pinned bundle',
+    };
+    const covered = applyValidationExceptions([inFiles(['a-vendor.mjs'])], [vendor], () => true);
+    expect(covered.issues).toEqual([]);
+    expect(covered.excepted[0]?.reason).toBe('pinned bundle');
+
+    // An authored module beside the bundle keeps the check.
+    const partial = applyValidationExceptions(
+      [inFiles(['a-vendor.mjs', 'a-panel.mjs'])],
+      [vendor],
+      () => true
+    );
+    expect(partial.issues).toEqual([inFiles(['a-vendor.mjs', 'a-panel.mjs'])]);
+    expect(partial.stale).toEqual([]);
+
+    // A file entry does not cover a tag-scoped finding.
+    const tagged = applyValidationExceptions(
+      [{ ...issue('a', 'hardcoded-text'), tags: ['a-vendor.mjs'] }],
+      [vendor],
+      () => true
+    );
+    expect(tagged.issues).toHaveLength(2);
+    expect(tagged.stale).toEqual([vendor]);
+  });
+
   it('reports an unused exception as stale only when its component was judged', () => {
     const exceptions = [
       { component: 'a', check: 'x', reason: 'r' },
@@ -290,6 +324,23 @@ describe('validateAccessibility judges the composed component', () => {
     expect(finding?.message).toContain('on <div>');
   });
 
+  it('names the modules a hardcoded-text finding is in, each judged on its own', async () => {
+    await writeFile(join(dir, 'moz-editor.mjs'), `${lit}export const host = 1;\n`);
+    await writeFile(
+      join(dir, 'moz-editor-vendor.mjs'),
+      'probe.textContent = "abc def ghi jkl mno pqr stu";\n'
+    );
+    await writeFile(
+      join(dir, 'moz-editor-ignored.mjs'),
+      '// furnace-ignore: hardcoded-text\nnode.textContent = "Not judged";\n'
+    );
+    const finding = (await validateAccessibility(dir, 'moz-editor')).find(
+      (entry) => entry.check === 'hardcoded-text'
+    );
+    expect(finding?.files).toEqual(['moz-editor-vendor.mjs']);
+    expect(finding?.message).toContain('in moz-editor-vendor.mjs');
+  });
+
   it('counts a keyboard handler in a companion for a click in the host', async () => {
     await writeFile(
       join(dir, 'moz-menu.mjs'),
@@ -321,6 +372,29 @@ describe('parseValidationExceptions tag', () => {
     ];
     expect(parseValidationExceptions(entries)).toEqual(entries);
     expect(() => parseValidationExceptions([entries[0], entries[0]])).toThrow(/on <li>/);
+  });
+});
+
+describe('parseValidationExceptions file', () => {
+  it('accepts a file name and keys duplicates by it', () => {
+    const entries = [
+      { component: 'moz-a', check: 'hardcoded-text', file: 'moz-a-vendor.mjs', reason: 'r' },
+      { component: 'moz-a', check: 'hardcoded-text', reason: 'r' },
+    ];
+    expect(parseValidationExceptions(entries)).toEqual(entries);
+    expect(() => parseValidationExceptions([entries[0], entries[0]])).toThrow(
+      /in moz-a-vendor\.mjs/
+    );
+  });
+
+  it('refuses a path, and a tag beside a file', () => {
+    const base = { component: 'moz-a', check: 'hardcoded-text', reason: 'r' };
+    for (const file of ['vendor/a.mjs', '..', 'a\\b.mjs']) {
+      expect(() => parseValidationExceptions([{ ...base, file }])).toThrow(/not a path/);
+    }
+    expect(() =>
+      parseValidationExceptions([{ ...base, file: 'moz-a-vendor.mjs', tag: 'div' }])
+    ).toThrow(/a "tag" or a "file", not both/);
   });
 });
 

@@ -306,10 +306,26 @@ shim: `LitElement` and the helpers of
 member lists, as `Cu` does, so a misspelt member of a widget host is an
 error rather than `any`. Template helpers and directives stay loose. It is
 off by default because a reactive property declared only in
-`static properties` or `static queries` then needs a constructor
-assignment or a JSDoc declaration to be known. A project shim can add
-members by merging `interface LitElementShimMembers`; a jsconfig `paths`
-entry that maps these URLs to real sources takes precedence.
+`static properties` or `static queries` then needs a declaration to be
+known. Since 0.52.0 the shim declares the global type
+`MozLitElementWith<Extra>`: a widget casts its base to it, and its
+instances carry `Extra` beside MozLitElement's members. A query getter
+cannot be declared any other way: a class field redefines the getter
+MozLitElement installs and throws, and a constructor declaration reads it
+before `renderRoot` exists.
+
+```js
+const Base = /** @type {MozLitElementWith<{ input: HTMLInputElement }>} */ (MozLitElement);
+export class MozSearch extends Base {
+  static queries = { input: 'input' };
+}
+```
+
+Without `litTypes` (and under per-patch checkJs, which does not type Lit)
+`MozLitElementWith<Extra>` is `any`, as the base is, so the same source
+checks in both. A project shim can add members by merging
+`interface LitElementShimMembers`; a jsconfig `paths` entry that maps these
+URLs to real sources takes precedence.
 
 Per-patch checkJs gives each test script its own program. Since 0.51.0 a
 test's `resource:///` and `chrome://` imports (including a

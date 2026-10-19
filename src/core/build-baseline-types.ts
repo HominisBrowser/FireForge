@@ -147,6 +147,20 @@ export interface BuildBaseline {
    * as "unknown" when absent.
    */
   recordedBy?: string;
+  /**
+   * The process that wrote this baseline: its pid, its invocation id (the
+   * one its history records carry) and the caller's `FIREFORGE_SESSION_ID`
+   * when set. A coverage refusal names it, so a run whose claim another
+   * session's scoped build replaced can tell whose build that was.
+   */
+  recorder?: BaselineRecorder;
+}
+
+/** See {@link BuildBaseline.recorder}. */
+export interface BaselineRecorder {
+  pid: number;
+  invocationId: string;
+  sessionId?: string;
 }
 
 /**

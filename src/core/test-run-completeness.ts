@@ -18,10 +18,14 @@
  * `FAIL reason=test-failures`, and a short start count is stamped on the
  * verdict line as `started=<n>/<m> first-unstarted=<path>`.
  *
- * The start-count check only runs when at least one start marker names a
- * requested file. The suite-specific xpcshell dispatch can prove execution
- * with a result-summary block alone and print no `TEST_START` line, and a
- * run that never names its files cannot be counted against them.
+ * From streamed or captured text, the start-count check only runs when at
+ * least one start marker names a requested file. The suite-specific xpcshell
+ * dispatch can prove execution with a result-summary block alone and print
+ * no `TEST_START` line, and a run that never names its files cannot be
+ * counted against them. The structured raw log names every test by its
+ * manifest id, so a raw log whose starts name none of the requested files
+ * ran something else: a `--jobs` instance that read another instance's test
+ * list once passed on that instance's file.
  */
 
 import {
@@ -121,10 +125,14 @@ export function createStartMarkerTracker(): StartMarkerTracker {
  * @param evidence - Captured mach stdout and stderr, or the markers
  *   collected from the complete stream
  * @param requestedPaths - Dispatched paths, in dispatch order
+ * @param authoritative - The markers come from the raw log, so a run whose
+ *   starts name no requested file is counted (as none started) instead of
+ *   being left uncounted
  */
 export function countStartedFiles(
   evidence: string | StartMarkers,
-  requestedPaths: readonly string[]
+  requestedPaths: readonly string[],
+  authoritative = false
 ): { started: number; requested: number; firstUnstarted?: string } | undefined {
   const requested = requestedPaths.filter((path) =>
     TEST_FILE_BASENAME_PATTERN.test(basenameOf(path))
@@ -137,8 +145,8 @@ export function countStartedFiles(
   };
   // Counting needs a dialect that names the requested files on its start
   // lines. When no start line names any of them, the output cannot be
-  // counted against the request at all.
-  if (!requested.some((path) => names(path, started))) return undefined;
+  // counted against the request at all, unless it is the raw log.
+  if (!authoritative && !requested.some((path) => names(path, started))) return undefined;
   const unstarted = requested.filter((path) => !names(path, started) && !names(path, skipped));
   const firstUnstarted = unstarted[0];
   return {
@@ -174,7 +182,11 @@ export function vetoIncompletePass(
   // tracker means nothing was streamed through it, and the capture is then
   // the only evidence there is.
   const useTracked = tracked !== undefined && tracked.markers.started.length > 0;
-  const counted = countStartedFiles(useTracked ? tracked.markers : output, requestedPaths);
+  const counted = countStartedFiles(
+    useTracked ? tracked.markers : output,
+    requestedPaths,
+    useTracked && tracked.source === 'raw'
+  );
   const unexpected = verdict.unexpected ?? 0;
   const truncated = counted?.firstUnstarted !== undefined;
   if (unexpected === 0 && shutdownLine === undefined && !truncated) return verdict;

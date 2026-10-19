@@ -92,6 +92,8 @@ Additive keys since 0.51.0 outside `test`:
   `@click`). An exception that matched an error adds a
   `validation-exception-on-error` error, and a full run under
   `furnace.json#minComponents` a `component-floor` error on `furnace.json`.
+- `furnace validate --json` (since 0.52.0): a `hardcoded-text` finding
+  carries `files`, the component's module file names it was found in.
 
 ## Versioning
 
@@ -199,7 +201,9 @@ shard did not pass; under `--shard-size` `shards=` counts files and
 session lock shared, and `results=<path>` names the `--results` document. A
 run whose engine changed mid-run only in files the running browser cannot
 see keeps its verdict and appends `drift-tolerated=<n>`. A negative control
-on compiled source appends `control-build=compiled`.
+on compiled source appends `control-build=compiled`. Since 0.52.0 a raw log
+that starts none of a dispatch's requested files counts as
+`started=0/<m> ... started-source=raw` instead of leaving the run uncounted.
 
 ### The additive `shuffle=` key
 

@@ -379,6 +379,11 @@ describe('build-baseline', () => {
         const stored = await readBuildBaseline(projectRoot);
         const recorded = stored?.buildInputFingerprints ?? {};
         expect(Object.keys(recorded)).toEqual([MOZBUILD]);
+        // The writing process is stamped, so a coverage refusal can name it.
+        expect(stored?.recorder).toEqual({
+          pid: process.pid,
+          invocationId: expect.any(String) as string,
+        });
       } finally {
         await rm(engineDir, { recursive: true, force: true });
       }

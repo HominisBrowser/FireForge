@@ -23,6 +23,7 @@ import {
 import { formatStaleExemptions } from '../core/test-stale-exempt.js';
 import { PreflightRefusalError } from '../errors/base.js';
 import type { TestOptions } from '../types/commands/index.js';
+import { isProcessAlive } from '../utils/errors.js';
 import { info, warn } from '../utils/logger.js';
 import { describePerfStaleImpact } from './test-perf-scope.js';
 
@@ -132,6 +133,13 @@ async function enforceCoverageGate(
           remaining.map((request) => [request.path, request.changed])
         ),
         carriesFullAnchor: baseline?.fullCoverageAnchor !== undefined,
+        recordedBy: baseline?.recordedBy,
+        builtAt: baseline?.builtAt,
+        recorder: baseline?.recorder,
+        recorderAlive:
+          baseline?.recorder !== undefined &&
+          baseline.recorder.pid !== process.pid &&
+          isProcessAlive(baseline.recorder.pid),
       }
     ),
     'coverage-replaced'

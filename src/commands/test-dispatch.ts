@@ -139,11 +139,22 @@ async function allocateLoopbackPort(): Promise<number> {
 }
 
 /**
+ * The mochitest harness writes the dispatched test list to
+ * `_tests/testing/mochitest/tests.json` and the browser fetches it from
+ * there, so instances sharing the default name read each other's list (and
+ * one instance's cleanup removes it under the other). Each instance names
+ * its own file.
+ */
+function testRunManifestArg(index: number): string {
+  return `--testrun-manifest-file=fireforge-tests-${process.pid}-job${index + 1}.json`;
+}
+
+/**
  * The context for `--jobs` instance `index` (0-based): its own output
- * prefix, and from the second instance on its own Marionette port, so
- * browsers started at the same moment never race for 2828. The mochitest
- * server ports are left to the engine harness's busy-port fallback, which
- * `--jobs` requires (auto ports).
+ * prefix and test-list manifest, and from the second instance on its own
+ * Marionette port, so browsers started at the same moment never race for
+ * 2828. The mochitest server ports are left to the engine harness's
+ * busy-port fallback, which `--jobs` requires (auto ports).
  */
 async function instanceContext(
   base: TestRunContext,
@@ -151,15 +162,13 @@ async function instanceContext(
   xpcshellOnly: boolean
 ): Promise<TestRunContext> {
   const ctx: TestRunContext = { ...base, outputPrefix: `[job ${index + 1}] ` };
-  if (index === 0 || xpcshellOnly) return ctx;
+  if (xpcshellOnly) return ctx;
+  const own = [...base.baseExtraArgs, testRunManifestArg(index)];
+  if (index === 0) return { ...ctx, baseExtraArgs: own };
   const port = await allocateLoopbackPort();
   return {
     ...ctx,
-    baseExtraArgs: [
-      ...base.baseExtraArgs,
-      `--setpref=marionette.port=${port}`,
-      `--marionette=127.0.0.1:${port}`,
-    ],
+    baseExtraArgs: [...own, `--setpref=marionette.port=${port}`, `--marionette=127.0.0.1:${port}`],
   };
 }
 

@@ -122,10 +122,30 @@ describe('dispatchTests', () => {
     const second = contexts.find((ctx) => ctx.outputPrefix === '[job 2] ');
     expect(second?.baseExtraArgs).toEqual([
       '--headless',
+      `--testrun-manifest-file=fireforge-tests-${process.pid}-job2.json`,
       expect.stringMatching(/^--setpref=marionette\.port=\d+$/) as string,
       expect.stringMatching(/^--marionette=127\.0\.0\.1:\d+$/) as string,
     ]);
     expect(notice).toHaveBeenCalledWith(expect.stringContaining('on 2 harness instances at once'));
+  });
+
+  it('gives every --jobs instance its own mochitest test-list manifest (not for xpcshell)', async () => {
+    // The harness writes the dispatched list to one shared tests.json; two
+    // instances on the default name ran each other's files.
+    await dispatchTests(inputs({ jobs: 2, autoPorts: true }, [['a.js'], ['b.js']]));
+    const manifests = vi
+      .mocked(runTestsWithRetries)
+      .mock.calls.map(([ctx]) =>
+        ctx.baseExtraArgs.find((arg) => arg.startsWith('--testrun-manifest-file='))
+      );
+    expect(new Set(manifests).size).toBe(2);
+    expect(manifests).not.toContain(undefined);
+
+    vi.mocked(runTestsWithRetries).mockClear();
+    await dispatchTests(inputs({ jobs: 2 }, [['test_a.js'], ['test_b.js']], true));
+    for (const [ctx] of vi.mocked(runTestsWithRetries).mock.calls) {
+      expect(ctx.baseExtraArgs).toEqual(['--headless']);
+    }
   });
 
   it('splits one directory argument into contiguous --jobs chunks', async () => {

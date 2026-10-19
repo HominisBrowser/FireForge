@@ -42,6 +42,28 @@ describe('createStartMarkerTracker', () => {
     ).toMatchObject({ started: 1, firstUnstarted: FILES[0], startedSource: 'capture' });
   });
 
+  it('fails a raw log whose starts name none of the requested files (a --jobs instance that ran another list)', () => {
+    const own = `${DIR}/browser_b.js`;
+    const verdict = vetoIncompletePass({ kind: 'tests-ran-ok', unexpected: 0 }, '', [own], {
+      markers: { started: [`${DIR}/browser_a.js`], skipped: [] },
+      source: 'raw',
+    });
+    expect(verdict.kind).toBe('test-failures');
+    expect(verdict.incomplete).toMatchObject({
+      started: 0,
+      requested: 1,
+      firstUnstarted: own,
+      startedSource: 'raw',
+    });
+    // Streamed text keeps the dialect escape: it cannot be counted.
+    expect(
+      vetoIncompletePass({ kind: 'tests-ran-ok', unexpected: 0 }, '', [own], {
+        markers: { started: [`${DIR}/browser_a.js`], skipped: [] },
+        source: 'stream',
+      }).kind
+    ).toBe('tests-ran-ok');
+  });
+
   it('falls back to the capture when nothing was streamed through the tracker', () => {
     const output = `TEST-START | ${FILES[0]}\nTEST-OK\n`;
     const verdict = vetoIncompletePass({ kind: 'tests-ran-ok' }, output, FILES, {

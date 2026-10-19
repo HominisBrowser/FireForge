@@ -8,7 +8,9 @@
  * never compiled: the run tests the unmutated binary and reports
  * `control=missed`, which reads as a test that cannot fail. Such a target
  * is now refused without `--build`, and with `--build` the control is
- * applied before the build so the binary under test carries it.
+ * applied before the build so the binary under test carries it. That build
+ * is a full `mach build`: the pre-test build is otherwise `mach build
+ * faster`, which compiles nothing, so the control still missed.
  */
 
 import { extname } from 'node:path';
@@ -59,6 +61,21 @@ export async function findCompiledControlTargets(
     }
   }
   return compiled;
+}
+
+/**
+ * The notice that explains why a compiled control's pre-test build is a
+ * full `mach build` instead of `mach build faster`.
+ *
+ * @param compiled - Engine-relative compiled targets
+ */
+export function formatCompiledControlBuildNotice(compiled: readonly string[]): string {
+  const files = compiled.map((path) => `engine/${path}`).join(', ');
+  return (
+    `The negative control edits compiled source (${files}); escalating this pre-test build to ` +
+    'a full mach build, since mach build faster compiles nothing and the binary under test ' +
+    'would not carry the control.'
+  );
 }
 
 /**

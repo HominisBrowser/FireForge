@@ -28,7 +28,11 @@ import { verbose, warn } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import { isPackageablePath, isXpcomManifestPath } from './build-audit.js';
 import { readBuildBaseline } from './build-baseline.js';
-import type { BuildBaseline, TestPackagingCoverage } from './build-baseline-types.js';
+import type {
+  BaselineRecorder,
+  BuildBaseline,
+  TestPackagingCoverage,
+} from './build-baseline-types.js';
 import { hashEngineFile } from './coverage-extend.js';
 import { isTestManifestPath } from './coverage-records.js';
 import { collectChangedEnginePaths, dropPathsMatchingFingerprints } from './engine-changes.js';
@@ -238,6 +242,30 @@ export interface CoverageRefusalDetail {
   changedInputs?: Readonly<Record<string, readonly string[]>>;
   /** The record carries a full build's anchor forward for unchanged paths. */
   carriesFullAnchor?: boolean;
+  /**
+   * Who wrote the record and when, so a run whose coverage a peer's scoped
+   * build replaced can tell whose build that was.
+   */
+  recordedBy?: string | undefined;
+  builtAt?: string | undefined;
+  recorder?: BaselineRecorder | undefined;
+  /** Whether the recorder's process is still running (it may still be using the packaging). */
+  recorderAlive?: boolean | undefined;
+}
+
+/** The refusal's sentence naming who wrote the coverage record. */
+function formatCoverageHolder(detail: CoverageRefusalDetail): string {
+  if (detail.recorder === undefined && detail.recordedBy === undefined) return '';
+  const what = detail.recordedBy !== undefined ? `"${detail.recordedBy}"` : 'a build';
+  const when = detail.builtAt !== undefined ? ` at ${detail.builtAt}` : '';
+  const recorder = detail.recorder;
+  const who =
+    recorder === undefined
+      ? ''
+      : ` (pid ${recorder.pid}${detail.recorderAlive === true ? ', still running' : ''}` +
+        (recorder.sessionId !== undefined ? `, session ${recorder.sessionId}` : '') +
+        `, invocation ${recorder.invocationId})`;
+  return ` The current record was written by ${what}${when}${who}.`;
 }
 
 /**
@@ -299,7 +327,7 @@ export function formatTestCoverageRefusal(
     `The packaged test runtime was produced by a scoped "fireforge test --build" covering only: ${scope}.\n` +
     `The requested run needs ${cap(uncovered)}, which that packaging does not cover — support ` +
     'fixtures for those manifests may be missing from obj-*/_tests/, and the run can hang ' +
-    `rather than fail.${affectedLine}${manifestLine} ${rebuildHint} ` +
+    `rather than fail.${formatCoverageHolder(detail)}${affectedLine}${manifestLine} ${rebuildHint} ` +
     '(--allow-stale-build does not bypass this check — it accepts stale content, not missing coverage.)'
   );
 }

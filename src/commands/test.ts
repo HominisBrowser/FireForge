@@ -215,7 +215,10 @@ export async function testCommand(
           emitFailVerdict('preflight', refusalNote(error));
         }
       );
-    const collectsResults = options.results !== undefined || options.shardSize !== undefined;
+    // `--jobs` always reads each dispatch's raw log, so a shard that ran
+    // files other than its own fails instead of passing on their results.
+    const collectsResults =
+      options.results !== undefined || options.shardSize !== undefined || (options.jobs ?? 1) > 1;
     try {
       await underLock(
         () => (collectsResults ? withRawLogDir((dir) => orchestrate(dir)) : orchestrate()),
@@ -480,6 +483,7 @@ async function runTestCommandBody(
     await runTestBuildPhase(projectRoot, paths, projectConfig, harnessRetries, options, {
       classification,
       normalizedPaths: hooks.coveragePaths ?? normalizedPaths,
+      ...(hooks.fullBuildReason === undefined ? {} : { fullBuildReason: hooks.fullBuildReason }),
     })
   ) {
     return;

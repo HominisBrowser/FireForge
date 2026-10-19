@@ -61,6 +61,8 @@ interface RunPreTestBuildOptions {
   extend?: { requestedPaths: string[] } | undefined;
   /** What the Furnace apply before the build does. */
   furnace: PreTestFurnacePlan;
+  /** Forces a full `mach build`, with this notice (a compiled negative control). */
+  fullBuildReason?: string | undefined;
 }
 
 /**
@@ -79,6 +81,7 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
     refuseUnexportedDrift,
     extend,
     furnace,
+    fullBuildReason,
   } = options;
   await withBuildLock(projectRoot, async () => {
     // Pass the previous baseline exactly like `fireforge build` does, so
@@ -121,20 +124,19 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
       if (retentionNotice !== undefined) notice(retentionNotice);
     }
 
-    const buildKind = preparation.fullBuildRequired ? 'full' : 'faster';
-    if (preparation.fullBuildRequired) {
+    const fullBuild = preparation.fullBuildRequired || fullBuildReason !== undefined;
+    const buildKind = fullBuild ? 'full' : 'faster';
+    if (fullBuild) {
       // Warning severity rather than info: agent-facing output filters
       // keep warnings and errors only, and this is the line that explains an
       // otherwise unexplained multi-minute build.
       notice(
-        preparation.fullBuildReason ??
+        (preparation.fullBuildRequired ? preparation.fullBuildReason : fullBuildReason) ??
           'A jar.mn registration changed since the last successful build; escalating this pre-test build to a full mach build so new install-manifest destinations are created.'
       );
     }
     const s = spinner(
-      preparation.fullBuildRequired
-        ? 'Running required full build...'
-        : 'Running incremental build...'
+      fullBuild ? 'Running required full build...' : 'Running incremental build...'
     );
     // The pre-test build routes through the same protected mach dispatch as
     // `fireforge build` / `build --ui`: in-venv resource-monitor guard plus
@@ -178,7 +180,7 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
           ...recorded,
           previousBaseline,
           recordedBy: describeBuildInvocation(extend !== undefined, testPackagingCoverage),
-          staticComponentsHandling: preparation.fullBuildRequired
+          staticComponentsHandling: fullBuild
             ? 'refresh'
             : plan !== undefined && (plan.keepFull || Object.keys(plan.retained).length > 0)
               ? 'carry-forward'
@@ -193,9 +195,13 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
     s.error('Pre-test build failed');
     throw new BuildError(
       result.crashSignature
-        ? buildHarnessCrashMessage(result.crashSignature, result.attempts, 'mach build faster')
+        ? buildHarnessCrashMessage(
+            result.crashSignature,
+            result.attempts,
+            fullBuild ? 'mach build' : 'mach build faster'
+          )
         : 'Pre-test build failed',
-      preparation.fullBuildRequired ? 'mach build' : 'mach build faster'
+      fullBuild ? 'mach build' : 'mach build faster'
     );
   });
 }
@@ -292,9 +298,14 @@ export async function runTestBuildPhase(
   projectConfig: FireForgeConfig,
   harnessRetries: number,
   options: TestOptions,
-  request: { classification: HarnessClassification; normalizedPaths: string[] }
+  request: {
+    classification: HarnessClassification;
+    normalizedPaths: string[];
+    /** Forces a full pre-test build (a compiled negative control). */
+    fullBuildReason?: string;
+  }
 ): Promise<boolean> {
-  const { classification, normalizedPaths } = request;
+  const { classification, normalizedPaths, fullBuildReason } = request;
   const extending = options.extendCoverage === true;
   if (extending) {
     assertExtendCoverageUsage(options, normalizedPaths);
@@ -328,6 +339,7 @@ export async function runTestBuildPhase(
       testPackagingCoverage: coverage,
       refuseUnexportedDrift: options.refuseUnexportedDrift === true,
       extend: extending ? { requestedPaths: normalizedPaths } : undefined,
+      fullBuildReason,
       furnace: await planPreTestFurnace(
         projectRoot,
         paths,

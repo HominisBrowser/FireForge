@@ -136,12 +136,30 @@ entries cover all of them:
 }
 ```
 
+An optional `file` (since 0.52.0) narrows an entry the same way to findings
+in one module of the component, by file name. `hardcoded-text` names the
+modules it found text in, so a vendored bundle whose bytes are pinned (and
+so cannot carry a `furnace-ignore` comment) can be accepted while the
+authored modules beside it keep the check. An entry names a `tag` or a
+`file`, not both:
+
+```json
+{
+  "component": "moz-editor",
+  "check": "hardcoded-text",
+  "file": "moz-editor-codemirror.mjs",
+  "reason": "The vendored bundle's width probe is never rendered."
+}
+```
+
 Accessibility checks judge the composed component: the host
 `<tag>.mjs` and its companion modules (`<tag>-*.mjs`, tests and stories
 left out) read as one source. Moving a template between the component's
 modules therefore no longer changes its findings: a keyboard handler in a
 companion covers an `@click` in the host, and an `@click` in a companion
-is judged too. Toolkit's `panel-item` counts as natively
+is judged too. `hardcoded-text` judges each module on its own, so a
+`// furnace-ignore: hardcoded-text` comment covers the file it is in, not
+its siblings. Toolkit's `panel-item` counts as natively
 keyboard-activated, beside `button`, form controls and the `moz-*` buttons.
 
 `minComponents` sets the fewest components a full `furnace validate` must

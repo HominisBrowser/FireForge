@@ -120,6 +120,20 @@ describe('runTypecheck', () => {
     expect(error.message).toContain("'updateCompelte'");
   });
 
+  it('types query getters through MozLitElementWith, and keeps it any without litTypes', async () => {
+    const loose = expectSingle(
+      await typecheckFixtures({ projects: ['lit-queries/jsconfig.json'] })
+    );
+    expect(loose.issues.filter((i) => i.category === 'error')).toHaveLength(0);
+
+    const typed = expectSingle(
+      await typecheckFixtures({ projects: ['lit-queries/jsconfig.json'], litTypes: true })
+    );
+    const error: TypecheckIssue = expectSingle(typed.issues.filter((i) => i.category === 'error'));
+    expect(error.code).toBe(2551);
+    expect(error.message).toContain("'inptu'");
+  });
+
   it('skips projects that explicitly opt out via checkJs: false', async () => {
     const results = await typecheckFixtures({
       projects: ['disabled/jsconfig.json'],

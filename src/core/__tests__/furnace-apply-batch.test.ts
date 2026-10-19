@@ -51,10 +51,13 @@ vi.mock('../furnace-rollback.js', () => ({
   snapshotFile: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('../furnace-registration-jar-inplace.js', () => ({
+  removeJarMnFileEntries: vi.fn(() => Promise.resolve(1)),
+}));
+
 vi.mock('../furnace-registration.js', () => ({
   addJarMnEntries: vi.fn(() => Promise.resolve()),
   addLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(0)),
-  removeJarMnEntries: vi.fn(() => Promise.resolve()),
   removeLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve()),
   removeCustomElementRegistration: vi.fn(() => Promise.resolve()),
 }));
@@ -151,11 +154,8 @@ import {
 } from '../furnace-apply-helpers.js';
 import { findPatchOwnedOverwrites } from '../furnace-apply-overwrite-warn.js';
 import { loadFurnaceConfig, loadFurnaceState, updateFurnaceState } from '../furnace-config.js';
-import {
-  addJarMnEntries,
-  removeCustomElementRegistration,
-  removeJarMnEntries,
-} from '../furnace-registration.js';
+import { addJarMnEntries, removeCustomElementRegistration } from '../furnace-registration.js';
+import { removeJarMnFileEntries } from '../furnace-registration-jar-inplace.js';
 import { restoreRollbackJournalOrThrow } from '../furnace-rollback.js';
 import { runPostApplyConsistencyChecks } from '../furnace-validate-registration.js';
 
@@ -542,9 +542,14 @@ describe('applyAllComponents', () => {
       'toolkit/locales/en-US/toolkit/global',
       expect.any(Object)
     );
-    // jar.mn must be re-synced (remove all + re-add live entries) so the
-    // stale CSS entry does not survive into the engine.
-    expect(removeJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel');
+    // jar.mn must be re-synced (drop the deleted file's line in place, add
+    // any missing live entry) so the stale CSS entry does not survive into
+    // the engine and the rest of the block keeps its order.
+    expect(removeJarMnFileEntries).toHaveBeenCalledWith(
+      nativePath('/project/engine'),
+      'moz-panel',
+      ['moz-panel.css']
+    );
     expect(addJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel', [
       'moz-panel.mjs',
     ]);
@@ -603,7 +608,11 @@ describe('applyAllComponents', () => {
       'toolkit/locales/en-US/toolkit/global',
       expect.any(Object)
     );
-    expect(removeJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel');
+    expect(removeJarMnFileEntries).toHaveBeenCalledWith(
+      nativePath('/project/engine'),
+      'moz-panel',
+      ['panel-helper-old.mjs']
+    );
     expect(addJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel', [
       'moz-panel.mjs',
       'panel-helper-new.mjs',
@@ -641,7 +650,11 @@ describe('applyAllComponents', () => {
       nativePath('/project/engine'),
       'moz-panel'
     );
-    expect(removeJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel');
+    expect(removeJarMnFileEntries).toHaveBeenCalledWith(
+      nativePath('/project/engine'),
+      'moz-panel',
+      ['moz-panel.mjs']
+    );
     expect(addJarMnEntries).toHaveBeenCalledWith(nativePath('/project/engine'), 'moz-panel', [
       'moz-panel.css',
     ]);
@@ -713,7 +726,7 @@ describe('applyAllComponents', () => {
     // Real undeploy must not run in dry-run.
     expect(undeployCustomFiles).not.toHaveBeenCalled();
     expect(undeployOverrideFiles).not.toHaveBeenCalled();
-    expect(removeJarMnEntries).not.toHaveBeenCalled();
+    expect(removeJarMnFileEntries).not.toHaveBeenCalled();
 
     expect(result.actions).toEqual(
       expect.arrayContaining([

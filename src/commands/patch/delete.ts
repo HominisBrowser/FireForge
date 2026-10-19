@@ -25,6 +25,11 @@ import { proceedAfterDecision } from '../destructive-decision.js';
 import { describeProjectedGaps } from './delete-gap-notice.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 import {
+  deleteCreatedFiles,
+  planClaimedFiles,
+  withCreatedFileLock,
+} from './removal-created-files.js';
+import {
   collectRemovalDependents,
   queueSnapshot,
   removalConflict,
@@ -74,14 +79,17 @@ export async function patchDeleteCommand(
 
   const conflicts = removalConflict(dependents, target);
 
+  const claimed = await planClaimedFiles(
+    baseCtx,
+    target,
+    paths.engine,
+    options.deleteCreated === true
+  );
   const summary: string[] = [
     `delete ${target.filename}  (category: ${target.category}, order: ${target.order})`,
     `description: ${target.description || '(none)'}`,
-    `files currently claimed by this patch (${target.filesAffected.length}):`,
+    ...claimed.summary,
   ];
-  for (const file of target.filesAffected) {
-    summary.push(`  ${file}  → will become unmanaged`);
-  }
   summary.push(...gapNotices);
 
   const decision = await confirmDestructive({
@@ -104,35 +112,42 @@ export async function patchDeleteCommand(
   // mutation with no audit trail. A history append failure is warned but not
   // re-thrown: by that point the mutation has committed, and reporting
   // failure to the caller would mislead.
-  await withPatchDirectoryLock(
-    paths.patches,
-    async () => {
-      const current = await buildPatchQueueContext(paths.patches);
-      // A changed body or manifest invalidates the dependency scan approved
-      // before the prompt. Recheck all of its inputs while holding the lock.
-      if (queueSnapshot(current) !== queueSnapshot(baseCtx)) {
-        throw new GeneralError(
-          'Patch queue changed while waiting for confirmation or the lock. Re-run patch delete to review the current dependencies.'
-        );
-      }
-      await removePatchFileAndManifest(paths.patches, target.filename);
-      await appendHistoryBestEffort(
-        paths.patches,
-        {
-          operation: 'patch-delete',
-          args: {
-            filename: target.filename,
-            order: target.order,
-            filesAffected: target.filesAffected,
+  const waitLockSeconds = resolveWaitLockSeconds(options.waitLock);
+  await withCreatedFileLock(projectRoot, 'patch delete', claimed, waitLockSeconds, () =>
+    withPatchDirectoryLock(
+      paths.patches,
+      async () => {
+        const current = await buildPatchQueueContext(paths.patches);
+        // A changed body or manifest invalidates the dependency scan approved
+        // before the prompt. Recheck all of its inputs while holding the lock.
+        if (queueSnapshot(current) !== queueSnapshot(baseCtx)) {
+          throw new GeneralError(
+            'Patch queue changed while waiting for confirmation or the lock. Re-run patch delete to review the current dependencies.'
+          );
+        }
+        await removePatchFileAndManifest(paths.patches, target.filename);
+        await deleteCreatedFiles(paths.engine, claimed.deleteOnCommit);
+        await appendHistoryBestEffort(
+          paths.patches,
+          {
+            operation: 'patch-delete',
+            args: {
+              filename: target.filename,
+              order: target.order,
+              filesAffected: target.filesAffected,
+              ...(claimed.deleteOnCommit.length > 0
+                ? { deletedCreatedFiles: claimed.deleteOnCommit }
+                : {}),
+            },
+            ...(options.yes === true ? { yes: true } : {}),
+            ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
+            result: 'ok',
           },
-          ...(options.yes === true ? { yes: true } : {}),
-          ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
-          result: 'ok',
-        },
-        `patch delete committed (${target.filename})`
-      );
-    },
-    { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch delete' }
+          `patch delete committed (${target.filename})`
+        );
+      },
+      { waitLockSeconds, command: 'patch delete' }
+    )
   );
 
   info(`Deleted ${target.filename}.`);
@@ -153,6 +168,10 @@ export function registerPatchDelete(parent: Command, context: CommandContext): v
     .option('--dry-run', 'Show what would happen without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
     .option(
+      '--delete-created',
+      'Also delete the engine files this patch creates that are still on disk, instead of leaving them unmanaged'
+    )
+    .option(
       '--force-unsafe',
       'Bypass the refusal when a later patch depends on this patch (last resort)'
     );
@@ -164,6 +183,7 @@ export function registerPatchDelete(parent: Command, context: CommandContext): v
           dryRun?: boolean;
           yes?: boolean;
           forceUnsafe?: boolean;
+          deleteCreated?: boolean;
           waitLock?: number | boolean;
         }
       ) => {

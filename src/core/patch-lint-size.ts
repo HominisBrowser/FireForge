@@ -9,7 +9,7 @@
 
 import { join } from 'node:path';
 
-import type { PatchLintIssue } from '../types/commands/index.js';
+import type { PatchLintIssue, PatchSizeShare } from '../types/commands/index.js';
 import type { FireForgeConfig, PatchLintPatchSizeMetric } from '../types/config.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { codeLineMask } from './patch-lint-code-lines.js';
@@ -311,6 +311,8 @@ interface LineCheck {
   count: number;
   thresholds: PatchSizeThresholds['lines'];
   scope: string;
+  /** Set when the measurement is split per class (see {@link lineChecks}). */
+  share?: PatchSizeShare;
 }
 
 /**
@@ -326,19 +328,26 @@ function lineChecks(
   config: Pick<FireForgeConfig, 'patchLint'> | undefined
 ): LineCheck[] {
   const perClass = measurement.metric === 'addedCode' && tier === 'general';
-  if (!perClass || measurement.testLines === 0) {
+  if (!perClass) {
     return [{ count: measurement.lines, thresholds: thresholds.lines, scope: '' }];
+  }
+  if (measurement.testLines === 0) {
+    return [
+      { count: measurement.lines, thresholds: thresholds.lines, scope: '', share: 'product' },
+    ];
   }
   return [
     {
       count: measurement.lines - measurement.testLines,
       thresholds: thresholds.lines,
       scope: ' in non-test files',
+      share: 'product',
     },
     {
       count: measurement.testLines,
       thresholds: getPatchSizeThresholds('test', config).lines,
       scope: ' in test files (test tier)',
+      share: 'test',
     },
   ];
 }
@@ -410,6 +419,7 @@ export function lintPatchSize(
       message: formatPatchSizeMessage(subject, band, check.thresholds),
       severity: band,
       measurement: check.count,
+      ...(check.share !== undefined ? { share: check.share } : {}),
     });
   }
 

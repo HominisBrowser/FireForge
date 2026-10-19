@@ -50,11 +50,8 @@ import { topologicalSortCustom } from './furnace-graph-utils.js';
 import { resolveFurnaceMarkerComment } from './furnace-marker.js';
 import { type FurnaceOperationContext, recordFurnaceRollbackFailure } from './furnace-operation.js';
 import { assertFurnaceEngineDirReady } from './furnace-precondition.js';
-import {
-  addJarMnEntries,
-  removeCustomElementRegistration,
-  removeJarMnEntries,
-} from './furnace-registration.js';
+import { addJarMnEntries, removeCustomElementRegistration } from './furnace-registration.js';
+import { removeJarMnFileEntries } from './furnace-registration-jar-inplace.js';
 import {
   createRollbackJournal,
   restoreRollbackJournalOrThrow,
@@ -224,8 +221,8 @@ async function applyOverrideBatch(ctx: ApplyBatchContext): Promise<void> {
 /**
  * After undeploying deleted files, the in-engine jar.mn and
  * customElements.js still carry entries for the removed files. Re-sync them
- * by removing all of `name`'s jar.mn entries and re-adding only those that
- * still exist in the workspace. If the .mjs itself was deleted, also drop
+ * by removing only the deleted files' jar.mn lines in place and adding any
+ * live file that has none. If the .mjs itself was deleted, also drop
  * the customElements.js registration. Snapshots are taken under the same
  * journal so the undo path is symmetric with apply.
  */
@@ -255,20 +252,19 @@ async function reconcileCustomRegistrationAfterUndeploy(args: {
   );
   if (deletedRegistrationFiles.length === 0) return;
 
-  // jar.mn re-sync. addJarMnEntries is idempotent on duplicates but does not
-  // drop stale entries, so we need a remove-then-add cycle. The journal
-  // snapshot before each mutation gives us a clean rollback target.
+  // jar.mn re-sync: drop only the deleted files' lines, so the rest of the
+  // widget's block keeps its order and the owning patch carries no reorder
+  // hunks. addJarMnEntries is idempotent, so the add pass inserts only a
+  // live file that has no line yet. The journal snapshot before the
+  // mutation gives us a clean rollback target.
   if (rollbackJournal) {
     await snapshotFile(rollbackJournal, join(engineDir, JAR_MN));
   }
-  await removeJarMnEntries(engineDir, name);
+  await removeJarMnFileEntries(engineDir, name, deletedRegistrationFiles);
   const liveJarFiles = Object.keys(currentChecksums).filter(
     (f) => f.endsWith('.mjs') || f.endsWith('.css')
   );
   if (liveJarFiles.length > 0) {
-    // applyCustomComponent has already added live entries, and the remove
-    // above dropped them too, so re-add now to leave jar.mn in the correct
-    // state.
     await addJarMnEntries(engineDir, name, liveJarFiles);
   }
   filesAffected.push(JAR_MN);

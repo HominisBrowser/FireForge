@@ -3,8 +3,9 @@ import {
   findUnownedSupportHeads,
   formatUnownedSupportHeadNotice,
 } from '../core/checkjs-support-heads.js';
+import { buildPatchQueueContext } from '../core/patch-lint.js';
 import { runCheckJsTestFilesGrouped } from '../core/patch-lint-checkjs.js';
-import { isTestScriptFile } from '../core/patch-lint-ownership.js';
+import { isTestScriptFile, resolvableModulesForTests } from '../core/patch-lint-ownership.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { analyzeTestPathScopes } from '../core/test-path-scope.js';
 import { GeneralError } from '../errors/base.js';
@@ -41,7 +42,8 @@ export async function checkRequestedTestTypes(
     owned,
     config.patchLint,
     paths.root,
-    selected
+    selected,
+    resolvableModulesForTests(await buildPatchQueueContext(paths.patches))
   );
   const issues = [...result.global, ...[...result.byFile.values()].flat()];
   for (const issue of issues) notice(`Pre-build checkJs: ${issue.file}: ${issue.message}`);

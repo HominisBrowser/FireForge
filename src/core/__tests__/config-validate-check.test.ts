@@ -20,6 +20,50 @@ describe('parseCheckConfig', () => {
     expect(parseCheckConfig(block)).toEqual(block);
   });
 
+  it('accepts timeouts, failOnSkipped, lintReport and ordered extra steps', () => {
+    const block = {
+      timeout: 900,
+      timeouts: { lint: 120, typecheck: 300 },
+      failOnSkipped: true,
+      lintReport: '.fireforge/check/lint.json',
+      extraSteps: [
+        { name: 'policy', command: 'x', after: ['lint'] },
+        { name: 'report', command: 'y', after: ['policy', 'typecheck'] },
+      ],
+    };
+    expect(parseCheckConfig(block)).toEqual(block);
+  });
+
+  it.each<[string, unknown, RegExp]>([
+    ['a zero timeout', { timeout: 0 }, /"check.timeout" must be a positive number/],
+    ['an unknown timeouts step', { timeouts: { nope: 1 } }, /has unknown key "nope"/],
+    ['a non-object timeouts', { timeouts: 3 }, /"check.timeouts" must be a plain object/],
+    ['a non-boolean failOnSkipped', { failOnSkipped: 1 }, /failOnSkipped" must be a boolean/],
+    ['an escaping lintReport', { lintReport: '../x.json' }, /must be a project-relative path/],
+    [
+      'an unknown after step',
+      { extraSteps: [{ name: 'a', command: 'x', after: ['nope'] }] },
+      /names unknown step "nope"/,
+    ],
+    [
+      'an after naming itself',
+      { extraSteps: [{ name: 'a', command: 'x', after: ['a'] }] },
+      /names the step itself/,
+    ],
+    [
+      'an ordering cycle',
+      {
+        extraSteps: [
+          { name: 'a', command: 'x', after: ['b'] },
+          { name: 'b', command: 'y', after: ['a'] },
+        ],
+      },
+      /in a cycle: a -> b -> a/,
+    ],
+  ])('refuses %s', (_label, raw, message) => {
+    expect(() => parseCheckConfig(raw)).toThrow(message);
+  });
+
   it('is reached from validateConfig', () => {
     const config = validateConfig({ ...DEFAULT_CONFIG, check: { skip: ['typecheck'] } });
     expect(config.check).toEqual({ skip: ['typecheck'] });

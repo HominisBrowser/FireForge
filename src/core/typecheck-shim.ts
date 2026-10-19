@@ -297,6 +297,118 @@ export const UNDEFINED_IDENTIFIER_CODES: ReadonlySet<number> = new Set([
   2552, // Cannot find name '{0}'. Did you mean '{1}'?
 ]);
 
+/**
+ * Typed Lit, opt-in through `typecheck.litTypes`. Declares the two chrome
+ * modules widgets import Lit from, so they no longer fall to the
+ * `chrome:*` wildcard as `any`: `LitElement` (with `ReactiveElement`'s
+ * lifecycle) and `MozLitElement` carry closed member lists, so a misspelt
+ * member of a widget host is TS2339, as `Cu` is in the built-in shim.
+ * Template helpers and directives stay loose. A project shim can merge
+ * members into `LitElementShimMembers`; a project whose jsconfig `paths`
+ * maps these URLs to the real sources gets those instead, since a resolved
+ * file wins over an ambient module.
+ */
+const LIT_TYPES_SHIM = `
+// ── FireForge typed Lit (typecheck.litTypes) ──
+interface LitPropertyDeclarationShim {
+  type?: unknown;
+  attribute?: boolean | string;
+  reflect?: boolean;
+  state?: boolean;
+  noAccessor?: boolean;
+  converter?: unknown;
+  hasChanged?(value: unknown, oldValue: unknown): boolean;
+  fluent?: boolean;
+}
+interface LitElementShimMembers {
+  readonly renderRoot: HTMLElement | DocumentFragment;
+  readonly isUpdatePending: boolean;
+  readonly hasUpdated: boolean;
+  readonly updateComplete: Promise<boolean>;
+  renderOptions: any;
+  requestUpdate(name?: PropertyKey, oldValue?: unknown, options?: LitPropertyDeclarationShim): void;
+  addController(controller: any): void;
+  removeController(controller: any): void;
+  connectedCallback(): void;
+  disconnectedCallback(): void;
+  attributeChangedCallback(name: string, oldValue: string | null, value: string | null): void;
+  createRenderRoot(): HTMLElement | DocumentFragment;
+  enableUpdating(requestedUpdate: boolean): void;
+  scheduleUpdate(): void | Promise<unknown>;
+  performUpdate(): void;
+  getUpdateComplete(): Promise<boolean>;
+  shouldUpdate(changedProperties: Map<PropertyKey, unknown>): boolean;
+  willUpdate(changedProperties: Map<PropertyKey, unknown>): void;
+  update(changedProperties: Map<PropertyKey, unknown>): void;
+  render(): unknown;
+  firstUpdated(changedProperties: Map<PropertyKey, unknown>): void;
+  updated(changedProperties: Map<PropertyKey, unknown>): void;
+}
+declare module 'chrome://global/content/vendor/lit.all.mjs' {
+  export class ReactiveElement extends HTMLElement {
+    static properties: Record<string, LitPropertyDeclarationShim>;
+    static styles: any;
+    static shadowRootOptions: ShadowRootInit;
+    static readonly observedAttributes: string[];
+    static createProperty(name: PropertyKey, options?: LitPropertyDeclarationShim): void;
+    static addInitializer(initializer: (element: ReactiveElement) => void): void;
+  }
+  export interface ReactiveElement extends LitElementShimMembers {}
+  export class LitElement extends ReactiveElement {}
+  export const html: (strings: TemplateStringsArray, ...values: unknown[]) => any;
+  export const svg: (strings: TemplateStringsArray, ...values: unknown[]) => any;
+  export const css: (strings: TemplateStringsArray, ...values: unknown[]) => any;
+  export const nothing: any;
+  export const noChange: any;
+  export const render: any;
+  export const unsafeCSS: any;
+  export const classMap: any;
+  export const styleMap: any;
+  export const ifDefined: any;
+  export const repeat: any;
+  export const when: any;
+  export const map: any;
+  export const live: any;
+  export const ref: any;
+  export const createRef: any;
+  export const until: any;
+  export const guard: any;
+  export const choose: any;
+  export const keyed: any;
+  export const cache: any;
+  export const join: any;
+  export const range: any;
+  export const unsafeHTML: any;
+  export const unsafeSVG: any;
+  export const literal: any;
+  export const unsafeStatic: any;
+  export const staticHtml: any;
+  export const staticSvg: any;
+  export const directive: any;
+  export const Directive: any;
+  export const AsyncDirective: any;
+  export const PartType: any;
+  export const defaultConverter: any;
+  export const notEqual: any;
+  export const adoptStyles: any;
+  export const supportsAdoptingStyleSheets: boolean;
+  export const CSSResult: any;
+  export const isServer: boolean;
+}
+declare module 'chrome://global/content/lit-utils.mjs' {
+  import { LitElement } from 'chrome://global/content/vendor/lit.all.mjs';
+  export class MozLitElement extends LitElement {
+    static queries: Record<string, string | Record<string, unknown>>;
+    static fragment: unknown;
+    dispatchOnUpdateComplete(event: Event): Promise<void>;
+  }
+  export const MozBaseInputElement: any;
+  export const MozBoolInputElement: any;
+  export const SelectControlBaseElement: any;
+  export const SelectControlItemMixin: any;
+}
+`;
+
 /** Hint appended to reported undefined-identifier diagnostics. */
 export const UNDEFINED_IDENTIFIER_HINT =
   '(undefined identifier — import or declare it, add the global to the extra shim, ' +
@@ -375,12 +487,16 @@ async function inlineTripleSlashReferences(
  * @param projectRoot - Absolute project root, used to resolve the relative
  *   shim path
  * @param extraShimPath - Optional project-relative path to an extra `.d.ts`
+ * @param options - `litTypes` appends {@link LIT_TYPES_SHIM} after the
+ *   built-in shim (before the extra shim, which can still merge into it)
  */
 export async function composeShimSource(
   projectRoot: string,
-  extraShimPath: string | undefined
+  extraShimPath: string | undefined,
+  options: { litTypes?: boolean | undefined } = {}
 ): Promise<ComposedShim> {
-  const base = FIREFOX_GLOBALS_SHIM;
+  const base =
+    options.litTypes === true ? `${FIREFOX_GLOBALS_SHIM}\n${LIT_TYPES_SHIM}` : FIREFOX_GLOBALS_SHIM;
   if (!extraShimPath) {
     return { source: base, extraShimAppended: false };
   }

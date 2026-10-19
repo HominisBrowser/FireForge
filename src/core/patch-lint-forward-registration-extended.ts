@@ -169,7 +169,7 @@ function testManifestReferences(file: string, content: string): RegistrationRefe
  * jar target → packaged source, over every jar.mn line the queue adds. Only
  * exact (wildcard-free) sources can back a chrome URL lookup.
  */
-function buildJarTargetIndex(
+export function buildJarTargetIndex(
   entries: readonly PatchQueueForwardRegistrationEntry[]
 ): Map<string, string> {
   const index = new Map<string, string>();

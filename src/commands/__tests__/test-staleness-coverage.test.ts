@@ -935,6 +935,30 @@ describe('testCommand staleness and packaging coverage', () => {
       await expect(testCommand('/project', [SLICE], { furnaceApply: false })).rejects.toThrow(
         /--no-furnace-apply requires --build or --build-only/
       );
+      await expect(testCommand('/project', [SLICE], { furnaceApply: 'reached' })).rejects.toThrow(
+        /--furnace-apply requires --build or --build-only/
+      );
+    });
+
+    it('--furnace-apply none skips the apply, and reached scopes it to the request', async () => {
+      const capture = captureStdout();
+      try {
+        await testCommand('/project', [SLICE], { buildOnly: true, furnaceApply: 'none' });
+        await testCommand('/project', [SLICE], { buildOnly: true, furnaceApply: 'reached' });
+        // A path-less build reaches every component, so reached applies all.
+        await testCommand('/project', [], {
+          build: true,
+          buildOnly: true,
+          furnaceApply: 'reached',
+        });
+      } finally {
+        capture.restore();
+      }
+      const calls = vi.mocked(prepareBuildEnvironment).mock.calls.map((call) => call[3]);
+      expect(calls[0]).toMatchObject({ skipFurnaceApply: true });
+      // No component reaches this slice here, so the scoped apply deploys none.
+      expect(calls[1]).toMatchObject({ skipFurnaceApply: false, furnaceComponents: [] });
+      expect(calls[2]).toMatchObject({ skipFurnaceApply: false, furnaceComponents: undefined });
     });
   });
 });

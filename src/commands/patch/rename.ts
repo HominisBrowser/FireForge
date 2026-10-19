@@ -42,7 +42,7 @@ import {
   getPatchPolicyCategories,
   isCategoryAllowedByConfig,
 } from '../../core/patch-policy.js';
-import { carryRetiredSlots } from '../../core/patch-retired.js';
+import { carryReservedSlots, carryRetiredSlots } from '../../core/patch-retired.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { CommandContext } from '../../types/cli.js';
 import type { PatchMetadata, PatchRenameOptions } from '../../types/commands/index.js';
@@ -211,10 +211,13 @@ async function commitRenameUnderLock(input: CommitRenameInput): Promise<void> {
         };
       }
 
-      // A rename onto a retired order fills that slot.
+      // A rename onto a retired or reserved order fills that slot.
       const retired = carryRetiredSlots(fresh, fresh.patches);
       if (retired === undefined) delete fresh.retired;
       else fresh.retired = retired;
+      const reserved = carryReservedSlots(fresh, fresh.patches);
+      if (reserved === undefined) delete fresh.reserved;
+      else fresh.reserved = reserved;
 
       enforcePatchPolicy({
         config: input.config,
@@ -510,11 +513,19 @@ export async function patchRenameCommand(
     forceUnsafe: options.forceUnsafe === true,
   });
 
+  // A description-only edit renames nothing and moves no order, so it needs
+  // no confirmation: scripts may change a description without --yes.
+  const descriptionOnly =
+    descriptionChanging &&
+    !filenameChanging &&
+    !nameChanging &&
+    !orderChanging &&
+    !categoryChanging;
   const decision = await confirmDestructive({
     operation: 'patch-rename',
     title: `Rename ${target.filename}`,
     summary,
-    yes: options.yes === true,
+    yes: options.yes === true || descriptionOnly,
     dryRun: isDryRun,
     conflicts: null,
   });

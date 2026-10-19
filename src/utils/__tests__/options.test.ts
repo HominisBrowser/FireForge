@@ -58,9 +58,14 @@ describe('resolveWaitLockSeconds', () => {
     expect(resolveWaitLockSeconds(45)).toBe(45);
   });
 
-  it.each(['0', '3601', 'abc', '-5'])('rejects %s with the exact range message', (raw) => {
+  it('accepts waits past the old one-hour cap, up to a day', () => {
+    expect(resolveWaitLockSeconds('7200')).toBe(7200);
+    expect(resolveWaitLockSeconds('86400')).toBe(86400);
+  });
+
+  it.each(['0', '86401', 'abc', '-5'])('rejects %s with the exact range message', (raw) => {
     expect(() => resolveWaitLockSeconds(raw)).toThrow(
-      `--wait-lock must be an integer in 1..3600 (got "${raw}")`
+      `--wait-lock must be an integer in 1..86400 (got "${raw}")`
     );
   });
 });
@@ -88,7 +93,7 @@ describe(`resolveWaitLockSeconds and ${WAIT_LOCK_ENV_VAR}`, () => {
     expect(resolveWaitLockSeconds(undefined)).toBeUndefined();
   });
 
-  it.each(['0', '3601', 'soon'])('refuses %s rather than silently failing fast', (raw) => {
+  it.each(['0', '86401', 'soon'])('refuses %s rather than silently failing fast', (raw) => {
     process.env[WAIT_LOCK_ENV_VAR] = raw;
     expect(() => resolveWaitLockSeconds(undefined)).toThrow(WAIT_LOCK_ENV_VAR);
   });

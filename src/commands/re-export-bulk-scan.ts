@@ -17,6 +17,11 @@ import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { readText } from '../utils/fs.js';
 import { sha256Hex } from '../utils/hash.js';
 import { isObject } from '../utils/validation.js';
+import {
+  describeForeignWriters,
+  type DryRunPurityScope,
+  fingerprintScopedDryRunState,
+} from './re-export-purity-scope.js';
 import { normalizeEngineRelativeInput } from './re-export-scan.js';
 
 /** Concurrency bound for patch-body hashing (matches the classify/lint pools). */
@@ -239,10 +244,16 @@ export async function withDryRunPurityGuard<T>(
   engineDir: string,
   patchesDir: string,
   isDryRun: boolean,
-  operation: () => Promise<T>
+  operation: () => Promise<T>,
+  scope?: DryRunPurityScope
 ): Promise<T> {
   if (!isDryRun) return operation();
-  const before = await fingerprintDryRunState(engineDir, patchesDir);
+  const fingerprint = (): Promise<Map<string, string>> =>
+    scope === undefined
+      ? fingerprintDryRunState(engineDir, patchesDir)
+      : fingerprintScopedDryRunState(engineDir, patchesDir, scope);
+  const startedAt = Date.now();
+  const before = await fingerprint();
   let result: T | undefined;
   let operationError: unknown;
   let failed = false;
@@ -254,7 +265,7 @@ export async function withDryRunPurityGuard<T>(
   }
   let after: Map<string, string>;
   try {
-    after = await fingerprintDryRunState(engineDir, patchesDir);
+    after = await fingerprint();
   } catch (fingerprintError: unknown) {
     // The post-run fingerprint failing must not swallow the dry run's own
     // failure: an operation that mutated state, broke it, and made it
@@ -274,11 +285,24 @@ export async function withDryRunPurityGuard<T>(
     .sort()
     .filter((key) => before.get(key) !== after.get(key));
   if (touched.length > 0) {
+    const also = failed ? ` The dry run also failed: ${toError(operationError).message}` : '';
+    const writers = await describeForeignWriters(patchesDir, startedAt);
+    if (writers.length > 0) {
+      throw new GeneralError(
+        `[dry-run] ${touched.join(', ')} changed during this dry run, written by another ` +
+          `writer: ${writers.join('; ')}. The preview raced that write; rerun it once the ` +
+          `writer is done.${also}`,
+        operationError
+      );
+    }
     throw new GeneralError(
-      `[dry-run] invariant violated: this dry run modified ${touched.join(', ')}. ` +
-        'This is a FireForge bug — please report it, and inspect the listed state ' +
-        '(e.g. `git status` in engine/ and your patches/ diff) before trusting it.' +
-        (failed ? ` The dry run also failed: ${toError(operationError).message}` : ''),
+      `[dry-run] invariant violated: ${touched.join(', ')} changed during this dry run. No ` +
+        'other FireForge command recorded a write in that window, so either another writer ' +
+        '(an editor, an agent or a git command in engine/) changed it, or this is a FireForge ' +
+        'bug. Rerun the dry run; if it repeats on a quiet tree, please report it, and inspect ' +
+        'the listed state (e.g. `git status` in engine/ and your patches/ diff) before ' +
+        'trusting it.' +
+        also,
       operationError
     );
   }

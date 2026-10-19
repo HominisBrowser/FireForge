@@ -31,6 +31,7 @@ import {
   type StagedEntryView,
 } from './staged-dependency-entries.js';
 import { runBatchAdd } from './staged-dependency-from.js';
+import { selectRemovalEntries } from './staged-dependency-remove.js';
 import { validateStagedDependencyAdd } from './staged-dependency-validate.js';
 
 /** Joins the names of the missing flags for error attribution. */
@@ -131,94 +132,6 @@ function requireRegistrationOptions(
 }
 
 /**
- * Resolves the `--remove` target for forward-imports:
- * `--file` + `--specifier` suffice when they identify at most one staged
- * entry. `--creates` is inferred from a unique match, an ambiguous match
- * refuses with the candidate list, and no match falls through to the
- * honest "no staged forward-import matched" summary.
- */
-function resolveImportRemovalTarget(
-  options: PatchStagedDependencyOptions,
-  staged: PatchStagedDependencies | undefined
-): PatchStagedForwardImport {
-  if (!options.file || !options.specifier) {
-    throw new InvalidArgumentError(
-      '--remove requires --file and --specifier; --creates is only needed to disambiguate when several staged entries share them.',
-      missingFlagList([
-        ['--file', options.file],
-        ['--specifier', options.specifier],
-      ])
-    );
-  }
-  if (options.creates) {
-    return requireForwardImportOptions(options);
-  }
-  const { file, specifier } = options;
-  const candidates = (staged?.forwardImports ?? []).filter(
-    (entry) =>
-      entry.file === file &&
-      entry.specifier === specifier &&
-      (options.owner === undefined || entry.owner === options.owner)
-  );
-  const single = candidates.length === 1 ? candidates[0] : undefined;
-  if (single !== undefined) {
-    info(`Inferred --creates ${single.creates} from the single matching staged entry.`);
-    return { ...single };
-  }
-  if (candidates.length > 1) {
-    const list = candidates
-      .map((entry) => `  - ${dependencyLabel('import', importView(entry))}`)
-      .join('\n');
-    throw new GeneralError(
-      `--remove matches ${candidates.length} staged forward-imports on this patch; ` +
-        `pass --creates to pick one:\n${list}`
-    );
-  }
-  return { file, specifier, creates: '(no match)' };
-}
-
-/** Registration twin of {@link resolveImportRemovalTarget}, keyed on `--line`. */
-function resolveRegistrationRemovalTarget(
-  options: PatchStagedDependencyOptions,
-  staged: PatchStagedDependencies | undefined
-): PatchStagedRegistration {
-  if (!options.file || !options.line) {
-    throw new InvalidArgumentError(
-      '--remove --kind registration requires --file and --line; --creates is only needed to disambiguate when several staged entries share them.',
-      missingFlagList([
-        ['--file', options.file],
-        ['--line', options.line],
-      ])
-    );
-  }
-  if (options.creates) {
-    return requireRegistrationOptions(options);
-  }
-  const { file, line } = options;
-  const candidates = (staged?.registrations ?? []).filter(
-    (entry) =>
-      entry.file === file &&
-      entry.line === line &&
-      (options.owner === undefined || entry.owner === options.owner)
-  );
-  const single = candidates.length === 1 ? candidates[0] : undefined;
-  if (single !== undefined) {
-    info(`Inferred --creates ${single.creates} from the single matching staged entry.`);
-    return { ...single };
-  }
-  if (candidates.length > 1) {
-    const list = candidates
-      .map((entry) => `  - ${dependencyLabel('registration', registrationView(entry))}`)
-      .join('\n');
-    throw new GeneralError(
-      `--remove matches ${candidates.length} staged registrations on this patch; ` +
-        `pass --creates to pick one:\n${list}`
-    );
-  }
-  return { file, line, creates: '(no match)' };
-}
-
-/**
  * Renders a one-line summary of a staged-dependency metadata change.
  */
 function describeStagedDependencyChange(
@@ -226,7 +139,7 @@ function describeStagedDependencyChange(
   afterCount: number,
   mode: StagedDependencyMode,
   kind: StagedDependencyKind,
-  target: StagedEntryView | undefined
+  targets: readonly StagedEntryView[]
 ): string {
   const noun = kind === 'import' ? 'staged forward-import' : 'staged registration';
   if (mode === 'clear') {
@@ -234,15 +147,16 @@ function describeStagedDependencyChange(
       ? 'stagedDependencies was already empty — no change'
       : `cleared ${beforeCount} staged dependency declaration(s)`;
   }
-  if (!target) return 'stagedDependencies unchanged';
+  const label = targets.map((target) => dependencyLabel(kind, target)).join('; ');
+  if (targets.length === 0) return 'stagedDependencies unchanged';
   if (mode === 'add') {
     return afterCount === beforeCount
-      ? `${noun} already present: ${dependencyLabel(kind, target)}`
-      : `added ${noun}: ${dependencyLabel(kind, target)}`;
+      ? `${noun} already present: ${label}`
+      : `added ${noun}: ${label}`;
   }
   return afterCount === beforeCount
-    ? `no ${noun} matched: ${dependencyLabel(kind, target)}`
-    : `removed ${beforeCount - afterCount} ${noun} declaration(s): ${dependencyLabel(kind, target)}`;
+    ? `no ${noun} matched: ${label}`
+    : `removed ${beforeCount - afterCount} ${noun} declaration(s): ${label}`;
 }
 
 /**
@@ -276,46 +190,49 @@ export async function patchStagedDependencyCommand(
   const targetPatch = requirePatchTarget(identifier, manifest.patches);
 
   const importDependency =
-    mode === 'clear' || kind !== 'import'
-      ? undefined
-      : mode === 'add'
-        ? requireForwardImportOptions(options)
-        : resolveImportRemovalTarget(options, targetPatch.stagedDependencies);
+    mode === 'add' && kind === 'import' ? requireForwardImportOptions(options) : undefined;
   const registrationDependency =
-    mode === 'clear' || kind !== 'registration'
-      ? undefined
-      : mode === 'add'
-        ? requireRegistrationOptions(options)
-        : resolveRegistrationRemovalTarget(options, targetPatch.stagedDependencies);
+    mode === 'add' && kind === 'registration' ? requireRegistrationOptions(options) : undefined;
   // Shape-check --add declarations against the loaded queue: a
   // patch-name-shaped --creates/--file is refused now instead of surfacing
   // later as an undischargeable staged-dependency-unused.
-  if (mode === 'add') {
-    const added = importDependency ?? registrationDependency;
-    if (added !== undefined) {
-      validateStagedDependencyAdd(added, manifest.patches);
-    }
+  const added = importDependency ?? registrationDependency;
+  if (added !== undefined) {
+    validateStagedDependencyAdd(added, manifest.patches);
   }
-  const target =
-    importDependency !== undefined
-      ? importView(importDependency)
-      : registrationDependency !== undefined
-        ? registrationView(registrationDependency)
-        : undefined;
+  const targets: StagedEntryView[] =
+    mode === 'remove'
+      ? selectRemovalEntries(kind, options, targetPatch.stagedDependencies)
+      : importDependency !== undefined
+        ? [importView(importDependency)]
+        : registrationDependency !== undefined
+          ? [registrationView(registrationDependency)]
+          : [];
 
+  const applyKind = <T>(
+    entries: readonly T[],
+    own: boolean,
+    toView: (entry: T) => StagedEntryView,
+    addition: T | undefined
+  ): T[] => {
+    if (!own) return [...entries];
+    if (mode !== 'remove') return applyMode(entries, mode, targets[0], toView, addition);
+    return targets.reduce<T[]>(
+      (remaining, target) => applyMode(remaining, 'remove', target, toView, undefined),
+      [...entries]
+    );
+  };
   const applyToStaged = (staged: PatchStagedDependencies | undefined): PatchStagedDependencies => {
     if (mode === 'clear') return {};
-    const forwardImports = applyMode(
+    const forwardImports = applyKind(
       staged?.forwardImports ?? [],
-      kind === 'import' ? mode : 'add',
-      kind === 'import' ? target : undefined,
+      kind === 'import',
       importView,
       importDependency
     );
-    const registrations = applyMode(
+    const registrations = applyKind(
       staged?.registrations ?? [],
-      kind === 'registration' ? mode : 'add',
-      kind === 'registration' ? target : undefined,
+      kind === 'registration',
       registrationView,
       registrationDependency
     );
@@ -332,7 +249,7 @@ export async function patchStagedDependencyCommand(
     countStagedEntries(projected),
     mode,
     kind,
-    target
+    targets
   );
 
   if (isDryRun) {
@@ -369,9 +286,17 @@ export async function patchStagedDependencyCommand(
       countStagedEntries(after),
       mode,
       kind,
-      target
+      targets
     )}.`
   );
+  if (mode === 'remove' && countStagedEntries(after) === countStagedEntries(before)) {
+    // The selection matched when the queue was read; a peer removed the
+    // entries before the locked write. Still a miss, so still a refusal.
+    throw new InvalidArgumentError(
+      `${targetPatch.filename}: the selected staged declaration(s) were already gone when the manifest was written.`,
+      '--remove'
+    );
+  }
 
   await appendHistoryBestEffort(
     paths.patches,
@@ -408,7 +333,10 @@ export function registerPatchStagedDependency(parent: Command, context: CommandC
       'Edit PatchMetadata.stagedDependencies on a single patch (no .patch body rewrite).'
     )
     .option('--add', 'Add a staged dependency declaration')
-    .option('--remove', 'Remove matching staged dependency declaration(s)')
+    .option(
+      '--remove',
+      'Remove matching staged dependency declaration(s); a selection that matches nothing exits 8'
+    )
     .option('--clear', 'Drop the stagedDependencies field entirely')
     .option(
       '--kind <kind>',
@@ -421,9 +349,12 @@ export function registerPatchStagedDependency(parent: Command, context: CommandC
     )
     .option(
       '--line <text>',
-      'Registration/packaging line as the patch adds it, compared whitespace-trimmed (--kind registration)'
+      'Registration/packaging line as the patch adds it, compared whitespace-insensitively (--kind registration)'
     )
-    .option('--creates <path>', 'Later-created file path relative to engine/')
+    .option(
+      '--creates <path>',
+      'Later-created file path relative to engine/ (with --remove and no --file: removes every declaration for that path)'
+    )
     .option('--owner <patch>', 'Exact later patch filename expected to create --creates')
     .option(
       '--reason <text>',

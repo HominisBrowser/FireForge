@@ -28,10 +28,21 @@ import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { info, notice, spinner, verbose } from '../utils/logger.js';
 import { reportPreTestFurnace } from './test-build-furnace.js';
+import { partitionReachedComponents, resolveFurnaceApplyMode } from './test-furnace-reach.js';
 import type { HarnessClassification } from './test-modes.js';
 import { reportBuildOnlyCompletion } from './test-modes.js';
 import { enforceStaleBuildGate, enforceStaticComponentsGate } from './test-stale-gate.js';
 import { emitPassVerdict } from './test-verdict.js';
+
+/** The Furnace apply a pre-test build runs. */
+interface PreTestFurnacePlan {
+  /** Skip the apply entirely (`--furnace-apply none`). */
+  skip: boolean;
+  /** Apply only these components (`reached`); every component when unset. */
+  only?: string[];
+  /** Components with undeployed edits that `reached` leaves out. */
+  unreached?: string[];
+}
 
 interface RunPreTestBuildOptions {
   /** Root directory of the project. */
@@ -48,8 +59,8 @@ interface RunPreTestBuildOptions {
   refuseUnexportedDrift: boolean;
   /** `--extend-coverage` request paths, when the flag is in force. */
   extend?: { requestedPaths: string[] } | undefined;
-  /** `--no-furnace-apply`: package engine/ without the Furnace apply. */
-  skipFurnaceApply: boolean;
+  /** What the Furnace apply before the build does. */
+  furnace: PreTestFurnacePlan;
 }
 
 /**
@@ -67,7 +78,7 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
     testPackagingCoverage,
     refuseUnexportedDrift,
     extend,
-    skipFurnaceApply,
+    furnace,
   } = options;
   await withBuildLock(projectRoot, async () => {
     // Pass the previous baseline exactly like `fireforge build` does, so
@@ -87,9 +98,10 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
     const preparation = await prepareBuildEnvironment(projectRoot, paths, projectConfig, {
       previousBaseline,
       refuseUnexportedDrift,
-      skipFurnaceApply,
+      skipFurnaceApply: furnace.skip,
+      furnaceComponents: furnace.only,
     });
-    await reportPreTestFurnace(projectRoot, preparation, skipFurnaceApply);
+    await reportPreTestFurnace(projectRoot, preparation, furnace.skip, furnace.unreached);
 
     // Which earlier claims this scoped build keeps, per staged path. The
     // mozconfig half can only be checked once prepareBuildEnvironment has
@@ -225,14 +237,38 @@ function assertRefuseUnexportedDriftUsage(options: TestOptions): void {
   );
 }
 
-/** Refuses `--no-furnace-apply` on a run that dispatches no build, for the same reason. */
+/** Refuses `--no-furnace-apply`/`--furnace-apply` on a run that dispatches no build, for the same reason. */
 function assertNoFurnaceApplyUsage(options: TestOptions): void {
-  if (options.furnaceApply !== false) return;
+  if (options.furnaceApply === undefined || options.furnaceApply === true) return;
   if (options.build === true || options.buildOnly === true) return;
+  const flag = options.furnaceApply === false ? '--no-furnace-apply' : '--furnace-apply';
   throw new InvalidArgumentError(
-    "--no-furnace-apply requires --build or --build-only: it skips the pre-test build's Furnace apply, and this run dispatches no build.",
-    '--no-furnace-apply'
+    `${flag} requires --build or --build-only: it shapes the pre-test build's Furnace apply, and this run dispatches no build.`,
+    flag
   );
+}
+
+/**
+ * The Furnace part of a pre-test build: skip the apply, apply everything,
+ * or apply only the components the request reaches (and name the rest).
+ */
+async function planPreTestFurnace(
+  projectRoot: string,
+  paths: ProjectPaths,
+  projectConfig: FireForgeConfig,
+  options: TestOptions,
+  normalizedPaths: readonly string[]
+): Promise<PreTestFurnacePlan> {
+  const mode = resolveFurnaceApplyMode(options, projectConfig);
+  if (mode === 'none') return { skip: true };
+  // A path-less build packages the whole suite, which reaches everything.
+  if (mode === 'all' || normalizedPaths.length === 0) return { skip: false };
+  const { reached, skipped } = await partitionReachedComponents(
+    projectRoot,
+    paths.engine,
+    normalizedPaths
+  );
+  return { skip: false, only: reached, unreached: skipped };
 }
 
 /** Renders the `recordedBy` invocation string surfaced by `status --test-coverage`. */
@@ -292,7 +328,13 @@ export async function runTestBuildPhase(
       testPackagingCoverage: coverage,
       refuseUnexportedDrift: options.refuseUnexportedDrift === true,
       extend: extending ? { requestedPaths: normalizedPaths } : undefined,
-      skipFurnaceApply: options.furnaceApply === false,
+      furnace: await planPreTestFurnace(
+        projectRoot,
+        paths,
+        projectConfig,
+        options,
+        normalizedPaths
+      ),
     });
     info('');
     if (options.buildOnly) {

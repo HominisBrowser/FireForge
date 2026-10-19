@@ -67,6 +67,21 @@ export interface TestConfig {
    * once. `--auto-ports` is the per-invocation equivalent.
    */
   mochitestPorts?: 'fixed' | 'auto';
+  /**
+   * `exclusive` (the default): every `fireforge test` holds the engine
+   * session lock alone. `shared`: a build-less run with auto ports holds it
+   * shared, so peers' build-less runs on the same objdir overlap while
+   * builds and re-exports still wait. `--shared-lock` is the per-invocation
+   * equivalent.
+   */
+  lockMode?: 'exclusive' | 'shared';
+  /**
+   * Which components `test --build` deploys before building: `all` (the
+   * default) every component with undeployed edits, `reached` only those a
+   * requested test reaches, `none` nothing. `--furnace-apply` is the
+   * per-invocation equivalent.
+   */
+  furnaceApply?: 'all' | 'reached' | 'none';
 }
 
 /** Patch history log settings stored in fireforge.json. */
@@ -269,6 +284,11 @@ export interface CheckExtraStep {
   cwd?: string;
   /** Seconds before the step is killed and fails. Unbounded when unset. */
   timeout?: number;
+  /**
+   * Steps (built-in or extra) that must finish before this one starts,
+   * whatever their outcome: an ordering, not a success dependency.
+   */
+  after?: string[];
 }
 
 /** Configuration for `fireforge check`. Every field is optional. */
@@ -291,6 +311,23 @@ export interface CheckConfig {
   };
   /** Project commands run as further steps. */
   extraSteps?: CheckExtraStep[];
+  /** Seconds before a built-in step is killed and fails. Unbounded when unset. */
+  timeout?: number;
+  /** Per-step `timeout` overrides for built-in steps, in seconds. */
+  timeouts?: Partial<Record<CheckBuiltinStep, number>>;
+  /**
+   * Fail the verdict when a built-in step is skipped because it has nothing
+   * to run (no `typecheck` block, no furnace.json). A step named in `skip`
+   * is a decision, not a gap, and never fails it.
+   */
+  failOnSkipped?: boolean;
+  /**
+   * Project-relative path the lint step writes its `lint --per-patch
+   * --report` JSON to. Extra steps receive it as
+   * `FIREFORGE_CHECK_LINT_REPORT`, so an audit can read the run's lint
+   * report instead of linting the queue a second time.
+   */
+  lintReport?: string;
 }
 
 /**
@@ -336,6 +373,15 @@ export interface TypecheckConfig {
    * blocking. `'off'` suppresses them.
    */
   undefinedIdentifiers?: PatchLintSeverityGate;
+  /**
+   * Types Lit in the shim: `LitElement` and the template helpers of
+   * `chrome://global/content/vendor/lit.all.mjs`, and `MozLitElement` of
+   * `chrome://global/content/lit-utils.mjs`, with closed member lists, so a
+   * misspelt member of a widget host is an error. Default off: reactive
+   * properties declared only through `static properties` or
+   * `static queries` then need a JSDoc or constructor declaration.
+   */
+  litTypes?: boolean;
 }
 
 /**
@@ -605,8 +651,12 @@ export interface PatchLintConfig {
 export interface PatchLintTokenScale {
   /** CSS properties governed (exact names, or a `*`-suffixed prefix such as `padding*`). */
   properties: string[];
-  /** Custom-property prefix of the scale's tokens, e.g. `--mybrowser-space-`. */
-  prefix: string;
+  /**
+   * Custom-property prefix of the scale's tokens, e.g. `--mybrowser-space-`,
+   * or a list of them for a scale whose steps are spelled more than one way
+   * (`["--mybrowser-space-", "--mybrowser-gap-"]`).
+   */
+  prefix: string | string[];
   /**
    * Literal value atoms accepted without a token (`0`, `auto`, `1px`).
    * `*` is a wildcard, so `*%` accepts any percentage. CSS-wide keywords
@@ -620,6 +670,28 @@ export interface PatchLintTokenScale {
    * tokens.
    */
   allow?: string[];
+  /**
+   * Literal atoms accepted only inside a math function (`calc()`, `min()`,
+   * `max()`, `clamp()`), with the `allowLiterals` wildcard syntax: a
+   * unitless multiplier (`calc(var(--x-space-2) * 2)`) without also
+   * accepting a bare `2`.
+   */
+  allowInCalc?: string[];
+  /**
+   * Largest total, in px, a declaration may subtract from this scale's
+   * tokens inside a math function (`calc(var(--x-space-4) - 1px)`), for a
+   * border or hairline inset. Summed over the declaration.
+   */
+  offsetCap?: number;
+  /** Engine-relative globs (`**`, `*`, `?`) of files this scale does not govern. */
+  exclude?: string[];
+  /**
+   * The fewest patch-created CSS files (outside `exclude`) that must carry a
+   * declaration of this scale's properties. A queue under it fails
+   * `token-scale-vacuous`, so a scale that matches nothing, or a scan set
+   * a move emptied, cannot pass by judging nothing.
+   */
+  minFiles?: number;
 }
 
 /**

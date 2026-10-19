@@ -53,21 +53,21 @@ if (options.json === true) {
 
 ## Current surfaces
 
-| Surface                            | Shape                                                                                                                                                                                                              | Notes                                                                                                                                                                                                                              |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status --json`                    | `{ schemaVersion: 1, … }`                                                                                                                                                                                          | Error envelope on three engine preconditions                                                                                                                                                                                       |
-| `status --json` under `--check`    | adds `check: { enabled, failOn, allow?, failOnUnknown?, failed, offenders }`                                                                                                                                       | Since 0.50.0 on the full payload too, not only `--summary`. `allow` and `failOnUnknown` appear only when set. An offender failing only through `--fail-on-unknown` carries `unnamed: true`. `--patches` adds `scope: { patches }`  |
-| `furnace validate --json`          | `{ schemaVersion: 1, passed, summary, maxWarnings?, components, issues, excepted, staleExceptions }`                                                                                                               | `issues` counts after `validationExceptions`, stale-exception warnings included. `excepted` carries each suppressed finding with its `reason`                                                                                      |
-| `check --json`                     | `{ schemaVersion: 1, verdict, reason?, summary, steps }`                                                                                                                                                           | One entry per step: `name`, `kind`, `command`, `status` (`pass`/`fail`/`skipped`), `exitCode`, `durationMs`, `detail`, and on failure `outputTail` (`timedOut` when killed at its budget). No verdict line under `--json`          |
-| `check` verdict line               | `FIREFORGE-VERDICT: PASS\|FAIL [reason=step-failures\|lock-timeout failed=<steps>] steps=<n> skipped=<n>`                                                                                                          | Not JSON. The last stdout line, after the step table, sealed like `test`'s. Its `reason=` set is its own, not `test`'s                                                                                                             |
-| `tree list --json`                 | `{ schemaVersion: 1, trees }`                                                                                                                                                                                      | Error envelope added in 0.44.0                                                                                                                                                                                                     |
-| `token list --json`                | `{ schemaVersion: 1, tokensCssPath, categories }`                                                                                                                                                                  | Categories in file order, each with its tokens (`name`, `line`, `value`)                                                                                                                                                           |
-| `token show --json`                | `{ schemaVersion: 1, name, category, declarations }`                                                                                                                                                               | One entry per declaring block, with its selector trail and line                                                                                                                                                                    |
-| `token lint --json`                | `{ schemaVersion: 1, tokensCssPath, tokenPrefix, filesScanned, findings }`                                                                                                                                         | Each finding has `check`, `file`, `line`, `token`, `message`. The document is written even when findings exist; the exit is then non-zero, as with `status --check --json`                                                         |
-| `test` verdict line                | `FIREFORGE-VERDICT: PASS\|FAIL reason=… [note=<class>] [started=<n>/<m> first-unstarted=<path>] [runs=<p>/<n>] [control=<outcome>] [shuffle=<seed>] [furnace-applied=<names>\|furnace-apply=skipped] [log=<path>]` | Not JSON. A single final stdout line, sealed by `setStdoutSealed` so nothing can displace it. `log=` names the run's own complete output under `.fireforge/logs/`, so a piped or truncated run still leaves a re-readable artifact |
-| `lint --per-patch --report <path>` | `{ schemaVersion: 1, patches, queueIssues, totals, … }`                                                                                                                                                            | Written to a file. `queueIssues` holds the cross-patch findings; `patch staged-dependency --add --from` reads back their `stagedDeclarations`                                                                                      |
-| `status --raw`                     | `git status --porcelain` lines                                                                                                                                                                                     | Not JSON, but still a machine surface: it engages the same stdout discipline, so rules 3 and 4 apply and rules 1 and 2 do not. A clean tree prints nothing                                                                         |
-| `build` log announcement           | `Full build output: <path>`                                                                                                                                                                                        | Not JSON. `build` prints no verdict line, so it names its run log directly on the way out                                                                                                                                          |
+| Surface                            | Shape                                                                                                                                                                                                                                                                             | Notes                                                                                                                                                                                                                              |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status --json`                    | `{ schemaVersion: 1, … }`                                                                                                                                                                                                                                                         | Error envelope on three engine preconditions                                                                                                                                                                                       |
+| `status --json` under `--check`    | adds `check: { enabled, failOn, allow?, failOnUnknown?, failed, offenders }`                                                                                                                                                                                                      | Since 0.50.0 on the full payload too, not only `--summary`. `allow` and `failOnUnknown` appear only when set. An offender failing only through `--fail-on-unknown` carries `unnamed: true`. `--patches` adds `scope: { patches }`  |
+| `furnace validate --json`          | `{ schemaVersion: 1, passed, summary, maxWarnings?, components, issues, excepted, staleExceptions }`                                                                                                                                                                              | `issues` counts after `validationExceptions`, stale-exception warnings included. `excepted` carries each suppressed finding with its `reason`                                                                                      |
+| `check --json`                     | `{ schemaVersion: 1, verdict, reason?, summary, steps }`                                                                                                                                                                                                                          | One entry per step: `name`, `kind`, `command`, `status` (`pass`/`fail`/`skipped`), `exitCode`, `durationMs`, `detail`, and on failure `outputTail` (`timedOut` when killed at its budget). No verdict line under `--json`          |
+| `check` verdict line               | `FIREFORGE-VERDICT: PASS\|FAIL [reason=step-failures\|lock-timeout\|skipped-steps failed=<steps>] steps=<n> skipped=<n> [skipped-steps=<steps>]`                                                                                                                                  | Not JSON. The last stdout line, after the step table, sealed like `test`'s. Its `reason=` set is its own, not `test`'s                                                                                                             |
+| `tree list --json`                 | `{ schemaVersion: 1, trees }`                                                                                                                                                                                                                                                     | Error envelope added in 0.44.0                                                                                                                                                                                                     |
+| `token list --json`                | `{ schemaVersion: 1, tokensCssPath, categories }`                                                                                                                                                                                                                                 | Categories in file order, each with its tokens (`name`, `line`, `value`)                                                                                                                                                           |
+| `token show --json`                | `{ schemaVersion: 1, name, category, declarations }`                                                                                                                                                                                                                              | One entry per declaring block, with its selector trail and line                                                                                                                                                                    |
+| `token lint --json`                | `{ schemaVersion: 1, tokensCssPath, tokenPrefix, filesScanned, findings }`                                                                                                                                                                                                        | Each finding has `check`, `file`, `line`, `token`, `message`. The document is written even when findings exist; the exit is then non-zero, as with `status --check --json`                                                         |
+| `test` verdict line                | `FIREFORGE-VERDICT: PASS\|FAIL reason=… [note=<class>] [started=<n>/<m> first-unstarted=<path> started-source=<src>] [shards=<p>/<t> [failed-shards=<labels>]] [runs=<p>/<n>] [control=<outcome>] [shuffle=<seed>] [furnace-applied=<names>\|furnace-apply=skipped] [log=<path>]` | Not JSON. A single final stdout line, sealed by `setStdoutSealed` so nothing can displace it. `log=` names the run's own complete output under `.fireforge/logs/`, so a piped or truncated run still leaves a re-readable artifact |
+| `lint --per-patch --report <path>` | `{ schemaVersion: 1, patches, queueIssues, totals, … }`                                                                                                                                                                                                                           | Written to a file. `queueIssues` holds the cross-patch findings; `patch staged-dependency --add --from` reads back their `stagedDeclarations`                                                                                      |
+| `status --raw`                     | `git status --porcelain` lines                                                                                                                                                                                                                                                    | Not JSON, but still a machine surface: it engages the same stdout discipline, so rules 3 and 4 apply and rules 1 and 2 do not. A clean tree prints nothing                                                                         |
+| `build` log announcement           | `Full build output: <path>`                                                                                                                                                                                                                                                       | Not JSON. `build` prints no verdict line, so it names its run log directly on the way out                                                                                                                                          |
 
 `--raw` is why `cli.ts` reads `process.argv` for `--json` or `--raw` before
 dispatching. Rule 3 is about who owns stdout, and that question is settled
@@ -79,6 +79,19 @@ serializable `DoctorCheck[]`, so adding one is cheap if a consumer asks for
 it. Follow the rules above rather than inventing a shape.
 
 The run logs behind `log=` are specified in [`run-logs.md`](run-logs.md).
+
+Additive keys since 0.51.0 outside `test`:
+
+- `check --json`: a skipped step carries `skipKind`, `config` when
+  `check.skip` names it and `unavailable` when the project has nothing for
+  it to run. The verdict line adds `skipped-steps=<steps>` whenever a step
+  is skipped, and `reason=skipped-steps` when `check.failOnSkipped` fails a
+  run on an `unavailable` skip alone.
+- `furnace validate --json`: a finding about particular elements carries
+  `tags` (`no-keyboard-handler` names each synthetic element with an
+  `@click`). An exception that matched an error adds a
+  `validation-exception-on-error` error, and a full run under
+  `furnace.json#minComponents` a `component-floor` error on `furnace.json`.
 
 ## Versioning
 
@@ -159,6 +172,35 @@ that has none. A run refused only for a non-zero `unexpected=` count or a
 mid-test shutdown carries neither. Absent on every other line. See
 [`testing.md`](testing.md#the-verdict-line).
 
+`started-source=raw|stream|capture` follows them and names the evidence the
+count came from: the mozlog structured log (a run with `--results` or
+`--shard-size`), the complete streamed output (every other run), or, only
+when nothing was streamed, the last 2 MB of the capture.
+
+### Shards: `FIREFORGE-SHARD:` and `failed-shards=`
+
+A sharded run prints one `FIREFORGE-SHARD:` line per finished shard, before
+the verdict line:
+
+```
+FIREFORGE-SHARD: PASS|FAIL [reason=…] [checks=<n>] [unexpected=<n>] shard=<i>/<n> path=<label> [failed-files=<path>,…]
+```
+
+`path=` is the shard's path argument (whitespace replaced by `_`), or a
+`--shard-size`/`--jobs` chunk's first file plus `+<k>`. `failed-files=`
+appears under `--shard-size` and names the chunk's files that failed. The
+aggregate verdict appends `failed-shards=<label>,…` after `shards=` when any
+shard did not pass; under `--shard-size` `shards=` counts files and
+`failed-shards=` names files. Both are absent on a green run.
+
+### Additive keys of parallel and per-file runs
+
+`jobs=<n>` marks a `--jobs` run, `lock=shared` a run that held the engine
+session lock shared, and `results=<path>` names the `--results` document. A
+run whose engine changed mid-run only in files the running browser cannot
+see keeps its verdict and appends `drift-tolerated=<n>`. A negative control
+on compiled source appends `control-build=compiled`.
+
 ### The additive `shuffle=` key
 
 A `fireforge test --shuffle [seed]` run records the seed used to permute
@@ -210,8 +252,10 @@ the verdict `reason=inconclusive` only when HEAD moved or a changed path is
 packaged by the running build: a source an objdir install manifest names, a
 directory one installs from, or a test file. Edits that no manifest installs
 (compiled sources, build files, docs) leave the sample standing with a
-warning naming them. Other runs keep the strict rule: any change is
-inconclusive.
+warning naming them. Other runs are inconclusive only when a changed path is
+one the running browser can see: a file the objdir links to its source, one
+staged at dispatch, or a test file or staging input of the run; anything
+else leaves the verdict standing with `drift-tolerated=<n>`.
 
 ### Additive Furnace keys
 
@@ -219,4 +263,6 @@ A `fireforge test --build` or `--build-only` run whose pre-test Furnace apply
 deployed components appends `furnace-applied=<name>,<name>…`: the components
 whose `components/` source changed since their last deploy, which the
 runtime under test therefore includes. `--no-furnace-apply` skips that apply
-and appends `furnace-apply=skipped`. Both are absent otherwise.
+and appends `furnace-apply=skipped`. `--furnace-apply reached` appends
+`furnace-skipped=<names>` for components with undeployed edits that no
+requested test reaches. All are absent otherwise.

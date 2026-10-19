@@ -47,6 +47,14 @@ vi.mock('../../core/engine-session-lock.js', async (importOriginal) => ({
   snapshotEngineGeneration: vi.fn(() => Promise.resolve('test-head\0')),
 }));
 
+// The scoped guard a real re-export uses reads git directly; the same fake
+// engine gets a stable empty fingerprint. re-export-purity-scope's own
+// integration test pins it against a real repository.
+vi.mock('../re-export-purity-scope.js', () => ({
+  fingerprintScopedDryRunState: vi.fn(() => Promise.resolve(new Map<string, string>())),
+  describeForeignWriters: vi.fn(() => Promise.resolve([])),
+}));
+
 vi.mock('../../core/git-diff.js', () => ({
   getDiffForFilesAgainstHead: vi.fn().mockResolvedValue('diff --git a/x b/x\n+content\n'),
 }));
@@ -484,10 +492,13 @@ describe('reExportCommand - --scan flag', () => {
     expect(updatePatchAndMetadata).toHaveBeenCalledTimes(1);
   });
 
-  it('--refuse-adjacent-unmanaged is refused alongside --scan', async () => {
+  it('--refuse-adjacent-unmanaged is refused alongside --files but not --scan', async () => {
+    await expect(
+      reExportCommand('/fake/root', ['001'], { files: ['a.js'], refuseAdjacentUnmanaged: true })
+    ).rejects.toThrow('--refuse-adjacent-unmanaged cannot be combined with --files');
     await expect(
       reExportCommand('/fake/root', ['001'], { scan: true, refuseAdjacentUnmanaged: true })
-    ).rejects.toThrow('--refuse-adjacent-unmanaged applies to the scan-less path only');
+    ).rejects.not.toThrow('--refuse-adjacent-unmanaged');
   });
 
   it('--refuse-foreign-drift is refused alongside --files but not --scan', async () => {

@@ -692,6 +692,56 @@ describe('mach command execution', () => {
     stderrSpy.mockRestore();
   });
 
+  it('prefixes echoed lines for a --jobs instance while capturing raw', async () => {
+    const { execStream } = await import('../../utils/process.js');
+    const echoedOut: string[] = [];
+    const echoedErr: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((data) => {
+      echoedOut.push(String(data));
+      return true;
+    });
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((data) => {
+      echoedErr.push(String(data));
+      return true;
+    });
+    await primePythonResolution();
+    const chunks: string[] = [];
+    vi.mocked(execStream).mockImplementationOnce((_cmd, _args, options) => {
+      options?.onStdout?.('TEST-START | a.js\nTEST-');
+      options?.onStdout?.('OK | a.js\n');
+      options?.onStderr?.('warning\n');
+      // The known teardown traceback is held back by the echo filter and
+      // flushed after the run; the residue carries the prefix too.
+      options?.onStdout?.('SUITE_END\nTraceback (most recent call last):\n');
+      return Promise.resolve(0);
+    });
+
+    const result = await runMachTestSuite('mochitest', {
+      engineDir: '/engine',
+      testPaths: ['a.js'],
+      outputPrefix: '[job 2] ',
+      teardown: { onOutputChunk: (_stream, chunk) => chunks.push(chunk) },
+    });
+
+    expect(result.stdout).toBe(
+      'TEST-START | a.js\nTEST-OK | a.js\nSUITE_END\nTraceback (most recent call last):\n'
+    );
+    expect(chunks).toEqual([
+      'TEST-START | a.js\nTEST-',
+      'OK | a.js\n',
+      'warning\n',
+      'SUITE_END\nTraceback (most recent call last):\n',
+    ]);
+    expect(echoedOut.join('')).toMatch(
+      /^\[job 2\] TEST-START \| a\.js\n\[job 2\] TEST-OK \| a\.js\n/
+    );
+    expect(echoedOut.join('')).toContain('[job 2] Traceback (most recent call last):');
+    expect(echoedErr.join('')).toBe('[job 2] warning\n');
+
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
   it('annotates the known teardown traceback in the echo while capturing it raw', async () => {
     const { execStream } = await import('../../utils/process.js');
     const echoed: string[] = [];

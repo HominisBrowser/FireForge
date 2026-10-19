@@ -107,6 +107,21 @@ read from the objdir, not from `engine/`, so a control on it stays green
 and reports `missed`: that result is the signal to target the file the
 browser actually loads.
 
+A control on compiled source (C/C++, Rust, IDL, WebIDL, IPDL or YAML that no
+install manifest ships) can only reach the binary through a build. Without
+`--build` it is refused before the lock. With `--build` it is applied before
+the pre-test build, so the binary under test carries it, stays applied for
+every `--repeat` run, and is restored with a fresh mtime so the next build
+recompiles the original. The verdict adds `control-build=compiled`. A
+build-less control whose packaging is not current is refused before the
+lock with the advice to add `--build`, instead of ending `inconclusive`
+after a full queue.
+
+Besides `git diff` output, a control may be a plain unified diff
+(`diff -u`, no `diff --git` lines; the path comes from `---`/`+++`) or a
+`git diff --no-index <engine file> <edited copy>`: when the new side names a
+copy outside `engine/` and `components/`, the control targets the old side.
+
 ### The restore safety model
 
 - **Only under the lock.** Apply, run and restore all happen inside the
@@ -194,7 +209,11 @@ earlier path whose own inputs and `engine/mozconfig` are unchanged, whatever
 moved elsewhere in the engine, including a peer's edits and an engine HEAD
 move that touches none of them. A path whose inputs changed is dropped and
 named, with the inputs that changed. Changed inputs this build restages are
-allowed.
+allowed, and a scoped build of one file restages that file's test manifest
+too: a manifest that gained an entry for the new file no longer drops the
+claims of its sibling files. A build-less run's packaging gates also run
+before the lock is requested, so a `coverage-replaced` or `stale-build`
+refusal arrives before the run queues.
 
 A scoped build after a full build keeps the claim full while nothing outside
 its scope moved. Otherwise it carries the full build's anchor forward, and a
@@ -220,6 +239,15 @@ on the verdict line (`furnace-applied=<names>`). `--no-furnace-apply`
 packages `engine/` as it stands, for example for a before-capture, names the
 components with undeployed edits it left out, and stamps
 `furnace-apply=skipped`.
+
+On a shared engine a peer's default `test --build` deploys every session's
+undeployed component edits. `--furnace-apply reached` (or
+`test.furnaceApply: "reached"`) deploys only the components a requested test
+reaches: the test path, the test file, a `head*.js` beside it, or any test
+file under a requested directory names the component. The rest are named in
+a notice and stamped `furnace-skipped=<names>`. A path-less build reaches
+every component. `--furnace-apply none` is `--no-furnace-apply`; `all` is the
+default.
 
 When `patchLint.checkJs` and `patchLint.checkJsTestFiles` are enabled, named
 pre-test builds check the selected test scripts before deployment or mach.
@@ -247,7 +275,7 @@ launchd-parented app remains unattributed and is not automatically killed.
 `test --wait-browser [seconds]` waits for this objdir's browser to exit;
 `test --wait-port [seconds]` waits for mochitest and Marionette listeners.
 `build --wait-browser [seconds]` queues a full or UI build behind the browser.
-Bare flags wait 60 seconds; explicit values accept 1–3600 seconds. They are
+Bare flags wait 60 seconds; explicit values accept 1–86400 seconds. They are
 independent of the FireForge lock budget, and they are spent BEFORE the
 engine session lock is requested, so a run waiting out a browser or a port
 does not hold every peer's build, test and re-export behind it. The run then
@@ -433,8 +461,15 @@ group sweep.
 Every test run ends with one machine-readable line:
 
 ```
-FIREFORGE-VERDICT: PASS|FAIL reason=… [note=<class>] [started=<n>/<m> first-unstarted=<path>] [runs=<p>/<n>] [control=<outcome>] [shuffle=<seed>] [orphans-reaped=<n>] [furnace-applied=<names>|furnace-apply=skipped] [log=<path>]
+FIREFORGE-VERDICT: PASS|FAIL reason=… [note=<class>] [started=<n>/<m> first-unstarted=<path> started-source=<src>] [shards=<p>/<t> [failed-shards=<labels>]] [runs=<p>/<n>] [control=<outcome>] [shuffle=<seed>] [orphans-reaped=<n>] [furnace-applied=<names>|furnace-apply=skipped] [furnace-skipped=<names>] [jobs=<n>] [lock=shared] [results=<path>] [log=<path>]
 ```
+
+The start count reads every line the harness printed, not the last 2 MB of
+captured output: a suite printing more than that (a large browser directory,
+or any run under `--full-output`) used to report files that ran and passed
+as never started. `started-source=` names the evidence. A sharded run also
+prints a `FIREFORGE-SHARD:` line per shard and names the shards that did not
+pass as `failed-shards=`; see [`machine-output.md`](machine-output.md).
 
 A run is never `PASS` when its summary reports unexpected results, when the
 harness printed "Application shut down (without crashing) in the middle of a
@@ -528,7 +563,41 @@ The two phases handle it differently, on purpose:
 
 A test run holds the engine-session lock and snapshots the engine git
 generation before and after the harness run, failing the verdict as invalid
-if the tree changed mid-run. The checks that need no lock run before it is
+if the tree changed mid-run in a way the running browser can see: a file the
+objdir links to its source, a file staged at dispatch, or a test file or
+staging input of the run. A peer's edit to anything else (a compiled source,
+a copied file, an unrelated test) leaves the verdict standing with a warning
+and `drift-tolerated=<n>`; the next run's stale-build gate judges whether it
+needs a rebuild.
+
+`--shared-lock` (or `test.lockMode: "shared"`) holds the lock shared for a
+build-less run that applies no negative control and uses auto ports, so
+several such runs on one objdir overlap. Anything that writes (a build, a
+re-export, a `test --build`) still holds the lock alone: it waits for shared
+holders to finish, and new shared holders queue behind it.
+`status --lock` counts shared holders. Orphan reaping only touches helpers
+whose parent died, so overlapping runs do not reap each other's live
+helpers.
+
+`--jobs <n>` runs a request's shards on n harness instances inside one lock
+hold. Each instance has its own profile and its own Marionette port, and
+auto ports (required) move each instance's mochitest server ports; output
+lines carry a `[job <i>]` prefix in the terminal and the run log. With
+`--no-shard`, or a single directory argument, the files are split in order
+into n contiguous chunks. Parallel browsers raise host load, so measure
+before relying on it.
+
+`--shard-size <n>` dispatches n files per mach invocation (mochitest restarts
+the browser between files), paying the harness start once per chunk instead
+of once per file, and judges each file from mozlog's structured log:
+`shards=` then counts files and `failed-shards=` names failed files.
+
+`--results <path>` writes one JSON record per test file and `--repeat` run
+(status, expected status, duration, unexpected subtests, the shard, and the
+run-log line where the dispatch began) from mozlog's structured log, which
+each dispatch then writes with `--log-raw`, and names it on the verdict as
+`results=<path>`. A `--log-raw <file>` already forwarded with `--mach-arg` is
+read instead. The checks that need no lock run before it is
 requested: the launchable binary, the named-file checkJs pass, and the
 `--wait-browser`/`--wait-port` budgets. The run log is open from the start,
 so a `reason=lock-timeout` line carries `log=` too.

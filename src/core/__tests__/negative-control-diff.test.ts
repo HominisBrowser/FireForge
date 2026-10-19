@@ -20,9 +20,35 @@ describe('parseControlDiff', () => {
     expect(files[0]?.hunks).toHaveLength(1);
   });
 
-  it('refuses text without a diff --git header and names the git command', () => {
-    expect(() => parseControlDiff('--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n')).toThrow(
-      /no `diff --git` sections.*git -C engine diff/s
+  it('refuses text with no diff at all and names the git command', () => {
+    expect(() => parseControlDiff('not a diff\n')).toThrow(
+      /no diff sections found.*git -C engine diff/s
+    );
+  });
+
+  it('accepts a plain unified diff (diff -u), taking the path from ---/+++', () => {
+    const plain =
+      '--- engine/x.js\t2026-10-12 10:00:00\n+++ engine/x.js\t2026-10-12 10:01:00\n' +
+      '@@ -1 +1 @@\n-a\n+b\n';
+    expect(parseControlDiff(plain).map((file) => file.path)).toEqual(['engine/x.js']);
+    expect(parseControlDiff('--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n')[0]?.path).toBe('x');
+  });
+
+  it('still refuses a plain diff that creates a file', () => {
+    expect(() => parseControlDiff('--- /dev/null\n+++ b/n.js\n@@ -0,0 +1 @@\n+x\n')).toThrow(
+      /creates or deletes a file/
+    );
+  });
+
+  it('maps a rename-shaped section through resolveRename, and refuses when it declines', () => {
+    const noIndex =
+      'diff --git a/engine/x.js b/tmp/scratch/x.js\n--- a/engine/x.js\n+++ b/tmp/scratch/x.js\n' +
+      '@@ -1 +1 @@\n-a\n+b\n';
+    expect(parseControlDiff(noIndex, { resolveRename: (source) => source })[0]?.path).toBe(
+      'engine/x.js'
+    );
+    expect(() => parseControlDiff(noIndex, { resolveRename: () => undefined })).toThrow(
+      /is a rename/
     );
   });
 

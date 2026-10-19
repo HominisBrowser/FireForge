@@ -339,6 +339,17 @@ describe('lintPatchSize bands and wording', () => {
       ['notice', 'Patch adds 900 code lines in non-test files'],
       ['notice', 'Patch adds 2000 code lines in test files (test tier)'],
     ]);
+    expect(issues.map((i) => i.share)).toEqual(['product', 'test']);
+  });
+
+  it('tags an unsplit addedCode measurement as the product share, and diff as none', () => {
+    const files = ['browser/modules/A.sys.mjs'];
+    const [addedCode] = lintPatchSize(
+      files,
+      measured({ metric: 'addedCode', lines: 900, testLines: 0, files: 1 })
+    );
+    expect(addedCode?.share).toBe('product');
+    expect(lintPatchSize(files, 2000)[0]).not.toHaveProperty('share');
   });
 
   it('does not split per class under the diff metric', () => {

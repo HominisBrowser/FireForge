@@ -258,7 +258,11 @@ export function registerPatchMoveFiles(parent: Command, context: CommandContext)
     .option('--dry-run', 'Show what would happen without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
     .option('--force-unsafe', 'Bypass projected-lint refusals')
-    .option('--skip-lint', 'Skip per-patch lint of the projected bodies');
+    .option('--skip-lint', 'Skip per-patch lint of the projected bodies')
+    .option(
+      '--declarations-out <path>',
+      'Where a refusal writes its one --from-ready staged-declaration report (default: .fireforge/declarations/<timestamp>.json)'
+    );
   addWaitLockOption(command).action(
     withErrorHandling(
       async (
@@ -274,6 +278,7 @@ export function registerPatchMoveFiles(parent: Command, context: CommandContext)
           yes?: boolean;
           forceUnsafe?: boolean;
           skipLint?: boolean;
+          declarationsOut?: string;
           waitLock?: number | boolean;
         }
       ) => {
@@ -288,6 +293,7 @@ export function registerPatchMoveFiles(parent: Command, context: CommandContext)
             yes: options.yes,
             forceUnsafe: options.forceUnsafe,
             skipLint: options.skipLint,
+            declarationsOut: options.declarationsOut,
             waitLock: options.waitLock,
           }),
         });

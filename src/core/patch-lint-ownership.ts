@@ -107,6 +107,33 @@ export function isTestScriptFile(file: string): boolean {
 }
 
 /**
+ * For each test script, the ES modules (`.mjs`, `.sys.mjs`) the queue
+ * creates up to and including the test's own patch: what its imports can
+ * resolve to in a per-test checkJs program. A test no patch touches sees
+ * every module the queue creates.
+ *
+ * @param patchQueueCtx - The queue, in apply order
+ * @returns Lookup from a test script path to its resolvable modules
+ */
+export function resolvableModulesForTests(
+  patchQueueCtx: PatchQueueContext
+): (testFile: string) => ReadonlySet<string> {
+  const byTest = new Map<string, ReadonlySet<string>>();
+  const upTo = new Set<string>();
+  for (const entry of patchQueueCtx.entries) {
+    for (const file of entry.newFiles.keys()) {
+      if (file.endsWith('.mjs') && !isTestScriptFile(file)) upTo.add(file);
+    }
+    const snapshot = new Set(upTo);
+    for (const file of [...entry.newFiles.keys(), ...entry.modifiedFileAdditions.keys()]) {
+      if (isTestScriptFile(file) && !byTest.has(file)) byTest.set(file, snapshot);
+    }
+  }
+  const all: ReadonlySet<string> = upTo;
+  return (testFile) => byTest.get(testFile) ?? all;
+}
+
+/**
  * Returns the set of patch-owned test `.js` files. Same
  * ownership semantics as {@link resolvePatchOwnedSysMjs}. Consumed by the
  * `patchLint.checkJsTestFiles` pass, which checks each as its own small

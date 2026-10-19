@@ -484,6 +484,12 @@ describe('reExportCommand integration', () => {
           "--owner 002-ui-helper.patch --reason '<why"
       )
     );
+    // Every proposed declaration also lands in one --from-ready report.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /All 1 declaration\(s\) this refusal proposes are in .*\.fireforge[/\\]declarations[/\\].*\.json[\s\S]*fireforge patch staged-dependency 001-ui-test\.patch --add --from /
+      )
+    );
     // Nothing adopted: the refusal fires before any write.
     await expect(readProjectText(projectRoot, 'patches/patches.json')).resolves.toBe(
       manifestBefore
@@ -1516,7 +1522,7 @@ describe('reExportCommand dry-run purity', () => {
         })
       )
     ).rejects.toThrow(
-      /\[dry-run\] invariant violated: this dry run modified patches\/001-ui-capture\.patch/
+      /\[dry-run\] invariant violated: patches\/001-ui-capture\.patch changed during this dry run/
     );
   });
 
@@ -1547,7 +1553,7 @@ describe('reExportCommand dry-run purity', () => {
     );
 
     expect(failure?.message).toMatch(
-      /\[dry-run\] invariant violated: this dry run modified patches\/001-ui-capture\.patch/
+      /\[dry-run\] invariant violated: patches\/001-ui-capture\.patch changed during this dry run/
     );
     expect(failure?.message).toContain('operation exploded mid-dry-run');
     expect((failure?.cause as Error | undefined)?.message).toBe('operation exploded mid-dry-run');
@@ -1641,7 +1647,7 @@ describe('reExportCommand dry-run purity', () => {
         rm(join(projectRoot, 'patches', '001-ui-capture.patch'))
       )
     ).rejects.toThrow(
-      /\[dry-run\] invariant violated: this dry run modified patches\/001-ui-capture\.patch/
+      /\[dry-run\] invariant violated: patches\/001-ui-capture\.patch changed during this dry run/
     );
   });
 

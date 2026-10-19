@@ -13,6 +13,7 @@ import {
   buildProjectedManifest,
   enforcePatchPolicy,
 } from '../core/patch-policy.js';
+import { reservationAt } from '../core/patch-retired.js';
 import { buildPatchSourceMetadata } from '../core/patch-source-metadata.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { ExportOptions } from '../types/commands/index.js';
@@ -120,6 +121,14 @@ export async function gatePlacementPlan(args: {
     forceUnsafe: options.forceUnsafe === true,
   });
   const summary = placementSummary(placementPlan);
+  const reservation = reservationAt(currentManifest, placementPlan.insertionOrder);
+  if (reservation !== undefined) {
+    const notice =
+      `order ${placementPlan.insertionOrder} is reserved by ${reservation.owner}; ` +
+      'this export fills the reservation';
+    summary.push(notice);
+    s.message(notice);
+  }
   const renameCount = placementPlan.renameMap.size;
 
   // Route through confirmDestructive when the operation is destructive

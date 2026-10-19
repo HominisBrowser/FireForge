@@ -34,7 +34,12 @@ import { classifyProfileArgumentFailure } from './test-profile-files.js';
 // name it without forming an import cycle. Re-exported here because the
 // command layer imports its harness diagnostics from this module.
 export type { HarnessCrashSignature } from './test-harness-signature.js';
-import type { HarnessCrashSignature, IncompleteRunEvidence } from './test-harness-signature.js';
+import {
+  formatIncompleteSuffix,
+  formatShardsSuffix,
+  type HarnessCrashSignature,
+  type IncompleteRunEvidence,
+} from './test-harness-signature.js';
 
 // The no-output-stall triage text lives in `test-stall-triage.ts` (it is
 // operator advice, not classification) and is re-exported here so the
@@ -801,20 +806,15 @@ function lastCapturedCount(output: string, pattern: RegExp): number | undefined 
  */
 export function formatFireforgeVerdictLine(
   verdict: HarnessRunVerdict,
-  shards?: { passed: number; total: number }
+  shards?: { passed: number; total: number; failed?: readonly string[] }
 ): string {
   const counts =
     (verdict.checks !== undefined ? ` checks=${verdict.checks}` : '') +
     (verdict.unexpected !== undefined ? ` unexpected=${verdict.unexpected}` : '');
-  const shardSuffix = shards ? ` shards=${shards.passed}/${shards.total}` : '';
-  const { started: n, requested: m, firstUnstarted: first } = verdict.incomplete ?? {};
-  const truncation = first === undefined ? '' : ` started=${n}/${m} first-unstarted=${first}`;
-  const note = verdict.note !== undefined ? ` (${verdict.note})` : '';
-  if (verdict.kind === 'tests-ran-ok') {
-    return `FIREFORGE-VERDICT: PASS${counts}${shardSuffix}${note}`;
-  }
+  const tail = `${formatShardsSuffix(shards)}${verdict.note !== undefined ? ` (${verdict.note})` : ''}`;
+  if (verdict.kind === 'tests-ran-ok') return `FIREFORGE-VERDICT: PASS${counts}${tail}`;
   const reason = verdict.kind === 'harness-crash' ? 'crash' : verdict.kind;
-  return `FIREFORGE-VERDICT: FAIL reason=${reason}${counts}${truncation}${shardSuffix}${note}`;
+  return `FIREFORGE-VERDICT: FAIL reason=${reason}${counts}${formatIncompleteSuffix(verdict.incomplete)}${tail}`;
 }
 
 /**

@@ -34,6 +34,17 @@ describe('reportPreTestFurnace', () => {
     expect(notice).toHaveBeenCalledWith(expect.stringContaining('--no-furnace-apply'));
   });
 
+  it('names the components --furnace-apply reached left out', async () => {
+    await reportPreTestFurnace('/project', PREPARED, false, ['moz-z']);
+    expect(setVerdictRunAttribute).toHaveBeenCalledWith('furnace-skipped', 'moz-z');
+    expect(notice).toHaveBeenCalledWith(
+      '--furnace-apply reached: 1 component(s) with undeployed components/ edits that no requested test reaches are NOT in this build: moz-z.'
+    );
+    vi.clearAllMocks();
+    await reportPreTestFurnace('/project', PREPARED, false, []);
+    expect(setVerdictRunAttribute).not.toHaveBeenCalledWith('furnace-skipped', expect.anything());
+  });
+
   it('says nothing when the apply deployed nothing', async () => {
     await reportPreTestFurnace('/project', { furnaceApplied: 0, reconfigured: false }, false);
     expect(setVerdictRunAttribute).not.toHaveBeenCalled();

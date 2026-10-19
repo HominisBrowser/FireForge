@@ -178,7 +178,7 @@ async function runCheck(projectRoot: string, options: CheckCommandOptions): Prom
   );
 
   const results = await runCheckSteps(plan, jobs);
-  const verdict = judgeCheck(results);
+  const verdict = judgeCheck(results, { failOnSkipped: config.check?.failOnSkipped });
 
   if (options.json === true) {
     writeCheckJson(results, verdict);

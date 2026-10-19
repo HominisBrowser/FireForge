@@ -16,26 +16,36 @@ import { join } from 'node:path';
 import { type DisplaySleepState, probeDisplaySleepState } from '../core/display-state.js';
 import { type MachCommandResult, type MachTestSuiteKind, runMachTestSuite } from '../core/mach.js';
 import { parentExited } from '../core/parent-exit-watchdog.js';
-import { getActiveRunLogPath } from '../core/run-log.js';
+import { activeRunLogLine, getActiveRunLogPath } from '../core/run-log.js';
 import { changedPrefNoiseVerdictNote } from '../core/test-changed-prefs.js';
 import {
-  buildHarnessCrashMessage,
   classifyHarnessRun,
   type HarnessCrashSignature,
   type HarnessRunVerdict,
   headedDisplayAsleepVerdictNote,
-  headedNoOutputTimeoutHint,
 } from '../core/test-harness-crash.js';
 import { reportTestHost, sampleTestHost, stampPerfHost } from '../core/test-host-state.js';
-import { vetoIncompletePass } from '../core/test-run-completeness.js';
+import {
+  forwardedRawLogPath,
+  hasForwardedRawLog,
+  type RawTestLog,
+  type RawTestResult,
+  readRawTestLog,
+} from '../core/test-raw-log.js';
+import {
+  createStartMarkerTracker,
+  type StartMarkerTracker,
+  vetoIncompletePass,
+} from '../core/test-run-completeness.js';
 import { retryAfterXpcshellSymlinkRepair } from '../core/test-xpcshell-retry.js';
 import { withXpcshellProfileDir } from '../core/xpcshell-profile-dir.js';
 import { TestFailureError } from '../errors/build.js';
-import { info, note, warn } from '../utils/logger.js';
+import { warn } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
 import { maybeInjectAppdirArg } from './test-appdir.js';
 import { createHarnessTeardown } from './test-harness-teardown.js';
-import { emitHarnessVerdict, setVerdictRunAttribute } from './test-verdict.js';
+import { recordTestResults } from './test-results.js';
+import { setVerdictRunAttribute } from './test-verdict.js';
 
 /** Default bounded retry budget for recognized harness crashes. */
 export const DEFAULT_HARNESS_RETRIES = 2;
@@ -80,6 +90,15 @@ export interface TestRunContext {
   fullOutput?: boolean;
   /** `--pgid-file`: where each dispatch publishes its harness process group id. */
   pgidFile?: string | undefined;
+  /**
+   * Where each dispatch writes its mozlog raw log (`--results`,
+   * `--shard-size`). Unset: no `--log-raw` is added and nothing is parsed.
+   */
+  rawLogDir?: string | undefined;
+  /** `--repeat` run this dispatch belongs to (1-based), for `--results`. */
+  repetition?: number | undefined;
+  /** Prefix for every echoed and logged output line (`--jobs` instances). */
+  outputPrefix?: string | undefined;
 }
 
 /** Outcome of one (possibly retried) harness invocation. */
@@ -94,6 +113,8 @@ export interface TestRunOutcome {
    * when the shape did not apply and no probe ran.
    */
   displayState?: DisplaySleepState | undefined;
+  /** Per-file results from the raw log, when the run wrote one. */
+  fileResults?: RawTestResult[] | undefined;
 }
 
 /**
@@ -103,26 +124,28 @@ export interface TestRunOutcome {
  */
 export async function runTestsWithRetries(
   ctx: TestRunContext,
-  paths: string[]
+  paths: string[],
+  label = paths.join(' ')
 ): Promise<TestRunOutcome> {
   // Pure mochitest dispatches keep their env byte-identical, since the profile
   // variable is xpcshell-harness-specific. Generic `mach
   // test` runs may include xpcshell paths, so they get the isolation too.
   if (ctx.suite === 'mochitest') {
-    return runTestsWithRetriesInner(ctx, paths, ctx.env);
+    return runTestsWithRetriesInner(ctx, paths, ctx.env, label);
   }
   // Fresh profile dir per harness invocation: shards isolate from each
   // other and from concurrent `fireforge test` processes. The crash /
   // symlink-repair retries inside one invocation reuse the same directory
   // on purpose (they are the same logical run and the harness
   // re-initialises the profile contents itself).
-  return withXpcshellProfileDir(ctx.env, (env) => runTestsWithRetriesInner(ctx, paths, env));
+  return withXpcshellProfileDir(ctx.env, (env) => runTestsWithRetriesInner(ctx, paths, env, label));
 }
 
 async function runTestsWithRetriesInner(
   ctx: TestRunContext,
   paths: string[],
-  env: Record<string, string> | undefined
+  env: Record<string, string> | undefined,
+  label: string
 ): Promise<TestRunOutcome> {
   const extraArgs = [...ctx.baseExtraArgs];
   const appdirInjectionAttempted = await maybeInjectAppdirArg(
@@ -138,9 +161,16 @@ async function runTestsWithRetriesInner(
   let result: MachCommandResult;
   let verdict: HarnessRunVerdict;
 
+  let rawLog: RawTestLog | undefined;
+  let logLine: number;
+
   for (;;) {
     attempts += 1;
-    result = await runTrackedMachTestSuite(ctx, kind, paths, extraArgs, env);
+    let tracker = createStartMarkerTracker();
+    const raw = rawLogDispatchArgs(ctx, extraArgs);
+    logLine = activeRunLogLine();
+    const dispatched = await runTrackedMachTestSuite(ctx, kind, paths, raw.args, env, tracker);
+    result = dispatched;
     // The parent that was reading this run is gone and the watchdog has
     // already killed the harness. Classifying the corpse would call it a
     // harness crash and retry it under nobody's supervision.
@@ -153,24 +183,35 @@ async function runTestsWithRetriesInner(
         getActiveRunLogPath()
       );
     }
+    const retryTracker = createStartMarkerTracker();
     result = await retryAfterXpcshellSymlinkRepair({
       engineDir: ctx.engineDir,
       objDir: ctx.objDir,
       result,
       classification: ctx.classification,
       normalizedPaths: paths,
-      extraArgs,
+      extraArgs: raw.args,
       env,
       kind,
       fullOutput: ctx.fullOutput,
+      onOutputChunk: (stream, chunk) => {
+        retryTracker.onChunk(stream, chunk);
+      },
     });
+    if (result !== dispatched) tracker = retryTracker;
+    rawLog = raw.path === undefined ? undefined : await readRawTestLog(raw.path);
     const combined = `${result.stdout}\n${result.stderr}`;
     // An exit-0 run is still not a pass when it stopped partway or
-    // reported unexpected results (see test-run-completeness.ts).
+    // reported unexpected results (see test-run-completeness.ts). The
+    // start count reads the structured raw log when the run wrote one, and
+    // the streamed markers otherwise, never the 2 MB capture tail.
     verdict = vetoIncompletePass(
       classifyHarnessRun(result.exitCode, combined, paths),
       combined,
-      paths
+      paths,
+      rawLog !== undefined && rawLog.markers.started.length > 0
+        ? { markers: rawLog.markers, source: 'raw' }
+        : { markers: tracker.markers(), source: 'stream' }
     );
     if (verdict.kind !== 'harness-crash' || attempts >= maxAttempts) break;
     warn(
@@ -198,7 +239,43 @@ async function runTestsWithRetriesInner(
     if (note !== undefined) verdict = { ...verdict, note };
   }
 
-  return { result, verdict, attempts, appdirInjectionAttempted, displayState };
+  if (rawLog !== undefined) {
+    recordTestResults(rawLog.results, rawLog.unfinished, {
+      run: ctx.repetition ?? 1,
+      shard: label,
+      logLine,
+    });
+  }
+
+  return {
+    result,
+    verdict,
+    attempts,
+    appdirInjectionAttempted,
+    displayState,
+    ...(rawLog === undefined ? {} : { fileResults: rawLog.results }),
+  };
+}
+
+/** Sequence for raw-log file names, unique within the process. */
+let rawLogSequence = 0;
+
+/**
+ * The dispatch arguments with a `--log-raw` destination added, when this run
+ * collects per-file results. An operator's own forwarded `--log-raw <file>`
+ * is read instead of adding a second one.
+ */
+function rawLogDispatchArgs(
+  ctx: TestRunContext,
+  extraArgs: readonly string[]
+): { args: string[]; path: string | undefined } {
+  if (ctx.rawLogDir === undefined) return { args: [...extraArgs], path: undefined };
+  if (hasForwardedRawLog(extraArgs)) {
+    return { args: [...extraArgs], path: forwardedRawLogPath(extraArgs) };
+  }
+  rawLogSequence += 1;
+  const path = join(ctx.rawLogDir, `dispatch-${rawLogSequence}.raw.jsonl`);
+  return { args: [...extraArgs, `--log-raw=${path}`], path };
 }
 
 /**
@@ -211,7 +288,8 @@ async function runTrackedMachTestSuite(
   kind: MachTestSuiteKind,
   paths: string[],
   extraArgs: string[],
-  env: Record<string, string> | undefined
+  env: Record<string, string> | undefined,
+  tracker: StartMarkerTracker
 ): Promise<MachCommandResult> {
   const teardown = createHarnessTeardown({
     objDir: ctx.objDir === undefined ? undefined : join(ctx.engineDir, ctx.objDir),
@@ -233,7 +311,14 @@ async function runTrackedMachTestSuite(
       args: extraArgs,
       env,
       fullOutput: ctx.fullOutput,
-      teardown: teardown.hooks,
+      ...(ctx.outputPrefix === undefined ? {} : { outputPrefix: ctx.outputPrefix }),
+      teardown: {
+        ...teardown.hooks,
+        onOutputChunk: (stream, chunk) => {
+          tracker.onChunk(stream, chunk);
+          teardown.hooks.onOutputChunk?.(stream, chunk);
+        },
+      },
     });
   } finally {
     teardown.dispose();
@@ -262,134 +347,4 @@ async function probeDisplayStateForStall(
   if (verdict.kind !== 'harness-crash') return undefined;
   if (!verdict.signature?.reason.includes('no-output timeout')) return undefined;
   return probeDisplaySleepState(getPlatform());
-}
-
-/**
- * One sequential harness invocation of a sharded run: a requested path
- * argument and the mach paths dispatched for it. A file argument is a group
- * of one. A directory argument groups its enumerated test files so the whole
- * directory still runs in ONE browser instance, keeping cross-file state
- * behaviour within a directory run.
- */
-export interface ShardGroup {
-  /** The path argument as the operator passed it (display label). */
-  label: string;
-  /** The mach dispatch paths for this argument. */
-  paths: string[];
-}
-
-/** Per-shard summary entry. */
-export interface ShardOutcome {
-  label: string;
-  outcome: TestRunOutcome;
-}
-
-const SHARD_STATUS_LABEL: Record<HarnessRunVerdict['kind'], string> = {
-  'tests-ran-ok': 'PASS',
-  'test-failures': 'FAIL',
-  'harness-crash': 'CRASH',
-  'no-tests': 'NO-TESTS',
-  'harness-arguments': 'ARGUMENTS',
-};
-
-/** Aggregate result of a sharded run, verdict emission deferred to the caller. */
-export interface ShardedRunSummary {
-  shards: ShardOutcome[];
-  passed: number;
-  total: number;
-  /** Aggregate classifier verdict. See {@link deriveAggregateShardVerdict}. */
-  aggregate: HarnessRunVerdict;
-}
-
-/**
- * Derives the aggregate classification for a sharded run: all-green is
- * `tests-ran-ok`. Otherwise the most structural failure wins. A crashed
- * shard makes the whole run `harness-crash`, then `no-tests`, then plain
- * `test-failures`, so the aggregate `reason=` keeps the classifier-driven
- * contract instead of collapsing every failure to `test-failures`.
- */
-export function deriveAggregateShardVerdict(shards: ShardOutcome[]): HarnessRunVerdict {
-  const kinds = new Set(shards.map(({ outcome }) => outcome.verdict.kind));
-  if (kinds.has('harness-arguments')) return { kind: 'harness-arguments' };
-  if (kinds.has('harness-crash')) return { kind: 'harness-crash' };
-  if (kinds.has('no-tests')) return { kind: 'no-tests' };
-  if (kinds.has('test-failures')) return { kind: 'test-failures' };
-  return { kind: 'tests-ran-ok' };
-}
-
-/**
- * Runs each requested path argument as its own sequential harness
- * invocation (a directory argument's enumerated files stay together in
- * one invocation, see {@link ShardGroup}) and prints an aggregate
- * report. Per-shard failures are diagnosed via `diagnoseShardFailure`
- * (which receives the throwing diagnosis chain from the command layer)
- * but downgraded to warnings so every shard runs. The aggregate verdict
- * line and the aggregate error are not produced here: the caller runs
- * the engine-generation integrity check first and then calls
- * {@link finalizeShardedOutcome}, so a run invalidated by a concurrent
- * `engine/` mutation can never print `PASS` before the check fails.
- */
-export async function runShardedTests(
-  ctx: TestRunContext,
-  groups: ShardGroup[],
-  diagnoseShardFailure: (outcome: TestRunOutcome, label: string) => string | undefined
-): Promise<ShardedRunSummary> {
-  const shards: ShardOutcome[] = [];
-  for (const [index, group] of groups.entries()) {
-    info(`— Shard ${index + 1}/${groups.length}: ${group.label}`);
-    const outcome = await runTestsWithRetries(ctx, group.paths);
-    shards.push({ label: group.label, outcome });
-
-    if (outcome.verdict.kind === 'harness-crash' && outcome.verdict.signature) {
-      const base = buildHarnessCrashMessage(outcome.verdict.signature, outcome.attempts);
-      const hint = headedNoOutputTimeoutHint(outcome.verdict.signature, {
-        headless: ctx.headless,
-        platform: getPlatform(),
-        ...(outcome.displayState !== undefined ? { displayState: outcome.displayState } : {}),
-      });
-      warn(hint ? `${base}\n\n${hint}` : base);
-    } else if (outcome.verdict.kind !== 'tests-ran-ok') {
-      const diagnosis = diagnoseShardFailure(outcome, group.label);
-      if (diagnosis) warn(diagnosis);
-    }
-  }
-
-  const lines = shards.map(
-    ({ label, outcome }) =>
-      `${SHARD_STATUS_LABEL[outcome.verdict.kind].padEnd(8)} ${label}` +
-      (outcome.attempts > 1 ? `  (${outcome.attempts} attempts)` : '')
-  );
-  const failing = shards.filter(({ outcome }) => outcome.verdict.kind !== 'tests-ran-ok');
-  note(
-    `${lines.join('\n')}\n\n${shards.length - failing.length}/${shards.length} shard(s) passed`,
-    'Sharded Test Summary'
-  );
-
-  return {
-    shards,
-    passed: shards.length - failing.length,
-    total: shards.length,
-    aggregate: deriveAggregateShardVerdict(shards),
-  };
-}
-
-/**
- * Emits the aggregate FIREFORGE-VERDICT line for a sharded run, then
- * throws the aggregate error when any shard did not pass, the same
- * emit-then-throw shape as `finalizeSingleRunOutcome`. Called only after
- * the engine-generation check succeeded.
- */
-export function finalizeShardedOutcome(summary: ShardedRunSummary): void {
-  emitHarnessVerdict(summary.aggregate, { passed: summary.passed, total: summary.total });
-  if (summary.passed < summary.total) {
-    const failing = summary.shards.filter(({ outcome }) => outcome.verdict.kind !== 'tests-ran-ok');
-    throw new TestFailureError(
-      `${failing.length} of ${summary.total} sharded test run(s) did not pass: ` +
-        `${failing.map(({ label }) => label).join(', ')}. ` +
-        'See the per-shard diagnosis above. Use --no-shard to reproduce the combined single-invocation behaviour.',
-      'mach test',
-      undefined,
-      getActiveRunLogPath()
-    );
-  }
 }

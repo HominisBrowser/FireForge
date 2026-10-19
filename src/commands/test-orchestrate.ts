@@ -26,8 +26,9 @@ import {
   recoverPendingNegativeControl,
   restoreNegativeControl,
 } from '../core/negative-control.js';
+import { formatCompiledControlRefusal } from '../core/negative-control-compiled.js';
 import { getActiveRunLogPath, writeToActiveRunLog } from '../core/run-log.js';
-import { GeneralError, InvalidArgumentError } from '../errors/base.js';
+import { GeneralError, InvalidArgumentError, PreflightRefusalError } from '../errors/base.js';
 import { TestFailureError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
@@ -48,6 +49,7 @@ import {
   emitAggregateVerdict,
   emitFailVerdict,
   setVerdictCapture,
+  setVerdictRunAttribute,
   verdictEmitted,
 } from './test-verdict.js';
 
@@ -61,6 +63,15 @@ export interface TestRunHooks {
   coveragePaths?: string[];
   /** Runs after every preflight gate and the pre-test build, right before dispatch. */
   beforeDispatch?: () => Promise<void>;
+  /**
+   * Runs right before the pre-test build: a negative control on compiled
+   * source, which only reaches the binary when the build compiles it.
+   */
+  beforeBuild?: () => Promise<void>;
+  /** `--repeat` run this sub-run is (1-based), for `--results`. */
+  repetition?: number;
+  /** Where dispatches write their mozlog raw logs (`--results`, `--shard-size`). */
+  rawLogDir?: string;
 }
 
 /** The single-run body (`runTestCommandBody`), injected to avoid an import cycle. */
@@ -150,7 +161,10 @@ async function planRuns(
         ...(group.harness === undefined ? {} : { harness: group.harness }),
         paths: group.paths,
         options: first ? options : laterRunOptions(options),
-        hooks: first && union !== undefined ? { coveragePaths: union } : {},
+        hooks: {
+          repetition,
+          ...(first && union !== undefined ? { coveragePaths: union } : {}),
+        },
       });
     }
   }
@@ -258,6 +272,16 @@ export async function orchestrateTestRuns(
       : await planNegativeControl(projectRoot, projectPaths.engine, options.negativeControl, {
           deferApplyCheck: options.build === true,
         });
+  // A compiled target only reaches the binary through a build, so its
+  // control goes in before the first run's pre-test build.
+  const compiled = plan?.compiled;
+  const compiledControl = compiled !== undefined;
+  if (compiledControl) {
+    if (options.build !== true) {
+      throw new PreflightRefusalError(formatCompiledControlRefusal(compiled), 'negative-control');
+    }
+    setVerdictRunAttribute('control-build', 'compiled');
+  }
 
   const results: SubRunResult[] = [];
   let restoreError: unknown;
@@ -273,7 +297,11 @@ export async function orchestrateTestRuns(
     try {
       await body(run.paths, run.options, {
         ...run.hooks,
-        ...(plan === undefined ? {} : { beforeDispatch: controlHook(controlPaths, plan, slot) }),
+        ...(plan === undefined
+          ? {}
+          : compiledControl && index === 0
+            ? { beforeBuild: controlHook(controlPaths, plan, slot) }
+            : { beforeDispatch: controlHook(controlPaths, plan, slot) }),
       });
     } catch (caught: unknown) {
       error = caught;

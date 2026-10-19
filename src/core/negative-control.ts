@@ -26,7 +26,7 @@
  */
 
 import { lstat, mkdir, readFile, rm, utimes } from 'node:fs/promises';
-import { join, posix, resolve } from 'node:path';
+import { isAbsolute, join, posix, relative, resolve } from 'node:path';
 
 import { GeneralError, PreflightRefusalError } from '../errors/base.js';
 import type { FurnaceConfig } from '../types/furnace.js';
@@ -34,8 +34,14 @@ import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { writeFileAtomic } from '../utils/fs.js';
 import { sha256Hex } from '../utils/hash.js';
 import { notice } from '../utils/logger.js';
-import { normalizePathSlashes, stripEnginePrefix } from '../utils/paths.js';
+import {
+  isContainedRelativePath,
+  isPathInsideRoot,
+  normalizePathSlashes,
+  stripEnginePrefix,
+} from '../utils/paths.js';
 import { loadFurnaceConfig } from './furnace-config.js';
+import { findCompiledControlTargets } from './negative-control-compiled.js';
 import {
   applyControlHunks,
   type ControlDiffFile,
@@ -68,6 +74,12 @@ export interface NegativeControlPlan {
   /** The diff file, as the operator passed it. */
   diffFile: string;
   targets: NegativeControlTarget[];
+  /**
+   * Engine-relative targets only a build delivers (compiled sources). A
+   * control with any must be applied before the pre-test build, and is
+   * restored with a fresh mtime. See `negative-control-compiled.ts`.
+   */
+  compiled?: string[];
 }
 
 /** Locations a control works against. */
@@ -85,6 +97,12 @@ interface JournalEntry {
   mode: number;
   atimeMs: number;
   mtimeMs: number;
+  /**
+   * Restore with the current time as mtime, not the original: a compiled
+   * source restored with its old mtime is skipped by the incremental build,
+   * which would leave the mutated code in the binary.
+   */
+  freshMtime?: boolean;
 }
 
 interface Journal {
@@ -248,7 +266,9 @@ export async function planNegativeControl(
   }
   let files: ControlDiffFile[];
   try {
-    files = parseControlDiff(content);
+    files = parseControlDiff(content, {
+      resolveRename: (source, target) => resolveEditedCopyRename(projectRoot, source, target),
+    });
   } catch (error: unknown) {
     refuse(toError(error).message);
   }
@@ -257,7 +277,47 @@ export async function planNegativeControl(
     if (options.deferApplyCheck === true && target.fromComponents) continue;
     await prepareTarget(engineDir, target);
   }
-  return { diffFile, targets };
+  const compiled = await findCompiledControlTargets(
+    engineDir,
+    targets.filter((target) => !target.fromComponents).map((target) => target.enginePath)
+  );
+  return { diffFile, targets, ...(compiled.length > 0 ? { compiled } : {}) };
+}
+
+/**
+ * A diff path as a project-relative path: a contained relative path as
+ * is, and an absolute one (git strips the leading `/` into `a/Users/…`)
+ * when it lies inside the project. Undefined otherwise.
+ */
+function projectRelative(projectRoot: string, path: string): string | undefined {
+  const normalized = normalizePathSlashes(path);
+  for (const candidate of [`/${normalized}`, normalized]) {
+    if (!isAbsolute(candidate)) continue;
+    if (isPathInsideRoot(projectRoot, candidate)) {
+      return normalizePathSlashes(relative(projectRoot, candidate));
+    }
+  }
+  return isContainedRelativePath(normalized) ? normalized : undefined;
+}
+
+/**
+ * The control target of a `git diff --no-index <engine file> <edited copy>`
+ * section: its old side, when that names a project file and the new side
+ * names a copy outside `engine/` and `components/`. A section whose sides
+ * both live in those trees is a real rename and stays refused.
+ */
+function resolveEditedCopyRename(
+  projectRoot: string,
+  source: string,
+  target: string
+): string | undefined {
+  const old = projectRelative(projectRoot, source);
+  if (old === undefined) return undefined;
+  const edited = projectRelative(projectRoot, target);
+  const tracked = (path: string): boolean =>
+    path.startsWith('engine/') || path.startsWith('components/');
+  if (edited !== undefined && tracked(edited)) return undefined;
+  return old;
 }
 
 async function writeJournal(paths: NegativeControlPaths, journal: Journal): Promise<void> {
@@ -297,6 +357,7 @@ export async function applyNegativeControl(
         mode: item.mode,
         atimeMs: item.atimeMs,
         mtimeMs: item.mtimeMs,
+        ...(plan.compiled?.includes(item.target.enginePath) === true ? { freshMtime: true } : {}),
       });
     }
     const journal: Journal = {
@@ -350,7 +411,12 @@ async function restoreEntry(
     );
   }
   await writeFileAtomic(absolutePath, original);
-  await utimes(absolutePath, entry.atimeMs / 1000, entry.mtimeMs / 1000);
+  if (entry.freshMtime === true) {
+    const now = Date.now() / 1000;
+    await utimes(absolutePath, now, now);
+  } else {
+    await utimes(absolutePath, entry.atimeMs / 1000, entry.mtimeMs / 1000);
+  }
   const readBack = await readFile(absolutePath);
   const stats = await lstat(absolutePath);
   if (!readBack.equals(original) || (stats.mode & 0o7777) !== (entry.mode & 0o7777)) {

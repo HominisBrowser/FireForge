@@ -105,6 +105,21 @@ describe('runTypecheck', () => {
     expect(error.message).toContain("'now'");
   });
 
+  it('leaves Lit untyped by default and types it under litTypes', async () => {
+    const loose = expectSingle(
+      await typecheckFixtures({ projects: ['lit-members/jsconfig.json'] })
+    );
+    expect(loose.issues.filter((i) => i.category === 'error')).toHaveLength(0);
+
+    const typed = expectSingle(
+      await typecheckFixtures({ projects: ['lit-members/jsconfig.json'], litTypes: true })
+    );
+    const error: TypecheckIssue = expectSingle(typed.issues.filter((i) => i.category === 'error'));
+    // TS2551: the TS2339 "does not exist" with a "did you mean" suggestion.
+    expect(error.code).toBe(2551);
+    expect(error.message).toContain("'updateCompelte'");
+  });
+
   it('skips projects that explicitly opt out via checkJs: false', async () => {
     const results = await typecheckFixtures({
       projects: ['disabled/jsconfig.json'],

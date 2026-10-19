@@ -23,6 +23,7 @@ import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type { PatchMoveFilesOptions } from '../../types/commands/index.js';
 import { info, intro, outro, success } from '../../utils/logger.js';
 import { normalizePatchDisplayName } from '../../utils/validation.js';
+import { withDeclarationsReport } from '../declarations-report.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { resolvePlacementPlan } from '../export-flow.js';
 import { runPatchLint } from '../export-shared.js';
@@ -34,6 +35,7 @@ import {
   buildSplitSummary,
   projectSplitManifest,
   runProjectedSplitLint,
+  splitDeclarationRenamer,
   type SplitPlan,
 } from './split-plan.js';
 import { emptyStagedMaintenance, findOwnerRewriteHolders } from './split-staged.js';
@@ -188,12 +190,15 @@ export async function patchMoveFilesCreateCommand(
     patchTier: source.tier,
   });
 
-  const { conflicts, stagedDependencyAdditions, stagedMaintenance } = runProjectedSplitLint(
-    plan,
-    patchQueueCtx
-  );
-  plan.stagedDependencyAdditions = stagedDependencyAdditions;
-  plan.stagedMaintenance = stagedMaintenance;
+  const projected = runProjectedSplitLint(plan, patchQueueCtx);
+  plan.stagedDependencyAdditions = projected.stagedDependencyAdditions;
+  plan.stagedMaintenance = projected.stagedMaintenance;
+  const conflicts = await withDeclarationsReport(projected.conflicts, {
+    projectRoot,
+    regressions: projected.regressions,
+    out: options.declarationsOut,
+    rename: splitDeclarationRenamer(plan),
+  });
   const newMetadata = buildNewPatchMetadata(plan, config);
 
   const decision = await confirmDestructive({

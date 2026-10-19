@@ -23,6 +23,7 @@ import { pathExistsStrict, readJson, removeFile, writeJson } from '../utils/fs.j
 import { warn } from '../utils/logger.js';
 import { isArray, isObject } from '../utils/validation.js';
 import { assertPatchDirectoryLockHeld } from './patch-lock.js';
+import { canonicalizeManifest, canonicalizePatchRow } from './patch-manifest-key-order.js';
 import { validatePatchesManifest } from './patch-manifest-validate.js';
 import { manifestWithRetiredSlots } from './patch-retired.js';
 
@@ -123,7 +124,7 @@ export async function savePatchesManifest(
   manifest: PatchesManifest
 ): Promise<void> {
   const manifestPath = join(patchesDir, PATCHES_MANIFEST);
-  await writeJson(manifestPath, manifest);
+  await writeJson(manifestPath, canonicalizeManifest(manifest));
 }
 
 /**
@@ -190,6 +191,12 @@ export async function mutatePatchRowsInManifest(
 
   if (changedIndexes.length === 0) return [];
 
+  // Only the rows this call changed are put in canonical order, so a key
+  // it sets lands where every other writer puts it; untouched rows keep
+  // their raw shape.
+  for (const index of changedIndexes) {
+    rawPatches[index] = canonicalizePatchRow(rawPatches[index] as Record<string, unknown>);
+  }
   const nextRawManifest = {
     ...rawManifest,
     patches: rawPatches,

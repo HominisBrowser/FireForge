@@ -47,7 +47,10 @@ in `toolkit/content/jar.mn`, including extra modules beside the main one. Add
 the file to the directory and deploy instead of writing the jar line by hand.
 A line that already registers the file anywhere in the jar (same target, or
 same `(widgets/<tag>/<file>)` source) is kept and never duplicated, so mach
-does not fail with "Item already in manifest".
+does not fail with "Item already in manifest". Removing a file from the
+directory drops only its line, and `furnace rename` rewrites the widget's
+lines where they stand, so the rest of the block keeps its order and the
+owning patch carries no reorder hunks.
 
 The apply and deploy summaries name why each component was skipped, for
 example `Applied 0, skipped 1 (1 already current)`. "Already current" means
@@ -111,6 +114,45 @@ it records is gone, so `validate` reports a `stale-validation-exception`
 warning asking for the entry to be deleted. A run over one component judges
 only that component's entries. `deploy` honours the same entries when it
 validates, but leaves the staleness report to `validate`.
+
+An entry never suppresses an error (since 0.51.0): an error blocks apply,
+and a review record cannot make a broken component deployable. The error
+stays counted, and the entry is reported as a
+`validation-exception-on-error` error until the finding is fixed and the
+entry deleted.
+
+An optional `tag` narrows an entry to findings about one element tag, so a
+reviewed `<panel-list>` menu does not mute `no-keyboard-handler` for the
+rest of the component. A finding that names several tags (`no-keyboard-handler`
+names every synthetic element with an `@click`) is suppressed only when
+entries cover all of them:
+
+```json
+{
+  "component": "moz-vault",
+  "check": "no-keyboard-handler",
+  "tag": "li",
+  "reason": "Rows are reached through the list's roving focus."
+}
+```
+
+Accessibility checks judge the composed component: the host
+`<tag>.mjs` and its companion modules (`<tag>-*.mjs`, tests and stories
+left out) read as one source. Moving a template between the component's
+modules therefore no longer changes its findings: a keyboard handler in a
+companion covers an `@click` in the host, and an `@click` in a companion
+is judged too. Toolkit's `panel-item` counts as natively
+keyboard-activated, beside `button`, form controls and the `moz-*` buttons.
+
+`minComponents` sets the fewest components a full `furnace validate` must
+judge. A run under it, an empty tree included, fails with a
+`component-floor` error on `furnace.json`, so a moved or emptied
+components tree cannot pass by validating nothing. A run naming one
+component is not held to it.
+
+```json
+{ "minComponents": 40 }
+```
 
 `optInChecks` turns on checks that are off by default:
 

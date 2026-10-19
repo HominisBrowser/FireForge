@@ -430,7 +430,7 @@ describe('registerFurnace', () => {
     }
     await expect(
       program.parseAsync(['node', 'fireforge', 'furnace', 'deploy', '--wait-lock', '0'])
-    ).rejects.toThrow('--wait-lock must be an integer in 1..3600 (got "0")');
+    ).rejects.toThrow('--wait-lock must be an integer in 1..86400 (got "0")');
     expect(furnaceDeployCommand).not.toHaveBeenCalled();
   });
 });

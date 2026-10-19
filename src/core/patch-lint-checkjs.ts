@@ -45,6 +45,7 @@ import {
   createModuleLiteralResolver,
 } from './patch-lint-checkjs-any-import.js';
 import { type CheckJsSourceFileCache, withSharedSourceFiles } from './patch-lint-checkjs-cache.js';
+import { collectCheckJsDiagnostics } from './patch-lint-checkjs-diagnostics.js';
 import {
   collectUnmanagedCompanions,
   retargetUnmanagedCompanionHints,
@@ -243,6 +244,8 @@ export interface RunCheckJsGroupedInput {
    * compiler options and shim in one run. See {@link runCheckJsTestFilesGrouped}.
    */
   sourceFileCache?: CheckJsSourceFileCache;
+  /** When set, diagnostics are collected only for these repo-relative files. */
+  reportOnly?: ReadonlySet<string>;
 }
 
 /**
@@ -447,7 +450,7 @@ export async function runCheckJsGrouped(
   );
   const byFile = groupOwnedDiagnostics(
     ts,
-    [...program.getSemanticDiagnostics(), ...program.getSyntacticDiagnostics()],
+    collectCheckJsDiagnostics(program, relByAbsolute, input.reportOnly),
     relByAbsolute,
     input.mode?.undefinedIdentifiers ?? 'warning',
     anyTypedImports
@@ -588,6 +591,13 @@ export async function invokePatchLintCheckJs(
  * reported per program (head helpers report from their own program), and
  * run-level errors are de-duplicated across programs.
  *
+ * With `resolvableModules`, a test's `resource:///` and `chrome://`
+ * imports also resolve to the modules it returns for that test (the
+ * modules the queue creates up to the test's own patch), so a test that
+ * imports an earlier patch's module is typed against its real source
+ * instead of the shim's `any` wildcard. Those modules are resolution
+ * targets only: never roots, and never reported on.
+ *
  * @param repoDir - Absolute engine (repository) directory
  * @param testFiles - Patch-owned test-script paths (repo-relative)
  * @param patchLint - The resolved `patchLint` config block
@@ -598,7 +608,8 @@ export async function runCheckJsTestFilesGrouped(
   testFiles: Set<string>,
   patchLint: PatchLintConfig,
   projectRoot: string,
-  rootScope?: ReadonlySet<string>
+  rootScope?: ReadonlySet<string>,
+  resolvableModules?: (testFile: string) => ReadonlySet<string>
 ): Promise<GroupedCheckJsResult> {
   const merged: GroupedCheckJsResult = { byFile: new Map(), global: [] };
   if (testFiles.size === 0) return merged;
@@ -628,7 +639,9 @@ export async function runCheckJsTestFilesGrouped(
     }
     const result = await runCheckJsGrouped({
       repoDir,
-      resolutionOwned: roots,
+      resolutionOwned: new Set([...roots, ...(resolvableModules?.(file) ?? [])]),
+      rootScope: roots,
+      reportOnly: new Set([file]),
       ...(patchLint.checkJsTestShim !== undefined
         ? { extraShimPath: patchLint.checkJsTestShim }
         : {}),

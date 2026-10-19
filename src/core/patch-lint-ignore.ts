@@ -19,6 +19,7 @@ import type {
   LintIgnoreCeiling,
   LintIgnoreEntry,
   PatchLintIssue,
+  PatchSizeShare,
 } from '../types/commands/index.js';
 
 /**
@@ -32,9 +33,21 @@ export const LINT_IGNORE_CEILING_RULES: readonly string[] = [
   'large-patch-files',
 ];
 
+/** The only rule whose findings carry a {@link PatchSizeShare}. */
+const SHARE_RULE = 'large-patch-lines';
+const SHARES: readonly PatchSizeShare[] = ['product', 'test'];
+
+/**
+ * The key a ceiling is stored under: the rule, plus `#<share>` for a
+ * share-scoped ceiling, so one rule can carry a ceiling per share.
+ */
+function ceilingKey(rule: string, share: PatchSizeShare | undefined): string {
+  return share === undefined ? rule : `${rule}#${share}`;
+}
+
 /**
  * A waiver filter: the bare check IDs as a set (so a plain `Set<string>`
- * still satisfies the type), plus the ceilings keyed by rule.
+ * still satisfies the type), plus the ceilings keyed by {@link ceilingKey}.
  *
  * Bare IDs and ceilings are kept apart on purpose. A caller that only knows
  * `has()` treats a ceiling-waived rule as not waived, which fails closed.
@@ -53,9 +66,19 @@ export function lintIgnoreRule(entry: LintIgnoreEntry): string {
   return isLintIgnoreCeiling(entry) ? entry.rule : entry;
 }
 
-/** One-word rendering for summaries and dry runs: `file-too-large<=1200`. */
+/**
+ * One-word rendering for summaries and dry runs: `file-too-large<=1200`,
+ * `large-patch-lines[test]<=900`.
+ */
 export function formatLintIgnoreEntry(entry: LintIgnoreEntry): string {
-  return isLintIgnoreCeiling(entry) ? `${entry.rule}<=${String(entry.max)}` : entry;
+  if (!isLintIgnoreCeiling(entry)) return entry;
+  const share = entry.share === undefined ? '' : `[${entry.share}]`;
+  return `${entry.rule}${share}<=${String(entry.max)}`;
+}
+
+/** The identity an entry is upserted and deduplicated by. */
+function entryKey(entry: LintIgnoreEntry): string {
+  return isLintIgnoreCeiling(entry) ? ceilingKey(entry.rule, entry.share) : entry;
 }
 
 /** Renders a list for messages, `(empty)` when there is nothing to show. */
@@ -65,7 +88,13 @@ export function formatLintIgnoreList(entries: readonly LintIgnoreEntry[]): strin
 
 function sameEntry(a: LintIgnoreEntry, b: LintIgnoreEntry): boolean {
   if (!isLintIgnoreCeiling(a) || !isLintIgnoreCeiling(b)) return a === b;
-  return a.rule === b.rule && a.max === b.max && a.reason === b.reason;
+  return (
+    a.rule === b.rule &&
+    a.max === b.max &&
+    a.reason === b.reason &&
+    a.share === b.share &&
+    JSON.stringify(a.meta) === JSON.stringify(b.meta)
+  );
 }
 
 /**
@@ -76,6 +105,9 @@ function sameEntry(a: LintIgnoreEntry, b: LintIgnoreEntry): boolean {
  * integer `max` and a non-empty `reason`, and must be the only entry for
  * its rule: a bare ID beside a ceiling for the same rule would make the
  * ceiling dead, and two ceilings would leave the effective one ambiguous.
+ * The one exception is `large-patch-lines`, which may carry one ceiling
+ * per `share` instead of a single share-less one. `meta` must be a JSON
+ * object and is kept verbatim.
  *
  * @param raw - The value under `lintIgnore`
  * @param label - Field label for error messages, e.g. `patches[3].lintIgnore`
@@ -96,14 +128,22 @@ export function parseLintIgnoreEntries(raw: unknown, label: string): LintIgnoreE
     }
     entries.push(parseCeiling(item, itemLabel));
   }
+  const sharedRules = new Set<string>();
   for (const entry of entries) {
     if (!isLintIgnoreCeiling(entry)) continue;
-    if (ceilingRules.has(entry.rule) || entries.includes(entry.rule)) {
+    const key = ceilingKey(entry.rule, entry.share);
+    const clash =
+      ceilingRules.has(key) ||
+      entries.includes(entry.rule) ||
+      (entry.share === undefined ? sharedRules.has(entry.rule) : ceilingRules.has(entry.rule));
+    if (clash) {
       throw new Error(
-        `${label} names "${entry.rule}" more than once; keep a single entry (bare or ceiling) per rule`
+        `${label} names "${entry.rule}" more than once; keep a single entry (bare or ceiling) ` +
+          'per rule, or one ceiling per share'
       );
     }
-    ceilingRules.add(entry.rule);
+    ceilingRules.add(key);
+    if (entry.share !== undefined) sharedRules.add(entry.rule);
   }
   return entries;
 }
@@ -113,13 +153,11 @@ function parseCeiling(item: unknown, label: string): LintIgnoreCeiling {
     throw new Error(`${label} must be a check ID string or a { rule, max, reason } object`);
   }
   const record = item as Record<string, unknown>;
-  const unknownKeys = Object.keys(record).filter(
-    (key) => key !== 'rule' && key !== 'max' && key !== 'reason'
-  );
+  const unknownKeys = Object.keys(record).filter((key) => !CEILING_KEYS.has(key));
   if (unknownKeys.length > 0) {
     throw new Error(`${label} has unknown field(s): ${unknownKeys.join(', ')}`);
   }
-  const { rule, max, reason } = record;
+  const { rule, max, reason, share, meta } = record;
   if (typeof rule !== 'string' || !LINT_IGNORE_CEILING_RULES.includes(rule)) {
     throw new Error(
       `${label}.rule must be one of the measured size rules: ${LINT_IGNORE_CEILING_RULES.join(', ')}`
@@ -131,8 +169,23 @@ function parseCeiling(item: unknown, label: string): LintIgnoreCeiling {
   if (typeof reason !== 'string' || reason.trim() === '') {
     throw new Error(`${label}.reason must be a non-empty string`);
   }
-  return { rule, max, reason };
+  const ceiling: LintIgnoreCeiling = { rule, max, reason };
+  if (share !== undefined) {
+    if (rule !== SHARE_RULE || !SHARES.includes(share as PatchSizeShare)) {
+      throw new Error(`${label}.share must be "product" or "test", and only on ${SHARE_RULE}`);
+    }
+    ceiling.share = share as PatchSizeShare;
+  }
+  if (meta !== undefined) {
+    if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) {
+      throw new Error(`${label}.meta must be a JSON object`);
+    }
+    ceiling.meta = meta as Record<string, unknown>;
+  }
+  return ceiling;
 }
+
+const CEILING_KEYS: ReadonlySet<string> = new Set(['rule', 'max', 'reason', 'share', 'meta']);
 
 /**
  * Builds the waiver filter for a patch's entries.
@@ -147,7 +200,7 @@ export function buildLintIgnoreChecks(
   const plain = new Set<string>();
   const ceilings = new Map<string, LintIgnoreCeiling>();
   for (const entry of entries) {
-    if (isLintIgnoreCeiling(entry)) ceilings.set(entry.rule, entry);
+    if (isLintIgnoreCeiling(entry)) ceilings.set(ceilingKey(entry.rule, entry.share), entry);
     else plain.add(entry);
   }
   return ceilings.size > 0 ? Object.assign(plain, { ceilings }) : plain;
@@ -168,7 +221,8 @@ export function lintIgnoreCacheTokens(checks: LintIgnoreChecks | undefined): str
  * semantics `export` / `re-export --lint-ignore` have always had. A bare ID
  * whose rule already has an entry (bare or ceiling) is a no-op: widening a
  * reviewed ceiling to an unbounded waiver is `patch lint-ignore`'s job, where
- * it is confirmed explicitly.
+ * it is confirmed explicitly. Ceilings deduplicate by rule and share, so a
+ * rule's per-share ceilings all survive.
  *
  * @returns The merged list, or undefined when it is empty
  */
@@ -177,20 +231,24 @@ export function mergeLintIgnoreIds(
   ids: readonly string[] | undefined
 ): LintIgnoreEntry[] | undefined {
   const merged: LintIgnoreEntry[] = [];
+  const keys = new Set<string>();
   const rules = new Set<string>();
   for (const entry of [...(existing ?? []), ...(ids ?? [])]) {
-    const rule = lintIgnoreRule(entry);
-    if (rules.has(rule)) continue;
-    rules.add(rule);
+    const blocked = isLintIgnoreCeiling(entry) ? keys.has(entryKey(entry)) : rules.has(entry);
+    if (blocked) continue;
+    keys.add(entryKey(entry));
+    rules.add(lintIgnoreRule(entry));
     merged.push(entry);
   }
   return merged.length > 0 ? merged : undefined;
 }
 
 /**
- * Adds or replaces entries by rule, the `patch lint-ignore --add` semantics:
- * an explicit `--add <rule>` turns a ceiling into a bare waiver, and
- * `--add <rule> --max <n>` sets or moves the ceiling.
+ * Adds or replaces entries, the `patch lint-ignore --add` semantics: an
+ * explicit `--add <rule>` turns a rule's ceilings into a bare waiver,
+ * `--add <rule> --max <n>` sets or moves the rule's ceiling, and a
+ * share-scoped ceiling replaces only its own share (plus any bare or
+ * share-less entry for the rule, which it would contradict).
  *
  * @returns The new list, or undefined when it is empty
  */
@@ -198,12 +256,24 @@ export function upsertLintIgnoreEntries(
   existing: readonly LintIgnoreEntry[],
   additions: readonly LintIgnoreEntry[]
 ): LintIgnoreEntry[] | undefined {
-  const next = [...existing];
+  let next = [...existing];
   for (const addition of additions) {
     const rule = lintIgnoreRule(addition);
-    const index = next.findIndex((entry) => lintIgnoreRule(entry) === rule);
-    if (index === -1) next.push(addition);
-    else next[index] = addition;
+    const scoped = isLintIgnoreCeiling(addition) && addition.share !== undefined;
+    const replaced = (entry: LintIgnoreEntry): boolean =>
+      lintIgnoreRule(entry) === rule &&
+      (!scoped ||
+        !isLintIgnoreCeiling(entry) ||
+        entry.share === undefined ||
+        entryKey(entry) === entryKey(addition));
+    const index = next.findIndex(replaced);
+    const kept = next.filter((entry) => !replaced(entry));
+    // The addition takes the first replaced entry's place, so a moved
+    // ceiling keeps its position in the list.
+    next =
+      index === -1
+        ? [...kept, addition]
+        : [...kept.slice(0, index), addition, ...kept.slice(index)];
   }
   return mergeLintIgnoreIds(next, undefined);
 }
@@ -246,7 +316,7 @@ export function partitionLintIgnoredIssues(
       suppressed.push(issue);
       continue;
     }
-    const ceiling = checks?.ceilings?.get(issue.check);
+    const ceiling = ceilingFor(issue, checks);
     if (ceiling === undefined) {
       kept.push(issue);
       continue;
@@ -255,14 +325,35 @@ export function partitionLintIgnoredIssues(
       suppressed.push(issue);
       continue;
     }
+    // A notice never gates, so a ceiling does not bound it: one past `max`
+    // surfaces as the plain notice it is, not as an exceeded waiver.
+    if (issue.severity === 'notice') {
+      kept.push(issue);
+      continue;
+    }
     kept.push({ ...issue, message: `${issue.message} ${describeExceededCeiling(ceiling)}` });
   }
   return { kept, suppressed };
 }
 
+/** The ceiling that governs `issue`: its share's, else the rule's share-less one. */
+function ceilingFor(
+  issue: PatchLintIssue,
+  checks: LintIgnoreChecks | undefined
+): LintIgnoreCeiling | undefined {
+  const ceilings = checks?.ceilings;
+  if (ceilings === undefined) return undefined;
+  if (issue.share !== undefined) {
+    const scoped = ceilings.get(ceilingKey(issue.check, issue.share));
+    if (scoped !== undefined) return scoped;
+  }
+  return ceilings.get(issue.check);
+}
+
 function describeExceededCeiling(ceiling: LintIgnoreCeiling): string {
+  const share = ceiling.share === undefined ? '' : ` (${ceiling.share} share)`;
   return (
-    `This exceeds the patch's lintIgnore ceiling for ${ceiling.rule} ` +
+    `This exceeds the patch's lintIgnore ceiling for ${ceiling.rule}${share} ` +
     `(max ${String(ceiling.max)}: ${ceiling.reason}).`
   );
 }
@@ -310,15 +401,80 @@ export interface LintIgnoreCeilingStatus {
   rule: string;
   max: number;
   reason: string;
+  /** The share the ceiling bounds, when it is share-scoped. */
+  share?: PatchSizeShare;
+  /** The ceiling's `meta`, verbatim, when it has one. */
+  meta?: Record<string, unknown>;
   /** Largest current measurement for the rule, null when none was taken. */
   measurement: number | null;
   /**
-   * `exceeded`: a finding measured past `max` and surfaced.
+   * `exceeded`: a warning- or error-band finding measured past `max` and
+   * surfaced. A notice never exceeds a ceiling: it gates nothing.
    * `removable`: the rule no longer reaches its own warning band, so the
    * waiver changes no gate and can be dropped.
    * `within`: the waiver is doing its job.
    */
   state: LintIgnoreCeilingState;
+}
+
+/**
+ * One waiver's standing, bare or ceiling, as the report's
+ * `lintIgnoreWaivers` records it. A bare waiver has `max: null`; its
+ * `state` is `within` while the rule still finds something to suppress at
+ * warning band or above, and `removable` otherwise (informational: a bare
+ * waiver of a rule this lint does not run reads as removable too).
+ */
+export interface LintIgnoreWaiverStatus {
+  kind: 'bare' | 'ceiling';
+  rule: string;
+  max: number | null;
+  reason: string | null;
+  share?: PatchSizeShare;
+  meta?: Record<string, unknown>;
+  measurement: number | null;
+  state: LintIgnoreCeilingState;
+}
+
+/** Patch-level measurements a size rule falls back to when it did not fire. */
+interface PatchMeasurements {
+  lines: number;
+  files: number;
+}
+
+function judgeWaiver(
+  rule: string,
+  max: number | null,
+  share: PatchSizeShare | undefined,
+  issues: readonly PatchLintIssue[],
+  patchMeasurements: PatchMeasurements
+): { measurement: number | null; state: LintIgnoreCeilingState } {
+  const findings = issues.filter(
+    (issue) => issue.check === rule && (share === undefined || issue.share === share)
+  );
+  const measured = findings
+    .map((issue) => issue.measurement)
+    .filter((value): value is number => value !== undefined);
+  // A share-scoped ceiling has no patch-level fallback: the total counts
+  // both shares, which is not what it bounds.
+  const fallback =
+    share !== undefined
+      ? null
+      : rule === 'large-patch-lines'
+        ? patchMeasurements.lines
+        : rule === 'large-patch-files'
+          ? patchMeasurements.files
+          : null;
+  const measurement = measured.length > 0 ? Math.max(...measured) : fallback;
+  const gating = findings.filter((issue) => issue.severity !== 'notice');
+  const exceeded =
+    max !== null &&
+    gating.some((issue) => issue.measurement !== undefined && issue.measurement > max);
+  const state: LintIgnoreCeilingState = exceeded
+    ? 'exceeded'
+    : gating.length > 0
+      ? 'within'
+      : 'removable';
+  return { measurement, state };
 }
 
 /**
@@ -334,31 +490,57 @@ export interface LintIgnoreCeilingStatus {
 export function evaluateLintIgnoreCeilings(
   entries: readonly LintIgnoreEntry[] | undefined,
   issues: readonly PatchLintIssue[],
-  patchMeasurements: { lines: number; files: number }
+  patchMeasurements: PatchMeasurements
 ): LintIgnoreCeilingStatus[] {
   const statuses: LintIgnoreCeilingStatus[] = [];
   for (const entry of entries ?? []) {
     if (!isLintIgnoreCeiling(entry)) continue;
-    const findings = issues.filter((issue) => issue.check === entry.rule);
-    const measured = findings
-      .map((issue) => issue.measurement)
-      .filter((value): value is number => value !== undefined);
-    const fallback =
-      entry.rule === 'large-patch-lines'
-        ? patchMeasurements.lines
-        : entry.rule === 'large-patch-files'
-          ? patchMeasurements.files
-          : null;
-    const measurement = measured.length > 0 ? Math.max(...measured) : fallback;
-    const gating = findings.some((issue) => issue.severity !== 'notice');
-    const state: LintIgnoreCeilingState = measured.some((value) => value > entry.max)
-      ? 'exceeded'
-      : gating
-        ? 'within'
-        : 'removable';
-    statuses.push({ rule: entry.rule, max: entry.max, reason: entry.reason, measurement, state });
+    statuses.push({
+      rule: entry.rule,
+      max: entry.max,
+      reason: entry.reason,
+      ...(entry.share !== undefined ? { share: entry.share } : {}),
+      ...(entry.meta !== undefined ? { meta: entry.meta } : {}),
+      ...judgeWaiver(entry.rule, entry.max, entry.share, issues, patchMeasurements),
+    });
   }
   return statuses;
+}
+
+/**
+ * Evaluates every waiver on a patch, bare IDs included, so a waiver audit
+ * reads each one's current measurement from the report instead of
+ * re-measuring bare waivers from `suppressedIssues`.
+ *
+ * @param entries - The patch's `lintIgnore`
+ * @param issues - Every finding of the patch's lint, surfaced and suppressed
+ * @param patchMeasurements - See {@link evaluateLintIgnoreCeilings}
+ */
+export function evaluateLintIgnoreWaivers(
+  entries: readonly LintIgnoreEntry[] | undefined,
+  issues: readonly PatchLintIssue[],
+  patchMeasurements: PatchMeasurements
+): LintIgnoreWaiverStatus[] {
+  return (entries ?? []).map((entry): LintIgnoreWaiverStatus => {
+    if (!isLintIgnoreCeiling(entry)) {
+      return {
+        kind: 'bare',
+        rule: entry,
+        max: null,
+        reason: null,
+        ...judgeWaiver(entry, null, undefined, issues, patchMeasurements),
+      };
+    }
+    return {
+      kind: 'ceiling',
+      rule: entry.rule,
+      max: entry.max,
+      reason: entry.reason,
+      ...(entry.share !== undefined ? { share: entry.share } : {}),
+      ...(entry.meta !== undefined ? { meta: entry.meta } : {}),
+      ...judgeWaiver(entry.rule, entry.max, entry.share, issues, patchMeasurements),
+    };
+  });
 }
 
 /**
@@ -375,11 +557,12 @@ export function removableCeilingIssues(
     .map((status) => {
       const now =
         status.measurement === null ? 'below its notice band' : `at ${String(status.measurement)}`;
+      const share = status.share === undefined ? '' : `, ${status.share} share`;
       return {
         file: patchFilename,
         check: 'lint-ignore-removable',
         message:
-          `lintIgnore ceiling for ${status.rule} (max ${String(status.max)}) is no longer needed: ` +
+          `lintIgnore ceiling for ${status.rule} (max ${String(status.max)}${share}) is no longer needed: ` +
           `the measurement is ${now}, under the rule's own warning threshold. ` +
           `Remove it with "fireforge patch lint-ignore ${patchFilename} --remove ${status.rule}".`,
         severity: 'notice' as const,

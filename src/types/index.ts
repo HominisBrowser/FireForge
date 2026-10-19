@@ -10,6 +10,7 @@ export type {
   FirefoxProduct,
   PatchLintFileSizeThresholds,
   PatchLintFileSizeTier,
+  PatchLintPatchSizeMetric,
   ProjectLicense,
   ProjectPaths,
   WireConfig,

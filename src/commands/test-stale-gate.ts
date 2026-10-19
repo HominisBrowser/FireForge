@@ -50,7 +50,9 @@ export async function enforceStaleBuildGate(
   projectRoot: string,
   engineDir: string,
   options: TestOptions,
-  normalizedPaths: readonly string[]
+  normalizedPaths: readonly string[],
+  /** `quiet`: refuse only, without the exemption note (the pre-lock pass). */
+  gate: { quiet?: boolean } = {}
 ): Promise<void> {
   const stale = await checkStaleBuildForTest(projectRoot, engineDir);
   const dispatchesNoTests = options.doctor === true && normalizedPaths.length === 0;
@@ -61,7 +63,7 @@ export async function enforceStaleBuildGate(
   await enforceStaticComponentsGate(engineDir, stale.baseline, options);
 
   const exempt = stale.exempt ?? [];
-  if (!stale.stale && exempt.length > 0) {
+  if (!stale.stale && exempt.length > 0 && gate.quiet !== true) {
     info(
       `Stale-build preflight: ${exempt.length} edit(s) since the last build need no rebuild: ${formatStaleExemptions(exempt)}.`
     );

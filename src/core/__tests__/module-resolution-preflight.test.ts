@@ -7,8 +7,14 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createTempProject, removeTempProject, writeFiles } from '../../test-utils/index.js';
 import {
+  createTempProject,
+  initCommittedRepo,
+  removeTempProject,
+  writeFiles,
+} from '../../test-utils/index.js';
+import {
+  collectWorktreeModuleFiles,
   findUnresolvedSystemModuleImports,
   formatUnresolvedSystemModuleImports,
 } from '../module-resolution-preflight.js';
@@ -136,5 +142,54 @@ describe('findUnresolvedSystemModuleImports', () => {
         'browser/modules/NewThing.sys.mjs',
       ])
     ).resolves.toEqual([]);
+  });
+
+  describe('worktree mode', () => {
+    const IMPORTER = 'browser/base/content/browser-hominis.js';
+    const MODULE = 'browser/modules/hominis/HominisLate.sys.mjs';
+
+    beforeEach(async () => {
+      await initCommittedRepo(engineDir, {
+        [IMPORTER]: 'void 0;\n',
+        'browser/modules/hominis/moz.build': 'EXTRA_JS_MODULES.hominis += ["Other.sys.mjs"]\n',
+        'browser/modules/hominis/Other.sys.mjs': 'export {};\n',
+      });
+      // A lazy getter in a chrome script for a new, unexported module with
+      // no moz.build line: neither file is in the queue yet.
+      await writeFiles(engineDir, {
+        [IMPORTER]:
+          'ChromeUtils.defineESModuleGetters(lazy, {\n' +
+          '  HominisLate: "resource:///modules/hominis/HominisLate.sys.mjs",\n' +
+          '});\n',
+        [MODULE]: 'export const HominisLate = 1;\n',
+      });
+    });
+
+    it('the queue-only scan cannot see an unexported importer and module', async () => {
+      await expect(findUnresolvedSystemModuleImports(engineDir, [])).resolves.toEqual([]);
+    });
+
+    it('names the unregistered module from the changed and untracked engine files', async () => {
+      const worktree = await collectWorktreeModuleFiles(engineDir);
+      expect(worktree.changed).toEqual(expect.arrayContaining([IMPORTER, MODULE]));
+      expect(worktree.untracked).toEqual([MODULE]);
+      await expect(findUnresolvedSystemModuleImports(engineDir, [], worktree)).resolves.toEqual([
+        {
+          module: MODULE,
+          specifier: 'resource:///modules/hominis/HominisLate.sys.mjs',
+          importers: [IMPORTER],
+          reason: 'unregistered',
+        },
+      ]);
+    });
+
+    it('is quiet once the moz.build line lands', async () => {
+      await writeFiles(engineDir, {
+        'browser/modules/hominis/moz.build':
+          'EXTRA_JS_MODULES.hominis += ["HominisLate.sys.mjs", "Other.sys.mjs"]\n',
+      });
+      const worktree = await collectWorktreeModuleFiles(engineDir);
+      await expect(findUnresolvedSystemModuleImports(engineDir, [], worktree)).resolves.toEqual([]);
+    });
   });
 });

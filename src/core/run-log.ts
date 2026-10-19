@@ -302,10 +302,22 @@ export async function keepRunLogCopy(
  * One command runs per process, so a single slot is the whole lifetime.
  */
 let activeRunLog: RunLog | undefined;
+/** Newlines written to the active log so far, for line references into it. */
+let activeRunLogNewlines = 0;
 
 /** Installs (or clears, with `undefined`) the run log for this process. */
 export function setActiveRunLog(log: RunLog | undefined): void {
   activeRunLog = log;
+  activeRunLogNewlines = 0;
+}
+
+/**
+ * The 1-based line of the active run log the next write starts on.
+ * Redaction rewrites within a line and never adds or drops one, so the
+ * number holds for the file on disk.
+ */
+export function activeRunLogLine(): number {
+  return activeRunLogNewlines + 1;
 }
 
 /** Absolute path of the active run log, or undefined when none is open. */
@@ -315,7 +327,11 @@ export function getActiveRunLogPath(): string | undefined {
 
 /** Appends to the active run log. A no-op when none is open. */
 export function writeToActiveRunLog(chunk: string): void {
-  activeRunLog?.write(chunk);
+  if (activeRunLog === undefined) return;
+  for (let index = chunk.indexOf('\n'); index !== -1; index = chunk.indexOf('\n', index + 1)) {
+    activeRunLogNewlines += 1;
+  }
+  activeRunLog.write(chunk);
 }
 
 /**

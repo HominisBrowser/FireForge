@@ -28,31 +28,94 @@ function refuse(message: string): never {
   throw new GeneralError(`Negative control diff refused: ${message}`);
 }
 
+/** A `---`/`+++` file name, without a trailing timestamp or git's `a/`/`b/`. */
+function plainDiffPath(raw: string): string {
+  const name = raw.split('\t')[0]?.trim() ?? '';
+  return name.startsWith('a/') || name.startsWith('b/') ? name.slice(2) : name;
+}
+
+/**
+ * Gives a plain unified diff (`diff -u`, no `diff --git` lines) the git
+ * header the section parser keys on, one per `---`/`+++` pair. A diff that
+ * already carries `diff --git` headers is returned unchanged.
+ *
+ * @param content - The diff file's text
+ */
+function withGitHeaders(content: string): string {
+  const lines = content.split('\n');
+  if (lines.some((line) => line.startsWith('diff --git '))) return content;
+  const out: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const next = lines[index + 1] ?? '';
+    if (line.startsWith('--- ') && next.startsWith('+++ ')) {
+      const oldPath = plainDiffPath(line.slice(4));
+      const newPath = plainDiffPath(next.slice(4));
+      index += 1;
+      if (oldPath === '/dev/null' || newPath === '/dev/null') {
+        // Kept as a create/delete, which the parser below refuses by name.
+        const path = oldPath === '/dev/null' ? newPath : oldPath;
+        out.push(
+          `diff --git a/${path} b/${path}`,
+          oldPath === '/dev/null' ? 'new file mode 100644' : 'deleted file mode 100644',
+          oldPath === '/dev/null' ? '--- /dev/null' : `--- a/${path}`,
+          newPath === '/dev/null' ? '+++ /dev/null' : `+++ b/${path}`
+        );
+        continue;
+      }
+      out.push(`diff --git a/${oldPath} b/${newPath}`, `--- a/${oldPath}`, `+++ b/${newPath}`);
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
+/** Options for {@link parseControlDiff}. */
+export interface ParseControlDiffOptions {
+  /**
+   * Called for a section whose old and new paths differ. Returns the path
+   * the control targets (a `git diff --no-index <file> <edited copy>` names
+   * the copy on its new side), or undefined for a real rename, which is
+   * refused.
+   */
+  resolveRename?: (sourcePath: string, targetPath: string) => string | undefined;
+}
+
 /**
  * Parses a control diff. Accepts `git diff` output (a `diff --git` header
  * per file), which is what `git -C engine diff -- <file>` or a project-root
- * `git diff` writes.
+ * `git diff` writes, a plain unified diff (`diff -u`), and, through
+ * `resolveRename`, a `git diff --no-index` against an edited copy.
  *
  * @param content - The diff file's text
+ * @param options - See {@link ParseControlDiffOptions}
  * @returns One entry per file, in diff order
  */
-export function parseControlDiff(content: string): ControlDiffFile[] {
-  const sections = parseDiffSections(content);
+export function parseControlDiff(
+  content: string,
+  options: ParseControlDiffOptions = {}
+): ControlDiffFile[] {
+  const sections = parseDiffSections(withGitHeaders(content));
   if (sections.length === 0) {
     refuse(
-      'no `diff --git` sections found. Write the control with git, e.g. ' +
+      'no diff sections found. Write the control with git, e.g. ' +
         '`git -C engine diff -- <file> > control.diff` after making the edit, then revert the edit.'
     );
   }
   const seen = new Set<string>();
   return sections.map((section) => {
-    const path = normalizePathSlashes(section.targetPath);
+    let path = normalizePathSlashes(section.targetPath);
     if (section.isBinary) refuse(`${path} is a binary section.`);
     if (section.isNewFile || section.isDeletedFile) {
       refuse(`${path} creates or deletes a file; a control may only modify existing text files.`);
     }
     if (section.sourcePath !== section.targetPath) {
-      refuse(`${section.sourcePath} -> ${path} is a rename; a control may only modify files.`);
+      const resolved = options.resolveRename?.(section.sourcePath, section.targetPath);
+      if (resolved === undefined) {
+        refuse(`${section.sourcePath} -> ${path} is a rename; a control may only modify files.`);
+      }
+      path = normalizePathSlashes(resolved);
     }
     if (!isContainedRelativePath(path)) {
       refuse(`${path} is not a contained relative path.`);

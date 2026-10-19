@@ -143,6 +143,24 @@ describe('per-path coverage retention', () => {
     expect(Object.keys(next.retained)).toEqual([A_TEST]);
   });
 
+  it("keeps a sibling's claim when a scoped build of one file restages their grown manifest", async () => {
+    // The manifest gains an entry for a new test; `test --build` of that one
+    // file restages the whole manifest, so the sibling stays covered.
+    const A_NEW = 'browser/a/test/browser_new.js';
+    await writeFiles(engineDir, {
+      'browser/a/test/browser.toml':
+        '[DEFAULT]\nsupport-files = ["head.js", "../../shared/fixture.txt"]\n\n["browser_a.js"]\n\n["browser_new.js"]\n',
+      [A_NEW]: 'test new\n',
+    });
+    const plan = await planCoverageRetention(
+      engineDir,
+      scopedBaseline({ testCoverageRecords: { [A_TEST]: recordFor() } }),
+      [A_NEW]
+    );
+    expect(plan.dropped).toEqual([]);
+    expect(Object.keys(plan.retained)).toEqual([A_TEST]);
+  });
+
   it('skips an earlier path this build restages wholesale', async () => {
     const plan = await planCoverageRetention(
       engineDir,

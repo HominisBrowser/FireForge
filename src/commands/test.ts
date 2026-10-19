@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
-import {
-  assertEngineGenerationUnchanged,
-  snapshotEngineGeneration,
-} from '../core/engine-session-lock.js';
 import { hasBuildArtifacts } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import { ensureLaunchableBrowserNotRunning } from '../core/marionette-port.js';
@@ -36,12 +32,11 @@ import {
   LockContentionError,
   PreflightRefusalError,
 } from '../errors/base.js';
-import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, notice, warn } from '../utils/logger.js';
+import { info, intro, warn } from '../utils/logger.js';
 import { resolveWaitLockSeconds } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import {
@@ -50,13 +45,8 @@ import {
   runDoctorPreflight,
 } from './test-browser-preflight.js';
 import { runTestBuildPhase } from './test-build-phase.js';
-import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
-import {
-  buildPerfSampleEnv,
-  mergeHarnessEnv,
-  resolveShuffleSeed,
-  shuffleTestGroups,
-} from './test-harness-env.js';
+import { assertParallelTestUsage, dispatchTests } from './test-dispatch.js';
+import { buildPerfSampleEnv, mergeHarnessEnv, resolveShuffleSeed } from './test-harness-env.js';
 import { removePgidFile, setActivePgidFile } from './test-harness-teardown.js';
 import {
   assertPathlessTestMode,
@@ -64,29 +54,24 @@ import {
   canaryTimeoutSeconds,
   classifyBeforeDispatch,
   type HarnessClassification,
-  reportCanaryOutcome,
   resolveCanaryPath,
   restartBetweenTestsArgs,
 } from './test-modes.js';
 import { orchestrateTestRuns, type TestRunHooks } from './test-orchestrate.js';
-import { perfGenerationTolerance } from './test-perf-scope.js';
 import {
   resolveLaunchablePathForTests,
   runTestPreLockPreflight,
   TEST_BUILD_PREFLIGHT,
 } from './test-prelock.js';
+import { resetTestResults, withRawLogDir, writeTestResults } from './test-results.js';
+import { DEFAULT_HARNESS_RETRIES, type TestRunContext, type TestSuite } from './test-run.js';
+import type { ShardGroup } from './test-shards.js';
 import {
-  DEFAULT_HARNESS_RETRIES,
-  finalizeShardedOutcome,
-  runShardedTests,
-  runTestsWithRetries,
-  type ShardedRunSummary,
-  type ShardGroup,
-  type TestRunContext,
-  type TestRunOutcome,
-  type TestSuite,
-} from './test-run.js';
-import { emitFailVerdict, resetVerdictEmission, verdictEmitted } from './test-verdict.js';
+  emitFailVerdict,
+  resetVerdictEmission,
+  setVerdictRunAttribute,
+  verdictEmitted,
+} from './test-verdict.js';
 
 async function assertTestPathsExist(engineDir: string, testPaths: string[]): Promise<void> {
   const missingPaths: string[] = [];
@@ -187,7 +172,8 @@ export async function testCommand(
   projectRoot: string,
   testPaths: string[],
   options: TestOptions = {},
-  underLock: (body: () => Promise<void>) => Promise<void> = (body) => body()
+  underLock: (body: () => Promise<void>, mode?: 'exclusive' | 'shared') => Promise<void> = (body) =>
+    body()
 ): Promise<void> {
   intro('FireForge Test');
   resetVerdictEmission();
@@ -204,21 +190,42 @@ export async function testCommand(
       staged = await stageProfileFiles(projectRoot, options.profileFile);
       options = { ...options, machArg: [...(options.machArg ?? []), ...staged.args] };
     }
+    assertParallelTestUsage(testPaths, options);
     const lockedOptions = await runTestPreLockPreflight(projectRoot, testPaths, options);
     const profileEnv = staged?.env;
-    await underLock(() =>
+    // The pre-lock pass resolved `sharedLock` against config and the run's shape.
+    const lockMode = lockedOptions.sharedLock === true ? 'shared' : 'exclusive';
+    if (lockMode === 'shared') setVerdictRunAttribute('lock', 'shared');
+    resetTestResults();
+    if (options.results !== undefined) {
+      setVerdictRunAttribute('results', resolve(projectRoot, options.results));
+    }
+    const orchestrate = (rawLogDir?: string): Promise<void> =>
       orchestrateTestRuns(
         projectRoot,
         testPaths,
         lockedOptions,
         (paths, runOptions, hooks) =>
-          runTestCommandBody(projectRoot, paths, runOptions, profileEnv, hooks),
+          runTestCommandBody(projectRoot, paths, runOptions, profileEnv, {
+            ...hooks,
+            ...(rawLogDir === undefined ? {} : { rawLogDir }),
+          }),
         (error) => {
           renderPreflightRefusal(error);
           emitFailVerdict('preflight', refusalNote(error));
         }
-      )
-    );
+      );
+    const collectsResults = options.results !== undefined || options.shardSize !== undefined;
+    try {
+      await underLock(
+        () => (collectsResults ? withRawLogDir((dir) => orchestrate(dir)) : orchestrate()),
+        lockMode
+      );
+    } finally {
+      if (options.results !== undefined) {
+        await writeResultsFile(resolve(projectRoot, options.results));
+      }
+    }
   } catch (error: unknown) {
     if (!verdictEmitted()) {
       if (error instanceof LockContentionError) {
@@ -245,6 +252,15 @@ export async function testCommand(
         warn(`Test cleanup failed: ${toError(error).message}`);
       }
     }
+  }
+}
+
+/** Writes `--results`; a failure warns, since the run's verdict is already out. */
+async function writeResultsFile(path: string): Promise<void> {
+  try {
+    await writeTestResults(path);
+  } catch (error: unknown) {
+    warn(`Could not write --results ${path}: ${toError(error).message}`);
   }
 }
 
@@ -282,33 +298,6 @@ function renderPreflightRefusal(error: unknown): void {
   // capture, the same reason the verdict line is written this way.
   process.stdout.write(block);
   writeToActiveRunLog(block);
-}
-
-/**
- * Verifies `engine/` did not change under the run before any PASS verdict
- * may print. On failure the run's verdict is `FAIL reason=inconclusive`,
- * because the harness result exists but cannot be trusted (`preflight` would
- * misdescribe a run whose harness already executed). It is emitted here so the
- * guard's throw can never leave a stale or missing verdict line behind.
- */
-async function verifyEngineGenerationOrEmitInconclusive(
-  engineDir: string,
-  before: string,
-  powerChanged = false,
-  perfSamples?: string
-): Promise<void> {
-  try {
-    await (perfSamples === undefined
-      ? assertEngineGenerationUnchanged(engineDir, before)
-      : assertEngineGenerationUnchanged(engineDir, before, perfGenerationTolerance(engineDir)));
-    if (powerChanged)
-      throw new GeneralError(
-        'Perf power source changed during the run; repeat this sitting on a stable power source.'
-      );
-  } catch (error: unknown) {
-    emitFailVerdict('inconclusive');
-    throw error;
-  }
 }
 
 async function guardBuildBrowser(
@@ -377,7 +366,13 @@ function prepareDispatchArguments(
     projectConfig,
     forwardedMachArgs
   );
-  extraArgs.push(...restartBetweenTestsArgs(options, suite, forwardedMachArgs));
+  // A `--shard-size` chunk runs several files in one browser; mochitest
+  // restarts it between them so a chunk judges each file as a shard would.
+  const restart =
+    options.shardSize !== undefined && suite === 'mochitest'
+      ? { ...options, restartBetweenTests: true }
+      : options;
+  extraArgs.push(...restartBetweenTestsArgs(restart, suite, forwardedMachArgs));
 
   return { suite, shuffleSeed, extraArgs };
 }
@@ -478,6 +473,9 @@ async function runTestCommandBody(
   // documented `--mach-arg --marionette-port=NNNN` route still hits the
   // wrapper preflight refusing on 2828 before the forwarded arg reaches
   // mach.
+  // A negative control on compiled source goes in here, so the build
+  // compiles it (see negative-control-compiled.ts).
+  await hooks.beforeBuild?.();
   if (
     await runTestBuildPhase(projectRoot, paths, projectConfig, harnessRetries, options, {
       classification,
@@ -538,6 +536,8 @@ async function runTestCommandBody(
     ...(options.fullOutput === true ? { fullOutput: true } : {}),
     ...(harnessEnv ? { env: harnessEnv } : {}),
     pgidFile: options.pgidFile,
+    ...(hooks.rawLogDir === undefined ? {} : { rawLogDir: hooks.rawLogDir }),
+    ...(hooks.repetition === undefined ? {} : { repetition: hooks.repetition }),
   };
   const postRebuildContext = options.build
     ? createPostRebuildFailureContext('fireforge test --build', normalizedPaths)
@@ -552,71 +552,18 @@ async function runTestCommandBody(
   // into later files. Sharding is per path argument: a directory argument
   // keeps its enumerated files together in one invocation, preserving the
   // one-browser-instance semantics of a directory run. `--no-shard` restores
-  // the combined invocation. The default must not be silent: a cross-file
-  // pollution repro otherwise "passes" because the comparison run was
-  // sharded without saying so, misattributing a suite-context bug upstream.
-  // Hence the one-line notice stating what sharding does and does not
-  // exercise.
-  if (canaryPath === undefined && dispatchGroups.length > 1 && options.shard !== false) {
-    notice(
-      `Sharding: running ${dispatchGroups.length} test path arguments in isolated browser instances ` +
-        '(one mach invocation per argument; a directory argument keeps its files in one instance). ' +
-        'Cross-argument state is NOT exercised — pass --no-shard for a combined single-instance run.'
-    );
-    const generationBefore = await snapshotEngineGeneration(paths.engine);
-    let summary: ShardedRunSummary;
-    try {
-      const orderedGroups =
-        shuffleSeed === undefined ? dispatchGroups : shuffleTestGroups(dispatchGroups, shuffleSeed);
-      summary = await runShardedTests(runCtx, orderedGroups, (outcome, label) =>
-        diagnoseShardOutcome(outcome, label, projectConfig.binaryName, postRebuildContext)
-      );
-    } finally {
-      // Runs before the aggregate verdict below: a mutated engine/ emits
-      // `FAIL reason=inconclusive` and throws, so an invalidated run can
-      // never print `PASS shards=N/N` first. (A throw here masks an
-      // in-flight shard error, as the plain assert always did.)
-      await verifyEngineGenerationOrEmitInconclusive(
-        paths.engine,
-        generationBefore,
-        runCtx.powerChanged,
-        options.perfSamples
-      );
-    }
-    finalizeShardedOutcome(summary);
-    return;
-  }
-
-  const combinedDispatchPaths = dispatchGroups.flatMap((group) => group.paths);
-  let outcome: TestRunOutcome;
-  const generationBefore = await snapshotEngineGeneration(paths.engine);
-  try {
-    outcome = await runTestsWithRetries(runCtx, combinedDispatchPaths);
-  } catch (error: unknown) {
-    throw new BuildError(
-      'Test process failed to start',
-      'mach test',
-      error instanceof Error ? error : undefined
-    );
-  } finally {
-    await verifyEngineGenerationOrEmitInconclusive(
-      paths.engine,
-      generationBefore,
-      runCtx.powerChanged,
-      options.perfSamples
-    );
-  }
-
-  if (canaryPath !== undefined) {
-    reportCanaryOutcome(outcome);
-    return;
-  }
-
-  finalizeSingleRunOutcome(
-    outcome,
+  // the combined invocation; `--shard-size` and `--jobs` reshape it (see
+  // test-dispatch.ts).
+  await dispatchTests({
+    engineDir: paths.engine,
+    runCtx,
+    dispatchGroups,
+    options,
+    projectConfig,
+    canaryPath,
+    shuffleSeed,
     normalizedPaths,
-    projectConfig.binaryName,
+    xpcshellOnly,
     postRebuildContext,
-    options.headless === true
-  );
+  });
 }

@@ -69,6 +69,8 @@ export const SUPPORTED_CONFIG_PATHS = [
   'test.canaryTimeoutSeconds',
   'test.reapOrphans',
   'test.mochitestPorts',
+  'test.lockMode',
+  'test.furnaceApply',
   'history',
   'history.path',
   'externalToolchains',

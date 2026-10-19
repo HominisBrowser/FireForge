@@ -23,12 +23,14 @@ import { setVerdictRunAttribute } from './test-verdict.js';
  *
  * @param projectRoot - Root directory of the project
  * @param preparation - Result of `prepareBuildEnvironment`
- * @param skipped - True under `--no-furnace-apply`
+ * @param skipped - True under `--no-furnace-apply` / `--furnace-apply none`
+ * @param unreached - Components `--furnace-apply reached` left out
  */
 export async function reportPreTestFurnace(
   projectRoot: string,
   preparation: BuildPreparation,
-  skipped: boolean
+  skipped: boolean,
+  unreached?: readonly string[]
 ): Promise<void> {
   if (skipped) {
     setVerdictRunAttribute('furnace-apply', 'skipped');
@@ -44,6 +46,13 @@ export async function reportPreTestFurnace(
         : 'Furnace apply skipped (--no-furnace-apply): engine/ is packaged as it stands.'
     );
     return;
+  }
+  if (unreached !== undefined && unreached.length > 0) {
+    setVerdictRunAttribute('furnace-skipped', unreached.join(','));
+    notice(
+      `--furnace-apply reached: ${unreached.length} component(s) with undeployed components/ ` +
+        `edits that no requested test reaches are NOT in this build: ${unreached.join(', ')}.`
+    );
   }
   const applied = preparation.furnaceAppliedNames ?? [];
   if (applied.length === 0) return;

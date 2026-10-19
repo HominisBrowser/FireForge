@@ -31,6 +31,7 @@ import {
   normalizeRequestPath,
   readEngineContentState,
   refreshAnchor,
+  widenWithRestagedManifests,
 } from './coverage-records.js';
 
 export { hashEngineFile } from './coverage-records.js';
@@ -158,7 +159,10 @@ export async function planCoverageRetention(
 ): Promise<CoverageRetentionPlan> {
   if (previous === undefined) return emptyPlan();
   const coverage = previous.testPackagingCoverage ?? 'full';
-  const rebuilt = requested.map(normalizeRequestPath).filter((path) => path !== '');
+  const rebuilt = await widenWithRestagedManifests(
+    engineDir,
+    requested.map(normalizeRequestPath).filter((path) => path !== '')
+  );
   let state: EngineContentState;
   try {
     state = await readEngineContentState(engineDir);

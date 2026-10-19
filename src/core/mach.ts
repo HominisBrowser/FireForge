@@ -16,6 +16,7 @@ import {
 import { withBuildRunRecord } from './build-run-record.js';
 import { createSiblingLockPath, withFileLock } from './file-lock.js';
 import { ensureFirefoxIgnorefileCompatibility } from './firefox-ignorefile.js';
+import { createLinePrefixer } from './line-prefixer.js';
 import { explainMachError } from './mach-error-hints.js';
 import {
   createKnownTeardownNoiseFilter,
@@ -94,6 +95,11 @@ export interface MachOptions {
   onProcessGroup?: (pgid: number) => void;
   /** Exec-layer hook, see {@link ProcessGroupOptions.postCloseSweep}. Capture-only. */
   postCloseSweep?: () => Promise<void>;
+  /**
+   * Prefix for every echoed and logged line (concurrent `test --jobs`
+   * instances). The capture and `onOutputChunk` stay raw. Capture-only.
+   */
+  outputPrefix?: string | undefined;
 }
 
 /**
@@ -179,6 +185,16 @@ export async function runMachCapture(
     options.annotateKnownTeardownNoise === true ? createTeardownNoiseContext() : undefined;
   const stdoutFilter = noiseContext && createKnownTeardownNoiseFilter(noiseContext);
   const stderrFilter = noiseContext && createKnownTeardownNoiseFilter(noiseContext);
+  const prefix = options.outputPrefix;
+  const prefixers =
+    prefix === undefined
+      ? undefined
+      : {
+          stdoutLog: createLinePrefixer(prefix),
+          stdoutEcho: createLinePrefixer(prefix),
+          stderrLog: createLinePrefixer(prefix),
+          stderrEcho: createLinePrefixer(prefix),
+        };
 
   const exitCode = await execStream(python, [machPath, ...args], {
     cwd: engineDir,
@@ -201,8 +217,9 @@ export async function runMachCapture(
       // echo filter only exists to shorten what a human scrolls past.
       // Collapsing a traceback in the artifact would reintroduce the loss
       // this log exists to prevent.
-      writeToActiveRunLog(data);
-      process.stdout.write(stdoutFilter ? stdoutFilter.transform(data) : data);
+      writeToActiveRunLog(prefixers ? prefixers.stdoutLog.transform(data) : data);
+      const echo = stdoutFilter ? stdoutFilter.transform(data) : data;
+      process.stdout.write(prefixers ? prefixers.stdoutEcho.transform(echo) : echo);
     },
     onStderr: (data) => {
       options.onOutputChunk?.('stderr', data);
@@ -210,18 +227,23 @@ export async function runMachCapture(
       if (stderr.length > CAPTURE_TAIL_LIMIT) {
         stderr = stderr.slice(-CAPTURE_TAIL_LIMIT);
       }
-      writeToActiveRunLog(data);
-      process.stderr.write(stderrFilter ? stderrFilter.transform(data) : data);
+      writeToActiveRunLog(prefixers ? prefixers.stderrLog.transform(data) : data);
+      const echo = stderrFilter ? stderrFilter.transform(data) : data;
+      process.stderr.write(prefixers ? prefixers.stderrEcho.transform(echo) : echo);
     },
   });
 
   if (stdoutFilter) {
     const residue = stdoutFilter.flush();
-    if (residue.length > 0) process.stdout.write(residue);
+    if (residue.length > 0) {
+      process.stdout.write(prefixers ? prefixers.stdoutEcho.transform(residue) : residue);
+    }
   }
   if (stderrFilter) {
     const residue = stderrFilter.flush();
-    if (residue.length > 0) process.stderr.write(residue);
+    if (residue.length > 0) {
+      process.stderr.write(prefixers ? prefixers.stderrEcho.transform(residue) : residue);
+    }
   }
 
   return { stdout, stderr, exitCode };
@@ -617,6 +639,8 @@ export interface MachTestSuiteOptions {
    * the harness launched. See {@link MachOptions}.
    */
   teardown?: Pick<MachOptions, 'onOutputChunk' | 'onProcessGroup' | 'postCloseSweep'> | undefined;
+  /** Line prefix for echo and run log, see {@link MachOptions.outputPrefix}. */
+  outputPrefix?: string | undefined;
 }
 
 /**
@@ -633,13 +657,14 @@ export async function runMachTestSuite(
   kind: MachTestSuiteKind,
   options: MachTestSuiteOptions
 ): Promise<MachCommandResult> {
-  const { engineDir, testPaths = [], args = [], env, fullOutput, teardown } = options;
+  const { engineDir, testPaths = [], args = [], env, fullOutput, teardown, outputPrefix } = options;
   const guard = await installMachResourceGuard(engineDir);
   const envUnset = testVerbosityEnvUnset(fullOutput);
   return runMachCapture([kind, ...testPaths, ...args], engineDir, {
     env: { ...guard.env, ...env },
     ...(envUnset ? { envUnset } : {}),
     ...teardown,
+    ...(outputPrefix === undefined ? {} : { outputPrefix }),
     annotateKnownTeardownNoise: true,
   });
 }

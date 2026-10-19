@@ -151,10 +151,76 @@ function registerTestBuildOptions(test: Command): Command {
       'With --build/--build-only and explicit paths, refuse instead of dropping any earlier packaging claim. Scoped builds keep each earlier path by default while its own staging inputs (manifest directory and the fixtures its manifest names) and engine/mozconfig are unchanged; this flag turns a drop into a refusal before the build.'
     )
     .option(
+      '--furnace-apply <mode>',
+      'With --build/--build-only: all (default; deploy every component with undeployed edits), reached (only components a requested test names; the rest are reported as furnace-skipped=<names>), or none. Same as test.furnaceApply.',
+      commanderArgParser((raw: string) => {
+        if (raw !== 'all' && raw !== 'reached' && raw !== 'none') {
+          throw new GeneralError(`--furnace-apply must be all, reached or none (got "${raw}")`);
+        }
+        return raw;
+      })
+    )
+    .option(
       '--no-furnace-apply',
-      'With --build/--build-only, skip the Furnace apply so the build packages engine/ as it stands; names the components whose undeployed components/ edits it leaves out'
+      'With --build/--build-only, skip the Furnace apply so the build packages engine/ as it stands; names the components whose undeployed components/ edits it leaves out (same as --furnace-apply none)'
     );
 }
+
+/** Options that run a request on several harness instances, or judge it per file. */
+function registerTestParallelOptions(test: Command): Command {
+  return test
+    .option(
+      '--jobs <n>',
+      'Run shards on n harness instances at once inside one lock hold, each with its own profile, Marionette port and (via auto ports) server ports. With --no-shard, or one directory argument, the files are split in order into n contiguous chunks. Prints a FIREFORGE-SHARD line per shard and one aggregate verdict. Requires --auto-ports or test.mochitestPorts: "auto".',
+      commanderArgParser((raw: string) => parsePositiveIntegerFlag('--jobs', raw))
+    )
+    .option(
+      '--shard-size <n>',
+      'Dispatch n files per mach invocation (mochitest restarts the browser between files) and judge each file from the structured log: shards= then counts files and failed-shards= names failed files. Combines with --jobs.',
+      commanderArgParser((raw: string) => parsePositiveIntegerFlag('--shard-size', raw))
+    )
+    .option(
+      '--results <path>',
+      'Write a JSON record per test file and --repeat run (status, expected, duration, run-log line) from the mozlog structured log, and name it on the verdict as results=<path>'
+    )
+    .option(
+      '--shared-lock',
+      'Hold the engine session lock shared when this run is build-less, applies no negative control and uses auto ports, so peers\' build-less runs on this objdir overlap; builds and re-exports still wait. Same as test.lockMode: "shared".'
+    );
+}
+
+/** The options Commander hands the `test` action. */
+type TestActionOptions = Pick<TestOptions, 'keepLog' | 'restartBetweenTests'> & {
+  headless?: boolean;
+  fullOutput?: boolean;
+  build?: boolean;
+  buildOnly?: boolean;
+  extendCoverage?: boolean;
+  refuseUnexportedDrift?: boolean;
+  furnaceApply?: boolean | 'all' | 'reached' | 'none';
+  auto?: boolean;
+  allowStaleBuild?: boolean;
+  allowStaleComponents?: boolean;
+  killStaleMarionette?: boolean;
+  reapOrphans?: boolean;
+  pgidFile?: string;
+  canary?: string | boolean;
+  doctor?: boolean;
+  machArg?: string[];
+  marionettePort?: number;
+  harnessRetries?: number;
+  genericMachTest?: boolean;
+  shard?: boolean;
+  perfSamples?: string;
+  shuffle?: number | boolean;
+  waitLock?: number | boolean;
+  waitBrowser?: number | boolean;
+  waitPort?: number | boolean;
+  profileFile?: string[];
+} & Pick<
+    TestOptions,
+    'repeat' | 'negativeControl' | 'autoPorts' | 'jobs' | 'shardSize' | 'results' | 'sharedLock'
+  >;
 
 /** Registers the test command on the CLI program. */
 export function registerTest(
@@ -253,56 +319,27 @@ export function registerTest(
     )
     .addHelpText('after', TEST_HELP_TEXT);
   addWaitLockOption(
-    registerTestBuildOptions(registerTestMultiRunOptions(registerTestSharingOptions(test)))
-  ).action(
-    withErrorHandling(
-      async (
-        paths: string[],
-        options: Pick<TestOptions, 'keepLog' | 'restartBetweenTests'> & {
-          headless?: boolean;
-          fullOutput?: boolean;
-          build?: boolean;
-          buildOnly?: boolean;
-          extendCoverage?: boolean;
-          refuseUnexportedDrift?: boolean;
-          furnaceApply?: boolean;
-          auto?: boolean;
-          allowStaleBuild?: boolean;
-          allowStaleComponents?: boolean;
-          killStaleMarionette?: boolean;
-          reapOrphans?: boolean;
-          pgidFile?: string;
-          canary?: string | boolean;
-          doctor?: boolean;
-          machArg?: string[];
-          marionettePort?: number;
-          harnessRetries?: number;
-          genericMachTest?: boolean;
-          shard?: boolean;
-          perfSamples?: string;
-          shuffle?: number | boolean;
-          waitLock?: number | boolean;
-          waitBrowser?: number | boolean;
-          waitPort?: number | boolean;
-          profileFile?: string[];
-        } & Pick<TestOptions, 'repeat' | 'negativeControl' | 'autoPorts'>
-      ) => {
-        const projectRoot = getProjectRoot();
-        // Fallback for a verdict testCommand did not emit (it takes the lock).
-        resetVerdictEmission();
-        try {
-          await testCommand(projectRoot, paths, pickDefined(options), (body) =>
-            withEngineSessionLock(projectRoot, 'test', body, {
-              waitLockSeconds: resolveWaitLockSeconds(options.waitLock),
-            })
-          );
-        } catch (error: unknown) {
-          if (!verdictEmitted()) {
-            emitFailVerdict(error instanceof LockContentionError ? 'lock-timeout' : 'preflight');
-          }
-          throw error;
-        }
-      }
+    registerTestParallelOptions(
+      registerTestBuildOptions(registerTestMultiRunOptions(registerTestSharingOptions(test)))
     )
+  ).action(
+    withErrorHandling(async (paths: string[], options: TestActionOptions) => {
+      const projectRoot = getProjectRoot();
+      // Fallback for a verdict testCommand did not emit (it takes the lock).
+      resetVerdictEmission();
+      try {
+        await testCommand(projectRoot, paths, pickDefined(options), (body, mode) =>
+          withEngineSessionLock(projectRoot, 'test', body, {
+            waitLockSeconds: resolveWaitLockSeconds(options.waitLock),
+            ...(mode === 'shared' ? { mode } : {}),
+          })
+        );
+      } catch (error: unknown) {
+        if (!verdictEmitted()) {
+          emitFailVerdict(error instanceof LockContentionError ? 'lock-timeout' : 'preflight');
+        }
+        throw error;
+      }
+    })
   );
 }

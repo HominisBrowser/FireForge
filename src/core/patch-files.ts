@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 
 import type { PatchInfo } from '../types/commands/index.js';
@@ -13,16 +13,35 @@ export async function discoverPatches(patchesDir: string): Promise<PatchInfo[]> 
   }
 
   const entries = await readdir(patchesDir, { withFileTypes: true });
-  const patches: PatchInfo[] = entries
-    .filter((entry) => entry.isFile() && extname(entry.name) === '.patch')
-    .map((entry) => ({
+  const patches: PatchInfo[] = [];
+  for (const entry of entries) {
+    if (extname(entry.name) !== '.patch') continue;
+    // A symlinked patch (a scratch queue built from links to the real
+    // patches) counts when it resolves to a regular file; a dangling link or
+    // a link to a directory does not.
+    if (
+      !entry.isFile() &&
+      !(entry.isSymbolicLink() && (await isLinkToFile(patchesDir, entry.name)))
+    ) {
+      continue;
+    }
+    patches.push({
       path: join(patchesDir, entry.name),
       filename: entry.name,
       order: extractOrder(entry.name),
-    }));
+    });
+  }
 
   patches.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
   return patches;
+}
+
+async function isLinkToFile(dir: string, name: string): Promise<boolean> {
+  try {
+    return (await stat(join(dir, name))).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /** Counts the patch files currently present in a patch directory. */

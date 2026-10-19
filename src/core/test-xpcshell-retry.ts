@@ -26,6 +26,8 @@ export interface XpcshellRetryOptions {
   kind?: MachTestSuiteKind | undefined;
   /** Whether the run was started with full harness output. */
   fullOutput?: boolean | undefined;
+  /** Per-chunk feed for the retried run's output (start-marker tracking). */
+  onOutputChunk?: ((stream: 'stdout' | 'stderr', chunk: string) => void) | undefined;
 }
 
 /**
@@ -48,6 +50,7 @@ export async function retryAfterXpcshellSymlinkRepair(
     env,
     kind = 'test',
     fullOutput,
+    onOutputChunk,
   } = options;
   if (
     result.exitCode !== 0 &&
@@ -68,6 +71,7 @@ export async function retryAfterXpcshellSymlinkRepair(
         args: extraArgs,
         env,
         fullOutput,
+        ...(onOutputChunk === undefined ? {} : { teardown: { onOutputChunk } }),
       });
     }
   }

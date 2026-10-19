@@ -42,11 +42,16 @@ export {
   isTestFile,
   resolvePatchSizeTier,
 } from './core/patch-lint.js';
-export type { CodeLineCount } from './core/patch-lint-code-lines.js';
-export { countCodeLines } from './core/patch-lint-code-lines.js';
+export type { CodeLineCount, CodeLineMask } from './core/patch-lint-code-lines.js';
+export { codeLineMask, countCodeLines } from './core/patch-lint-code-lines.js';
 export type { ResolvedFileSizeTier } from './core/patch-lint-file-size.js';
 export { resolveFileSizeThresholds } from './core/patch-lint-file-size.js';
+export type { PatchSizeMeasurement } from './core/patch-lint-size.js';
+export { measurePatchSize } from './core/patch-lint-size.js';
 export type { ResolvedPatchFilesTier } from './core/patch-lint-size-thresholds.js';
+export { isPatchSizeRegistrationFile } from './core/patch-lint-size-thresholds.js';
+export type { PatchPolicyIssue, PatchPolicyIssueCode } from './core/patch-policy.js';
+export { evaluatePatchPolicyContentForQueue } from './core/patch-policy-content.js';
 export type { AddTokenOptions, AddTokenResult, TokenMode } from './core/token-manager.js';
 export { addToken, getTokensCssPath, validateTokenAdd } from './core/token-manager.js';
 export {
@@ -58,6 +63,7 @@ export {
   ResolutionError,
 } from './errors/base.js';
 export { ExitCode } from './errors/codes.js';
+export type { PatchesManifest, PatchMetadata } from './types/commands/index.js';
 export type {
   ApplyResult,
   BuildConfig,
@@ -73,6 +79,7 @@ export type {
   OverrideType,
   PatchLintFileSizeThresholds,
   PatchLintFileSizeTier,
+  PatchLintPatchSizeMetric,
   ProjectLicense,
   StepError,
   ValidationIssue,

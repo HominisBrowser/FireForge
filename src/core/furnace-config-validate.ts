@@ -12,7 +12,9 @@ import type { JsonObject, JsonValue } from '../types/json.js';
 import { isJsonObject, isString } from '../utils/validation.js';
 import { parseStringArray } from './furnace-config-array-utils.js';
 import {
+  parseMinComponents,
   parseOptInChecks,
+  parseTokenSiblingSheets,
   parseValidationExceptions,
 } from './furnace-config-validate-exceptions.js';
 
@@ -118,6 +120,9 @@ export function applyOptionalFurnaceFields(migrated: JsonObject, config: Furnace
   if (migrated['platformPrefixes'] !== undefined) {
     config.platformPrefixes = parseStringArray(migrated['platformPrefixes'], 'platformPrefixes');
   }
+  if (migrated['tokenSiblingSheets'] !== undefined) {
+    config.tokenSiblingSheets = parseTokenSiblingSheets(migrated['tokenSiblingSheets']);
+  }
   if (migrated['runtimeVariables'] !== undefined) {
     config.runtimeVariables = parseStringArray(migrated['runtimeVariables'], 'runtimeVariables');
   }
@@ -170,5 +175,8 @@ export function applyOptionalFurnaceFields(migrated: JsonObject, config: Furnace
   }
   if (migrated['optInChecks'] !== undefined) {
     config.optInChecks = parseOptInChecks(migrated['optInChecks']);
+  }
+  if (migrated['minComponents'] !== undefined) {
+    config.minComponents = parseMinComponents(migrated['minComponents']);
   }
 }

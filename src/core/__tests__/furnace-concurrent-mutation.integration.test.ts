@@ -108,44 +108,55 @@ describe('concurrent furnace mutations', () => {
     const tempDir = await makeTempDir('concurrent-parallel');
     const lockPath1 = join(tempDir, 'furnace1.lock');
     const lockPath2 = join(tempDir, 'furnace2.lock');
-    const executionOrder: string[] = [];
+    // Each operation waits inside its lock until the other has started,
+    // which only happens when both locks are held at once. A fixed sleep
+    // raced the second acquisition and lost on slow (Windows) runners; with
+    // a barrier the only failure is a real overlap failure, which shows up
+    // as one side giving up after OVERLAP_WAIT_MS.
+    const OVERLAP_WAIT_MS = 5000;
+    let markOp1Started!: () => void;
+    let markOp2Started!: () => void;
+    const op1Started = new Promise<void>((resolve) => {
+      markOp1Started = resolve;
+    });
+    const op2Started = new Promise<void>((resolve) => {
+      markOp2Started = resolve;
+    });
+
+    async function sawOther(other: Promise<void>): Promise<boolean> {
+      let timer: NodeJS.Timeout | undefined;
+      const gaveUp = new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => {
+          resolve(false);
+        }, OVERLAP_WAIT_MS);
+      });
+      try {
+        return await Promise.race([other.then(() => true), gaveUp]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
 
     const op1 = withFileLock(
       lockPath1,
-      async () => {
-        executionOrder.push('op1-start');
-        await new Promise((resolve) => setTimeout(resolve, 40));
-        executionOrder.push('op1-end');
-        return 'result1';
+      () => {
+        markOp1Started();
+        return sawOther(op2Started);
       },
-      { timeoutMs: 2000, pollMs: 10, staleMs: 60_000 }
+      { timeoutMs: 10_000, pollMs: 10, staleMs: 60_000 }
     );
 
     const op2 = withFileLock(
       lockPath2,
-      async () => {
-        executionOrder.push('op2-start');
-        await new Promise((resolve) => setTimeout(resolve, 40));
-        executionOrder.push('op2-end');
-        return 'result2';
+      () => {
+        markOp2Started();
+        return sawOther(op1Started);
       },
-      { timeoutMs: 2000, pollMs: 10, staleMs: 60_000 }
+      { timeoutMs: 10_000, pollMs: 10, staleMs: 60_000 }
     );
 
-    const [result1, result2] = await Promise.all([op1, op2]);
-
-    expect(result1).toBe('result1');
-    expect(result2).toBe('result2');
-    // Both should overlap: both starts must occur before both ends.
-    // We do not assert which operation starts first because the OS
-    // scheduler is free to run either callback first when both are
-    // launched concurrently via Promise.all.
-    const op1StartIdx = executionOrder.indexOf('op1-start');
-    const op2StartIdx = executionOrder.indexOf('op2-start');
-    const op1EndIdx = executionOrder.indexOf('op1-end');
-    const op2EndIdx = executionOrder.indexOf('op2-end');
-    const firstEnd = Math.min(op1EndIdx, op2EndIdx);
-    expect(op1StartIdx).toBeLessThan(firstEnd);
-    expect(op2StartIdx).toBeLessThan(firstEnd);
+    // Neither operation starts first by contract, so each must have seen
+    // the other start while it still held its own lock.
+    expect(await Promise.all([op1, op2])).toEqual([true, true]);
   });
 });

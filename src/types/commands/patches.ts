@@ -71,7 +71,23 @@ export interface LintIgnoreCeiling {
   max: number;
   /** Why the waiver exists. Required so the ceiling is reviewable. */
   reason: string;
+  /**
+   * Which share of a split `large-patch-lines` measurement the ceiling
+   * bounds: `product` (non-test files) or `test` (test files, held to the
+   * test tier). Absent: every finding of the rule. Only valid on
+   * `large-patch-lines`, and a rule carries either one share-less ceiling
+   * or at most one ceiling per share.
+   */
+  share?: PatchSizeShare;
+  /**
+   * Free-form JSON object FireForge preserves and never reads: a place for
+   * a project's own waiver bookkeeping (kind, owner, exit condition).
+   */
+  meta?: Record<string, unknown>;
 }
+
+/** The two classes a split `addedCode` line measurement reports. */
+export type PatchSizeShare = 'test' | 'product';
 
 /** One `PatchMetadata.lintIgnore` entry: a bare check ID or a ceiling waiver. */
 export type LintIgnoreEntry = string | LintIgnoreCeiling;
@@ -240,6 +256,29 @@ export interface PatchesManifest {
    * slot, and the slot is dropped on that write.
    */
   retired?: PatchRetiredSlot[];
+  /**
+   * Order numbers `patch reserve` holds for a patch a session has agreed to
+   * export but has not exported yet. Like a retired slot, a reservation is
+   * read only by the `patchPolicy.allowGaps: false` gap check (as an
+   * occupied order) and by the earliest-legal-order search (as taken); the
+   * export that lands on the order fills it, and the slot is dropped on that
+   * write.
+   */
+  reserved?: PatchReservedSlot[];
+}
+
+/** One order held by `patch reserve` until its owner exports it. */
+export interface PatchReservedSlot {
+  /** The reserved order number. */
+  order: number;
+  /** Category the reserved patch will carry, so the slot stays in its range. */
+  category: PatchCategory;
+  /** Who holds the reservation: a session label or the planned filename. */
+  owner: string;
+  /** ISO timestamp of the reservation. */
+  reservedAt: string;
+  /** Optional human-readable rationale. */
+  reason?: string;
 }
 
 /** One placeholder left by `patch retire`. */
@@ -322,4 +361,10 @@ export interface PatchLintIssue {
    * ceiling compares against it, and `lint --report` carries it.
    */
   measurement?: number;
+  /**
+   * For a `large-patch-lines` finding under `patchSizeMetric: "addedCode"`
+   * on a general-tier patch: which share of the patch it measured. A
+   * share-scoped lintIgnore ceiling matches only findings of its share.
+   */
+  share?: PatchSizeShare;
 }

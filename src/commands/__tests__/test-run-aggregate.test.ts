@@ -14,7 +14,7 @@ import {
   finalizeShardedOutcome,
   type ShardedRunSummary,
   type ShardOutcome,
-} from '../test-run.js';
+} from '../test-shards.js';
 import { resetVerdictEmission } from '../test-verdict.js';
 
 function shard(label: string, kind: HarnessRunVerdict['kind']): ShardOutcome {
@@ -82,7 +82,16 @@ describe('finalizeShardedOutcome', () => {
 
   function summaryOf(shards: ShardOutcome[]): ShardedRunSummary {
     const passed = shards.filter(({ outcome }) => outcome.verdict.kind === 'tests-ran-ok').length;
-    return { shards, passed, total: shards.length, aggregate: deriveAggregateShardVerdict(shards) };
+    const failed = shards
+      .filter(({ outcome }) => outcome.verdict.kind !== 'tests-ran-ok')
+      .map(({ label }) => label);
+    return {
+      shards,
+      passed,
+      total: shards.length,
+      failed,
+      aggregate: deriveAggregateShardVerdict(shards),
+    };
   }
 
   it('emits the classified aggregate verdict, then throws the aggregate error', () => {
@@ -96,7 +105,9 @@ describe('finalizeShardedOutcome', () => {
     } finally {
       capture.restore();
     }
-    expect(capture.writes).toEqual(['FIREFORGE-VERDICT: FAIL reason=crash shards=1/2\n']);
+    expect(capture.writes).toEqual([
+      'FIREFORGE-VERDICT: FAIL reason=crash shards=1/2 failed-shards=a\n',
+    ]);
   });
 
   it('names the failing shard labels in the aggregate error', () => {
@@ -108,7 +119,9 @@ describe('finalizeShardedOutcome', () => {
     } finally {
       capture.restore();
     }
-    expect(capture.writes).toEqual(['FIREFORGE-VERDICT: FAIL reason=no-tests shards=1/2\n']);
+    expect(capture.writes).toEqual([
+      'FIREFORGE-VERDICT: FAIL reason=no-tests shards=1/2 failed-shards=a\n',
+    ]);
   });
 
   it('an all-pass summary emits PASS and returns', () => {

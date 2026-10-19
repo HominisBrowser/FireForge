@@ -15,7 +15,7 @@ import { warn } from '../utils/logger.js';
 import { PATCH_CATEGORIES } from '../utils/validation.js';
 import { rewriteStagedDependencyOwners } from './patch-manifest-io.js';
 import { formatOrderRange, formatPatchOrder } from './patch-parse.js';
-import { manifestWithRetiredSlots, retiredOrderSet } from './patch-retired.js';
+import { manifestWithRetiredSlots, reservedOrderSet, retiredOrderSet } from './patch-retired.js';
 
 /** Default patch filename contract used when a policy omits `filenamePattern`. */
 const DEFAULT_PATCH_POLICY_FILENAME_PATTERN =
@@ -348,8 +348,8 @@ function evaluateGaps(
     const last = occupied[occupied.length - 1] as number;
     const missing: number[] = [];
     for (let order = first; order <= last; order++) {
-      // A retired slot (`patch retire`) is an occupied order with no
-      // patch behind it: the number stays spent, so it is not a gap.
+      // A retired slot (`patch retire`) or a reservation (`patch reserve`)
+      // is an occupied order with no patch behind it, so it is not a gap.
       if (
         !occupiedSet.has(order) &&
         !retiredOrders.has(order) &&
@@ -410,7 +410,10 @@ export function evaluatePatchPolicy(
   const severity = mutationMode(config) === 'warn' ? 'warning' : 'error';
   const issues = manifest.patches.flatMap((patch) => evaluatePatchMetadata(cfg, patch, severity));
   issues.push(...evaluateOrderCollisions(manifest.patches, severity));
-  issues.push(...evaluateGaps(cfg, manifest.patches, severity, retiredOrderSet(manifest)));
+  // Retired and reserved slots are both spent orders with no patch behind
+  // them: neither is a gap.
+  const placeholders = new Set([...retiredOrderSet(manifest), ...reservedOrderSet(manifest)]);
+  issues.push(...evaluateGaps(cfg, manifest.patches, severity, placeholders));
   return issues;
 }
 
@@ -492,11 +495,16 @@ export function enforcePatchPolicy(input: PatchPolicyEnforcementInput): void {
   );
 }
 
-/** Allocates the next available order inside the configured ranges for a category. */
+/**
+ * Allocates the next available order inside the configured ranges for a
+ * category. Orders in `reserved` (`patch reserve`) are skipped: they are
+ * held for their owner's export.
+ */
 export function allocatePolicyOrder(
   config: FireForgeConfig,
   patches: readonly PatchMetadata[],
-  category: string
+  category: string,
+  reserved: ReadonlySet<number> = new Set()
 ): number | null {
   const cfg = policy(config);
   if (!cfg) return null;
@@ -505,7 +513,7 @@ export function allocatePolicyOrder(
     .sort((a, b) => a.from - b.from || a.to - b.to);
   if (ranges.length === 0) return null;
 
-  const occupied = new Set(patches.map((patch) => patch.order));
+  const occupied = new Set([...patches.map((patch) => patch.order), ...reserved]);
   const highestInRanges = patches.reduce<number | null>((highest, patch) => {
     if (!ranges.some((range) => patch.order >= range.from && patch.order <= range.to)) {
       return highest;

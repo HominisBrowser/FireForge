@@ -283,7 +283,7 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
       capture.restore();
     }
     expect(capture.verdicts()).toEqual([
-      'FIREFORGE-VERDICT: FAIL reason=crash shards=1/2 host-load=0.00\n',
+      'FIREFORGE-VERDICT: FAIL reason=crash shards=1/2 failed-shards=browser/components/b/test/browser_b.js host-load=0.00\n',
     ]);
   });
 

@@ -71,6 +71,22 @@ export function parseTestBlock(rec: ConfigRecord, config: FireForgeConfig): void
     out.mochitestPorts = mochitestPorts;
   }
 
+  const lockMode = testRec.raw('lockMode');
+  if (lockMode !== undefined) {
+    if (lockMode !== 'exclusive' && lockMode !== 'shared') {
+      throw new ConfigError('Config field "test.lockMode" must be "exclusive" or "shared"');
+    }
+    out.lockMode = lockMode;
+  }
+
+  const furnaceApply = testRec.raw('furnaceApply');
+  if (furnaceApply !== undefined) {
+    if (furnaceApply !== 'all' && furnaceApply !== 'reached' && furnaceApply !== 'none') {
+      throw new ConfigError('Config field "test.furnaceApply" must be "all", "reached" or "none"');
+    }
+    out.furnaceApply = furnaceApply;
+  }
+
   config.test = out;
 }
 

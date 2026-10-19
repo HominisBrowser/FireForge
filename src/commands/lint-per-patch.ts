@@ -332,9 +332,13 @@ async function applyPerPatchResults(
         heldNotices.push({ check: suppressedIssue.check, patch: patch.filename, suppressed: true });
         continue;
       }
-      const ceiling = patch.lintIgnore?.find(
+      const ceilings = (patch.lintIgnore ?? []).filter(
         (entry) => isLintIgnoreCeiling(entry) && entry.rule === suppressedIssue.check
       );
+      const ceiling =
+        ceilings.find(
+          (entry) => isLintIgnoreCeiling(entry) && entry.share === suppressedIssue.share
+        ) ?? ceilings[0];
       const waiver =
         ceiling === undefined ? 'lintIgnore' : `lintIgnore (${formatLintIgnoreEntry(ceiling)})`;
       info(
@@ -583,7 +587,10 @@ async function lintPerPatchInner(
 
   const queueIssues: PatchLintIssue[] = [];
   for (const issue of lintPatchQueue(ctx)) {
-    if (isSubset && !subsetTouchedFiles.has(issue.file)) continue;
+    // A finding that names a subset patch stays in scope even when its file
+    // is one the patch no longer touches (a stale staged declaration).
+    const namesSubset = issue.patches?.some((name) => subsetNames.has(name)) === true;
+    if (isSubset && !namesSubset && !subsetTouchedFiles.has(issue.file)) continue;
     issues.push(issue);
     queueIssues.push(issue);
   }

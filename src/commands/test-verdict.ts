@@ -51,7 +51,13 @@ export type VerdictRunAttributeKey =
   | 'power-source'
   | 'power-changed'
   | 'furnace-applied'
-  | 'furnace-apply';
+  | 'furnace-apply'
+  | 'furnace-skipped'
+  | 'control-build'
+  | 'drift-tolerated'
+  | 'lock'
+  | 'jobs'
+  | 'results';
 
 /** Records an additive attribute for this run's verdict line. */
 export function setVerdictRunAttribute(key: VerdictRunAttributeKey, value: string): void {
@@ -156,7 +162,7 @@ function writeVerdictLine(line: string): void {
  */
 export function emitHarnessVerdict(
   verdict: HarnessRunVerdict,
-  shards?: { passed: number; total: number }
+  shards?: { passed: number; total: number; failed?: readonly string[] }
 ): void {
   writeVerdictLine(formatFireforgeVerdictLine(verdict, shards));
 }

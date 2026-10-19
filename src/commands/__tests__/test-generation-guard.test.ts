@@ -244,9 +244,11 @@ describe('engine-generation guard verdict ordering', () => {
     }
     expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: PASS shards=2/2 host-load=0.00\n']);
     // The guard ran before the verdict was emitted.
+    // An ordinary run passes the run-scoped drift tolerance (test-perf-scope.ts).
     expect(assertEngineGenerationUnchanged).toHaveBeenCalledWith(
       '/project/engine',
-      'generation-before'
+      'generation-before',
+      expect.any(Function)
     );
   });
 });

@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { InconclusiveVerdictError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { info, warn } from '../utils/logger.js';
+import { MAX_WAIT_LOCK_SECONDS } from '../utils/options.js';
 import { sleep } from '../utils/sleep.js';
-import type { LockHolder, LockQueueState } from './file-lock.js';
+import type { LockHolder, LockMode, LockQueueState } from './file-lock.js';
 import {
   formatLockQueuePosition,
   type LockStatusSnapshot,
@@ -23,7 +24,7 @@ const ENGINE_SESSION_LOCK_PATH = join('.fireforge', 'engine-session.lock');
  * never gets one longer than the largest wait they could have asked for.
  */
 const WAIT_EXTENSION_FACTOR = 4;
-const MAX_WAIT_LOCK_MS = 3600 * 1000;
+const MAX_WAIT_LOCK_MS = MAX_WAIT_LOCK_SECONDS * 1000;
 
 export interface EngineSessionLockOptions {
   /**
@@ -33,6 +34,11 @@ export interface EngineSessionLockOptions {
    * fail-fast behaviour.
    */
   waitLockSeconds?: number | undefined;
+  /**
+   * `shared` lets build-less test runs overlap each other; see
+   * `file-lock-shared.ts`. Every other caller holds the lock exclusively.
+   */
+  mode?: LockMode | undefined;
 }
 
 /**
@@ -106,6 +112,7 @@ export async function withEngineSessionLock<T>(
   }
   const { waitLockSeconds } = options;
   return withFileLock(join(projectRoot, ENGINE_SESSION_LOCK_PATH), operation, {
+    ...(options.mode === 'shared' ? { mode: 'shared' as const } : {}),
     timeoutMs: waitLockSeconds !== undefined ? waitLockSeconds * 1000 : 1000,
     ...(waitLockSeconds !== undefined
       ? {
@@ -170,8 +177,14 @@ export function formatEngineSessionLockStatus(
   snapshot: LockStatusSnapshot,
   holderCpuSeconds?: number
 ): string[] {
+  const shared =
+    snapshot.sharedHolders !== undefined && snapshot.sharedHolders > 0
+      ? `Shared holders: ${snapshot.sharedHolders} build-less test run(s) under a shared lock.`
+      : undefined;
   if (!snapshot.held) {
-    return ['Engine session lock: free (no FireForge engine-mutating command is running).'];
+    return shared === undefined
+      ? ['Engine session lock: free (no FireForge engine-mutating command is running).']
+      : ['Engine session lock: no exclusive holder.', shared];
   }
   const elapsed =
     snapshot.heldForMs === undefined
@@ -186,6 +199,7 @@ export function formatEngineSessionLockStatus(
   const lines = [
     `Engine session lock: ${identity}, for ${elapsed}.`,
     `Queue depth: ${snapshot.queueDepth} waiter(s).`,
+    ...(shared === undefined ? [] : [shared]),
   ];
   // Liveness answers "does the process exist". It does not answer "is it
   // getting anywhere". A holder alive for minutes having used a fraction of

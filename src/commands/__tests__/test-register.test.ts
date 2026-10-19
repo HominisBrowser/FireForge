@@ -127,6 +127,42 @@ describe('registerTest', () => {
     });
   });
 
+  it('parses the parallel, results and Furnace options', async () => {
+    await parse(
+      '--jobs',
+      '3',
+      '--shard-size',
+      '5',
+      '--results',
+      'out.json',
+      '--shared-lock',
+      '--furnace-apply',
+      'reached',
+      'a.js'
+    );
+    expect(vi.mocked(testCommand).mock.calls[0]?.[2]).toMatchObject({
+      jobs: 3,
+      shardSize: 5,
+      results: 'out.json',
+      sharedLock: true,
+      furnaceApply: 'reached',
+    });
+    await expect(parse('--furnace-apply', 'some', 'a.js')).rejects.toMatchObject({
+      code: 'commander.invalidArgument',
+    });
+  });
+
+  it('takes the engine lock shared when testCommand asks for it', async () => {
+    vi.mocked(testCommand).mockImplementationOnce((_root, _paths, _options, underLock) =>
+      (underLock ?? ((run) => run()))(() => Promise.resolve(), 'shared')
+    );
+    await parse('a.js');
+    expect(withEngineSessionLock).toHaveBeenCalledWith(PROJECT_ROOT, 'test', expect.any(Function), {
+      waitLockSeconds: undefined,
+      mode: 'shared',
+    });
+  });
+
   it.each(['0', 'two', '-1'])('rejects --repeat %s through Commander', async (value) => {
     await expect(parse('--repeat', value)).rejects.toMatchObject({
       code: 'commander.invalidArgument',

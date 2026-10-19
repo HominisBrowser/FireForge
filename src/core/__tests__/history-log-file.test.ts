@@ -6,7 +6,7 @@
  * (no record lost, whichever files exist), and the per-invocation identity
  * that lets a session pick out its own lines.
  */
-import { link, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -188,6 +188,24 @@ describe('migrateLegacyHistoryLog', () => {
 
     const ops = (await readLines(join(projectRoot, DEFAULT_HISTORY_LOG_PATH))).map((r) => r['op']);
     expect(ops).toEqual(['old-1', 'old-2', 'new']);
+  });
+
+  it('stands down when a concurrent claimant ends up holding the claimed file', async () => {
+    // Windows can report both racing renames as successful; the file then
+    // sits under the other claimant's name and this link finds nothing.
+    const stolen = join(patchesDir, 'other-claimant');
+    vi.mocked(link).mockImplementationOnce(async (claimed) => {
+      await rename(claimed, stolen);
+      throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
+    });
+    await writeFile(join(patchesDir, LEGACY_HISTORY_LOG_FILENAME), legacyRecords, 'utf-8');
+    const target = join(projectRoot, DEFAULT_HISTORY_LOG_PATH);
+
+    await expect(migrateLegacyHistoryLog(patchesDir, target)).resolves.toBeUndefined();
+
+    expect(await readFile(stolen, 'utf-8')).toBe(legacyRecords);
+    await expect(readFile(target, 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(vi.mocked(info)).not.toHaveBeenCalled();
   });
 
   it('is a no-op when history.path still names the legacy file', async () => {

@@ -403,11 +403,17 @@ describe('patch lint-ignore', () => {
   });
 
   it.each([
-    [{ remove: ['file-too-large'], max: 5 }, '--max and --reason only apply to --add'],
-    [{ add: ['file-too-large'], max: 5 }, 'needs both --max <n> and --reason <text>'],
-    [{ add: ['file-too-large'], reason: 'r' }, 'needs both --max <n> and --reason <text>'],
-    [{ add: ['file-too-large'], max: 5, reason: '  ' }, '--reason must not be empty'],
+    [{ remove: ['file-too-large'], max: 5 }, '--max, --reason and --share only apply to --add'],
+    [{ add: ['file-too-large'], max: 5 }, 'A lintIgnore ceiling needs --reason <text>'],
+    [{ add: ['file-too-large=5'] }, 'A lintIgnore ceiling needs --reason <text>'],
+    [{ add: ['file-too-large'], reason: 'r' }, '--reason and --share apply to ceilings'],
+    [{ add: ['file-too-large'], max: 5, reason: '  ' }, 'A lintIgnore ceiling needs --reason'],
     [{ add: ['raw-color-value'], max: 5, reason: 'r' }, 'only applies to the measured size rules'],
+    [{ add: ['raw-color-value=5'], reason: 'r' }, 'only applies to the measured size rules'],
+    [{ add: ['file-too-large=0'], reason: 'r' }, 'expected <rule>=<max>'],
+    [{ add: ['file-too-large=5'], reason: 'r', share: 'test' as const }, 'share must be'],
+    [{ from: 'x.json', add: ['a'] }, '--from takes its entries from the file'],
+    [{ from: 'x.json', max: 5 }, '--from takes its entries from the file'],
   ])('refuses a malformed ceiling request %j', async (options, message) => {
     await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
 
@@ -415,6 +421,133 @@ describe('patch lint-ignore', () => {
       patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', { ...options, yes: true })
     ).rejects.toThrow(message);
     expect((await loadManifest(patchesDir)).patches[0]).not.toHaveProperty('lintIgnore');
+  });
+
+  it('--add <rule>=<max> sets a ceiling per rule in one call', async () => {
+    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      add: ['file-too-large=1200', 'large-patch-files=40', 'raw-color-value'],
+      reason: 'rebaseline',
+      yes: true,
+    });
+
+    expect((await loadManifest(patchesDir)).patches[0]?.lintIgnore).toEqual([
+      { rule: 'file-too-large', max: 1200, reason: 'rebaseline' },
+      { rule: 'large-patch-files', max: 40, reason: 'rebaseline' },
+      'raw-color-value',
+    ]);
+  });
+
+  it('--share writes a share-scoped large-patch-lines ceiling beside the other share', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-branding-a.patch', 1, ['a.js'], {
+        lintIgnore: [{ rule: 'large-patch-lines', max: 4000, reason: 'r', share: 'test' }],
+      }),
+    ]);
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      add: ['large-patch-lines=900'],
+      reason: 'product',
+      share: 'product',
+      yes: true,
+    });
+
+    expect((await loadManifest(patchesDir)).patches[0]?.lintIgnore).toEqual([
+      { rule: 'large-patch-lines', max: 4000, reason: 'r', share: 'test' },
+      { rule: 'large-patch-lines', max: 900, reason: 'product', share: 'product' },
+    ]);
+  });
+
+  it('--from adds an array of entries for this patch under one write, keeping meta', async () => {
+    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
+    const file = join(projectRoot, 'waivers.json');
+    await writeFile(
+      file,
+      JSON.stringify([
+        { rule: 'file-too-large', max: 1200, meta: { kind: 'structural' } },
+        'raw-color-value',
+        { rule: 'large-patch-files', max: 9, reason: 'own', patch: '002-other.patch' },
+      ])
+    );
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+      from: file,
+      reason: 'default',
+      yes: true,
+    });
+
+    expect((await loadManifest(patchesDir)).patches[0]?.lintIgnore).toEqual([
+      { rule: 'file-too-large', max: 1200, reason: 'default', meta: { kind: 'structural' } },
+      'raw-color-value',
+    ]);
+  });
+
+  it('--from a lint report rebaselines this patch ceilings to their measurement', async () => {
+    await seed(patchesDir, [
+      makeMetadata('001-branding-a.patch', 1, ['a.js'], {
+        lintIgnore: [
+          { rule: 'file-too-large', max: 2000, reason: 'r' },
+          { rule: 'large-patch-lines', max: 5000, reason: 'r', share: 'test' },
+        ],
+      }),
+    ]);
+    const file = join(projectRoot, 'report.json');
+    await writeFile(
+      file,
+      JSON.stringify({
+        patches: [
+          {
+            filename: '001-branding-a.patch',
+            lintIgnoreCeilings: [
+              {
+                rule: 'file-too-large',
+                max: 2000,
+                reason: 'r',
+                measurement: 1450,
+                state: 'within',
+              },
+              {
+                rule: 'large-patch-lines',
+                max: 5000,
+                reason: 'r',
+                share: 'test',
+                measurement: 3100,
+                state: 'within',
+              },
+            ],
+          },
+          { filename: '002-other.patch', lintIgnoreCeilings: [] },
+        ],
+      })
+    );
+
+    await patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', { from: file, yes: true });
+
+    expect((await loadManifest(patchesDir)).patches[0]?.lintIgnore).toEqual([
+      { rule: 'file-too-large', max: 1450, reason: 'r' },
+      { rule: 'large-patch-lines', max: 3100, reason: 'r', share: 'test' },
+    ]);
+  });
+
+  it('--from refuses a file with nothing for this patch, or an unreadable one', async () => {
+    await seed(patchesDir, [makeMetadata('001-branding-a.patch', 1, ['a.js'])]);
+    const file = join(projectRoot, 'empty.json');
+    await writeFile(file, JSON.stringify([{ rule: 'x', patch: '002-other.patch' }]));
+
+    await expect(
+      patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', { from: file, yes: true })
+    ).rejects.toThrow(/holds no lintIgnore entry/);
+    await expect(
+      patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', {
+        from: join(projectRoot, 'missing.json'),
+        yes: true,
+      })
+    ).rejects.toThrow(/Cannot read --from/);
+    await writeFile(file, '"text"');
+    await expect(
+      patchLintIgnoreCommand(projectRoot, '001-branding-a.patch', { from: file, yes: true })
+    ).rejects.toThrow(/must hold a JSON array/);
   });
 });
 
@@ -488,7 +621,7 @@ describe('patch staged-dependency', () => {
     expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toHaveLength(2);
   });
 
-  it('--remove with no matching file+specifier keeps the honest no-match summary', async () => {
+  it('--remove with no matching file+specifier refuses and keeps the entry', async () => {
     await seed(patchesDir, [
       makeMetadata('001-ui-shim.patch', 1, ['foo/A.sys.mjs'], {
         stagedDependencies: {
@@ -503,11 +636,13 @@ describe('patch staged-dependency', () => {
       }),
     ]);
 
-    await patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
-      remove: true,
-      file: 'foo/A.sys.mjs',
-      specifier: 'resource:///modules/DoesNotExist.sys.mjs',
-    });
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '001-ui-shim.patch', {
+        remove: true,
+        file: 'foo/A.sys.mjs',
+        specifier: 'resource:///modules/DoesNotExist.sys.mjs',
+      })
+    ).rejects.toThrow(InvalidArgumentError);
 
     const manifest = await loadManifest(patchesDir);
     expect(manifest.patches[0]?.stagedDependencies?.forwardImports).toHaveLength(1);
@@ -800,6 +935,86 @@ describe('patch staged-dependency', () => {
 
     const manifest = await loadManifest(patchesDir);
     expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
+  });
+
+  it('--remove --kind registration matches a line whatever its padding', async () => {
+    await seed(patchesDir, [
+      makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'], {
+        stagedDependencies: {
+          registrations: [
+            {
+              file: 'toolkit/content/jar.mn',
+              line: '        content/global/a.js     (a.js)',
+              creates: 'toolkit/content/a.js',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+      remove: true,
+      kind: 'registration',
+      file: 'toolkit/content/jar.mn',
+      line: 'content/global/a.js (a.js)',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
+  });
+
+  it('--remove --creates alone drops every declaration for that path', async () => {
+    await seed(patchesDir, [
+      makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'], {
+        stagedDependencies: {
+          registrations: [
+            {
+              file: 'toolkit/content/jar.mn',
+              line: 'content/global/a.js (a.js)',
+              creates: 'toolkit/content/a.js',
+            },
+            {
+              file: 'toolkit/content/tests/browser.toml',
+              line: '["browser_a.js"]',
+              creates: 'toolkit/content/a.js',
+            },
+            {
+              file: 'toolkit/content/jar.mn',
+              line: 'content/global/b.js (b.js)',
+              creates: 'toolkit/content/b.js',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+      remove: true,
+      kind: 'registration',
+      creates: 'toolkit/content/a.js',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.stagedDependencies?.registrations).toEqual([
+      {
+        file: 'toolkit/content/jar.mn',
+        line: 'content/global/b.js (b.js)',
+        creates: 'toolkit/content/b.js',
+      },
+    ]);
+  });
+
+  it('--remove that matches nothing refuses on a dry run too', async () => {
+    await seed(patchesDir, [makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'])]);
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+        remove: true,
+        kind: 'registration',
+        creates: 'toolkit/content/missing.js',
+        dryRun: true,
+      })
+    ).rejects.toThrow(/matched no staged registration\. This patch has no staged registrations/);
   });
 
   it('registration operations leave forwardImports of the same patch untouched', async () => {

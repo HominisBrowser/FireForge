@@ -719,6 +719,18 @@ describe('validateConfig', () => {
         typecheck: { projects: ['ok/jsconfig.json'], undefinedIdentifiers: 'loud' },
       })
     ).toThrow('typecheck.undefinedIdentifiers');
+
+    const withLit = validateConfig({
+      ...makeValidConfig(),
+      typecheck: { projects: ['ok/jsconfig.json'], litTypes: true },
+    });
+    expect(withLit.typecheck?.litTypes).toBe(true);
+    expect(() =>
+      validateConfig({
+        ...makeValidConfig(),
+        typecheck: { projects: ['ok/jsconfig.json'], litTypes: 'yes' },
+      })
+    ).toThrow('Config field "typecheck.litTypes" must be a boolean');
   });
 
   it('parses typecheck.projectOverrides (per-project shim override / opt-out)', () => {

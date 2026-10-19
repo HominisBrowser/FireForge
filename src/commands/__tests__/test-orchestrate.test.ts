@@ -150,9 +150,9 @@ describe('orchestrateTestRuns', () => {
       [
         ['u/unit/test_a.js'],
         { build: true },
-        { coveragePaths: ['u/unit/test_a.js', 'b/browser_a.js'] },
+        { repetition: 1, coveragePaths: ['u/unit/test_a.js', 'b/browser_a.js'] },
       ],
-      [['b/browser_a.js'], {}, {}],
+      [['b/browser_a.js'], {}, { repetition: 1 }],
     ]);
     expect(lines('FIREFORGE-RUN')).toEqual([
       'FIREFORGE-RUN: PASS checks=2 run=1/2 harness=xpcshell',
@@ -309,5 +309,41 @@ describe('--negative-control', () => {
     });
     await run(['a.js'], {}, body);
     expect(body).toHaveBeenCalledTimes(1);
+  });
+
+  describe('on compiled source', () => {
+    const CPP = 'gfx/apz/Controller.cpp';
+    const cppFile = (): Promise<string> => readFile(join(root, 'engine', CPP), 'utf8');
+
+    beforeEach(async () => {
+      await writeFiles(root, {
+        [`engine/${CPP}`]: SOURCE,
+        'cpp.diff': DIFF.replaceAll(TARGET, CPP),
+      });
+    });
+
+    it('is refused without --build, before any run', async () => {
+      const body = vi.fn<TestRunBody>(() => pass());
+      await expect(run(['a.js'], { negativeControl: 'cpp.diff' }, body)).rejects.toThrow(
+        /edits compiled source.*Add --build/s
+      );
+      expect(body).not.toHaveBeenCalled();
+    });
+
+    it('goes in before the first build, stays for later runs, and marks the verdict', async () => {
+      const seen: string[] = [];
+      const body = vi.fn<TestRunBody>(async (_paths, _options, hooks) => {
+        seen.push(hooks.beforeBuild === undefined ? 'dispatch' : 'build');
+        await hooks.beforeBuild?.();
+        await hooks.beforeDispatch?.();
+        expect(await cppFile()).toBe(NEUTERED);
+        await red();
+      });
+      await run(['a.js'], { negativeControl: 'cpp.diff', build: true, repeat: 2 }, body);
+      expect(seen).toEqual(['build', 'dispatch']);
+      expect(await cppFile()).toBe(SOURCE);
+      expect(lines('FIREFORGE-VERDICT')[0]).toContain('control=caught');
+      expect(lines('FIREFORGE-VERDICT')[0]).toContain('control-build=compiled');
+    });
   });
 });

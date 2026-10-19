@@ -80,6 +80,12 @@ export interface PrepareBuildOptions {
    * (`fireforge test --build --no-furnace-apply`).
    */
   skipFurnaceApply?: boolean | undefined;
+  /**
+   * Apply only these components (`fireforge test --build --furnace-apply
+   * reached`). Undefined applies every component with undeployed edits; an
+   * empty list applies none.
+   */
+  furnaceComponents?: readonly string[] | undefined;
 }
 
 /** Path fragments of files whose edits invalidate the recursive-make backend. */
@@ -258,13 +264,43 @@ async function reportUnexportedDriftBeforeOverwrite(
 }
 
 /**
+ * Applies the named components one at a time, each under its own Furnace
+ * mutation (one rollback journal per apply), and merges the results.
+ */
+async function applySelectedComponents(
+  projectRoot: string,
+  names: readonly string[]
+): Promise<ApplyAllComponentsResult> {
+  const merged: ApplyAllComponentsResult & { warnings: string[] } = {
+    applied: [],
+    skipped: [],
+    errors: [],
+    warnings: [],
+  };
+  for (const componentName of names) {
+    const result = await runFurnaceMutation(projectRoot, 'apply-rollback', (ctx) =>
+      applyAllComponents(projectRoot, false, { operationContext: ctx, componentName })
+    );
+    merged.applied.push(...result.applied);
+    merged.skipped.push(...result.skipped);
+    merged.errors.push(...result.errors);
+    merged.warnings.push(...(result.warnings ?? []));
+  }
+  return merged;
+}
+
+/**
  * Applies Furnace components before the build when `furnace.json` exists.
  * Prints every warning the apply computed, then the loud sync banner.
  *
  * @param projectRoot - Project root
+ * @param only - Apply just these components; every component when undefined
  * @returns Names of the components written to engine/
  */
-async function applyFurnaceBeforeBuild(projectRoot: string): Promise<string[]> {
+async function applyFurnaceBeforeBuild(
+  projectRoot: string,
+  only?: readonly string[]
+): Promise<string[]> {
   if (!(await furnaceConfigExists(projectRoot))) return [];
   const furnaceConfig = await loadFurnaceConfig(projectRoot);
   const hasComponents =
@@ -274,9 +310,12 @@ async function applyFurnaceBeforeBuild(projectRoot: string): Promise<string[]> {
   const furnaceSpinner = spinner('Applying Furnace components...');
   let result: ApplyAllComponentsResult;
   try {
-    result = await runFurnaceMutation(projectRoot, 'apply-rollback', (ctx) =>
-      applyAllComponents(projectRoot, false, { operationContext: ctx })
-    );
+    result =
+      only === undefined
+        ? await runFurnaceMutation(projectRoot, 'apply-rollback', (ctx) =>
+            applyAllComponents(projectRoot, false, { operationContext: ctx })
+          )
+        : await applySelectedComponents(projectRoot, only);
   } catch (error: unknown) {
     furnaceSpinner.error('Failed to apply Furnace components');
     throw error;
@@ -467,7 +506,9 @@ export async function prepareBuildEnvironment(
   }
 
   const furnaceAppliedNames =
-    options.skipFurnaceApply === true ? [] : await applyFurnaceBeforeBuild(projectRoot);
+    options.skipFurnaceApply === true || options.furnaceComponents?.length === 0
+      ? []
+      : await applyFurnaceBeforeBuild(projectRoot, options.furnaceComponents);
 
   // Generate mozconfig
   const mozconfigSpinner = spinner('Generating mozconfig...');

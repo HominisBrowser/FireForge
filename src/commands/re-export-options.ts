@@ -153,6 +153,39 @@ function validateExpectedRemovalUsage(patches: readonly string[], options: ReExp
   }
 }
 
+/**
+ * `--hunks-from` and `--exclude-hunks` rebuild one patch's files from named
+ * hunks, so they take exactly one explicit patch and no flag that sets the
+ * file list another way.
+ */
+function validateHunkSelectionUsage(patches: readonly string[], options: ReExportOptions): void {
+  if (options.hunksFrom !== undefined && options.excludeHunks !== undefined) {
+    throw new InvalidArgumentError(
+      '--hunks-from and --exclude-hunks are alternatives; pass one.',
+      '--hunks-from'
+    );
+  }
+  const flag =
+    options.hunksFrom !== undefined
+      ? '--hunks-from'
+      : options.excludeHunks !== undefined
+        ? '--exclude-hunks'
+        : undefined;
+  if (flag === undefined) return;
+  if (
+    patches.length !== 1 ||
+    options.all ||
+    options.scan ||
+    options.files !== undefined ||
+    options.scanFilesManifest !== undefined
+  ) {
+    throw new InvalidArgumentError(
+      `${flag} rebuilds one patch's files from named hunks: pass exactly one patch, without --scan, --files or --all.`,
+      flag
+    );
+  }
+}
+
 /** Validates mutually exclusive `re-export` targeting and metadata options. */
 export function validateReExportOptionCombinations(
   patches: readonly string[],
@@ -162,6 +195,7 @@ export function validateReExportOptionCombinations(
   // combination error it happens to trip, naming the wrong problem.
   validatePathFlagValues(options);
   validateExpectedRemovalUsage(patches, options);
+  validateHunkSelectionUsage(patches, options);
   if (options.files !== undefined) {
     if (options.all || options.scan) {
       throw new InvalidArgumentError('--files cannot be combined with --scan or --all.', '--files');
@@ -208,9 +242,11 @@ export function validateReExportOptionCombinations(
     }
   }
 
-  if (options.refuseAdjacentUnmanaged === true && (options.scan || options.files !== undefined)) {
+  // Beside --scan the belt judges the neighbours the scan did not adopt;
+  // --files replaces the file list outright, so there is nothing to judge.
+  if (options.refuseAdjacentUnmanaged === true && options.files !== undefined) {
     throw new InvalidArgumentError(
-      '--refuse-adjacent-unmanaged applies to the scan-less path only and cannot be combined with --scan or --files (those set filesAffected explicitly).',
+      '--refuse-adjacent-unmanaged cannot be combined with --files (it sets filesAffected explicitly).',
       '--refuse-adjacent-unmanaged'
     );
   }

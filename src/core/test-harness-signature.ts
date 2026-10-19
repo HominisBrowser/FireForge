@@ -23,6 +23,29 @@ export interface HarnessCrashSignature {
   line: string;
 }
 
+/**
+ * The verdict line's `started=<n>/<m> first-unstarted=<path>
+ * [started-source=<src>]` keys, or nothing when every file started.
+ */
+export function formatIncompleteSuffix(evidence: IncompleteRunEvidence | undefined): string {
+  if (evidence?.firstUnstarted === undefined) return '';
+  const source =
+    evidence.startedSource === undefined ? '' : ` started-source=${evidence.startedSource}`;
+  return ` started=${evidence.started}/${evidence.requested} first-unstarted=${evidence.firstUnstarted}${source}`;
+}
+
+/** The verdict line's `shards=<p>/<t> [failed-shards=<labels>]` keys of a sharded run. */
+export function formatShardsSuffix(
+  shards: { passed: number; total: number; failed?: readonly string[] } | undefined
+): string {
+  if (shards === undefined) return '';
+  const failed =
+    shards.failed !== undefined && shards.failed.length > 0
+      ? ` failed-shards=${shards.failed.join(',')}`
+      : '';
+  return ` shards=${shards.passed}/${shards.total}${failed}`;
+}
+
 /** Why an exit-0 run that would have read as a pass was failed instead. */
 export interface IncompleteRunEvidence {
   /** Requested test files that produced a start (or skip) marker. */
@@ -31,6 +54,11 @@ export interface IncompleteRunEvidence {
   requested: number;
   /** First requested file, in dispatch order, that never started. */
   firstUnstarted?: string;
+  /**
+   * Which evidence the start count came from, stamped with a short count:
+   * the structured raw log, the streamed output, or the capped capture.
+   */
+  startedSource?: 'raw' | 'stream' | 'capture';
   /** The harness's "shut down in the middle of a test" line, when present. */
   shutdownLine?: string;
   /** The summary's non-zero `Unexpected results:` count, when it printed one. */

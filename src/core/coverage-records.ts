@@ -257,6 +257,41 @@ async function findManifestDirectory(engineDir: string, dir: string): Promise<st
   }
 }
 
+/**
+ * The request paths a scoped build restages, widened by the test manifests
+ * of every requested file: packaging one file of a manifest re-processes
+ * the manifest itself, so a manifest that gained an entry for that file is
+ * restaged too, and must not count as a changed input of the manifest's
+ * other files afterwards.
+ *
+ * @param engineDir - Path to the engine directory
+ * @param requested - Normalized request paths of the build
+ */
+export async function widenWithRestagedManifests(
+  engineDir: string,
+  requested: readonly string[]
+): Promise<string[]> {
+  const widened = new Set(requested);
+  for (const path of requested) {
+    if (!TEST_FILE_PATTERN.test(posix.basename(path))) continue;
+    const dir = await findManifestDirectory(engineDir, posix.dirname(path));
+    if (dir === undefined) continue;
+    let entries: string[];
+    try {
+      entries = await readdir(join(engineDir, dir));
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (TEST_MANIFEST_BASENAMES.has(entry)) widened.add(dir === '' ? entry : `${dir}/${entry}`);
+    }
+  }
+  return [...widened];
+}
+
+/** A test implementation file (`browser_*.js`, `test_*.js`, …), not a directory. */
+const TEST_FILE_PATTERN = /^(?:browser|test)_.*\.m?js$/;
+
 /** Test manifests at or beneath `dir`, bounded by {@link MAX_WALK_ENTRIES}. */
 async function findManifestsBeneath(engineDir: string, dir: string): Promise<string[]> {
   const manifests: string[] = [];

@@ -21,9 +21,17 @@ import {
   registerWaiter,
   type WaiterRegistration,
 } from './file-lock-queue.js';
+import {
+  countLiveSharedHolders,
+  type LockMode,
+  registerSharedHold,
+  releaseSharedHoldsForSignal,
+  type SharedHold,
+} from './file-lock-shared.js';
 
 export { LOCK_PID_FILE };
 export { formatLockQueuePosition, type LockQueueState } from './file-lock-queue.js';
+export type { LockMode } from './file-lock-shared.js';
 
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 const DEFAULT_LOCK_POLL_MS = 50;
@@ -123,6 +131,11 @@ export interface FileLockOptions {
   onStaleLockMessage?: (ageMs: number) => string | undefined;
   /** Extra owner-file lines for human diagnostics. Lock mechanics ignore them. */
   ownerMetadata?: readonly string[];
+  /**
+   * `exclusive` (default) or `shared`. Shared holders overlap each other and
+   * exclude exclusive ones; see `file-lock-shared.ts`.
+   */
+  mode?: LockMode | undefined;
 }
 
 /** Derives the sibling lock-directory path used to guard a file-based resource. */
@@ -140,6 +153,8 @@ export interface LockStatusSnapshot {
   /** Milliseconds since the lock directory was created, when held. */
   heldForMs?: number | undefined;
   queueDepth: number;
+  /** Live shared holders (build-less test runs under a shared lock). */
+  sharedHolders?: number | undefined;
 }
 
 /**
@@ -148,6 +163,8 @@ export interface LockStatusSnapshot {
  */
 export async function readLockStatus(lockPath: string): Promise<LockStatusSnapshot> {
   const queue = await readLockQueue(lockPath);
+  const shared = await countLiveSharedHolders(lockPath, { reap: false });
+  const sharedPart = shared > 0 ? { sharedHolders: shared } : {};
   let heldForMs: number | undefined;
   try {
     // Clamped: filesystem mtime resolution can round a just-created lock
@@ -155,13 +172,13 @@ export async function readLockStatus(lockPath: string): Promise<LockStatusSnapsh
     // in a status report.
     heldForMs = Math.max(0, Date.now() - (await stat(lockPath)).mtimeMs);
   } catch {
-    return { held: false, queueDepth: queue.depth };
+    return { held: false, queueDepth: queue.depth, ...sharedPart };
   }
   const owner = await readLockOwner(lockPath);
   const holder: LockHolder | undefined = owner.present
     ? { pid: owner.pid, alive: isLockOwnerAlive(owner), metadata: owner.metadata }
     : undefined;
-  return { held: true, holder, heldForMs, queueDepth: queue.depth };
+  return { held: true, holder, heldForMs, queueDepth: queue.depth, ...sharedPart };
 }
 
 /**
@@ -495,6 +512,7 @@ export async function forceReleaseHeldLocksForSignal(): Promise<string[]> {
       removed.push(lockPath);
     }
   }
+  removed.push(...(await releaseSharedHoldsForSignal()));
   return removed;
 }
 
@@ -646,12 +664,75 @@ export async function withFileLock<T>(
   // `writeLockOwner` removes the just-created directory before throwing.
   const ownerToken = randomUUID();
   await writeLockOwner(lockPath, ownerToken, options.ownerMetadata);
+  return runWhileHeld(lockPath, ownerToken, operation, options, {
+    deadline: Math.max(deadline, Date.now() + pollMs),
+    pollMs,
+  });
+}
+
+/**
+ * Runs `operation` once the turnstile is ours: as a shared holder (turnstile
+ * released at once), or exclusively once every shared holder has drained.
+ */
+async function runWhileHeld<T>(
+  lockPath: string,
+  ownerToken: string,
+  operation: () => Promise<T>,
+  options: FileLockOptions,
+  drain: { deadline: number; pollMs: number }
+): Promise<T> {
+  if (options.mode === 'shared') {
+    // The exclusive lock was only the turnstile: record the shared hold and
+    // let the next waiter in. See file-lock-shared.ts.
+    let hold: SharedHold;
+    try {
+      hold = await registerSharedHold(lockPath, options.ownerMetadata);
+    } finally {
+      await releaseLock(lockPath, ownerToken);
+    }
+    try {
+      return await operation();
+    } finally {
+      await hold.release();
+    }
+  }
 
   heldLocks.add(lockPath);
   try {
+    await waitForSharedHoldersToDrain(lockPath, drain.deadline, drain.pollMs);
     return await operation();
   } finally {
     heldLocks.delete(lockPath);
     await releaseLock(lockPath, ownerToken);
+  }
+}
+
+/**
+ * Holds an exclusive acquisition until every live shared holder has gone.
+ * The turnstile is already ours, so no new shared holder can join meanwhile.
+ *
+ * @throws LockContentionError when shared holders outlast the budget
+ */
+async function waitForSharedHoldersToDrain(
+  lockPath: string,
+  deadline: number,
+  pollMs: number
+): Promise<void> {
+  let announced = false;
+  for (;;) {
+    const live = await countLiveSharedHolders(lockPath);
+    if (live === 0) return;
+    if (Date.now() >= deadline) {
+      throw new LockContentionError(
+        `Timed out waiting for file lock ${lockPath}: ${live} shared holder(s) (build-less ` +
+          'test runs under a shared lock) still hold it. Wait for them to finish, or retry ' +
+          'with a larger --wait-lock.'
+      );
+    }
+    if (!announced) {
+      verbose(`Waiting for ${live} shared holder(s) of ${lockPath} to finish.`);
+      announced = true;
+    }
+    await sleep(Math.max(pollMs, 100));
   }
 }

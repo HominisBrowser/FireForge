@@ -16,6 +16,11 @@ export interface CheckStepResult {
   /** The command line, as the table prints it. */
   command: string;
   status: 'pass' | 'fail' | 'skipped';
+  /**
+   * For a skipped step: `config` when `check.skip` names it, `unavailable`
+   * when the project has nothing for it to run.
+   */
+  skipKind?: 'config' | 'unavailable';
   /** The child's exit code. Null when it never ran or was killed at its budget. */
   exitCode: number | null;
   durationMs: number;
@@ -41,7 +46,14 @@ function tailLines(text: string): string {
 async function runStep(plan: CheckStepPlan, now: () => number): Promise<CheckStepResult> {
   const base = { name: plan.name, kind: plan.kind, command: plan.display };
   if (plan.skipReason !== undefined) {
-    return { ...base, status: 'skipped', exitCode: null, durationMs: 0, detail: plan.skipReason };
+    return {
+      ...base,
+      status: 'skipped',
+      skipKind: plan.skipKind ?? 'unavailable',
+      exitCode: null,
+      durationMs: 0,
+      detail: plan.skipReason,
+    };
   }
   let stdout = '';
   let combined = '';
@@ -55,6 +67,7 @@ async function runStep(plan: CheckStepPlan, now: () => number): Promise<CheckSte
       cwd: plan.cwd,
       processGroup: true,
       ...(plan.timeoutMs !== undefined ? { timeout: plan.timeoutMs } : {}),
+      ...(plan.env !== undefined ? { env: plan.env } : {}),
       onStdout: (chunk) => {
         stdout += chunk;
         append(chunk);

@@ -33,6 +33,11 @@ import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../ut
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 import {
+  deleteCreatedFiles,
+  planClaimedFiles,
+  withCreatedFileLock,
+} from './removal-created-files.js';
+import {
   collectRemovalDependents,
   queueSnapshot,
   removalConflict,
@@ -66,16 +71,19 @@ export async function patchRetireCommand(
   warnDanglingStagedOwners(baseCtx, target, 'retire');
 
   const order = formatPatchOrder(target.order);
+  const claimed = await planClaimedFiles(
+    baseCtx,
+    target,
+    paths.engine,
+    options.deleteCreated === true
+  );
   const summary: string[] = [
     `retire ${target.filename}  (category: ${target.category}, order: ${order})`,
     `description: ${target.description || '(none)'}`,
     `order ${order} stays spent as a retired slot in patches.json; ` +
       `"fireforge export --order ${order}" can fill it later`,
-    `files currently claimed by this patch (${target.filesAffected.length}):`,
+    ...claimed.summary,
   ];
-  for (const file of target.filesAffected) {
-    summary.push(`  ${file}  → will become unmanaged`);
-  }
 
   const decision = await confirmDestructive({
     operation: 'patch-retire',
@@ -100,34 +108,41 @@ export async function patchRetireCommand(
   // Same locking and history contract as `patch delete`: the dependency
   // scan approved before the prompt is re-checked under the lock, and the
   // history record is appended inside it.
-  await withPatchDirectoryLock(
-    paths.patches,
-    async () => {
-      const current = await buildPatchQueueContext(paths.patches);
-      if (queueSnapshot(current) !== queueSnapshot(baseCtx)) {
-        throw new GeneralError(
-          'Patch queue changed while waiting for confirmation or the lock. Re-run patch retire to review the current dependencies.'
-        );
-      }
-      await removePatchFileAndManifest(paths.patches, target.filename, slot);
-      await appendHistoryBestEffort(
-        paths.patches,
-        {
-          operation: 'patch-retire',
-          args: {
-            filename: target.filename,
-            order: target.order,
-            filesAffected: target.filesAffected,
-            ...(options.reason !== undefined ? { reason: options.reason } : {}),
+  const waitLockSeconds = resolveWaitLockSeconds(options.waitLock);
+  await withCreatedFileLock(projectRoot, 'patch retire', claimed, waitLockSeconds, () =>
+    withPatchDirectoryLock(
+      paths.patches,
+      async () => {
+        const current = await buildPatchQueueContext(paths.patches);
+        if (queueSnapshot(current) !== queueSnapshot(baseCtx)) {
+          throw new GeneralError(
+            'Patch queue changed while waiting for confirmation or the lock. Re-run patch retire to review the current dependencies.'
+          );
+        }
+        await removePatchFileAndManifest(paths.patches, target.filename, slot);
+        await deleteCreatedFiles(paths.engine, claimed.deleteOnCommit);
+        await appendHistoryBestEffort(
+          paths.patches,
+          {
+            operation: 'patch-retire',
+            args: {
+              filename: target.filename,
+              order: target.order,
+              filesAffected: target.filesAffected,
+              ...(claimed.deleteOnCommit.length > 0
+                ? { deletedCreatedFiles: claimed.deleteOnCommit }
+                : {}),
+              ...(options.reason !== undefined ? { reason: options.reason } : {}),
+            },
+            ...(options.yes === true ? { yes: true } : {}),
+            ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
+            result: 'ok',
           },
-          ...(options.yes === true ? { yes: true } : {}),
-          ...(options.forceUnsafe === true ? { unsafeOverride: true } : {}),
-          result: 'ok',
-        },
-        `patch retire committed (${target.filename})`
-      );
-    },
-    { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch retire' }
+          `patch retire committed (${target.filename})`
+        );
+      },
+      { waitLockSeconds, command: 'patch retire' }
+    )
   );
 
   info(`Retired ${target.filename}; order ${order} is kept as a retired slot.`);
@@ -158,6 +173,10 @@ export function registerPatchRetire(parent: Command, context: CommandContext): v
     .option('--dry-run', 'Show what would happen without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
     .option(
+      '--delete-created',
+      'Also delete the engine files this patch creates that are still on disk, instead of leaving them unmanaged'
+    )
+    .option(
       '--force-unsafe',
       'Bypass the refusal when a later patch depends on this patch (last resort)'
     );
@@ -170,6 +189,7 @@ export function registerPatchRetire(parent: Command, context: CommandContext): v
           dryRun?: boolean;
           yes?: boolean;
           forceUnsafe?: boolean;
+          deleteCreated?: boolean;
           waitLock?: number | boolean;
         }
       ) => {

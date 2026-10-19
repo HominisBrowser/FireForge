@@ -34,6 +34,16 @@ interface CheckJson {
   }[];
 }
 
+/**
+ * A step that prints to both streams and exits 3. Extra steps run through
+ * the platform shell, and `cmd.exe` neither splits commands on `;` nor ends
+ * a `/c` line with a bare `exit 3`.
+ */
+const RED_STEP_COMMAND =
+  process.platform === 'win32'
+    ? 'echo first & echo policy: 2 findings 1>&2 & exit /b 3'
+    : 'echo first; echo "policy: 2 findings" >&2; exit 3';
+
 describe('fireforge check across the process boundary', () => {
   let projectRoot: string;
 
@@ -43,7 +53,7 @@ describe('fireforge check across the process boundary', () => {
       check: {
         extraSteps: [
           { name: 'audit-ok', command: 'echo audit fine' },
-          { name: 'audit-red', command: 'echo first; echo "policy: 2 findings" >&2; exit 3' },
+          { name: 'audit-red', command: RED_STEP_COMMAND },
           { name: 'audit-slow', command: 'sleep 5', timeout: 1 },
           { name: 'audit-sub', command: 'pwd', cwd: 'tools' },
         ],

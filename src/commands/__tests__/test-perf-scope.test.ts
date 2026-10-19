@@ -11,7 +11,11 @@ vi.mock('../../utils/logger.js', () => createLoggerMock());
 import { generationDeltaPaths } from '../../core/engine-session-lock.js';
 import { createTempProject, removeTempProject, writeFiles } from '../../test-utils/index.js';
 import { warn } from '../../utils/logger.js';
-import { describePerfStaleImpact, perfGenerationTolerance } from '../test-perf-scope.js';
+import {
+  describePerfStaleImpact,
+  perfGenerationTolerance,
+  runGenerationTolerance,
+} from '../test-perf-scope.js';
 
 const SEP = '\x1f';
 
@@ -114,5 +118,70 @@ describe.skipIf(process.platform === 'win32')('perf sample scope', () => {
         token('h', ' M widget/cocoa/nsView.mm')
       )
     ).resolves.toBe(false);
+  });
+
+  describe('runGenerationTolerance (an ordinary run)', () => {
+    const REQUEST = ['browser/base/content/test/perf/browser_startup.js'];
+
+    beforeEach(async () => {
+      // A packaged (copied) chrome file: listed, but not linked to its source.
+      const copied = join(engineDir, 'browser/base/content/copied.js');
+      await writeFiles(engineDir, {
+        'browser/base/content/copied.js': 'copied',
+        'obj-test/faster/install_dist_bin': [
+          '5',
+          ['1', 'live.js', join(engineDir, 'browser/base/content/live.js')].join(SEP),
+          ['1', 'copied.js', copied].join(SEP),
+        ].join('\n'),
+      });
+    });
+
+    it('keeps the verdict when only files the running browser cannot see changed', async () => {
+      const tolerated = vi.fn();
+      const tolerate = runGenerationTolerance(engineDir, REQUEST, tolerated);
+      await expect(
+        tolerate(
+          token('h'),
+          token(
+            'h',
+            ' M widget/cocoa/nsView.mm',
+            ' M browser/base/content/copied.js',
+            ' D toolkit/other/test/browser_peer.js',
+            '?? docs/new/'
+          )
+        )
+      ).resolves.toBe(true);
+      expect(tolerated).toHaveBeenCalledWith(4);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('the verdict stands'));
+    });
+
+    it.each([
+      ['a linked chrome file', token('h', ' M browser/base/content/live.js')],
+      ['a staging input of the run', token('h', ' M browser/base/content/test/perf/head.js')],
+      ['the requested test itself', token('h', ` M ${REQUEST[0] ?? ''}`)],
+      ['a directory the build installs from', token('h', '?? browser/base/')],
+      ['a HEAD move', token('i', ' M widget/cocoa/nsView.mm')],
+      ['an empty delta', token('h')],
+    ])('still invalidates the run on %s', async (_label, after) => {
+      const tolerated = vi.fn();
+      await expect(
+        runGenerationTolerance(engineDir, REQUEST, tolerated)(token('h'), after)
+      ).resolves.toBe(false);
+      expect(tolerated).not.toHaveBeenCalled();
+    });
+
+    it('treats every test file as its own on a path-less run, and fails closed without an objdir', async () => {
+      const after = token('h', ' M toolkit/other/test/browser_peer.js');
+      await expect(runGenerationTolerance(engineDir, [], vi.fn())(token('h'), after)).resolves.toBe(
+        false
+      );
+      await expect(
+        runGenerationTolerance(
+          join(projectRoot, 'missing'),
+          REQUEST,
+          vi.fn()
+        )(token('h'), token('h', ' M widget/cocoa/nsView.mm'))
+      ).resolves.toBe(false);
+    });
   });
 });

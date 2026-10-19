@@ -15,7 +15,7 @@
 import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
-import type { CheckConfig, FireForgeConfig } from '../types/config.js';
+import type { CheckBuiltinStep, CheckConfig, FireForgeConfig } from '../types/config.js';
 
 /** One planned step. */
 export interface CheckStepPlan {
@@ -33,6 +33,14 @@ export interface CheckStepPlan {
   after: string[];
   /** Set when the step is planned but not run, with the reason. */
   skipReason?: string | undefined;
+  /**
+   * Why it is skipped: `config` when `check.skip` names it (a decision),
+   * `unavailable` when the project has nothing for it to run (a gap,
+   * which `check.failOnSkipped` fails).
+   */
+  skipKind?: 'config' | 'unavailable' | undefined;
+  /** Extra environment for the child. */
+  env?: Record<string, string> | undefined;
   /** Condenses a finished run into the table's detail cell. */
   summarize: (output: { stdout: string; combined: string; exitCode: number }) => string;
 }
@@ -163,10 +171,10 @@ export function statusPolicyArgs(policy: CheckConfig['status']): string[] {
 function builtinStep(
   invocation: { command: string; prefix: string[] },
   projectRoot: string,
-  name: string,
+  name: CheckBuiltinStep,
   args: string[],
   summarize: CheckStepPlan['summarize'],
-  extra: Partial<Pick<CheckStepPlan, 'after' | 'skipReason'>> = {}
+  extra: Partial<Pick<CheckStepPlan, 'after' | 'skipReason' | 'timeoutMs'>> = {}
 ): CheckStepPlan {
   return {
     name,
@@ -175,10 +183,18 @@ function builtinStep(
     args: [...invocation.prefix, ...args],
     display: `fireforge ${args.join(' ')}`,
     cwd: projectRoot,
+    timeoutMs: extra.timeoutMs,
     after: extra.after ?? [],
     skipReason: extra.skipReason,
+    skipKind: extra.skipReason !== undefined ? 'unavailable' : undefined,
     summarize,
   };
+}
+
+/** A built-in step's budget: `check.timeouts.<step>`, else `check.timeout`. */
+function builtinTimeoutMs(check: CheckConfig, name: CheckBuiltinStep): number | undefined {
+  const seconds = check.timeouts?.[name] ?? check.timeout;
+  return seconds !== undefined ? seconds * 1000 : undefined;
 }
 
 /** Runs a project command line through the platform shell. */
@@ -209,25 +225,43 @@ export function buildCheckPlan(input: CheckPlanInput): CheckStepPlan[] {
       ? ['--max-warnings', String(check.maxWarnings.furnace)]
       : [];
 
+  const lintReport =
+    check.lintReport !== undefined ? join(projectRoot, check.lintReport) : undefined;
+  const lintReportArgs = lintReport !== undefined ? ['--report', lintReport] : [];
+  const timeoutMs = (name: CheckBuiltinStep): number | undefined => builtinTimeoutMs(check, name);
+
   const plan: CheckStepPlan[] = [
     builtinStep(
       invocation,
       projectRoot,
       'status',
       ['status', '--json', '--summary', '--check', ...statusPolicyArgs(check.status), ...patchArgs],
-      summarizeStatus
+      summarizeStatus,
+      { timeoutMs: timeoutMs('status') }
     ),
-    builtinStep(invocation, projectRoot, 'verify', ['verify', ...patchArgs], generic),
+    builtinStep(invocation, projectRoot, 'verify', ['verify', ...patchArgs], generic, {
+      timeoutMs: timeoutMs('verify'),
+    }),
     builtinStep(
       invocation,
       projectRoot,
       'lint',
-      ['lint', '--per-patch', '--notices', 'summary', ...lintWarnings, ...patchArgs],
-      generic
+      [
+        'lint',
+        '--per-patch',
+        '--notices',
+        'summary',
+        ...lintWarnings,
+        ...lintReportArgs,
+        ...patchArgs,
+      ],
+      generic,
+      { timeoutMs: timeoutMs('lint') }
     ),
     builtinStep(invocation, projectRoot, 'typecheck', ['typecheck'], generic, {
       skipReason:
         config.typecheck === undefined ? 'no "typecheck" block in fireforge.json' : undefined,
+      timeoutMs: timeoutMs('typecheck'),
     }),
     builtinStep(
       invocation,
@@ -238,6 +272,7 @@ export function buildCheckPlan(input: CheckPlanInput): CheckStepPlan[] {
       {
         after: ['typecheck'],
         skipReason: input.furnaceConfigured ? undefined : 'no furnace.json',
+        timeoutMs: timeoutMs('furnace-validate'),
       }
     ),
     builtinStep(
@@ -245,7 +280,8 @@ export function buildCheckPlan(input: CheckPlanInput): CheckStepPlan[] {
       projectRoot,
       'token-coverage',
       ['token', 'coverage'],
-      summarizeTokenCoverage
+      summarizeTokenCoverage,
+      { timeoutMs: timeoutMs('token-coverage') }
     ),
   ];
 
@@ -259,14 +295,18 @@ export function buildCheckPlan(input: CheckPlanInput): CheckStepPlan[] {
       display: step.command,
       cwd: step.cwd !== undefined ? join(projectRoot, step.cwd) : projectRoot,
       timeoutMs: step.timeout !== undefined ? step.timeout * 1000 : undefined,
-      after: [],
+      after: step.after ?? [],
+      env: lintReport !== undefined ? { FIREFORGE_CHECK_LINT_REPORT: lintReport } : undefined,
       summarize: generic,
     });
   }
 
   for (const name of check.skip ?? []) {
     const step = plan.find((entry) => entry.name === name);
-    if (step !== undefined) step.skipReason = 'skipped by check.skip in fireforge.json';
+    if (step !== undefined) {
+      step.skipReason = 'skipped by check.skip in fireforge.json';
+      step.skipKind = 'config';
+    }
   }
   return plan;
 }

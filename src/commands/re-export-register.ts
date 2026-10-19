@@ -10,7 +10,9 @@
 
 import { Command, Option } from 'commander';
 
+import { getProjectPaths } from '../core/config.js';
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
+import { withPrivateGitIndex } from '../core/git-readonly-index.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ReExportOptions } from '../types/commands/index.js';
 import {
@@ -56,7 +58,7 @@ export function registerReExport(
     )
     .option(
       '--refuse-adjacent-unmanaged',
-      'Refuse a scan-less re-export (non-zero exit, patch not written) when unmanaged files exist adjacent to the patch ownership, instead of warning. Adjacent means the same directory as an owned file (not a sibling or nested directory), or named by a registration line the patch adds. Mutually exclusive with --scan and --files.'
+      'Refuse a re-export (non-zero exit, patch not written) when unmanaged files exist adjacent to the patch ownership, instead of warning. Adjacent means the same directory as an owned file (not a sibling or nested directory), or named by a registration line the patch adds. Beside --scan it judges the files the scan did not adopt. Mutually exclusive with --files.'
     )
     .option(
       '--refuse-foreign-drift',
@@ -102,6 +104,18 @@ export function registerReExport(
       '--allow-shrink',
       'Allow --files to remove paths currently owned by the patch. Required before --yes can bypass the shrink confirmation.'
     )
+    .option(
+      '--declarations-out <path>',
+      'Where a refused --scan adoption writes its one --from-ready staged-declaration report (default: .fireforge/declarations/<timestamp>.json).'
+    )
+    .option(
+      '--hunks-from <diff>',
+      "Export each file the diff names as the patch's current body plus only the diff's hunks, so another session's edits in the same file stay out. One explicit patch; not with --scan, --files or --all."
+    )
+    .option(
+      '--exclude-hunks <diff>',
+      "Export each file the diff names as the working tree minus the diff's hunks. One explicit patch; not with --scan, --files or --all."
+    )
     .option('-y, --yes', 'Skip confirmation prompts (required for non-TTY destructive writes)')
     .option('--force-unsafe', 'Bypass cross-patch lint refusal when --files shrinks a patch')
     .option(
@@ -126,6 +140,17 @@ export function registerReExport(
       // Refuse what the locked run would refuse before queueing for the
       // lock, which can be a long wait under contention.
       await preflightReExportArguments(projectRoot, patches, reExportOptions);
+      // A dry run writes nothing, so it does not queue behind peers' builds
+      // and test runs for the engine lock. Its git plumbing runs on a
+      // private index, so not even git's stat-cache refresh reaches the
+      // shared `.git/index`; dry runs still serialize among themselves.
+      if (reExportOptions.dryRun === true) {
+        const engineDir = getProjectPaths(projectRoot).engine;
+        await withPrivateGitIndex(engineDir, () =>
+          reExportCommand(projectRoot, patches, reExportOptions)
+        );
+        return;
+      }
       await withEngineSessionLock(
         projectRoot,
         're-export',
@@ -151,6 +176,9 @@ interface ReExportCliOptions {
   expectNew?: string[];
   adjacentIgnore?: string[];
   expectRemoved?: string[];
+  declarationsOut?: string;
+  hunksFrom?: string;
+  excludeHunks?: string;
   dryRun?: boolean;
   skipLint?: boolean;
   yes?: boolean;

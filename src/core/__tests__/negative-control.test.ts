@@ -10,6 +10,7 @@ vi.mock('../../utils/logger.js', async () =>
 
 import { createTempProject, removeTempProject, writeFiles } from '../../test-utils/index.js';
 import { notice } from '../../utils/logger.js';
+import { normalizePathSlashes } from '../../utils/paths.js';
 import {
   applyNegativeControl,
   type NegativeControlPaths,
@@ -82,11 +83,59 @@ describe('planNegativeControl', () => {
   it('refuses an unparseable diff, a non-UTF-8 target and a symlinked target', async () => {
     await writeFiles(root, { 'junk.diff': 'not a diff\n' });
     await expect(planNegativeControl(root, paths.engineDir, 'junk.diff')).rejects.toThrow(
-      /no `diff --git`/
+      /no diff sections found/
     );
     await writeFile(join(paths.engineDir, target), Buffer.from([0xff, 0xfe, 0x00]));
     await expect(planNegativeControl(root, paths.engineDir, 'control.diff')).rejects.toThrow(
       /not valid UTF-8/
+    );
+  });
+
+  it('accepts a git diff --no-index against an edited copy outside engine/', async () => {
+    // `git diff --no-index engine/<file> <scratch copy>` names the copy on
+    // its new side; absolute paths lose their leading slash under a/ and b/
+    // (`a/Users/…`), while a Windows drive path keeps its drive (`a/C:/Users/…`).
+    const absolute = normalizePathSlashes(join(root, 'engine', target)).replace(/^\//, '');
+    await writeFiles(root, {
+      'relative.diff': controlDiff(`engine/${target}`).replace(
+        /b\/engine\/browser\/modules\/Check\.sys\.mjs/g,
+        'b/scratch/Check.sys.mjs'
+      ),
+      'absolute.diff': controlDiff(`engine/${target}`)
+        .replace(/a\/engine\/browser\/modules\/Check\.sys\.mjs/g, `a/${absolute}`)
+        .replace(/b\/engine\/browser\/modules\/Check\.sys\.mjs/g, 'b/private/tmp/Check.sys.mjs'),
+      'rename.diff': controlDiff(`engine/${target}`).replace(
+        /b\/engine\/browser\/modules\/Check\.sys\.mjs/g,
+        'b/engine/browser/modules/Other.sys.mjs'
+      ),
+    });
+    for (const file of ['relative.diff', 'absolute.diff']) {
+      const plan = await planNegativeControl(root, paths.engineDir, file);
+      expect(plan.targets.map((t) => t.enginePath)).toEqual([target]);
+    }
+    await expect(planNegativeControl(root, paths.engineDir, 'rename.diff')).rejects.toThrow(
+      /is a rename/
+    );
+  });
+
+  it('marks a compiled-source target, and restores it with a fresh mtime', async () => {
+    const cpp = 'gfx/layers/apz/src/AsyncPanZoomController.cpp';
+    await writeFiles(root, {
+      [`engine/${cpp}`]: SOURCE,
+      'cpp.diff': controlDiff(`engine/${cpp}`),
+    });
+    const old = new Date('2020-01-01T00:00:00Z');
+    await utimes(join(paths.engineDir, cpp), old, old);
+    const plan = await planNegativeControl(root, paths.engineDir, 'cpp.diff');
+    expect(plan.compiled).toEqual([cpp]);
+    const control = await applyNegativeControl(paths, plan);
+    await restoreNegativeControl(control);
+    const restored = await stat(join(paths.engineDir, cpp));
+    expect(await readFile(join(paths.engineDir, cpp), 'utf8')).toBe(SOURCE);
+    expect(restored.mtimeMs).toBeGreaterThan(old.getTime() + 1000);
+    // A script target is not compiled and keeps its original timestamps.
+    expect((await planNegativeControl(root, paths.engineDir, 'control.diff')).compiled).toBe(
+      undefined
     );
   });
 

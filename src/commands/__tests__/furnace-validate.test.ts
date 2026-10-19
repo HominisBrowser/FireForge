@@ -911,13 +911,12 @@ describe('furnaceValidateCommand', () => {
       ).resolves.toBeUndefined();
     });
 
-    it('suppresses an excepted finding (an error too) and reports it with its reason', async () => {
+    it('suppresses an excepted warning and reports it with its reason', async () => {
       withExceptions([
         { component: 'moz-sidebar', check: 'no-aria-role', reason: 'wraps a native button' },
       ]);
-      vi.mocked(validateAllComponents).mockResolvedValue(
-        new Map([['moz-sidebar', [failure('moz-sidebar', 'no-aria-role')]]])
-      );
+      const finding = { ...failure('moz-sidebar', 'no-aria-role'), severity: 'warning' as const };
+      vi.mocked(validateAllComponents).mockResolvedValue(new Map([['moz-sidebar', [finding]]]));
       const out = captureStdout();
       try {
         await furnaceValidateCommand('/project', undefined, { json: true, maxWarnings: 0 });
@@ -927,12 +926,89 @@ describe('furnaceValidateCommand', () => {
       expect(out.read()).toMatchObject({
         passed: true,
         summary: { errors: 0, warnings: 0, excepted: 1, staleExceptions: 0 },
-        excepted: [{ ...failure('moz-sidebar', 'no-aria-role'), reason: 'wraps a native button' }],
+        excepted: [{ ...finding, reason: 'wraps a native button' }],
       });
       expect(note).toHaveBeenCalledWith(
         '0 error(s), 0 warning(s), 1 excepted across 1 component(s)',
         'Validation Summary'
       );
+    });
+
+    it('keeps an excepted error counted and flags the exception', async () => {
+      withExceptions([{ component: 'moz-sidebar', check: 'missing-mjs', reason: 'reviewed' }]);
+      vi.mocked(validateAllComponents).mockResolvedValue(
+        new Map([['moz-sidebar', [failure('moz-sidebar', 'missing-mjs')]]])
+      );
+      const out = captureStdout();
+      try {
+        await expect(furnaceValidateCommand('/project', undefined, { json: true })).rejects.toThrow(
+          'Validation failed with 2 error(s).'
+        );
+      } finally {
+        out.restore();
+      }
+      expect(out.read()).toMatchObject({
+        passed: false,
+        summary: { errors: 2, excepted: 0 },
+        issues: [
+          { check: 'missing-mjs' },
+          { check: 'validation-exception-on-error', severity: 'error' },
+        ],
+      });
+    });
+
+    it('fails a full run that judges fewer components than minComponents', async () => {
+      withExceptions([]);
+      const config = await loadFurnaceConfig('/project');
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({ ...config, minComponents: 2 });
+      vi.mocked(validateAllComponents).mockResolvedValue(new Map([['moz-sidebar', []]]));
+      const out = captureStdout();
+      try {
+        await expect(furnaceValidateCommand('/project', undefined, { json: true })).rejects.toThrow(
+          'Validation failed with 1 error(s).'
+        );
+      } finally {
+        out.restore();
+      }
+      expect(out.read()).toMatchObject({
+        passed: false,
+        issues: [{ component: 'furnace.json', check: 'component-floor', severity: 'error' }],
+      });
+    });
+
+    it('fails a full run over no components at all under minComponents', async () => {
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+        minComponents: 1,
+      });
+      await expect(furnaceValidateCommand('/project')).rejects.toThrow(
+        'Validation failed with 1 error(s).'
+      );
+      const out = captureStdout();
+      try {
+        await expect(furnaceValidateCommand('/project', undefined, { json: true })).rejects.toThrow(
+          'Validation failed with 1 error(s).'
+        );
+      } finally {
+        out.restore();
+      }
+      expect(out.read()).toMatchObject({
+        passed: false,
+        summary: { components: 0, errors: 1 },
+        issues: [{ check: 'component-floor' }],
+      });
+    });
+
+    it('does not hold a run naming one component to minComponents', async () => {
+      withExceptions([]);
+      const config = await loadFurnaceConfig('/project');
+      vi.mocked(loadFurnaceConfig).mockResolvedValue({ ...config, minComponents: 5 });
+      vi.mocked(validateComponent).mockResolvedValue([]);
+      await expect(furnaceValidateCommand('/project', 'moz-sidebar')).resolves.toBeUndefined();
     });
 
     it('reports an exception that matches nothing as a stale warning', async () => {

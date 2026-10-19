@@ -25,6 +25,7 @@ import { isGitRepository } from '../core/git.js';
 import { withPrivateGitIndex } from '../core/git-readonly-index.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import {
+  collectWorktreeModuleFiles,
   findUnresolvedSystemModuleImports,
   formatUnresolvedSystemModuleImports,
 } from '../core/module-resolution-preflight.js';
@@ -303,10 +304,19 @@ export async function collectPatchQueueHealth(
     // CREATES. This asks the same question of the engine, so an import ADDED
     // to an existing module is named as text instead of surfacing later as a
     // bare `xpcshell return code: -11` with zero output.
+    // Unscoped, the engine worktree joins in: an unexported chrome script
+    // importing an unexported, unregistered module crashes every objdir
+    // start before either file is in the queue. A scoped run never judges
+    // unmanaged files.
     if (await pathExists(paths.engine)) {
+      const worktree =
+        scope === undefined && (await isGitRepository(paths.engine))
+          ? await collectWorktreeModuleFiles(paths.engine)
+          : undefined;
       const unresolved = await findUnresolvedSystemModuleImports(
         paths.engine,
-        scopePatches(manifest.patches, scope).flatMap((patch) => patch.filesAffected)
+        scopePatches(manifest.patches, scope).flatMap((patch) => patch.filesAffected),
+        worktree
       );
       if (unresolved.length > 0) {
         groups.push({

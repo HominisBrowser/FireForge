@@ -429,7 +429,7 @@ describePosix('tree create --wait-lock', () => {
 
   it('rejects out-of-range --wait-lock values through commander', async () => {
     await expect(createTree('--wait-lock', '0')).rejects.toThrow(
-      '--wait-lock must be an integer in 1..3600 (got "0")'
+      '--wait-lock must be an integer in 1..86400 (got "0")'
     );
     expect(cloneTree).not.toHaveBeenCalled();
   });

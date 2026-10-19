@@ -20,13 +20,14 @@ import {
   addJarMnEntries,
   addLocaleFtlJarMnEntry,
   removeCustomElementRegistration,
-  removeJarMnEntries,
   removeLocaleFtlJarMnEntry,
   renameCustomElementRegistration,
 } from '../../core/furnace-registration.js';
+import { renameJarMnEntriesInPlace } from '../../core/furnace-registration-jar-inplace.js';
 import { type RollbackJournal, snapshotFile } from '../../core/furnace-rollback.js';
 import type { CustomComponentConfig } from '../../types/furnace.js';
 import { pathExists, readText, removeFile, writeText } from '../../utils/fs.js';
+import { renameComponentFileName } from './rename-helpers.js';
 
 /**
  * The project marker (`// <MARKER>:`) a registration line written by the
@@ -95,10 +96,15 @@ export async function updateEngineRegistrations(
 
   if (await pathExists(jarMnPath)) {
     await snapshotFile(journal, jarMnPath);
-    await removeJarMnEntries(engineDir, oldName);
     const files = (await readdir(newDir, { withFileTypes: true }))
       .filter((e) => e.isFile() && (e.name.endsWith('.mjs') || e.name.endsWith('.css')))
       .map((e) => e.name);
+    // Rewrite the old lines where they stand, like the customElements.js
+    // entry above, so the rename moves no other line of the block; only a
+    // file with no line yet is inserted.
+    await renameJarMnEntriesInPlace(engineDir, oldName, newName, files, (file) =>
+      renameComponentFileName(file, oldName, newName)
+    );
     if (files.length > 0) {
       await addJarMnEntries(engineDir, newName, files);
     }

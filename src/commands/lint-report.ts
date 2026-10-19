@@ -17,7 +17,9 @@ import {
 } from '../core/patch-lint.js';
 import {
   evaluateLintIgnoreCeilings,
+  evaluateLintIgnoreWaivers,
   type LintIgnoreCeilingStatus,
+  type LintIgnoreWaiverStatus,
 } from '../core/patch-lint-ignore.js';
 import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig, PatchLintPatchSizeMetric } from '../types/config.js';
@@ -58,6 +60,12 @@ interface LintReportPatch {
    * Empty when the patch carries no ceiling or was skipped.
    */
   lintIgnoreCeilings: LintIgnoreCeilingStatus[];
+  /**
+   * Every lintIgnore entry, bare IDs (`max: null`) and ceilings alike, with
+   * its current measurement and state. Empty when the patch carries none or
+   * was skipped. `lintIgnoreCeilings` keeps its ceiling-only shape.
+   */
+  lintIgnoreWaivers: LintIgnoreWaiverStatus[];
 }
 
 /**
@@ -89,6 +97,8 @@ export async function writePerPatchLintReport(
     const result = results[i];
     if (!patch || !result) continue;
     const tier = resolvePatchSizeTier(result.existingFiles, patch.tier);
+    const findings = [...result.rawIssues, ...result.suppressedIssues];
+    const measurements = { lines: result.lineCount, files: patch.filesAffected.length };
     patches.push({
       filename: patch.filename,
       name: patch.name,
@@ -103,11 +113,11 @@ export async function writePerPatchLintReport(
       lintIgnoreCeilings:
         result.status === 'skipped'
           ? []
-          : evaluateLintIgnoreCeilings(
-              patch.lintIgnore,
-              [...result.rawIssues, ...result.suppressedIssues],
-              { lines: result.lineCount, files: patch.filesAffected.length }
-            ),
+          : evaluateLintIgnoreCeilings(patch.lintIgnore, findings, measurements),
+      lintIgnoreWaivers:
+        result.status === 'skipped'
+          ? []
+          : evaluateLintIgnoreWaivers(patch.lintIgnore, findings, measurements),
     });
     if (result.status === 'skipped') skipped++;
     else linted++;

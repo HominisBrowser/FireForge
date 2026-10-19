@@ -139,6 +139,42 @@ describe('tokenLintCommand', () => {
     );
   });
 
+  it('treats a reference with a fallback as optional', async () => {
+    await seed(CLEAN_TOKENS, {
+      'browser/panel.css': '.a { gap: var(--mybrowser-hook, 4px); top: var( --mybrowser-x ,0); }\n',
+    });
+
+    await expect(tokenLintCommand(projectRoot)).resolves.toBeUndefined();
+  });
+
+  it('resolves a reference against a sheet the same document links', async () => {
+    await seed(CLEAN_TOKENS, {
+      'browser/host.xhtml':
+        '<?xml-stylesheet href="host.css"?>\n<html:link rel="stylesheet" href="panel.css"/>\n',
+      'browser/host.css': ':root { --mybrowser-host-only: 1px; }\n',
+      'browser/panel.css': '.a { gap: var(--mybrowser-host-only); }\n',
+      'browser/lone.css': '.b { gap: var(--mybrowser-host-only); }\n',
+    });
+
+    await expect(tokenLintCommand(projectRoot)).rejects.toThrow('token lint found 1 finding(s).');
+    expect(vi.mocked(warn).mock.calls[0]?.[0]).toMatch(
+      /^browser\/lone\.css:1 \[token-undeclared\]/
+    );
+  });
+
+  it('resolves a reference against furnace.json tokenSiblingSheets partners', async () => {
+    vi.mocked(furnaceConfigExists).mockResolvedValue(true);
+    vi.mocked(loadFurnaceConfig).mockResolvedValue({
+      tokenSiblingSheets: { 'browser/lone.css': ['browser/host.css'] },
+    } as unknown as FurnaceConfig);
+    await seed(CLEAN_TOKENS, {
+      'browser/host.css': ':root { --mybrowser-host-only: 1px; }\n',
+      'browser/lone.css': '.b { gap: var(--mybrowser-host-only); }\n',
+    });
+
+    await expect(tokenLintCommand(projectRoot)).resolves.toBeUndefined();
+  });
+
   it('honours the furnace prefix and its allowlisted / runtime names', async () => {
     vi.mocked(furnaceConfigExists).mockResolvedValue(true);
     vi.mocked(loadFurnaceConfig).mockResolvedValue({

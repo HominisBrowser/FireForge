@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
@@ -99,6 +100,50 @@ beforeEach(() => {
 });
 
 describe('buildCheckPlan', () => {
+  it('bounds built-in steps by check.timeout and check.timeouts', () => {
+    const plan = buildCheckPlan({
+      projectRoot: '/project',
+      config: { ...DEFAULT_CONFIG, check: { timeout: 600, timeouts: { lint: 30 } } },
+      furnaceConfigured: true,
+    });
+    expect(plan.find((step) => step.name === 'lint')?.timeoutMs).toBe(30_000);
+    expect(plan.find((step) => step.name === 'verify')?.timeoutMs).toBe(600_000);
+  });
+
+  it('orders extra steps by after and hands them the lint report', () => {
+    const plan = buildCheckPlan({
+      projectRoot: '/project',
+      config: {
+        ...DEFAULT_CONFIG,
+        check: {
+          lintReport: '.fireforge/check/lint.json',
+          extraSteps: [{ name: 'policy', command: 'npm run policy', after: ['lint'] }],
+        },
+      },
+      furnaceConfigured: false,
+    });
+    const lint = plan.find((step) => step.name === 'lint');
+    expect(lint?.args.slice(-2)).toEqual([
+      '--report',
+      nativePath('/project/.fireforge/check/lint.json'),
+    ]);
+    const policy = plan.find((step) => step.name === 'policy');
+    expect(policy?.after).toEqual(['lint']);
+    expect(policy?.env).toEqual({
+      FIREFORGE_CHECK_LINT_REPORT: nativePath('/project/.fireforge/check/lint.json'),
+    });
+  });
+
+  it('marks check.skip skips as decisions and missing blocks as gaps', () => {
+    const plan = buildCheckPlan({
+      projectRoot: '/project',
+      config: { ...DEFAULT_CONFIG, check: { skip: ['token-coverage'] } },
+      furnaceConfigured: false,
+    });
+    expect(plan.find((step) => step.name === 'token-coverage')?.skipKind).toBe('config');
+    expect(plan.find((step) => step.name === 'typecheck')?.skipKind).toBe('unavailable');
+  });
+
   it('plans the six built-in steps, skipping typecheck and furnace when unconfigured', () => {
     const plan = buildCheckPlan({
       projectRoot: '/project',
@@ -280,9 +325,33 @@ describe('runCheckSteps', () => {
 });
 
 describe('check verdict and table', () => {
-  it('passes when nothing failed and counts skips', () => {
+  it('passes when nothing failed and counts and names skips', () => {
     const verdict = judgeCheck([result({}), result({ name: 'typecheck', status: 'skipped' })]);
-    expect(formatCheckVerdictLine(verdict)).toBe('FIREFORGE-VERDICT: PASS steps=2 skipped=1');
+    expect(formatCheckVerdictLine(verdict)).toBe(
+      'FIREFORGE-VERDICT: PASS steps=2 skipped=1 skipped-steps=typecheck'
+    );
+  });
+
+  it('fails a step skipped for want of anything to run under failOnSkipped', () => {
+    const results = [
+      result({}),
+      result({ name: 'typecheck', status: 'skipped', skipKind: 'unavailable' }),
+      result({ name: 'token-coverage', status: 'skipped', skipKind: 'config' }),
+    ];
+    expect(judgeCheck(results).passed).toBe(true);
+    const verdict = judgeCheck(results, { failOnSkipped: true });
+    expect(verdict).toMatchObject({
+      passed: false,
+      reason: 'skipped-steps',
+      failed: ['typecheck'],
+    });
+    expect(formatCheckVerdictLine(verdict)).toBe(
+      'FIREFORGE-VERDICT: FAIL reason=skipped-steps failed=typecheck steps=3 skipped=2 skipped-steps=typecheck,token-coverage'
+    );
+    const red = judgeCheck([...results, result({ name: 'lint', status: 'fail', exitCode: 1 })], {
+      failOnSkipped: true,
+    });
+    expect(red.reason).toBe('step-failures');
   });
 
   it('names lock-timeout only when every failure exited 15', () => {

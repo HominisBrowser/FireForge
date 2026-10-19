@@ -130,7 +130,9 @@ export async function runTypecheck(
     const key = extraShim ?? '';
     const cached = shimCache.get(key);
     if (cached !== undefined) return cached;
-    const composed = await composeShimSource(projectRoot, extraShim);
+    const composed = await composeShimSource(projectRoot, extraShim, {
+      litTypes: cfg.litTypes,
+    });
     if (composed.extraShimAppended) {
       verbose(`typecheck: extra shim ${extraShim ?? ''} appended to Firefox globals shim`);
     }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Scan-less re-export adjacency advisory.
+ * Re-export adjacency advisory.
  *
  * A plain `re-export` keeps the manifest's filesAffected unchanged, so a
  * brand-new file an author just created beside a patch's owned files is
@@ -8,7 +8,8 @@
  * files, filters out tool-managed paths (branding, furnace) so the notice
  * names only genuinely unmanaged candidates, and, under
  * `--refuse-adjacent-unmanaged`, lets the caller turn the notice into a
- * non-zero refusal.
+ * non-zero refusal. Beside `--scan` it judges the files the scan did not
+ * adopt, so a targeted `--scan-file` adoption keeps the belt.
  *
  * Split out of re-export.ts to keep that file inside the max-lines budget.
  * Exports helpers consumed by re-export.ts, no registrar.
@@ -315,9 +316,15 @@ export async function reportAdjacentUnmanagedFiles(args: {
   manifest: PatchesManifest;
   currentFilesAffected: readonly string[];
   ctx: AdjacentUnmanagedContext;
+  /**
+   * Set beside `--scan`: the scan has already reconciled missing files and
+   * adopted what it was asked to, so only the neighbours it left are judged.
+   */
+  afterScan?: boolean;
 }): Promise<boolean> {
   const { patch, paths, manifest, currentFilesAffected, ctx } = args;
-  const missingFiles = await findMissingFiles(paths.engine, currentFilesAffected);
+  const missingFiles =
+    args.afterScan === true ? [] : await findMissingFiles(paths.engine, currentFilesAffected);
   if (missingFiles.length > 0) {
     warn(
       `${patch.filename}: some files in patches.json no longer exist on disk ` +

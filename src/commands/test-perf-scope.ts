@@ -95,3 +95,59 @@ export function perfGenerationTolerance(
     return true;
   };
 }
+
+/**
+ * Tolerance for `assertEngineGenerationUnchanged` on an ordinary run: true
+ * (with a warning, and `drift-tolerated=<n>` on the verdict) when HEAD did
+ * not move and every changed path is one the running browser cannot see.
+ *
+ * A peer deleting an unrelated chrome script used to make a whole run
+ * inconclusive. What a running browser can see mid-run is narrower than
+ * "anything under engine/": a file the objdir links to its source (`live`),
+ * one the harness stages at dispatch (`at-dispatch`), and the run's own
+ * test files and the staging inputs their manifests name. A compiled
+ * source, or a file the build copied into the package, is already fixed in
+ * the running binary or package; the next run's stale-build gate judges it.
+ *
+ * Perf runs keep {@link perfGenerationTolerance}: a sample is also void
+ * when a packaged path changes.
+ *
+ * @param engineDir - Absolute engine directory
+ * @param requested - Normalized request paths of the run
+ * @param onTolerated - Receives the tolerated path count
+ */
+export function runGenerationTolerance(
+  engineDir: string,
+  requested: readonly string[],
+  onTolerated: (count: number) => void
+): (before: string, after: string) => Promise<boolean> {
+  return async (before, after) => {
+    const delta = generationDeltaPaths(before, after);
+    if (delta.headMoved || delta.paths.length === 0) return false;
+    const index = await loadEngineInstallIndex(engineDir);
+    if (index === undefined) return false;
+    const inputs: string[] = [...requested];
+    for (const path of requested) inputs.push(...(await collectStagingInputs(engineDir, path)));
+    for (const path of delta.paths) {
+      const bare = path.endsWith('/') ? path.slice(0, -1) : path;
+      if (inputs.some((input) => isUnderPath(bare, input) || isUnderPath(input, bare))) {
+        return false;
+      }
+      // A path-less run requests every test, so any test file is its own.
+      if (requested.length === 0 && isTestPath(path)) return false;
+      if (path.endsWith('/')) {
+        if (installsFromDirectory(index, path)) return false;
+        continue;
+      }
+      const delivery = await classifyRuntimeDelivery(index, engineDir, path);
+      if (delivery === 'live' || delivery === 'at-dispatch') return false;
+    }
+    warn(
+      `engine/ changed while this run was in flight, but only in files the running browser ` +
+        `cannot see (${capList(delta.paths)}); the verdict stands. The next run's stale-build ` +
+        'gate judges whether they need a rebuild.'
+    );
+    onTolerated(delta.paths.length);
+    return true;
+  };
+}

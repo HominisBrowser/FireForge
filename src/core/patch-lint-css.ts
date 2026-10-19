@@ -61,17 +61,19 @@ async function loadCssTokenContext(repoDir: string): Promise<CssTokenContext | u
  * matching how a CSS parser treats it.
  */
 export function maskCssComments(source: string): string {
-  const masked = source.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
-  const openerIndex = masked.indexOf('/*');
-  if (openerIndex === -1) return masked;
-  return (
-    masked.slice(0, openerIndex) +
-    masked
-      .slice(openerIndex)
-      .split('\n')
-      .map((line) => ' '.repeat(line.length))
-      .join('\n')
-  );
+  // Linear indexOf scan rather than a lazy `/\*[\s\S]*?\*\/` regex: with
+  // many openers and no closer, the regex retries from every `/*` to EOF
+  // (quadratic in file size).
+  let masked = '';
+  let cursor = 0;
+  for (;;) {
+    const open = source.indexOf('/*', cursor);
+    if (open === -1) return masked + source.slice(cursor);
+    const close = source.indexOf('*/', open + 2);
+    const end = close === -1 ? source.length : close + 2;
+    masked += source.slice(cursor, open) + source.slice(open, end).replace(/[^\n]/g, ' ');
+    cursor = end;
+  }
 }
 
 const RAW_COLOR_IGNORE_MARKER = 'fireforge-ignore: raw-color-value';

@@ -96,13 +96,16 @@ vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   recordFurnaceRollbackFailure: vi.fn(),
 }));
 
+vi.mock('../../core/furnace-registration-jar-inplace.js', () => ({
+  renameJarMnEntriesInPlace: vi.fn(() => Promise.resolve([])),
+}));
+
 vi.mock('../../core/furnace-registration.js', () => ({
   addCustomElementRegistration: vi.fn(),
   addJarMnEntries: vi.fn(),
   addLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(1)),
   hasLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(true)),
   removeCustomElementRegistration: vi.fn(),
-  removeJarMnEntries: vi.fn(),
   // True: the old locale line existed and was removed, so it is re-pointed.
   removeLocaleFtlJarMnEntry: vi.fn(() => Promise.resolve(true)),
   // False by default: no in-place entry to rewrite, so the rename falls
@@ -142,10 +145,10 @@ import {
   addJarMnEntries,
   addLocaleFtlJarMnEntry,
   removeCustomElementRegistration,
-  removeJarMnEntries,
   removeLocaleFtlJarMnEntry,
   renameCustomElementRegistration,
 } from '../../core/furnace-registration.js';
+import { renameJarMnEntriesInPlace } from '../../core/furnace-registration-jar-inplace.js';
 import { restoreRollbackJournalOrThrow, snapshotFile } from '../../core/furnace-rollback.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
@@ -174,7 +177,7 @@ const mockUpdateFurnaceState = vi.mocked(updateFurnaceState);
 const mockAddCustomElementRegistration = vi.mocked(addCustomElementRegistration);
 const mockAddJarMnEntries = vi.mocked(addJarMnEntries);
 const mockRemoveCustomElementRegistration = vi.mocked(removeCustomElementRegistration);
-const mockRemoveJarMnEntries = vi.mocked(removeJarMnEntries);
+const mockRenameJarMnEntries = vi.mocked(renameJarMnEntriesInPlace);
 const mockRestoreRollbackJournalOrThrow = vi.mocked(restoreRollbackJournalOrThrow);
 const mockSnapshotFile = vi.mocked(snapshotFile);
 
@@ -568,7 +571,7 @@ describe('furnaceRenameCommand override component rename', () => {
     expect(mockAddCustomElementRegistration).not.toHaveBeenCalled();
     expect(mockRemoveCustomElementRegistration).not.toHaveBeenCalled();
     expect(mockAddJarMnEntries).not.toHaveBeenCalled();
-    expect(mockRemoveJarMnEntries).not.toHaveBeenCalled();
+    expect(mockRenameJarMnEntries).not.toHaveBeenCalled();
   });
 });
 
@@ -595,9 +598,14 @@ describe('furnaceRenameCommand engine registrations', () => {
       'chrome://global/content/elements/moz-nav.mjs',
       { markerComment: 'MYBROWSER' }
     );
-    expect(mockRemoveJarMnEntries).toHaveBeenCalledWith(
+    // The old lines are rewritten in place, then any file still missing
+    // a line is added.
+    expect(mockRenameJarMnEntries).toHaveBeenCalledWith(
       nativePath('/project/engine'),
-      'moz-sidebar'
+      'moz-sidebar',
+      'moz-nav',
+      expect.arrayContaining(['moz-nav.mjs', 'moz-nav.css']),
+      expect.any(Function)
     );
     expect(mockAddJarMnEntries).toHaveBeenCalledWith(
       nativePath('/project/engine'),

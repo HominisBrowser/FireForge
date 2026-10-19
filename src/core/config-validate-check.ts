@@ -94,7 +94,7 @@ function parseExtraStep(raw: unknown, field: string): CheckExtraStep {
       `Config field "${field}" must be a plain object with "name" and "command"`
     );
   }
-  assertKnownKeys(raw, field, ['name', 'command', 'cwd', 'timeout']);
+  assertKnownKeys(raw, field, ['name', 'command', 'cwd', 'timeout', 'after']);
   const name = raw['name'];
   if (typeof name !== 'string' || !STEP_NAME_PATTERN.test(name)) {
     throw new ConfigError(
@@ -117,13 +117,65 @@ function parseExtraStep(raw: unknown, field: string): CheckExtraStep {
     step.cwd = cwd;
   }
   if (raw['timeout'] !== undefined) {
-    const timeout = parseNonNegativeInteger(raw['timeout'], `${field}.timeout`);
-    if (timeout === 0) {
-      throw new ConfigError(`Config field "${field}.timeout" must be a positive number of seconds`);
-    }
-    step.timeout = timeout;
+    step.timeout = parsePositiveSeconds(raw['timeout'], `${field}.timeout`);
   }
+  if (raw['after'] !== undefined) step.after = parseStringList(raw['after'], `${field}.after`);
   return step;
+}
+
+function parsePositiveSeconds(raw: unknown, field: string): number {
+  const seconds = parseNonNegativeInteger(raw, field);
+  if (seconds === 0) {
+    throw new ConfigError(`Config field "${field}" must be a positive number of seconds`);
+  }
+  return seconds;
+}
+
+/**
+ * Checks every `after` names a known step and the extra steps' ordering
+ * has no cycle: a cycle would leave its steps waiting forever.
+ */
+function assertExtraStepOrdering(steps: readonly CheckExtraStep[]): void {
+  const extras = new Map(steps.map((step) => [step.name, step]));
+  for (const [index, step] of steps.entries()) {
+    for (const dependency of step.after ?? []) {
+      if (dependency === step.name) {
+        throw new ConfigError(
+          `Config field "check.extraSteps[${String(index)}].after" names the step itself`
+        );
+      }
+      if (!isBuiltinStep(dependency) && !extras.has(dependency)) {
+        throw new ConfigError(
+          `Config field "check.extraSteps[${String(index)}].after" names unknown step "${dependency}"`
+        );
+      }
+    }
+  }
+  const state = new Map<string, 'visiting' | 'done'>();
+  const visit = (name: string, path: string[]): void => {
+    if (state.get(name) === 'done') return;
+    if (state.get(name) === 'visiting') {
+      throw new ConfigError(
+        `Config field "check.extraSteps" orders its steps in a cycle: ${[...path, name].join(' -> ')}`
+      );
+    }
+    state.set(name, 'visiting');
+    for (const dependency of extras.get(name)?.after ?? []) {
+      if (extras.has(dependency)) visit(dependency, [...path, name]);
+    }
+    state.set(name, 'done');
+  };
+  for (const step of steps) visit(step.name, []);
+}
+
+function parseTimeouts(raw: unknown): NonNullable<CheckConfig['timeouts']> {
+  if (!isObject(raw)) throw new ConfigError('Config field "check.timeouts" must be a plain object');
+  assertKnownKeys(raw, 'check.timeouts', [...CHECK_BUILTIN_STEPS]);
+  const out: NonNullable<CheckConfig['timeouts']> = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (isBuiltinStep(name)) out[name] = parsePositiveSeconds(value, `check.timeouts.${name}`);
+  }
+  return out;
 }
 
 function parseExtraSteps(raw: unknown): CheckExtraStep[] {
@@ -139,6 +191,7 @@ function parseExtraSteps(raw: unknown): CheckExtraStep[] {
     }
     seen.add(step.name);
   }
+  assertExtraStepOrdering(steps);
   return steps;
 }
 
@@ -150,11 +203,36 @@ function parseExtraSteps(raw: unknown): CheckExtraStep[] {
  */
 export function parseCheckConfig(raw: unknown): CheckConfig {
   if (!isObject(raw)) throw new ConfigError('Config field "check" must be a plain object');
-  assertKnownKeys(raw, 'check', ['skip', 'status', 'maxWarnings', 'extraSteps']);
+  assertKnownKeys(raw, 'check', [
+    'skip',
+    'status',
+    'maxWarnings',
+    'extraSteps',
+    'timeout',
+    'timeouts',
+    'failOnSkipped',
+    'lintReport',
+  ]);
   const out: CheckConfig = {};
   if (raw['skip'] !== undefined) out.skip = parseSkip(raw['skip']);
   if (raw['status'] !== undefined) out.status = parseStatusPolicy(raw['status']);
   if (raw['maxWarnings'] !== undefined) out.maxWarnings = parseMaxWarnings(raw['maxWarnings']);
   if (raw['extraSteps'] !== undefined) out.extraSteps = parseExtraSteps(raw['extraSteps']);
+  if (raw['timeout'] !== undefined)
+    out.timeout = parsePositiveSeconds(raw['timeout'], 'check.timeout');
+  if (raw['timeouts'] !== undefined) out.timeouts = parseTimeouts(raw['timeouts']);
+  if (raw['failOnSkipped'] !== undefined) {
+    if (typeof raw['failOnSkipped'] !== 'boolean') {
+      throw new ConfigError('Config field "check.failOnSkipped" must be a boolean');
+    }
+    out.failOnSkipped = raw['failOnSkipped'];
+  }
+  if (raw['lintReport'] !== undefined) {
+    const path = raw['lintReport'];
+    if (typeof path !== 'string' || path.trim() === '' || !isContainedRelativePath(path)) {
+      throw new ConfigError('Config field "check.lintReport" must be a project-relative path');
+    }
+    out.lintReport = path;
+  }
   return out;
 }

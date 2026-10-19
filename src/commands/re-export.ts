@@ -49,7 +49,10 @@ import {
 import { validateExpectedRemovals } from './re-export-removed.js';
 import { normalizeEngineRelativeInput, normalizeScanFiles } from './re-export-scan.js';
 import { assignScanFileOwners, scanOptionsForPatch } from './re-export-scan-owner.js';
-import { reExportSinglePatchWithIndexLockRetry } from './re-export-single.js';
+import {
+  type ReExportSinglePatchArgs,
+  reExportSinglePatchWithIndexLockRetry,
+} from './re-export-single.js';
 import { formatReExportRunSummary } from './re-export-summary.js';
 
 async function resolveSelectedPatches(
@@ -105,6 +108,38 @@ async function resolveSelectedPatches(
 
   const selectedFilenames = selected;
   return manifest.patches.filter((p) => selectedFilenames.includes(p.filename));
+}
+
+/** Refreshes each selected patch in turn, collecting which wrote and which failed. */
+async function reExportEach(args: {
+  selectedPatches: readonly PatchMetadata[];
+  options: ReExportOptions;
+  scanAssignments: ReadonlyMap<string, string[]> | undefined;
+  progress: SpinnerHandle;
+  startedAt: number;
+  shared: Omit<ReExportSinglePatchArgs, 'patch' | 'options'>;
+}): Promise<{ written: string[]; failed: string[] }> {
+  const { selectedPatches, options, scanAssignments, progress, startedAt, shared } = args;
+  const written: string[] = [];
+  const failed: string[] = [];
+  for (const [index, patch] of selectedPatches.entries()) {
+    const patchOptions = scanOptionsForPatch(options, patch.filename, scanAssignments);
+    progress.message(
+      `Re-exporting ${index + 1}/${selectedPatches.length}: ${patch.filename} (${patch.filesAffected.length} file(s), ${elapsedSince(startedAt)} elapsed)...`
+    );
+    try {
+      if (
+        await reExportSinglePatchWithIndexLockRetry({ ...shared, patch, options: patchOptions })
+      ) {
+        written.push(patch.filename);
+      }
+    } catch (error: unknown) {
+      failed.push(patch.filename);
+      warn(`Failed to re-export ${patch.filename}`);
+      warn(toError(error).message);
+    }
+  }
+  return { written, failed };
 }
 
 /**
@@ -170,7 +205,12 @@ export async function reExportCommand(
     return;
   }
 
-  const expectedRemovals = await validateExpectedRemovals(paths, selectedPatches, options);
+  const expectedRemovals = await validateExpectedRemovals(
+    paths,
+    selectedPatches,
+    options,
+    manifest.patches
+  );
   if (expectedRemovals.length > 0) options = { ...options, expectRemoved: expectedRemovals };
 
   if (scanFilesByPatch !== undefined) {
@@ -191,8 +231,12 @@ export async function reExportCommand(
   if (options.files !== undefined) {
     const filesConfig = await loadConfig(projectRoot);
     await withDryRunReExportLock(paths.fireforgeDir, isDryRun, () =>
-      withDryRunPurityGuard(paths.engine, paths.patches, isDryRun, () =>
-        reExportFilesInPlace(paths, selectedPatches, options, filesConfig)
+      withDryRunPurityGuard(
+        paths.engine,
+        paths.patches,
+        isDryRun,
+        () => reExportFilesInPlace(paths, selectedPatches, options, filesConfig),
+        { patches: selectedPatches }
       )
     );
     return;
@@ -223,42 +267,27 @@ export async function reExportCommand(
     new Set(selectedPatches.map((patch) => patch.filename))
   );
 
-  let reExported = 0;
-  const reExportedFilenames: string[] = [];
-  const failedFilenames: string[] = [];
   const progress = spinner('Preparing re-export...');
-
-  await withDryRunReExportLock(paths.fireforgeDir, isDryRun, async () =>
-    withDryRunPurityGuard(paths.engine, paths.patches, isDryRun, async () => {
-      for (const [index, patch] of selectedPatches.entries()) {
-        const patchOptions = scanOptionsForPatch(options, patch.filename, scanAssignments);
-        progress.message(
-          `Re-exporting ${index + 1}/${selectedPatches.length}: ${patch.filename} (${patch.filesAffected.length} file(s), ${elapsedSince(startedAt)} elapsed)...`
-        );
-        try {
-          const exported = await reExportSinglePatchWithIndexLockRetry({
-            patch,
-            paths,
-            manifest,
-            options: patchOptions,
-            isDryRun,
-            config,
-            adjacentCtx,
-            driftCtx,
-            lintCtx,
-          });
-          if (exported) {
-            reExported++;
-            reExportedFilenames.push(patch.filename);
-          }
-        } catch (error: unknown) {
-          failedFilenames.push(patch.filename);
-          warn(`Failed to re-export ${patch.filename}`);
-          warn(toError(error).message);
-        }
-      }
-    })
+  const outcome = await withDryRunReExportLock(paths.fireforgeDir, isDryRun, () =>
+    withDryRunPurityGuard(
+      paths.engine,
+      paths.patches,
+      isDryRun,
+      () =>
+        reExportEach({
+          selectedPatches,
+          options,
+          scanAssignments,
+          progress,
+          startedAt,
+          shared: { paths, manifest, isDryRun, config, adjacentCtx, driftCtx, lintCtx },
+        }),
+      { patches: selectedPatches }
+    )
   );
+  const reExportedFilenames = outcome.written;
+  const failedFilenames = outcome.failed;
+  const reExported = reExportedFilenames.length;
 
   await finishReExportLint(lintCtx);
   warnUnseenExpectedDrift(driftCtx);

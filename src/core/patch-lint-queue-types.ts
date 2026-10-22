@@ -4,8 +4,8 @@
  *
  * A leaf module by design: it imports nothing, so the individual rule
  * modules can describe the slice of `PatchQueueContext` they read without
- * importing `patch-lint-cross.ts` (which imports them back). Previously each
- * rule re-declared its own private `{ entries }` interface. Sharing them here
+ * importing `patch-lint-cross.ts` (which imports them back). Sharing them
+ * here instead of re-declaring a private `{ entries }` interface per rule
  * keeps the dependency edge one-way and `dpdm` clean while stating the shape
  * once.
  */

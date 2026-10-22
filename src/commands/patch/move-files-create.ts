@@ -20,13 +20,14 @@ import { loadPatchesManifest, resolvePatchIdentifier } from '../../core/patch-ma
 import { formatPatchOrder } from '../../core/patch-parse.js';
 import { enforcePatchPolicy } from '../../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
-import type { PatchMoveFilesOptions } from '../../types/commands/index.js';
+import type { PatchMetadata, PatchMoveFilesOptions } from '../../types/commands/index.js';
 import { info, intro, outro, success } from '../../utils/logger.js';
 import { normalizePatchDisplayName } from '../../utils/validation.js';
 import { withDeclarationsReport } from '../declarations-report.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { resolvePlacementPlan } from '../export-flow.js';
-import { runPatchLint } from '../export-shared.js';
+import { resolveAdoptedFiles } from './move-files-adopt.js';
+import { runMoveSideLint } from './move-size-tier.js';
 import { commitPatchSplit, reportSplitStagedChanges } from './split.js';
 import {
   assertSourceOwnsFiles,
@@ -35,10 +36,52 @@ import {
   buildSplitSummary,
   projectSplitManifest,
   runProjectedSplitLint,
+  splitDeclarationReason,
   splitDeclarationRenamer,
   type SplitPlan,
 } from './split-plan.js';
 import { emptyStagedMaintenance, findOwnerRewriteHolders } from './split-staged.js';
+
+/** The file sets of a `--create` move: moved, kept, adopted, and the new patch's. */
+interface CreateMoveFiles {
+  movedFiles: string[];
+  remainingFiles: string[];
+  adoptedFiles: string[];
+  newPatchFiles: string[];
+}
+
+/**
+ * Validates `--file` and `--scan-file` for a `--create` move: the source
+ * owns every moved file and keeps at least one, and every adopted file is
+ * new and unowned.
+ */
+async function resolveCreateMoveFiles(
+  source: PatchMetadata,
+  patches: readonly PatchMetadata[],
+  enginePath: string,
+  options: PatchMoveFilesOptions
+): Promise<CreateMoveFiles> {
+  const movedFiles = [...new Set((options.file ?? []).map((f) => f.trim()).filter(Boolean))].sort();
+  if (movedFiles.length === 0) {
+    throw new InvalidArgumentError('Specify at least one --file path to move.', '--file');
+  }
+  assertSourceOwnsFiles(source, movedFiles);
+  const movedSet = new Set(movedFiles);
+  const remainingFiles = source.filesAffected.filter((f) => !movedSet.has(f));
+  if (remainingFiles.length === 0) {
+    throw new InvalidArgumentError(
+      `Moving every file out of ${source.filename} would leave it empty. ` +
+        'Use "fireforge patch rename" / "fireforge patch reorder" to repurpose or move the whole patch instead, ' +
+        'or fold it into an existing patch with "patch move-files <from> <to> --retire-empty".',
+      '--file'
+    );
+  }
+  // Adopted files join the new patch with the moved ones: one body, linted
+  // as the transaction leaves it.
+  const adoptedFiles = await resolveAdoptedFiles(options.scanFile, patches, enginePath, movedFiles);
+  const newPatchFiles = [...new Set([...movedFiles, ...adoptedFiles])].sort();
+  return { movedFiles, remainingFiles, adoptedFiles, newPatchFiles };
+}
 
 /**
  * Runs `patch move-files --create --order <n>`: plans the create+move as a
@@ -81,22 +124,14 @@ export async function patchMoveFilesCreateCommand(
     );
   }
 
-  const movedFiles = [...new Set((options.file ?? []).map((f) => f.trim()).filter(Boolean))].sort();
-  if (movedFiles.length === 0) {
-    throw new InvalidArgumentError('Specify at least one --file path to move.', '--file');
-  }
-  assertSourceOwnsFiles(source, movedFiles);
-  const movedSet = new Set(movedFiles);
-  const remainingFiles = source.filesAffected.filter((f) => !movedSet.has(f));
-  if (remainingFiles.length === 0) {
-    throw new InvalidArgumentError(
-      `Moving every file out of ${source.filename} would leave it empty. ` +
-        'Use "fireforge patch rename" / "fireforge patch reorder" to repurpose or move the whole patch instead.',
-      '--file'
-    );
-  }
+  const { movedFiles, remainingFiles, adoptedFiles, newPatchFiles } = await resolveCreateMoveFiles(
+    source,
+    manifest.patches,
+    paths.engine,
+    options
+  );
 
-  const movedDiff = await buildSplitDiff(paths.engine, movedFiles, 'moved', source.filename);
+  const movedDiff = await buildSplitDiff(paths.engine, newPatchFiles, 'moved', source.filename);
   const remainingDiff = await buildSplitDiff(
     paths.engine,
     remainingFiles,
@@ -126,7 +161,7 @@ export async function patchMoveFilesCreateCommand(
 
   const plan: SplitPlan = {
     source,
-    movedFiles,
+    movedFiles: newPatchFiles,
     remainingFiles,
     movedDiff,
     remainingDiff,
@@ -135,11 +170,17 @@ export async function patchMoveFilesCreateCommand(
     category,
     name: displayName,
     description: options.description ?? '',
-    ownerRewrites: findOwnerRewriteHolders(manifest.patches, source.filename, movedSet),
+    ownerRewrites: findOwnerRewriteHolders(
+      manifest.patches,
+      source.filename,
+      new Set(newPatchFiles)
+    ),
     // Populated by runProjectedSplitLint below (forward edges into the new
     // patch, and the declarations the move re-homes or makes unused).
     stagedDependencyAdditions: new Map(),
     stagedMaintenance: emptyStagedMaintenance(),
+    operation: 'patch move-files',
+    ...(adoptedFiles.length > 0 ? { adoptedFiles } : {}),
   };
 
   // Policy first: the projected manifest (orders, ranges, the gap rule)
@@ -169,9 +210,11 @@ export async function patchMoveFilesCreateCommand(
   // projection lint is blind.
   const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
   const ignoreChecks = buildLintIgnoreChecks(source.lintIgnore);
-  await runPatchLint({
+  await runMoveSideLint({
     engineDir: paths.engine,
     filesAffected: remainingFiles,
+    filesBefore: source.filesAffected,
+    role: 'source',
     diffContent: remainingDiff,
     config,
     skipLint: options.skipLint,
@@ -179,9 +222,10 @@ export async function patchMoveFilesCreateCommand(
     ignoreChecks,
     patchTier: source.tier,
   });
-  await runPatchLint({
+  await runMoveSideLint({
     engineDir: paths.engine,
-    filesAffected: movedFiles,
+    filesAffected: newPatchFiles,
+    role: 'new patch',
     diffContent: movedDiff,
     config,
     skipLint: options.skipLint,
@@ -198,6 +242,7 @@ export async function patchMoveFilesCreateCommand(
     regressions: projected.regressions,
     out: options.declarationsOut,
     rename: splitDeclarationRenamer(plan),
+    reason: splitDeclarationReason(plan),
   });
   const newMetadata = buildNewPatchMetadata(plan, config);
 
@@ -216,7 +261,7 @@ export async function patchMoveFilesCreateCommand(
 
   success(
     `Created ${placement.newFilename} (order ${formatPatchOrder(placement.insertionOrder)}) ` +
-      `and moved ${plan.movedFiles.length} file(s) out of ${source.filename}`
+      `and moved ${movedFiles.length} file(s) out of ${source.filename}`
   );
   reportSplitStagedChanges(plan);
   outro('Move complete');

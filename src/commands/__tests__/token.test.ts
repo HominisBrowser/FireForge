@@ -161,7 +161,7 @@ describe('tokenAddCommand', () => {
 
   it('treats a bare name already starting with the prefix text as fully qualified', async () => {
     // "token add mybrowser-shadow-low" with tokenPrefix
-    // "--mybrowser-" used to produce "--mybrowser-mybrowser-shadow-low".
+    // "--mybrowser-" must not produce "--mybrowser-mybrowser-shadow-low".
     await tokenAddCommand('/project', 'mybrowser-shadow-low', '0 1px 2px #000', {
       category: 'Shadows',
       mode: 'static',
@@ -374,8 +374,8 @@ describe('tokenAddCommand', () => {
   });
 
   it('names the VARIANT block when a variant add is skipped', async () => {
-    // The variant path used to report no location at all, so a re-run meant
-    // to change a value exited 0 having silently changed nothing. A variant
+    // Without a location, a re-run meant to change a value would exit 0
+    // having silently changed nothing. A variant
     // declaration has no category to name. The block is the location.
     mockedAddToken.mockResolvedValue({
       cssAdded: false,
@@ -417,8 +417,8 @@ describe('tokenAddCommand', () => {
   });
 
   it('adds a variant token with no --category at all', async () => {
-    // `--category` used to be mandatory even under `--variant`, where it
-    // describes nothing about where the declaration lands.
+    // `--category` is optional under `--variant`, where it describes
+    // nothing about where the declaration lands.
     mockedAddToken.mockResolvedValue({
       cssAdded: true,
       docsAdded: false,

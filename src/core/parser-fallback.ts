@@ -26,12 +26,12 @@ export function consumeParserFallbackEvents(): ParserFallbackEvent[] {
  * The `rethrowIf` predicate every AST-primary caller wants.
  *
  * Rethrows internal-invariant `GeneralError`s ("Unexpected empty …array"):
- * those are programming bugs, and retrying the legacy scanner cannot fix a
+ * those are programming bugs, and retrying the fallback scanner cannot fix a
  * broken invariant, it just buries the stack. Everything else still falls
  * back, which matters: the AST path raises a raw acorn SyntaxError
  * on chrome sources acorn cannot parse (preprocessor directives), and
  * BuildError when the file's shape is unexpected. Both are exactly what the
- * legacy scanner is here to handle.
+ * fallback scanner is here to handle.
  *
  * @param error - The error the primary parser threw
  * @returns True when the error must propagate instead of falling back
@@ -50,15 +50,15 @@ export interface ParserResult<T> {
 }
 
 /**
- * Wraps a primary (AST/tokenizer) parser with a legacy (regex/line-based)
+ * Wraps a primary (AST/tokenizer) parser with a regex/line-based
  * fallback. If the primary throws, a warning is logged and the fallback is
  * used instead.
  *
  * Returns a {@link ParserResult} so callers (and tests) can detect which
  * code path was taken and surface it in logs or assertions.
  *
- * @param primary - The modern parser implementation
- * @param fallback - The legacy fallback implementation
+ * @param primary - The primary parser implementation
+ * @param fallback - The regex/line-based fallback implementation
  * @param context - File/context name used in the warning message
  * @param rethrowIf - Optional predicate. If it returns true for the caught
  *   error the error is re-thrown instead of falling back (useful for

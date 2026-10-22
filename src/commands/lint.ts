@@ -483,7 +483,7 @@ async function reportLintOutcome(
   // with warnings" when only notices fired contradicts the preceding
   // `0 warning(s)` summary line and reads as a regression. Errors suppressed
   // by --only-introduced still warrant the "with warnings" outro: they print
-  // as ERROR rows but no longer fail the run, which is the same contract the
+  // as ERROR rows but do not fail the run, which is the same contract the
   // operator gets from a real warning.
   const suppressedErrors = options.onlyIntroduced && errors.length > 0;
   if (warnings.length > 0 || suppressedErrors) {
@@ -620,7 +620,7 @@ export function registerLint(
     )
     .option(
       '--patches <names...>',
-      'With --per-patch, lint only the named patches. Accepts repeated flags, comma lists, full filenames/stems, bare order numbers, manifest names, category-prefixed slugs, or bare slugs. Positional arguments after --per-patch are treated the same way.'
+      'With --per-patch, lint only the named patches. Accepts repeated flags, comma or whitespace lists, full filenames/stems, bare order numbers, manifest names, category-prefixed slugs, or bare slugs. Positional arguments after --per-patch are treated the same way.'
     )
     .option(
       '--max-warnings <n>',
@@ -700,8 +700,8 @@ export function registerLint(
     .description('Manage the per-patch lint result cache')
     // Commander routes `fireforge lint cache` here even when the operator
     // meant to lint an engine directory literally named `cache`. A bare
-    // `lint cache` (no subcommand) used to silently do nothing, so make
-    // the ambiguity explicit instead of doing the wrong operation quietly.
+    // `lint cache` (no subcommand) would otherwise silently do nothing, so
+    // make the ambiguity explicit instead of doing the wrong operation quietly.
     .action(
       withErrorHandling(() => {
         info(

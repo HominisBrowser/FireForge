@@ -398,7 +398,7 @@ describe('validateConfig', () => {
     );
   });
 
-  // The thresholds were module constants until 0.45.0, and under the
+  // The thresholds are configurable because under the
   // recommended `--max-warnings 0` posture the "soft" 750 band is a hard
   // failure, so a project that needs a different number needs a dial.
   it('accepts patchLint.fileSizeThresholds and merges partial tiers', () => {

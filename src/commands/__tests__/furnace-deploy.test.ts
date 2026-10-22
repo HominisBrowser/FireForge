@@ -386,7 +386,7 @@ describe('furnaceDeployCommand', () => {
         },
       },
     });
-    // Rollback itself now happens inside applyAllComponents (covered by
+    // Rollback itself happens inside applyAllComponents (covered by
     // furnace-apply tests). Deploy's contract is to refuse persisting and
     // skip validation when the result carries step errors.
     vi.mocked(applyAllComponents).mockResolvedValue({

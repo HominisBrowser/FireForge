@@ -4,9 +4,9 @@
  * tokens each declares, and what a single token resolves to in every theme
  * block that mentions it.
  *
- * `token add` requires `--category` and, until now, nothing reported the
- * categories a project actually has, so the only way to name one correctly
- * was to hand-parse a neighbouring `= Category =` banner out of the file.
+ * `token add` requires `--category`, so it needs a report of the categories
+ * a project actually has; without one, the only way to name one correctly
+ * is to hand-parse a neighbouring `= Category =` banner out of the file.
  * This module is that report. It reuses the banner and
  * category-region model from `token-category.ts` rather than parsing
  * tokens CSS a second way: two readers that disagree on what a banner is

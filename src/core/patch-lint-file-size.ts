@@ -7,13 +7,11 @@
  * `patch-lint.ts` from `config-validate.ts` for a constant would draw an
  * import edge (and a cycle) between the rule bodies and config parsing.
  *
- * On the vocabulary: the bands were `notice` / `warning` / `error` with the
- * middle one described as a "soft limit". That description is false under
- * the posture FireForge itself recommends for a release gate,
- * `--max-warnings 0`, where a warning is a hard failure, so a file at 751
- * lines failed a gate with a message calling 750 soft. The message below
- * says what the band is (a warning) and what a zero-warning gate does with
- * it, and the thresholds are now tunable, so a project whose file-size
+ * On the vocabulary: the bands are `notice` / `warning` / `error`, and the
+ * middle one is not a "soft limit". Under the posture FireForge itself
+ * recommends for a release gate, `--max-warnings 0`, a warning is a hard
+ * failure. The message below therefore says what the band is (a warning)
+ * and what a zero-warning gate does with it, and the thresholds are tunable, so a project whose file-size
  * policy differs has a dial instead of an argument. The notice band is the
  * design target: advisory, and its message says so rather than borrowing
  * the warning band's gate sentence.

@@ -232,9 +232,13 @@ describe('runTestPreLockPreflight', () => {
 describe('packaging and control refusals before the lock', () => {
   it('runs the stale gate quietly for a build-less run, and never for a build', async () => {
     await runTestPreLockPreflight(ROOT, [FILE], {});
-    expect(enforceStaleBuildGate).toHaveBeenCalledWith(ROOT, `${ROOT}/engine`, {}, [FILE], {
-      quiet: true,
-    });
+    expect(enforceStaleBuildGate).toHaveBeenCalledWith(
+      ROOT,
+      `${ROOT}/engine`,
+      {},
+      [FILE],
+      expect.objectContaining({ quiet: true })
+    );
     vi.mocked(enforceStaleBuildGate).mockClear();
     await runTestPreLockPreflight(ROOT, [FILE], { build: true });
     await runTestPreLockPreflight(ROOT, [FILE], { allowStaleBuild: true });

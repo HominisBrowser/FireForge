@@ -20,8 +20,8 @@ import { escapeRegex } from '../utils/regex.js';
  * Body of the first `/* … *\/` comment on `line`, or `undefined` when the
  * line carries no closed block comment.
  *
- * This uses index arithmetic rather than a regex: every regex spelling of
- * "banner comment" this module used to carry was super-linear on a line that
+ * This uses index arithmetic rather than a regex: the natural regex
+ * spellings of "banner comment" are super-linear on a line that
  * repeats the opening shape (CodeQL `js/polynomial-redos`), and `tokens.css`
  * is a file FireForge reads out of a consumer's engine tree, so a
  * pathological line needs no attacker to arrive.

@@ -13,7 +13,7 @@ export function buildPatchSourceMetadata(
   };
 }
 
-/** Backward-compatible source version reader for legacy manifests. */
+/** Source version reader that also accepts rows carrying only `sourceEsrVersion`. */
 export function getPatchSourceVersion(
   patch: Pick<PatchMetadata, 'sourceEsrVersion' | 'sourceVersion'>
 ): string {

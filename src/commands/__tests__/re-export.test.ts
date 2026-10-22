@@ -274,8 +274,8 @@ describe('reExportCommand - --scan flag', () => {
       ])
     );
 
-    // A wrong guess used to print every manifest filename inline, burying
-    // the error it was reporting under a ~300-entry list.
+    // A wrong guess must not print every manifest filename inline, burying
+    // the error it reports under a ~300-entry list.
     const rejection = reExportCommand('/fake/root', ['999'], {});
     await expect(rejection).rejects.toThrow('Patch "999" not found.');
     await expect(rejection).rejects.toThrow('fireforge patch list');

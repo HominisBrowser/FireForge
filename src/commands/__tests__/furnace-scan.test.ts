@@ -291,10 +291,10 @@ describe('furnaceScanCommand', () => {
   });
 
   it('runs the add-to-stock mutation through runFurnaceMutation with a journal', async () => {
-    // Regression: scan used to write furnace.json directly, bypassing the
-    // furnace-wide lock and SIGINT/SIGTERM rollback. The mutation must
-    // now go through runFurnaceMutation, which acquires the lock and gives
-    // the body a journal it registers for signal-driven cleanup.
+    // Scan must not write furnace.json directly, bypassing the furnace-wide
+    // lock and SIGINT/SIGTERM rollback. The mutation goes through
+    // runFurnaceMutation, which acquires the lock and gives the body a
+    // journal it registers for signal-driven cleanup.
     setTTY(true, true);
     vi.mocked(scanWidgetsDirectory).mockResolvedValue([
       {

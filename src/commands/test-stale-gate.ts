@@ -14,8 +14,10 @@ import {
   checkStaleBuildForTest,
   checkStaticComponentsStale,
   findChangedTestManifestsForPaths,
+  findCompiledSourcesNewerThanBinary,
   findUncoveredRequestPaths,
   formatStaleBuildWarning,
+  formatStaleCompiledRefusal,
   formatStaticComponentsRefusal,
   formatTestCoverageRefusal,
   FULL_SUITE_REQUEST,
@@ -52,16 +54,22 @@ export async function enforceStaleBuildGate(
   engineDir: string,
   options: TestOptions,
   normalizedPaths: readonly string[],
-  /** `quiet`: refuse only, without the exemption note (the pre-lock pass). */
-  gate: { quiet?: boolean } = {}
+  /**
+   * `quiet`: refuse only, without the exemption note (the pre-lock pass).
+   * `launchablePath`: the engine-relative binary the run launches, which
+   * anchors the stale-compiled check (skipped without one).
+   */
+  gate: { quiet?: boolean; launchablePath?: string | undefined } = {}
 ): Promise<void> {
   const stale = await checkStaleBuildForTest(projectRoot, engineDir);
+  enforceControlBuiltGate(stale.baseline);
   const dispatchesNoTests = options.doctor === true && normalizedPaths.length === 0;
   if (!dispatchesNoTests) {
     await enforceCoverageGate(engineDir, stale.baseline, normalizedPaths);
   }
 
   await enforceStaticComponentsGate(engineDir, stale.baseline, options);
+  await enforceStaleCompiledGate(engineDir, stale.baseline, options, gate.launchablePath);
 
   const exempt = stale.exempt ?? [];
   if (!stale.stale && exempt.length > 0 && gate.quiet !== true) {
@@ -96,6 +104,46 @@ export async function enforceStaleBuildGate(
   } else {
     throw new PreflightRefusalError(staleMessage, 'stale-build');
   }
+}
+
+/**
+ * Control-built refusal: the recorded build compiled a negative control
+ * into the binary, and no build since has recompiled the restored source
+ * (the run was killed, or its restore build failed). Every test against
+ * that binary tests the mutation. Not bypassable: `--allow-stale-build`
+ * accepts old content, not a deliberately broken binary.
+ */
+function enforceControlBuiltGate(baseline: BuildBaseline | undefined): void {
+  const stamp = baseline?.controlBuild;
+  if (stamp === undefined) return;
+  throw new PreflightRefusalError(
+    `The binary under test was built with the negative control ${stamp.diffFile} applied ` +
+      `(${stamp.targets.map((target) => `engine/${target}`).join(', ')}, applied ${stamp.appliedAt}), ` +
+      'and no build has recompiled the restored source since. Run "fireforge build" to ' +
+      'rebuild the binary without the control, then rerun.',
+    'control-built'
+  );
+}
+
+/**
+ * Stale-compiled refusal: compiled sources modified after the binary under
+ * test was linked. `--allow-stale-build` downgrades it to a warning, as it
+ * does the stale-build refusal.
+ */
+async function enforceStaleCompiledGate(
+  engineDir: string,
+  baseline: BuildBaseline | undefined,
+  options: TestOptions,
+  launchablePath: string | undefined
+): Promise<void> {
+  const result = await findCompiledSourcesNewerThanBinary(engineDir, baseline, launchablePath);
+  if (result === undefined || result.paths.length === 0) return;
+  const message = formatStaleCompiledRefusal(result);
+  if (options.allowStaleBuild === true) {
+    warn(message);
+    return;
+  }
+  throw new PreflightRefusalError(message, 'stale-compiled');
 }
 
 /**

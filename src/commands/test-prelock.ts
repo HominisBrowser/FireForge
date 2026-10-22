@@ -3,15 +3,14 @@
  * The `fireforge test` checks that run BEFORE the engine session lock.
  *
  * Everything here reads, never writes, so none of it needs the lock, and
- * each check used to cost a full place in the lock queue before it could
- * refuse:
+ * running it first keeps each check from costing a full place in the lock
+ * queue before it can refuse:
  *
- *  - a missing launchable binary (a peer's interrupted build) refused only
- *    after the wait, in every session, with nothing naming the cause;
- *  - the named-file checkJs pass refused an `Element | null` after an
- *    eighteen-minute queue;
- *  - `--wait-browser` and `--wait-port` spent their budget holding the
- *    lock, so every peer queued behind a run that was doing nothing.
+ *  - a missing launchable binary (a peer's interrupted build) refuses
+ *    before the wait, naming the cause;
+ *  - the named-file checkJs pass refuses a type error without a queue;
+ *  - `--wait-browser` and `--wait-port` spend their budget without holding
+ *    the lock, so no peer queues behind a run that is doing nothing.
  *
  * The in-lock ladder in `test.ts` still runs in full afterwards. That is
  * the "re-check once under the lock": the waits this pass spent are
@@ -153,7 +152,10 @@ export async function runTestPreLockPreflight(
     await checkRequestedTestTypes(paths, config, normalizedPaths);
   } else {
     await refuseCompiledControlBeforeLock(projectRoot, paths.engine, options);
-    await refuseStalePackagingBeforeLock(projectRoot, paths.engine, options, normalizedPaths);
+    await refuseStalePackagingBeforeLock(projectRoot, paths.engine, options, {
+      normalizedPaths,
+      launchablePath,
+    });
   }
 
   return waitForResourcesBeforeLock(paths.engine, config, options, {
@@ -236,19 +238,20 @@ async function refuseCompiledControlBeforeLock(
  * under `--allow-stale-build`/`--allow-stale-components`, whose warnings
  * belong to the in-lock pass alone. A `--negative-control` refusal says to
  * add `--build`: without it the control has nothing current to run on, and
- * the invocation used to end `control=inconclusive` after a full queue.
+ * the invocation would end `control=inconclusive` after a full queue.
  */
 async function refuseStalePackagingBeforeLock(
   projectRoot: string,
   engineDir: string,
   options: TestOptions,
-  normalizedPaths: readonly string[]
+  request: { normalizedPaths: readonly string[]; launchablePath: string | undefined }
 ): Promise<void> {
   if (options.allowStaleBuild === true || options.allowStaleComponents === true) return;
   if ((await readBuildRunState(projectRoot)).kind === 'running') return;
   try {
-    await enforceStaleBuildGate(projectRoot, engineDir, options, normalizedPaths, {
+    await enforceStaleBuildGate(projectRoot, engineDir, options, request.normalizedPaths, {
       quiet: true,
+      launchablePath: request.launchablePath,
     });
   } catch (error: unknown) {
     if (options.negativeControl === undefined || !(error instanceof PreflightRefusalError)) {

@@ -20,13 +20,20 @@ vi.mock('../../core/run-log.js', async () =>
 vi.mock('../../core/xpcshell-appdir.js', async () =>
   (await import('./test-command-mocks.js')).xpcshellAppdirMock()
 );
+vi.mock('../test-control-restore.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../test-control-restore.js')>()),
+  runControlRestoreBuild: vi.fn(() => Promise.resolve('done')),
+}));
 
+import { getBuildBaselinePath } from '../../core/build-baseline.js';
 import { findNearestXpcshellManifest } from '../../core/xpcshell-appdir.js';
 import { InvalidArgumentError, PreflightRefusalError } from '../../errors/base.js';
 import { TestFailureError } from '../../errors/build.js';
 import { createTempProject, removeTempProject, writeFiles } from '../../test-utils/index.js';
 import type { TestOptions } from '../../types/commands/index.js';
+import { ensureDir, writeJson } from '../../utils/fs.js';
 import { info, success } from '../../utils/logger.js';
+import { runControlRestoreBuild } from '../test-control-restore.js';
 import { orchestrateTestRuns, type TestRunBody } from '../test-orchestrate.js';
 import {
   emitFailVerdict,
@@ -350,6 +357,36 @@ describe('--negative-control', () => {
       expect(await cppFile()).toBe(SOURCE);
       expect(lines('FIREFORGE-VERDICT')[0]).toContain('control=caught');
       expect(lines('FIREFORGE-VERDICT')[0]).toContain('control-build=compiled');
+      // The body recorded no control-built baseline, so nothing to rebuild.
+      expect(runControlRestoreBuild).not.toHaveBeenCalled();
+    });
+
+    it('rebuilds once after the restore when its build recorded the control stamp', async () => {
+      const body = vi.fn<TestRunBody>(async (_paths, _options, hooks) => {
+        await hooks.beforeBuild?.();
+        if (hooks.controlBuild !== undefined) {
+          expect(hooks.controlBuild).toMatchObject({ diffFile: 'cpp.diff', targets: [CPP] });
+          // What the pre-test build's baseline write records.
+          await ensureDir(join(root, '.fireforge'));
+          await writeJson(getBuildBaselinePath(root), {
+            engineHeadSha: '',
+            builtAt: '2026-10-22T00:00:00.000Z',
+            binaryName: 'mybrowser',
+            controlBuild: hooks.controlBuild,
+          });
+        }
+        await hooks.beforeDispatch?.();
+        await red();
+      });
+      await run(['a.js'], { negativeControl: 'cpp.diff', build: true, repeat: 2 }, body);
+      expect(await cppFile()).toBe(SOURCE);
+      expect(runControlRestoreBuild).toHaveBeenCalledTimes(1);
+      expect(runControlRestoreBuild).toHaveBeenCalledWith(
+        root,
+        expect.objectContaining({ diffFile: 'cpp.diff' }),
+        undefined
+      );
+      expect(lines('FIREFORGE-VERDICT')[0]).toContain('control-restore-build=done');
     });
   });
 });

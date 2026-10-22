@@ -65,7 +65,10 @@ function matchesTarget(view: StagedEntryView, target: StagedEntryView): boolean 
 
 /**
  * Applies one add/remove/clear to a declaration list: `add` appends unless
- * an entry with the same file, matcher, creates and owner exists.
+ * an entry with the same file, matcher, creates and owner exists. A
+ * matching entry whose `reason` differs from the addition's takes
+ * the new reason in place, keeping its position in the list; an addition
+ * without a reason leaves the existing one alone.
  */
 export function applyMode<T>(
   existing: readonly T[],
@@ -78,9 +81,45 @@ export function applyMode<T>(
   if (!target) return [...existing];
   if (mode === 'remove') return existing.filter((entry) => !matchesTarget(toView(entry), target));
 
-  const seen = new Set(existing.map((entry) => dependencyKey(toView(entry))));
-  if (seen.has(dependencyKey(target)) || addition === undefined) return [...existing];
-  return [...existing, addition];
+  if (addition === undefined) return [...existing];
+  const key = dependencyKey(target);
+  const index = existing.findIndex((entry) => dependencyKey(toView(entry)) === key);
+  if (index === -1) return [...existing, addition];
+  const current = existing[index] as T;
+  if (target.reason === undefined || toView(current).reason === target.reason) {
+    return [...existing];
+  }
+  const next = [...existing];
+  next[index] = addition;
+  return next;
+}
+
+/**
+ * Number of declarations in `after` whose key matches one in `before` but
+ * whose `reason` differs: the in-place reason updates of an `--add`.
+ */
+export function countReasonUpdates(
+  before: PatchStagedDependencies | undefined,
+  after: PatchStagedDependencies | undefined
+): number {
+  const updates = <T>(
+    left: readonly T[] | undefined,
+    right: readonly T[] | undefined,
+    toView: (entry: T) => StagedEntryView
+  ): number => {
+    const reasons = new Map(
+      (left ?? []).map((entry) => [dependencyKey(toView(entry)), toView(entry).reason])
+    );
+    return (right ?? []).filter((entry) => {
+      const view = toView(entry);
+      const key = dependencyKey(view);
+      return reasons.has(key) && reasons.get(key) !== view.reason;
+    }).length;
+  };
+  return (
+    updates(before?.forwardImports, after?.forwardImports, importView) +
+    updates(before?.registrations, after?.registrations, registrationView)
+  );
 }
 
 /** Number of declarations of both kinds. */

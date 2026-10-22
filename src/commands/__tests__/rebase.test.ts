@@ -264,14 +264,14 @@ function setupDefaults(): void {
   getHeadMock.mockResolvedValue('abc123');
   loadStateMock.mockResolvedValue({});
   readCommittedFirefoxPinMock.mockResolvedValue(undefined);
-  // The legacy per-test mocks keep their implementations across describes
+  // The per-function session mocks keep their implementations across describes
   // (clearAllMocks clears calls, not impls), so pin their no-session defaults
   // here rather than inheriting whatever the previous describe left behind.
   hasActiveRebaseSessionMock.mockResolvedValue(false);
   loadRebaseSessionMock.mockResolvedValue(null);
-  // Default: mirror whatever the two legacy mocks are set to. A loaded
+  // Default: mirror whatever those two mocks are set to. A loaded
   // session wins, else liveness comes from `hasActiveRebaseSessionMock`. The
-  // legacy mocks have no notion of "corrupt", so a present session is reported
+  // two mocks have no notion of "corrupt", so a present session is reported
   // valid. The real absent/valid/corrupt split is covered against actual
   // files in `rebase-session.test.ts` and `rebase.integration.test.ts`.
   readRebaseSessionMock.mockImplementation(async (root: string) => {
@@ -868,7 +868,7 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
       '/project/engine',
       3
     );
-    // pendingResolution cleanup now uses the transactional updateState path.
+    // pendingResolution cleanup uses the transactional updateState path.
     expect(updateStateMock).toHaveBeenCalled();
     expect(stampPatchVersionsMock).toHaveBeenCalledWith(
       '/project/patches',
@@ -1000,7 +1000,7 @@ describe('fireforge rebase — dirty-tree guard on fresh start', () => {
 
     await rebaseCommand('/project', { continue: true });
 
-    // --continue now uses transactional `updateState` for both writes: a
+    // --continue uses transactional `updateState` for both writes: a
     // clear of pendingResolution (after the previous resolve) and a set
     // when the next patch fails mid-continue. Invoke the captured updaters
     // with representative state to verify the effective payloads.

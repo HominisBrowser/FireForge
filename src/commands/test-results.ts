@@ -26,7 +26,22 @@ export interface TestFileResult extends RawTestResult {
   shard: string;
   /** Line of the run log where this file's dispatch began (1-based). */
   logLine: number;
+  /**
+   * The shard's dispatched files, on a harness pseudo-record only (see
+   * {@link HARNESS_PSEUDO_TEST}).
+   */
+  shardFiles?: string[];
+  /** The shard's one file, on a harness pseudo-record of a one-file shard. */
+  file?: string;
 }
+
+/**
+ * The `test` id mozlog gives a result the harness itself reports, such as
+ * the no-output TIMEOUT of a hung browser: a record that names no test
+ * file. It keeps that id, and gains the shard's files so a consumer can
+ * attribute it without matching `shard` labels back to paths.
+ */
+const HARNESS_PSEUDO_TEST = 'automation.py';
 
 /** The document `--results` writes. */
 export interface TestResultsDocument {
@@ -49,17 +64,31 @@ export function resetTestResults(): void {
  *
  * @param results - The dispatch's finished files
  * @param unfinished - Its started-but-unfinished files
- * @param context - Run, shard and run-log line of the dispatch
+ * @param context - Run, shard and run-log line of the dispatch, and the
+ *   shard's dispatched files for harness pseudo-records
  */
 export function recordTestResults(
   results: readonly RawTestResult[],
   unfinished: readonly string[],
-  context: { run: number; shard: string; logLine: number }
+  context: { run: number; shard: string; logLine: number; shardFiles?: readonly string[] }
 ): void {
-  for (const result of results) collected.files.push({ ...result, ...context });
+  const { shardFiles, ...dispatch } = context;
+  for (const result of results) {
+    collected.files.push({ ...result, ...dispatch, ...harnessRecordFiles(result, shardFiles) });
+  }
   for (const test of unfinished) {
     collected.unfinished.push({ test, run: context.run, shard: context.shard });
   }
+}
+
+/** The `shardFiles`/`file` keys a harness pseudo-record gains. */
+function harnessRecordFiles(
+  result: RawTestResult,
+  shardFiles: readonly string[] | undefined
+): Pick<TestFileResult, 'shardFiles' | 'file'> {
+  if (result.test !== HARNESS_PSEUDO_TEST || shardFiles === undefined) return {};
+  const only = shardFiles.length === 1 ? shardFiles[0] : undefined;
+  return { shardFiles: [...shardFiles], ...(only === undefined ? {} : { file: only }) };
 }
 
 /** The results collected so far (for tests and the shard summary). */

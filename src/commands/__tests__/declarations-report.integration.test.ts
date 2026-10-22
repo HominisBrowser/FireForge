@@ -99,7 +99,7 @@ describe('one --from-ready declaration report', () => {
     ).resolves.toBe(conflicts);
   });
 
-  it('maps a split projection back onto the current queue names', () => {
+  it('maps a split projection back onto the current queue names, keeping the planned owner', () => {
     const rename = splitDeclarationRenamer({
       placement: {
         newFilename: '006-ui-new.patch',
@@ -107,9 +107,12 @@ describe('one --from-ready declaration report', () => {
       },
     } as unknown as Parameters<typeof splitDeclarationRenamer>[0]);
     const base = { kind: 'registration' as const, file: 'f', line: 'l', creates: 'c' };
+    // The owner the refused run would create keeps its planned filename, so
+    // a `--from` of the report declares the owner the rerun creates.
     expect(rename({ ...base, patch: '007-ui-old.patch', owner: '006-ui-new.patch' })).toEqual({
       ...base,
       patch: '006-ui-old.patch',
+      owner: '006-ui-new.patch',
     });
     expect(rename({ ...base, patch: '001-ui-a.patch', owner: '007-ui-old.patch' })).toEqual({
       ...base,
@@ -164,11 +167,15 @@ describe('one --from-ready declaration report', () => {
       `fireforge patch staged-dependency 101-ui-tests.patch --add --from ${reportPath}`
     );
     const report = JSON.parse(await readFile(reportPath, 'utf8')) as {
-      queueIssues: { check: string; stagedDeclarations: { creates: string }[] }[];
+      queueIssues: { check: string; stagedDeclarations: { creates: string; reason?: string }[] }[];
     };
-    expect(
-      report.queueIssues.flatMap((issue) => issue.stagedDeclarations.map((d) => d.creates)).sort()
-    ).toEqual([ONE, TWO]);
+    const declarations = report.queueIssues.flatMap((issue) => issue.stagedDeclarations);
+    expect(declarations.map((d) => d.creates).sort()).toEqual([ONE, TWO]);
+    // Every entry names the move that needs it, so the --from call needs no --reason.
+    expect(new Set(declarations.map((d) => d.reason))).toEqual(
+      new Set(['101-ui-tests.patch → 301-ui-later.patch by patch move-files'])
+    );
+    expect(printed).not.toContain(`--from ${reportPath} --reason`);
 
     await patchStagedDependencyCommand(projectRoot, '101', {
       add: true,
@@ -182,5 +189,61 @@ describe('one --from-ready declaration report', () => {
     expect(after.patches.find((p) => p.order === 301)?.filesAffected).toEqual(
       expect.arrayContaining([ONE, TWO])
     );
+  });
+
+  it('a --create move projects test-manifest suite entries and reports the planned owner', async () => {
+    // FORGE: the dry run projected support-files only, and a suite's
+    // ["browser_*.js"] entry surfaced as an undeclared forward registration
+    // only after the move landed. The report also dropped the owner the
+    // refused run would have created.
+    await writeFireForgeConfig(projectRoot, { patchLint: { forwardRegistration: 'extended' } });
+    const suite = 'browser/t/test/browser_t.js';
+    const engineDir = join(projectRoot, 'engine');
+    const patchesDir = join(projectRoot, 'patches');
+    await initCommittedRepo(engineDir, { 'README.txt': 'engine\n' });
+    const manifestLines = ['[DEFAULT]', '', '["browser_t.js"]'];
+    await writeFiles(engineDir, {
+      [MANIFEST]: `${manifestLines.join('\n')}\n`,
+      [suite]: 'add_task(async () => {});\n',
+    });
+    await ensureDir(patchesDir);
+    await writeFile(
+      join(patchesDir, '101-ui-tests.patch'),
+      [
+        createFileDiff(MANIFEST, manifestLines),
+        createFileDiff(suite, ['add_task(async () => {});']),
+      ].join('')
+    );
+    const manifest: PatchesManifest = {
+      version: 1,
+      patches: [meta('101-ui-tests.patch', 101, [MANIFEST, suite])],
+    };
+    await writeFile(join(patchesDir, 'patches.json'), JSON.stringify(manifest, null, 2));
+
+    const reportPath = join(projectRoot, 'suites.json');
+    await expect(
+      patchMoveFilesCommand(projectRoot, '101', 'suites', {
+        file: [suite],
+        create: true,
+        order: 301,
+        yes: true,
+        skipLint: true,
+        declarationsOut: reportPath,
+      })
+    ).rejects.toThrow(/Refusing to run "patch-move-files-create"/);
+    const report = JSON.parse(await readFile(reportPath, 'utf8')) as {
+      queueIssues: { check: string; stagedDeclarations: Record<string, string>[] }[];
+    };
+    expect(report.queueIssues.flatMap((issue) => issue.stagedDeclarations)).toEqual([
+      {
+        patch: '101-ui-tests.patch',
+        kind: 'registration',
+        file: MANIFEST,
+        line: '["browser_t.js"]',
+        creates: suite,
+        owner: '301-ui-suites.patch',
+        reason: '101-ui-tests.patch → 301-ui-suites.patch by patch move-files',
+      },
+    ]);
   });
 });

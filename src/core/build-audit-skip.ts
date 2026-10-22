@@ -18,8 +18,8 @@ import { extractWithBrandingPath } from './mach-mozconfig.js';
 /**
  * Why a changed engine path was not audited.
  *
- * The first four name skips that already existed as unstructured
- * `verbose()` strings. The last four are the 0.46.0 classifiers.
+ * Each reason is structured so summaries and machine output can count
+ * skips by cause instead of reading verbose log strings.
  */
 export type AuditSkipReason =
   | 'not-packageable'

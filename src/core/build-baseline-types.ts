@@ -96,10 +96,11 @@ export interface BuildBaseline {
    * mozconfig and complete testInputFingerprints outside the rebuilt scope
    * remain anchored. Explicitly rebuilt paths may change. A failed anchor
    * replaces coverage with a dropped-path notice, or refuses when the caller
-   * required --extend-coverage. Legacy packageable-only anchors cannot retain
-   * coverage because they cannot prove test scripts and fixtures unchanged.
+   * required --extend-coverage. Anchors that fingerprint only packageable
+   * inputs cannot retain coverage because they cannot prove test scripts and
+   * fixtures unchanged.
    *
-   * Since 0.50.0 retention is decided per staged path: see
+   * Retention is decided per staged path: see
    * {@link BuildBaseline.testCoverageRecords} and
    * {@link BuildBaseline.fullCoverageAnchor}.
    */
@@ -154,6 +155,27 @@ export interface BuildBaseline {
    * session's scoped build replaced can tell whose build that was.
    */
   recorder?: BaselineRecorder;
+  /**
+   * Set when this build compiled a negative control into the binary
+   * (`test --negative-control --build` on compiled source). The source is
+   * restored byte-exact after the run, but the objdir binary keeps the
+   * mutation until a build recompiles it. FireForge runs that restore build
+   * itself, inside the same lock hold, and its baseline drops the stamp.
+   * A stamp still present (the run was killed, or the restore build
+   * failed) makes the next `fireforge test` refuse with `control-built`
+   * until `fireforge build` replaces the baseline.
+   */
+  controlBuild?: ControlBuildStamp;
+}
+
+/** See {@link BuildBaseline.controlBuild}. */
+export interface ControlBuildStamp {
+  /** The `--negative-control` diff file, as given. */
+  diffFile: string;
+  /** Engine-relative compiled targets the control edited. */
+  targets: string[];
+  /** ISO-8601 time the control was applied. */
+  appliedAt: string;
 }
 
 /** See {@link BuildBaseline.recorder}. */

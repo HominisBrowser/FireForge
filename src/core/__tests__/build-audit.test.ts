@@ -43,7 +43,7 @@ describe('isPackageablePath', () => {
     ['tools/script.py', false],
     ['docs/readme.md', false],
     // Build inputs are consumed by the build, never themselves packaged.
-    // Auditing them used to false-flag every edit and, worse, false-match
+    // Auditing them would false-flag every edit and, worse, false-match
     // unrelated upstream files of the same basename as "stale".
     ['browser/branding/mybrowser/locales/jar.mn', false],
     ['browser/branding/mybrowser/locales/moz.build', false],

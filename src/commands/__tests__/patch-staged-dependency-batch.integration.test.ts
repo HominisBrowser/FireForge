@@ -211,6 +211,51 @@ describe('patch staged-dependency --from', () => {
     expect(text).toContain('(1 already present or repeated)');
   });
 
+  it("--add updates a present declaration's reason in place, keeping its position", async () => {
+    const first = {
+      file: MANIFEST,
+      line: SUPPORT_LINE,
+      creates: FIXTURES[0],
+      owner: '301-ui-fixtures.patch',
+      reason: '103 creates',
+    };
+    const second = { ...first, creates: FIXTURES[1] };
+    const listPath = join(projectRoot, 'list.json');
+    await writeFile(listPath, JSON.stringify([first, second]));
+    await patchStagedDependencyCommand(projectRoot, '102', { add: true, from: listPath });
+
+    const infos: string[] = [];
+    vi.spyOn(logger, 'info').mockImplementation((message: string) => {
+      infos.push(message);
+    });
+    // --from: the first entry's reason changes, the second is unchanged.
+    await writeFile(listPath, JSON.stringify([{ ...first, reason: '301 creates' }, second]));
+    await patchStagedDependencyCommand(projectRoot, '102', { add: true, from: listPath });
+    expect(infos.join('\n')).toContain(
+      'added 0 of 2 staged declaration(s) from ' +
+        listPath +
+        ', updated the reason of 1 (1 already present or repeated)'
+    );
+
+    // A single --add with a new --reason updates the second in place too.
+    await patchStagedDependencyCommand(projectRoot, '102', {
+      add: true,
+      kind: 'registration',
+      file: MANIFEST,
+      line: SUPPORT_LINE,
+      creates: String(FIXTURES[1]),
+      owner: '301-ui-fixtures.patch',
+      reason: '301 creates',
+    });
+    expect(infos.join('\n')).toContain('updated 1 staged registration reason in place');
+
+    const registrations = (await readStaged('102-ui-alpha.patch'))?.registrations;
+    expect(registrations?.map((entry) => [entry.creates, entry.reason])).toEqual([
+      [FIXTURES[0], '301 creates'],
+      [FIXTURES[1], '301 creates'],
+    ]);
+  });
+
   it('--dry-run reports the batch without writing', async () => {
     const listPath = join(projectRoot, 'list.json');
     await writeFile(

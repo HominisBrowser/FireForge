@@ -10,6 +10,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { mutatePatchRowsInManifest } from '../../core/patch-manifest-io.js';
 import { mergeStagedManifest } from '../../core/patch-manifest-stage.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import {
@@ -87,6 +88,27 @@ describe('patch stage', () => {
     expect(names.split('\n').sort()).toEqual(['patches/3-ui-p3.patch', 'patches/patches.json']);
     // The working copy keeps every session's rows.
     expect(await readFile(manifestPath(), 'utf8')).toBe(manifestText(working));
+  });
+
+  it('leaves no key-order diff between the working copy and the index after a row write', async () => {
+    // HEAD with a non-canonical key order: sourceProduct after the arrays.
+    const legacy = (order: number): Record<string, unknown> => ({
+      ...meta(order),
+      sourceProduct: 'firefox-esr',
+    });
+    const headText = `${JSON.stringify({ version: 1, patches: [legacy(1), legacy(2)] }, null, 2)}\n`;
+    await writeFile(manifestPath(), headText);
+    await runGit(projectRoot, ['commit', '-qam', 'legacy order']);
+
+    // A re-export of 2 rewrites its row; 1 is untouched.
+    await mutatePatchRowsInManifest(join(projectRoot, 'patches'), ['2-ui-p2.patch'], () => ({
+      set: { description: 'edited' },
+    }));
+    await patchStageCommand(projectRoot, ['2']);
+
+    // Row 1 must be canonical in both the working copy and the index, or
+    // the next whole-file commit flips it.
+    expect(await runGit(projectRoot, ['diff', '--', 'patches/patches.json'])).toBe('');
   });
 
   it('stages the removal of a deleted patch named by its HEAD filename', async () => {

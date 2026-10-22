@@ -5,12 +5,11 @@
  * adopt-then-split for a real moved-code block, but only after checking
  * that the adopt itself would pass.
  *
- * The advice used to be offered on the moved-code heuristic alone. On one
- * queue it told the operator to adopt six new modules into an existing
- * patch when the only error was the missing registration; the adopt then
- * refused one module for importing later patches, and without it breached
- * the source patch's hard size limit. Split out of export-flow.ts for the
- * line budget.
+ * The moved-code heuristic alone is not enough: it can advise adopting
+ * several new modules into an existing patch when the only error is the
+ * missing registration, and the adopt then refuses a module for importing
+ * later patches, or without it breaches the source patch's hard size limit.
+ * Split out of export-flow.ts for the line budget.
  */
 
 import { detectMovedCodeOverlaps, formatMovedCodeAdvice } from '../core/export-moved-code-shape.js';

@@ -149,7 +149,7 @@ export function addInitAST(
 }
 
 /**
- * Legacy regex/line-based implementation preserved as fallback.
+ * Regex/line-based fallback implementation.
  */
 export function legacyAddInit(
   content: string,

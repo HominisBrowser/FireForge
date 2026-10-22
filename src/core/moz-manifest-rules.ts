@@ -120,12 +120,13 @@ export function getRules(binaryName: string, createManifest = false): PatternRul
       pattern: /^(?!browser\/base\/content\/test\/)(.+)\/(test_[^/]+\.js)$/,
       isRegistered: (engineDir, dirRel, fileName) =>
         isXpcshellTestRegistered(engineDir, dirRel, fileName),
-      register: (engineDir, _after, dryRun, dirRel, fileName) =>
-        registerXpcshellTest(engineDir, dirRel, fileName, dryRun, createManifest),
+      register: (engineDir, after, dryRun, dirRel, fileName) =>
+        registerXpcshellTest(engineDir, dirRel, fileName, dryRun, createManifest, after),
       // Both groups are guaranteed by the pattern, so slice avoids dead
       // fallback branches.
       extractArgs: (m) => m.slice(1, 3),
-      supportsAfter: false,
+      // `--after <entry>` places the section after that entry's block.
+      supportsAfter: true,
     },
   ];
 }

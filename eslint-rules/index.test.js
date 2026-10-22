@@ -89,7 +89,7 @@ js.run('prefer-shared-regex-escape', rules['prefer-shared-regex-escape'], {
   valid: [
     'const escaped = escapeRegex(value);',
     // A metacharacter-looking character class that is not a regex escape. The
-    // rule used to report every one of these purely on the literal's shape.
+    // rule must not report these on the literal's shape alone.
     'const parts = value.split(/[.*+?^${}()|[\\]\\\\]/);',
     'const hasMeta = /[.*+?^${}()|[\\]\\\\]/.test(value);',
     "const stripped = value.replace(/[.*+?^${}()|[\\]\\\\]/g, '');",

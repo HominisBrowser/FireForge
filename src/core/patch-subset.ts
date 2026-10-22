@@ -6,6 +6,7 @@
  */
 import { GeneralError } from '../errors/base.js';
 import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
+import { formatPatchSuggestions } from './patch-identifier-suggest.js';
 
 /** Every spelling an operator may use for one patch. */
 function patchAliases(p: PatchMetadata): Set<string> {
@@ -34,12 +35,14 @@ function matchesPatch(p: PatchMetadata, name: string): boolean {
  * Resolves a `--patches <name…>` subset against the manifest, matching each
  * requested name tolerantly (exact filename, filename ± `.patch`, the bare
  * order number, the manifest `name` field, or the slug). Accepts repeated
- * values and comma lists. Throws listing the available patches when a
+ * values and lists separated by commas or whitespace, so a list passed as
+ * one shell word (`--patches "$P"` under zsh) still splits. Throws when a
  * requested name matches none, so a typo fails loud rather than silently
- * judging nothing.
+ * judging nothing; the refusal names that name and its nearest matches,
+ * not the whole queue.
  *
  * @param manifest - The loaded patch manifest
- * @param requested - Raw `--patches` values (each may be a comma list)
+ * @param requested - Raw `--patches` values (each may be a comma or whitespace list)
  * @param refusalHint - Sentence inserted into the no-match refusal, naming
  *   what the caller's flag selects
  * @returns The matching manifest rows, de-duplicated, in request order
@@ -50,8 +53,7 @@ export function selectPatchSubset(
   refusalHint = ''
 ): PatchMetadata[] {
   const normalizedRequests = requested
-    .flatMap((entry) => entry.split(','))
-    .map((entry) => entry.trim())
+    .flatMap((entry) => entry.split(/[\s,]+/))
     .filter((entry) => entry.length > 0);
 
   const selected: PatchMetadata[] = [];
@@ -59,10 +61,9 @@ export function selectPatchSubset(
   for (const name of normalizedRequests) {
     const found = manifest.patches.filter((p) => matchesPatch(p, name));
     if (found.length === 0) {
-      const available = manifest.patches.map((p) => p.filename).join(', ');
       throw new GeneralError(
         `No patch in the queue matches "${name}".${refusalHint ? ` ${refusalHint}` : ''} ` +
-          `Available patches: ${available}`
+          formatPatchSuggestions(name, manifest.patches)
       );
     }
     for (const p of found) {

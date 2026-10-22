@@ -7,10 +7,10 @@
  * objdir links to. A C++ (or Rust, IDL, …) source edited at that point is
  * never compiled: the run tests the unmutated binary and reports
  * `control=missed`, which reads as a test that cannot fail. Such a target
- * is now refused without `--build`, and with `--build` the control is
+ * is refused without `--build`, and with `--build` the control is
  * applied before the build so the binary under test carries it. That build
  * is a full `mach build`: the pre-test build is otherwise `mach build
- * faster`, which compiles nothing, so the control still missed.
+ * faster`, which compiles nothing, so the control would still miss.
  */
 
 import { extname } from 'node:path';
@@ -19,7 +19,7 @@ import { classifyRuntimeDelivery } from './objdir-install-manifests.js';
 import { loadEngineInstallIndex } from './test-stale-exempt.js';
 
 /** Extensions of sources the build compiles or code-generates into the binary. */
-const COMPILED_EXTENSIONS = new Set([
+const COMPILED_EXTENSIONS: ReadonlySet<string> = new Set([
   '.c',
   '.cc',
   '.cpp',
@@ -39,9 +39,30 @@ const COMPILED_EXTENSIONS = new Set([
 ]);
 
 /**
+ * Header extensions. An `EXPORTS` install manifest names many headers (it
+ * copies them into `dist/include`), but that copy only feeds other
+ * compiles: the runtime never reads a header, so a header edit reaches the
+ * binary through a compile whatever the manifests say.
+ */
+const HEADER_EXTENSIONS: ReadonlySet<string> = new Set(['.h', '.hh', '.hpp', '.ipdlh']);
+
+/**
+ * Whether an engine-relative path has a compiled-source extension: a file
+ * the build compiles or code-generates into the binary. This is the
+ * extension test only. {@link findCompiledControlTargets} additionally
+ * drops non-header files an install manifest ships as-is.
+ *
+ * @param path - Engine-relative path
+ */
+export function isCompiledSourcePath(path: string): boolean {
+  return COMPILED_EXTENSIONS.has(extname(path));
+}
+
+/**
  * The engine-relative targets that reach the runtime only through a
  * compile: a compiled-source extension and no install-manifest entry that
- * ships the file itself.
+ * ships the file itself. Headers are always compiled, even when an
+ * `EXPORTS` manifest installs them into `dist/include`.
  *
  * @param engineDir - Absolute engine directory
  * @param enginePaths - The control's engine-relative targets
@@ -50,13 +71,17 @@ export async function findCompiledControlTargets(
   engineDir: string,
   enginePaths: readonly string[]
 ): Promise<string[]> {
-  const candidates = enginePaths.filter((path) => COMPILED_EXTENSIONS.has(extname(path)));
+  const candidates = enginePaths.filter(isCompiledSourcePath);
   if (candidates.length === 0) return [];
+  if (candidates.every((path) => HEADER_EXTENSIONS.has(extname(path)))) return candidates;
   const index = await loadEngineInstallIndex(engineDir);
   if (index === undefined) return candidates;
   const compiled: string[] = [];
   for (const path of candidates) {
-    if ((await classifyRuntimeDelivery(index, engineDir, path)) === 'unlisted') {
+    if (
+      HEADER_EXTENSIONS.has(extname(path)) ||
+      (await classifyRuntimeDelivery(index, engineDir, path)) === 'unlisted'
+    ) {
       compiled.push(path);
     }
   }

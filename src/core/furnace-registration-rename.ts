@@ -2,11 +2,11 @@
 /**
  * In-place rename of a custom element registration in customElements.js.
  *
- * `furnace rename` used to remove the old entry and add a new one. On a
- * registration list the remove path could not see, that left the old entry
- * beside the new one, and the new entry was written without the project
- * marker every sibling line carries (`// <MARKER>:`), so the next lint
- * flagged it as an unmarked engine edit. Rewriting the tag and module
+ * Removing the old entry and adding a new one would, on a registration
+ * list the remove path cannot see, leave the old entry beside the new one,
+ * and the new entry would lack the project marker every sibling line
+ * carries (`// <MARKER>:`), so the next lint would flag it as an unmarked
+ * engine edit. Rewriting the tag and module
  * literals inside the existing entry keeps the entry's position, layout and
  * trailing marker comments exactly as they were.
  */

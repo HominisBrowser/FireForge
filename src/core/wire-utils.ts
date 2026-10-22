@@ -182,7 +182,7 @@ export function tokenizeXhtml(lines: string[]): XhtmlToken[] {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy (line-based) helpers, shared by fallback implementations in
+// Line-based helpers, shared by fallback implementations in
 // the wire target modules.  Extracted to reduce duplication and make the brace-
 // walking logic independently testable.
 // ---------------------------------------------------------------------------
@@ -265,7 +265,7 @@ export function walkToTryBlockEnd(
 
 /**
  * Scans the entire file and returns the net brace balance so callers can
- * assert that a legacy fallback mutation did not silently introduce or
+ * assert that a line-based fallback mutation did not silently introduce or
  * drop a `{` / `}`. The helper reuses {@link countBraceDepth} so strings,
  * comments, and regex literals are handled consistently with the walker.
  *
@@ -286,7 +286,7 @@ export function computeFileBraceBalance(content: string): { depth: number; balan
 }
 
 /**
- * Round-trip guard used after a legacy fallback mutation: if the file's
+ * Round-trip guard used after a line-based fallback mutation: if the file's
  * net brace balance drifts between `before` and `after`, something went
  * wrong and the fallback is refusing to write a corrupted file. Expects
  * the delta to be exactly zero, since wire fallbacks only insert whole

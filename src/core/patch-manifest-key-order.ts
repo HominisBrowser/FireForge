@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * The one key order every `patches.json` writer uses for a patch row and
- * for the manifest itself. Writers used to disagree: `export` spread
- * `sourceProduct` before `sourceVersion` while a full-manifest save put it
- * after `filesAffected`, so a no-op rewrite left a key-order-only hunk in
- * the manifest.
+ * for the manifest itself, so that every writer (`export`, full-manifest
+ * saves, `patch stage`) agrees and a no-op rewrite leaves no key-order-only
+ * hunk in the manifest.
  */
 
 /** Patch-row keys in the order of the `PatchMetadata` interface. */

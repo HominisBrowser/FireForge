@@ -16,6 +16,7 @@ import { warn } from '../../utils/logger.js';
 import { runTestsWithRetries, type TestRunContext, type TestRunOutcome } from '../test-run.js';
 import {
   chunkShardGroups,
+  deriveAggregateShardVerdict,
   failedFilesOf,
   formatShardLine,
   runShardedTests,
@@ -73,6 +74,43 @@ describe('formatShardLine', () => {
     expect(formatShardLine({ label: 'a.js', outcome: outcome('tests-ran-ok') }, 0, 1)).toBe(
       'FIREFORGE-SHARD: PASS shard=1/1 path=a.js'
     );
+  });
+});
+
+describe('server ports and server-startup shards', () => {
+  it('names the mochitest server ports an instance took on its shard line', () => {
+    const shard = {
+      label: 'a.js',
+      outcome: { ...outcome('tests-ran-ok'), serverPorts: { http: 53001, ssl: 53002, ws: 53003 } },
+    };
+    expect(formatShardLine(shard, 0, 2)).toBe(
+      'FIREFORGE-SHARD: PASS shard=1/2 path=a.js ports=http:53001,ssl:53002,ws:53003'
+    );
+  });
+
+  it('says reason=server-startup on the shard and aggregate lines when only servers failed', () => {
+    const signature = {
+      reason: 'mochitest server failed to start (server-startup)',
+      line: '!!! could not start server on port 8888',
+      verdictReason: 'server-startup' as const,
+    };
+    const startup: TestRunOutcome = {
+      ...outcome('harness-crash'),
+      verdict: { kind: 'harness-crash', signature },
+    };
+    expect(formatShardLine({ label: 'a.js', outcome: startup }, 0, 1)).toBe(
+      'FIREFORGE-SHARD: FAIL reason=server-startup shard=1/1 path=a.js'
+    );
+    const only = deriveAggregateShardVerdict([
+      { label: 'a.js', outcome: startup },
+      { label: 'b.js', outcome: outcome('tests-ran-ok') },
+    ]);
+    expect(only.signature?.verdictReason).toBe('server-startup');
+    const mixed = deriveAggregateShardVerdict([
+      { label: 'a.js', outcome: startup },
+      { label: 'b.js', outcome: outcome('harness-crash') },
+    ]);
+    expect(mixed).toEqual({ kind: 'harness-crash' });
   });
 });
 

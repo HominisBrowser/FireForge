@@ -13,6 +13,11 @@
  * Preconditions match `re-export`: the engine worktree must currently
  * reflect both patches' content, because both bodies are regenerated from
  * the worktree.
+ *
+ * The same transaction can also adopt new, unowned engine files
+ * into the target (`--scan-file`, see move-files-adopt.ts) and fold the
+ * whole source into the target, retiring its slot (`--retire-empty`, see
+ * move-files-retire.ts).
  */
 
 import { dirname, join, resolve } from 'node:path';
@@ -39,6 +44,7 @@ import {
   savePatchesManifest,
   validatePatchesManifest,
 } from '../../core/patch-manifest.js';
+import { removePatchFileAndManifest } from '../../core/patch-manifest.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type {
   PatchLintIssue,
@@ -48,14 +54,16 @@ import type {
 } from '../../types/commands/index.js';
 import type { FireForgeConfig } from '../../types/config.js';
 import { toError } from '../../utils/errors.js';
-import { readText, writeText } from '../../utils/fs.js';
+import { pathExists, readText, writeText } from '../../utils/fs.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
 import { resolveWaitLockSeconds } from '../../utils/options.js';
 import { withDeclarationsReport } from '../declarations-report.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
-import { runPatchLint } from '../export-shared.js';
 import { projectEntryBody } from './entry-projection.js';
-import { buildSplitDiff, mergeStagedForwardImports } from './split-plan.js';
+import { assertAdoptedStillUnowned } from './move-files-adopt.js';
+import { foldSourceRows, retiredSlotForFold } from './move-files-retire.js';
+import { runMoveSideLint } from './move-size-tier.js';
+import { buildSplitDiff, mergeStagedForwardImports, moveDeclarationReason } from './split-plan.js';
 import { findOwnerRewriteHolders, rewriteSplitOwners } from './split-staged.js';
 
 /** Everything the commit step needs, computed and confirmed up front. */
@@ -71,6 +79,41 @@ export interface MoveIntoPlan {
   ownerRewrites: string[];
   /** Forward-import declarations the move introduces, keyed by importing patch. */
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
+  /** New engine files no patch owned that the target adopts (`--scan-file`). */
+  adoptedFiles: string[];
+  /**
+   * `--retire-empty`: the move empties the source, so every declaration
+   * owned by the source re-points to the target and the source's slot is
+   * retired. `sourceDiff` is empty then.
+   */
+  retireSource: boolean;
+}
+
+/**
+ * Applies the manifest side of a move to its rows: owner rewrites (every
+ * source-owned declaration on a fold, the moved files' otherwise), the
+ * auto-declared forward imports and both `filesAffected` lists. A folded
+ * source row is left as is for the retire step to remove.
+ */
+function applyMoveToRows(rows: readonly PatchMetadata[], plan: MoveIntoPlan): PatchMetadata[] {
+  const movedSet = new Set([...plan.movedFiles, ...plan.adoptedFiles]);
+  const rewritten = plan.retireSource
+    ? foldSourceRows(rows, plan.source.filename, plan.target.filename).patches
+    : rows.map((row) =>
+        rewriteSplitOwners(row, plan.source.filename, movedSet, plan.target.filename)
+      );
+  return rewritten.map((row) => {
+    let updated = row;
+    const decls = plan.stagedDependencyAdditions.get(updated.filename);
+    if (decls?.length) updated = mergeStagedForwardImports(updated, decls);
+    if (updated.filename === plan.source.filename && !plan.retireSource) {
+      return { ...updated, filesAffected: plan.sourceAfter };
+    }
+    if (updated.filename === plan.target.filename) {
+      return { ...updated, filesAffected: plan.targetAfter };
+    }
+    return updated;
+  });
 }
 
 /**
@@ -87,21 +130,33 @@ function runProjectedMoveLint(
   regressions: PatchLintIssue[];
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
 } {
-  const movedSet = new Set(plan.movedFiles);
+  const movedSet = new Set([...plan.movedFiles, ...plan.adoptedFiles]);
+  const reason = moveDeclarationReason(
+    plan.source.filename,
+    plan.target.filename,
+    'patch move-files'
+  );
 
-  const entries: PatchQueueEntry[] = baseCtx.entries.map((entry) => {
-    let metadata = entry.metadata;
-    if (metadata) {
-      metadata = rewriteSplitOwners(metadata, plan.source.filename, movedSet, plan.target.filename);
-    }
-    if (entry.filename === plan.source.filename) {
-      return { ...entry, metadata, ...projectEntryBody(plan.sourceDiff) };
-    }
-    if (entry.filename === plan.target.filename) {
-      return { ...entry, metadata, ...projectEntryBody(plan.targetDiff) };
-    }
-    return { ...entry, metadata };
-  });
+  // The projected rows go through the same rewrite the commit applies, so
+  // the projection and the written manifest cannot disagree.
+  const rows = baseCtx.entries.flatMap((entry) => (entry.metadata ? [entry.metadata] : []));
+  const projectedRows = new Map(
+    applyMoveToRows(rows, { ...plan, stagedDependencyAdditions: new Map() }).map(
+      (row) => [row.filename, row] as const
+    )
+  );
+  const entries: PatchQueueEntry[] = baseCtx.entries
+    .filter((entry) => !(plan.retireSource && entry.filename === plan.source.filename))
+    .map((entry) => {
+      const metadata = entry.metadata ? (projectedRows.get(entry.filename) ?? null) : null;
+      if (entry.filename === plan.source.filename) {
+        return { ...entry, metadata, ...projectEntryBody(plan.sourceDiff) };
+      }
+      if (entry.filename === plan.target.filename) {
+        return { ...entry, metadata, ...projectEntryBody(plan.targetDiff) };
+      }
+      return { ...entry, metadata };
+    });
 
   const stagedDependencyAdditions = new Map<string, PatchStagedForwardImport[]>();
   for (const edge of collectForwardImportEdges({ entries })) {
@@ -111,6 +166,7 @@ function runProjectedMoveLint(
       specifier: edge.specifier,
       creates: edge.creates,
       owner: plan.target.filename,
+      reason,
     };
     const list = stagedDependencyAdditions.get(edge.entry) ?? [];
     if (
@@ -130,10 +186,12 @@ function runProjectedMoveLint(
   }
 
   const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
-  const projectedIssues = lintPatchQueue({
-    entries,
-    ...(baseCtx.patchPolicy ? { patchPolicy: baseCtx.patchPolicy } : {}),
-  }).filter((i) => i.severity === 'error');
+  // Keep every queue-wide lint setting (patch policy, forward-registration
+  // scope, token scales) so the projection checks what the committed gate
+  // checks, test-manifest suite entries included.
+  const projectedIssues = lintPatchQueue({ ...baseCtx, entries }).filter(
+    (i) => i.severity === 'error'
+  );
   const regressions = computeProjectedLintRegressions(baselineIssues, projectedIssues);
   if (baselineIssues.length > 0 && regressions.length === 0) {
     warn(
@@ -149,6 +207,15 @@ function runProjectedMoveLint(
           details: regressions.map(formatPatchLintIssue),
         };
   return { conflicts, regressions, stagedDependencyAdditions };
+}
+
+/** Restores one body during rollback, warning instead of throwing. */
+async function restoreBody(path: string, body: string, label: string): Promise<void> {
+  try {
+    await writeText(path, body);
+  } catch (rollbackError: unknown) {
+    warn(`Rollback warning: could not restore ${label} body: ${toError(rollbackError).message}`);
+  }
 }
 
 /**
@@ -181,7 +248,8 @@ async function commitMoveInto(
         );
       }
 
-      const movedSet = new Set(plan.movedFiles);
+      assertAdoptedStillUnowned(manifest.patches, plan.adoptedFiles, 'patch move-files');
+
       const sourcePath = join(patchesDir, plan.source.filename);
       const targetPath = join(patchesDir, plan.target.filename);
       const originalSourceBody = await readText(sourcePath);
@@ -190,30 +258,25 @@ async function commitMoveInto(
       let targetWritten = false;
 
       try {
-        await writeText(sourcePath, plan.sourceDiff);
-        sourceWritten = true;
+        if (!plan.retireSource) {
+          await writeText(sourcePath, plan.sourceDiff);
+          sourceWritten = true;
+        }
         await writeText(targetPath, plan.targetDiff);
         targetWritten = true;
 
-        const updatedPatches = manifest.patches.map((patch) => {
-          let updated = rewriteSplitOwners(
-            patch,
-            plan.source.filename,
-            movedSet,
-            plan.target.filename
-          );
-          const decls = plan.stagedDependencyAdditions.get(updated.filename);
-          if (decls?.length) updated = mergeStagedForwardImports(updated, decls);
-          if (updated.filename === plan.source.filename) {
-            return { ...updated, filesAffected: plan.sourceAfter };
-          }
-          if (updated.filename === plan.target.filename) {
-            return { ...updated, filesAffected: plan.targetAfter };
-          }
-          return updated;
-        });
+        const updatedPatches = applyMoveToRows(manifest.patches, plan);
         const updated = validatePatchesManifest({ ...manifest, patches: updatedPatches });
         await savePatchesManifest(patchesDir, updated);
+        if (plan.retireSource) {
+          // Same write `patch retire` makes: the row and the .patch file
+          // leave, and the order stays spent as a retired slot.
+          await removePatchFileAndManifest(
+            patchesDir,
+            plan.source.filename,
+            retiredSlotForFold(plan.source, plan.target.filename)
+          );
+        }
 
         await appendHistoryBestEffort(
           patchesDir,
@@ -224,29 +287,19 @@ async function commitMoveInto(
               target: plan.target.filename,
               files: plan.movedFiles,
               ownerRewrites: plan.ownerRewrites,
+              ...(plan.adoptedFiles.length > 0 ? { adoptedFiles: plan.adoptedFiles } : {}),
+              ...(plan.retireSource
+                ? { retiredSource: { filename: plan.source.filename, order: plan.source.order } }
+                : {}),
             },
             result: 'ok',
           },
           `patch move-files committed`
         );
       } catch (error: unknown) {
-        if (targetWritten) {
-          try {
-            await writeText(targetPath, originalTargetBody);
-          } catch (rollbackError: unknown) {
-            warn(
-              `Rollback warning: could not restore target body: ${toError(rollbackError).message}`
-            );
-          }
-        }
-        if (sourceWritten) {
-          try {
-            await writeText(sourcePath, originalSourceBody);
-          } catch (rollbackError: unknown) {
-            warn(
-              `Rollback warning: could not restore source body: ${toError(rollbackError).message}`
-            );
-          }
+        if (targetWritten) await restoreBody(targetPath, originalTargetBody, 'target');
+        if (sourceWritten || !(await pathExists(sourcePath))) {
+          await restoreBody(sourcePath, originalSourceBody, 'source');
         }
         try {
           await savePatchesManifest(patchesDir, manifest);
@@ -272,36 +325,53 @@ export async function runMoveFilesInto(args: {
   target: PatchMetadata;
   files: string[];
   sourceAfter: string[];
+  /** Includes `adoptedFiles`. */
   targetAfter: string[];
+  /** New, unowned engine files the target adopts (`--scan-file`). */
+  adoptedFiles?: string[];
+  /** The move empties the source and retires its slot (`--retire-empty`). */
+  retireSource?: boolean;
   options: PatchMoveFilesOptions;
   config: FireForgeConfig;
 }): Promise<void> {
   const { enginePath, patchesDir, source, target, files, sourceAfter, targetAfter, options } = args;
+  const adoptedFiles = args.adoptedFiles ?? [];
+  const retireSource = args.retireSource === true;
 
   // Refuse a prompt-less run before the diff/lint work, not after it.
   assertConfirmationAvailable('patch move-files', options);
 
-  const sourceDiff = await buildSplitDiff(enginePath, sourceAfter, 'remaining', source.filename);
+  const sourceDiff = retireSource
+    ? ''
+    : await buildSplitDiff(enginePath, sourceAfter, 'remaining', source.filename);
   const targetDiff = await buildSplitDiff(enginePath, targetAfter, 'moved', target.filename);
 
-  // Per-patch lint both projected bodies with each patch's own waivers.
-  // The whole-queue context (built once, with the config for committed-gate
+  // Per-patch lint both projected bodies with each patch's own waivers,
+  // judged on what the whole transaction leaves (adopted files land in the
+  // target directly, so no patch is judged on an intermediate body). The
+  // whole-queue context (built once, with the config for committed-gate
   // parity) resolves cross-patch imports and sibling head.js harness roots
   // instead of linting each projected body blind.
   const patchQueueCtx = await buildPatchQueueContext(patchesDir, args.config);
-  await runPatchLint({
-    engineDir: enginePath,
-    filesAffected: sourceAfter,
-    diffContent: sourceDiff,
-    config: args.config,
-    skipLint: options.skipLint,
-    patchQueueCtx,
-    ignoreChecks: buildLintIgnoreChecks(source.lintIgnore),
-    patchTier: source.tier,
-  });
-  await runPatchLint({
+  if (!retireSource) {
+    await runMoveSideLint({
+      engineDir: enginePath,
+      filesAffected: sourceAfter,
+      filesBefore: source.filesAffected,
+      role: 'source',
+      diffContent: sourceDiff,
+      config: args.config,
+      skipLint: options.skipLint,
+      patchQueueCtx,
+      ignoreChecks: buildLintIgnoreChecks(source.lintIgnore),
+      patchTier: source.tier,
+    });
+  }
+  await runMoveSideLint({
     engineDir: enginePath,
     filesAffected: targetAfter,
+    filesBefore: target.filesAffected,
+    role: 'destination',
     diffContent: targetDiff,
     config: args.config,
     skipLint: options.skipLint,
@@ -319,12 +389,16 @@ export async function runMoveFilesInto(args: {
     targetAfter,
     sourceDiff,
     targetDiff,
-    ownerRewrites: findOwnerRewriteHolders(
-      manifest?.patches ?? [],
-      source.filename,
-      new Set(files)
-    ),
+    ownerRewrites: retireSource
+      ? foldSourceRows(manifest?.patches ?? [], source.filename, target.filename).repointed
+      : findOwnerRewriteHolders(
+          manifest?.patches ?? [],
+          source.filename,
+          new Set([...files, ...adoptedFiles])
+        ),
     stagedDependencyAdditions: new Map(),
+    adoptedFiles,
+    retireSource,
   };
 
   const projected = runProjectedMoveLint(plan, patchQueueCtx);
@@ -333,6 +407,7 @@ export async function runMoveFilesInto(args: {
     projectRoot: dirname(resolve(patchesDir)),
     regressions: projected.regressions,
     out: options.declarationsOut,
+    reason: moveDeclarationReason(source.filename, target.filename, 'patch move-files'),
   });
 
   const decision = await confirmDestructive({
@@ -340,7 +415,14 @@ export async function runMoveFilesInto(args: {
     title: `Move ${files.length} file(s) from ${source.filename} to ${target.filename}`,
     summary: [
       `moved files (${files.length}): ${files.join(', ')}`,
-      `${source.filename} keeps (${sourceAfter.length}): ${sourceAfter.join(', ')}`,
+      ...(adoptedFiles.length > 0
+        ? [
+            `adopted from the worktree (no patch owned them) (${adoptedFiles.length}): ${adoptedFiles.join(', ')}`,
+          ]
+        : []),
+      retireSource
+        ? `${source.filename} is emptied and retired; order ${source.order} stays spent as a retired slot`
+        : `${source.filename} keeps (${sourceAfter.length}): ${sourceAfter.join(', ')}`,
       `${target.filename} grows to (${targetAfter.length}): ${targetAfter.join(', ')}`,
       ...(plan.ownerRewrites.length > 0
         ? [`staged-dependency owners re-pointed in: ${plan.ownerRewrites.join(', ')}`]
@@ -356,8 +438,14 @@ export async function runMoveFilesInto(args: {
   await commitMoveInto(patchesDir, plan, resolveWaitLockSeconds(options.waitLock));
 
   success(`Moved ${files.length} file(s) from ${source.filename} to ${target.filename}`);
+  if (adoptedFiles.length > 0) {
+    info(`Adopted ${adoptedFiles.length} new file(s) into ${target.filename}`);
+  }
   if (plan.ownerRewrites.length > 0) {
     info(`Re-pointed staged-dependency owners in: ${plan.ownerRewrites.join(', ')}`);
+  }
+  if (retireSource) {
+    info(`Retired ${source.filename}; order ${source.order} is kept as a retired slot.`);
   }
   outro('Move complete');
 }

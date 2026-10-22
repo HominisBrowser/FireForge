@@ -31,7 +31,7 @@ vi.mock('../../core/git-file-ops.js', () => ({
 }));
 
 // Keep the pure describe/summarize/apply helpers real. Stub only the
-// planner so unit tests drive the legacy (unmanaged) restore path without
+// planner so unit tests drive the unmanaged restore path without
 // a patches directory on disk. The patch-aware planning itself is covered
 // by src/core/__tests__/discard-baseline.test.ts and the
 // discard-patch-baseline integration suite.
@@ -291,7 +291,7 @@ describe('discardCommand', () => {
 
     it('normalizes trailing slashes on the directory path', async () => {
       // The input's trailing slashes must be normalized once on entry: every
-      // user-facing message appends `/` itself and previously rendered
+      // user-facing message appends `/` itself and would otherwise render
       // "stories/furnace//", and the managed-prefix comparison against
       // "stories/furnace//" is a prefix of nothing and prefixed by nothing,
       // silently dropping the Furnace warning for a parent of a managed path.

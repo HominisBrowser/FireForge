@@ -274,7 +274,10 @@ export async function projectPlacementForLint(
     ...pendingBody,
   });
   projectedEntries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
-  const policyRest = baseCtx.patchPolicy ? { patchPolicy: baseCtx.patchPolicy } : {};
+  // The projection keeps every queue-wide lint setting of the baseline
+  // (patch policy, forward-registration scope, token scales), so a
+  // test-manifest suite entry is checked exactly as the committed gate
+  // checks it.
   // A new module whose moz.build line is declared (staged registration)
   // and present in the working tree, but not yet exported by its owner, is
   // accepted with a "re-export the owner next" note instead of refused.
@@ -283,10 +286,9 @@ export async function projectPlacementForLint(
     baseCtx,
     newFilename: plan.newFilename,
     pendingNewFiles: new Set(pendingBody.newFiles.keys()),
-    projectedIssues: lintPatchQueue({
-      entries: projectedEntries,
-      ...policyRest,
-    }).filter((i) => i.severity === 'error'),
+    projectedIssues: lintPatchQueue({ ...baseCtx, entries: projectedEntries }).filter(
+      (i) => i.severity === 'error'
+    ),
   });
   for (const note of registration.accepted) warn(note);
   const projectedIssues = registration.remaining;
@@ -295,10 +297,7 @@ export async function projectPlacementForLint(
   // pre-existing breakage rather than a consequence of this placement, and
   // calling it one would misattribute. Entries are already in memory,
   // so this second pass costs no additional IO.
-  const baselineIssues = lintPatchQueue({
-    entries: baseCtx.entries,
-    ...policyRest,
-  }).filter((i) => i.severity === 'error');
+  const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
   // Register-first and new-file + moved-code advice: name the working
   // sequence instead of leaving the operator to derive it from two
   // individually-correct guards that together dead-end, but only offer

@@ -45,13 +45,19 @@ vi.mock('../test-furnace-reach.js', () => ({
   partitionReachedComponents: vi.fn(() => Promise.resolve({ reached: [], skipped: [] })),
   resolveFurnaceApplyMode: vi.fn(() => 'all'),
 }));
+vi.mock('../../core/test-stale-check.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/test-stale-check.js')>()),
+  findCompiledSourcesNewerThanBinary: vi.fn(() => Promise.resolve(undefined)),
+}));
 vi.mock('../test-stale-gate.js', () => ({
   enforceStaleBuildGate: vi.fn(() => Promise.resolve()),
   enforceStaticComponentsGate: vi.fn(() => Promise.resolve()),
 }));
 
 import { writeBuildBaseline } from '../../core/build-baseline.js';
+import { readBuildBaseline } from '../../core/build-baseline.js';
 import { runProtectedMachBuild } from '../../core/mach.js';
+import { findCompiledSourcesNewerThanBinary } from '../../core/test-stale-check.js';
 import type { FireForgeConfig, ProjectPaths } from '../../types/config.js';
 import { notice } from '../../utils/logger.js';
 import { runTestBuildPhase } from '../test-build-phase.js';
@@ -90,6 +96,71 @@ describe('runTestBuildPhase', () => {
     expect(notice).toHaveBeenCalledWith(reason);
     expect(writeBuildBaseline).toHaveBeenCalledWith(
       expect.objectContaining({ buildKind: 'full', staticComponentsHandling: 'refresh' })
+    );
+  });
+
+  it('records a trailing-slash directory request as a normalized coverage path', async () => {
+    await runTestBuildPhase(
+      '/project',
+      PATHS,
+      CONFIG,
+      0,
+      { build: true },
+      { ...REQUEST, normalizedPaths: ['browser/base/content/test/hominis/'] }
+    );
+    expect(writeBuildBaseline).toHaveBeenCalledWith(
+      expect.objectContaining({ testPackagingCoverage: ['browser/base/content/test/hominis'] })
+    );
+  });
+
+  it('escalates to a full build when compiled sources are newer than the binary', async () => {
+    vi.mocked(findCompiledSourcesNewerThanBinary).mockResolvedValueOnce({
+      paths: ['gfx/a.cpp'],
+      linkedPath: 'obj-x/dist/bin/libxul.so',
+      linkedAt: new Date(0),
+    });
+    await runTestBuildPhase(
+      '/project',
+      PATHS,
+      CONFIG,
+      0,
+      { build: true },
+      { ...REQUEST, launchablePath: 'obj-x/dist/bin/mybrowser' }
+    );
+    expect(runProtectedMachBuild).toHaveBeenCalledWith('full', PATHS.engine, expect.anything());
+    expect(notice).toHaveBeenCalledWith(expect.stringContaining('engine/gfx/a.cpp'));
+  });
+
+  it('escalates to a full build when the binary still carries a negative control', async () => {
+    vi.mocked(readBuildBaseline).mockResolvedValue({
+      engineHeadSha: 'abc',
+      builtAt: '2026-10-22T00:00:00.000Z',
+      binaryName: 'mybrowser',
+      controlBuild: { diffFile: 'c.diff', targets: ['gfx/a.cpp'], appliedAt: 'x' },
+    });
+    try {
+      await runTestBuildPhase('/project', PATHS, CONFIG, 0, { build: true }, REQUEST);
+    } finally {
+      vi.mocked(readBuildBaseline).mockResolvedValue(undefined);
+    }
+    expect(runProtectedMachBuild).toHaveBeenCalledWith('full', PATHS.engine, expect.anything());
+    expect(writeBuildBaseline).toHaveBeenCalledWith(
+      expect.objectContaining({ controlBuild: undefined })
+    );
+  });
+
+  it("records a compiled control's stamp on the baseline its build writes", async () => {
+    const stamp = { diffFile: 'c.diff', targets: ['gfx/a.cpp'], appliedAt: '2026-10-22T00:00:00Z' };
+    await runTestBuildPhase(
+      '/project',
+      PATHS,
+      CONFIG,
+      0,
+      { build: true },
+      { ...REQUEST, fullBuildReason: 'compiled control', controlBuild: stamp }
+    );
+    expect(writeBuildBaseline).toHaveBeenCalledWith(
+      expect.objectContaining({ controlBuild: stamp, buildKind: 'full' })
     );
   });
 });

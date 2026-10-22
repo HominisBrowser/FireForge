@@ -131,6 +131,25 @@ describe('scoped lint --per-patch keeps queue findings that name the subset', ()
     expect(unusedLines()[0]).toContain('001-keep.patch');
   });
 
+  it('splits a --patches list given as one word, and names an unmatched one alone', async () => {
+    await lintCommand(projectRoot, [], {
+      perPatch: true,
+      noCache: true,
+      patches: ['001-keep.patch 002-other.patch'],
+    }).catch(() => undefined);
+    expect(unusedLines()).toHaveLength(1);
+
+    const refusal = lintCommand(projectRoot, [], {
+      perPatch: true,
+      noCache: true,
+      patches: ['001-keep kep'],
+    });
+    await expect(refusal).rejects.toThrow(/No patch in the queue matches "kep"\./);
+    await expect(
+      lintCommand(projectRoot, [], { perPatch: true, noCache: true, patches: ['001-keep kep'] })
+    ).rejects.toThrow(/2 patches in (the )?queue/);
+  });
+
   it('keeps it out of a run scoped to another patch', async () => {
     await lintCommand(projectRoot, [], {
       perPatch: true,

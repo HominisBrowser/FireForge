@@ -487,11 +487,11 @@ export async function completeJournalRollback(
 export async function forceReleaseFurnaceLocksForActiveOperations(): Promise<void> {
   const paths = new Set([...activeOperations.values()].map((op) => getFurnaceLockPath(op.root)));
   for (const lockPath of paths) {
-    // Ownership-checked, like every other release path. The bare `rm` this
-    // replaced would delete a lock a different process had acquired in the
-    // window between our operation dying and this sweep running. That is the
-    // exact race `releaseLock`'s PID verification was added to close, reopened
-    // here because the sweeper has no acquisition token to check.
+    // Ownership-checked, like every other release path. A bare `rm` would
+    // delete a lock a different process had acquired in the window between
+    // our operation dying and this sweep running. That is the exact race
+    // `releaseLock`'s PID verification closes, and the sweeper has no
+    // acquisition token to check.
     const removed = await releaseLockIfOwned(lockPath);
     verbose(
       removed

@@ -59,7 +59,7 @@ import {
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
-import { projectReorder } from './reorder.js';
+import { projectReorder } from './reorder-projection.js';
 
 /**
  * Pulls the ordinal-string + category prefix out of a patch filename so

@@ -44,9 +44,9 @@ describe('patch-files parsing', () => {
   });
 
   it('captures binary file targets from GIT binary patch sections', async () => {
-    // Regression: the earlier `+++ b/…` regex missed binary diffs (which
-    // carry only the `diff --git a/… b/…` header, no `+++` line). Verify
-    // mismatched against branding patches and the doctor repair rewrote
+    // A `+++ b/…` regex misses binary diffs (which carry only the
+    // `diff --git a/… b/…` header, no `+++` line). Verify would then mismatch
+    // against branding patches and the doctor repair would rewrite
     // `filesAffected` to the text-only subset, hiding the true scope.
     vi.mocked(readText).mockResolvedValueOnce(
       [

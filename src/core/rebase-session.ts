@@ -90,9 +90,8 @@ const REBASE_PATCH_STATUSES: readonly RebasePatchStatus[] = [
 /**
  * Drops payload that does not belong to an entry's status.
  *
- * Applied on read so a session written by an older FireForge, where
- * `rebase --continue` left `error`/`conflictingFiles` on a now-`resolved`
- * entry, loads cleanly and is corrected, instead of being refused by a
+ * Applied on read so a session whose `resolved` entry still carries
+ * `error`/`conflictingFiles` loads cleanly and is corrected, instead of being refused by a
  * stricter validator mid-rebase.
  *
  * @param entry - A structurally valid entry, possibly carrying stale payload
@@ -217,11 +216,10 @@ export async function readRebaseSession(projectRoot: string): Promise<RebaseSess
   if (!isValidSession(data)) {
     return { present: true, valid: false, reason: 'the file is not a valid rebase session' };
   }
-  // Normalize on read: an older session can carry a failure's
+  // Normalize on read: a session can carry a failure's
   // `error`/`conflictingFiles` on an entry whose status has since been
   // flipped to `resolved`. Correcting it here is what lets the validator
-  // stay permissive, so an in-flight rebase from an older FireForge still
-  // loads.
+  // stay permissive, so such an in-flight rebase still loads.
   return {
     present: true,
     valid: true,

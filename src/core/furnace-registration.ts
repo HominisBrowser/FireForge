@@ -322,8 +322,8 @@ export async function removeJarMnEntries(engineDir: string, tagName: string): Pr
   // line the component registered is removed regardless of the target
   // basename. A helper `.mjs` whose name does not start with the tag (e.g.
   // a renamed `foo-utils.mjs`) otherwise survives the remove pass and leaves
-  // a stale registration that breaks packaging. The legacy target-path match
-  // is kept as an OR for lines written before the source mapping existed.
+  // a stale registration that breaks packaging. The target-path match is
+  // kept as an OR for lines that carry no source mapping.
   // Word boundaries keep "moz-card" from matching "moz-card-group".
   const sourcePattern = new RegExp(`\\(widgets/${escapeRegex(tagName)}/`);
   const legacyTargetPattern = new RegExp(`content/global/elements/${escapeRegex(tagName)}\\.`);

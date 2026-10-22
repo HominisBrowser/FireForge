@@ -50,7 +50,7 @@ describe('runTypecheck', () => {
     expect(errors.some((i) => i.code === 2322)).toBe(true);
 
     // None of the suppressed module-resolution codes should leak into
-    // the output. (2304/2552 are no longer in this set,
+    // the output. (2304/2552 are not in this set,
     // but the basic fixture has no undefined identifiers.)
     const suppressed = [2304, 2305, 2306, 2307, 2552, 2580, 2792, 7016];
     for (const code of suppressed) {

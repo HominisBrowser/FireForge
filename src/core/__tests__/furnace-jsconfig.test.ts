@@ -469,7 +469,7 @@ describe('syncFurnaceJsconfigPaths — root-level jsconfig (./-relative, TS5090)
   it('does not churn a hand-written bare or ./-prefixed value (both treated as non-stale)', async () => {
     const key = 'chrome://global/content/elements/moz-widget.mjs';
     for (const handWritten of [
-      'components/custom/moz-widget/moz-widget.mjs', // bare (legacy / workaround)
+      'components/custom/moz-widget/moz-widget.mjs', // bare (hand-written workaround)
       './components/custom/moz-widget/moz-widget.mjs', // already prefixed
     ]) {
       await writeFile(

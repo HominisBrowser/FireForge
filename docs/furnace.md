@@ -115,7 +115,7 @@ warning asking for the entry to be deleted. A run over one component judges
 only that component's entries. `deploy` honours the same entries when it
 validates, but leaves the staleness report to `validate`.
 
-An entry never suppresses an error (since 0.51.0): an error blocks apply,
+An entry never suppresses an error: an error blocks apply,
 and a review record cannot make a broken component deployable. The error
 stays counted, and the entry is reported as a
 `validation-exception-on-error` error until the finding is fixed and the
@@ -136,7 +136,7 @@ entries cover all of them:
 }
 ```
 
-An optional `file` (since 0.52.0) narrows an entry the same way to findings
+An optional `file` narrows an entry the same way to findings
 in one module of the component, by file name. `hardcoded-text` names the
 modules it found text in, so a vendored bundle whose bytes are pinned (and
 so cannot carry a `furnace-ignore` comment) can be accepted while the
@@ -155,7 +155,7 @@ authored modules beside it keep the check. An entry names a `tag` or a
 Accessibility checks judge the composed component: the host
 `<tag>.mjs` and its companion modules (`<tag>-*.mjs`, tests and stories
 left out) read as one source. Moving a template between the component's
-modules therefore no longer changes its findings: a keyboard handler in a
+modules therefore does not change its findings: a keyboard handler in a
 companion covers an `@click` in the host, and an `@click` in a companion
 is judged too. `hardcoded-text` judges each module on its own, so a
 `// furnace-ignore: hardcoded-text` comment covers the file it is in, not

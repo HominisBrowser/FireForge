@@ -473,7 +473,7 @@ export function registerVerify(
     .description('Read-only fsck for the patch queue (manifest + cross-patch lint)')
     .option(
       '--patches <names...>',
-      'Judge only findings that name these patches (filename, stem, order number, manifest name, or slug; repeat or comma-separate). Queue-wide findings stay; unowned worktree changes drop out'
+      'Judge only findings that name these patches (filename, stem, order number, manifest name, or slug; repeat, or separate with commas or whitespace). Queue-wide findings stay; unowned worktree changes drop out'
     )
     .action(
       withErrorHandling(async (options: { patches?: string[] }) => {

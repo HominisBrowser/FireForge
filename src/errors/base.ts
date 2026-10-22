@@ -121,7 +121,7 @@ export class InternalInvariantError extends FireForgeError {
 }
 
 /**
- * Raised when a legacy regex/brace-depth fallback parser decides it
+ * Raised when a regex/brace-depth fallback parser decides it
  * cannot safely perform its mutation, e.g. because a block it expected
  * to walk never closes, because the inserted result fails a round-trip
  * brace balance check, or because an expected pattern is missing.

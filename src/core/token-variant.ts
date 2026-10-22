@@ -80,12 +80,12 @@ function normalizeAttributeFragment(group: string): string {
  * Boolean-attribute fragments are returned unchanged.
  *
  * Structure is decided by {@link rootAttributeSelector}, the matcher's own
- * parse, rather than by a second regex. 0.44.2 widened
- * the matcher to consume consecutive `[…]` groups and stop at a pseudo-class
- * tail, and the validator did not move with it, so
- * `:root[data-skin="humanist"]:not([data-private])` was a block the tool
- * could find but would not let you name. Running both halves off one parse
- * is what stops them drifting apart again. Character-level safety stays a
+ * parse, rather than by a second regex. The matcher consumes consecutive
+ * `[…]` groups and stops at a pseudo-class tail, and a separate validator
+ * that does not follow it leaves blocks such as
+ * `:root[data-skin="humanist"]:not([data-private])` findable but
+ * unnameable. Running both halves off one parse keeps them from drifting
+ * apart. Character-level safety stays a
  * separate, per-group check, because the matcher finds bracket boundaries
  * and validates no characters at all.
  *
@@ -232,7 +232,7 @@ function findVariantBlock(lines: string[], variant: string): VariantBlock | unde
     const selector = rootAttributeSelector(line);
     if (selector === undefined || canonicalSelector(selector.attributes) !== want) continue;
     // An unqualified request still matches a qualified block: that is the
-    // 0.44.2 behaviour `variantBlockQualifier` exists to report, since
+    // behaviour `variantBlockQualifier` exists to report, since
     // silently skipping the block is the worse failure. A request that names
     // a qualifier, though, means it, so it must match.
     if (wantQualifier !== '' && canonicalSelector(selector.qualifier) !== wantQualifier) continue;

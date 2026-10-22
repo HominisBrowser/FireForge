@@ -25,7 +25,7 @@ command, read the decision table at the bottom first.
    exception: it writes nothing, runs its git plumbing on a private index
    (so even the `--intent-to-add` staging an untracked binary needs never
    reaches the shared `.git/index`), and serializes only against other dry
-   runs, so a preview no longer queues behind a peer's build or test run.
+   runs, so a preview does not queue behind a peer's build or test run.
 
 3. **A furnace mutation that does not finish restores the engine or says
    so.** Both a signal (SIGINT or SIGTERM) and a thrown error trigger a
@@ -33,14 +33,11 @@ command, read the decision table at the bottom first.
    `pendingRepair` marker blocks all further furnace mutations until
    `fireforge doctor --repair-furnace` reconciles.
 
-   The thrown-error half landed in 0.43.0. Before it, `runFurnaceMutation`'s
-   `finally` only deregistered the operation, and because it also set
-   `completed`, a body that threw removed itself from the signal handler's
-   view as well. A throw outside a body's own catch therefore left the
-   checkout torn with no marker. `applyAllComponents` was the live instance:
-   it rolls back on collected `result.errors` and `stepErrors`, but a throw
-   from its pre-loop or post-loop work escaped both. The wrapper now runs
-   cleanups, restores the journal, and rethrows the original error. A
+   On a thrown error `runFurnaceMutation` runs cleanups, restores the
+   journal, and rethrows the original error, so a throw outside a body's own
+   catch does not leave the checkout torn with no marker. `applyAllComponents`
+   rolls back on collected `result.errors` and `stepErrors`, but a throw from
+   its pre-loop or post-loop work escapes both and relies on the wrapper. A
    rollback failure becomes a marker plus a warning, never a replacement
    error.
 
@@ -70,17 +67,15 @@ command, read the decision table at the bottom first.
    refusal on structural conflicts (`--force-unsafe` to override), and a
    JSONL history entry appended only after the mutation succeeded. This
    covers metadata mutations too: `patch tier` and `patch lint-ignore` route
-   through `confirmDestructive`. They used to accept `--yes` without ever
-   prompting, so the flag only showed up in the history record. Enforced by
+   through `confirmDestructive`. Enforced by
    `patch-tier-and-lint-ignore.integration.test.ts`.
 
    The history log is write-only: FireForge appends to it and no command
    reads it back, so nothing depends on its contents or location. It lives
    at `.fireforge/history.jsonl` (or `fireforge.json#history.path`), outside
-   the tracked patch queue. Before 0.50.0 it was
-   `patches/.fireforge-history.jsonl`; the first append after upgrading
-   moves that file, and appends its records when both exist rather than
-   overwriting either. Each record carries `invocationId` (one per FireForge
+   the tracked patch queue. If `patches/.fireforge-history.jsonl` exists,
+   the next append moves it there, and appends its records when both exist
+   rather than overwriting either. Each record carries `invocationId` (one per FireForge
    process), `pid`, `ppid`, and `sessionId` when `FIREFORGE_SESSION_ID` is
    set, so a session sharing the checkout can select its own lines.
    Enforced by `history-log-file.test.ts`.
@@ -117,14 +112,14 @@ command, read the decision table at the bottom first.
    and `tree remove` refuses while a live PID holds a tree lock and checks
    that its `rm -rf` target is contained in the tree path.
 
-   In-tree `test` (0.41.0) is the one conditional carve-out, and it is
+   In-tree `test` is the one conditional carve-out, and it is
    marker-gated. mach objdirs embed absolute `topsrcdir` and `topobjdir`
    paths, so `tree create --with-objdir` rewrites the cloned objdir's
    `mozinfo.json` to the tree using the same safe-relocation rewriter that
    `build --rewrite-mozinfo` uses, scrubs the cloned `_virtualenvs` (they
    carry primary shebangs, and mach rebuilds them in-tree), and runs
    `mach configure` inside the tree so the configure-generated root files are
-   regenerated against the tree's paths rather than keeping the primary's. It
+   regenerated against the tree's paths rather than keeping the primary's.
    Before configure, relocation rewrites old-source symlinks, `.pp`/`.d`,
    FasterMake and Cargo fingerprint metadata, and removes copied
    `config.statusd/*/config.track` inventories. Those inventories contain
@@ -151,14 +146,14 @@ command, read the decision table at the bottom first.
    **Both halves of that enforcement fail closed on an unreadable state,
    because "we cannot tell" is not "there is nothing there."** A marker that
    exists but does not parse reports `corrupt`, not `absent`, and refuses the
-   command. Reading it as absent granted a snapshot the full mutating command
-   set on the strength of a file that failed to parse. A lock directory whose
+   command. Reading it as absent would grant a snapshot the full mutating
+   command set on the strength of a file that failed to parse. A lock directory whose
    owner cannot be identified reports `unknown`, not free, and refuses
-   removal. Since 0.45.1 `withFileLock` treats its owner-record write as
+   removal. `withFileLock` treats its owner-record write as
    fatal (`writeLockOwner` in `file-lock-owner.ts` removes the just-created
    directory and throws a `GeneralError` if the record cannot be written or
-   does not read back as written), so an owner-less lock is only ever left by
-   a pre-0.45.1 holder or by a crash inside that write. It is still refused,
+   does not read back as written), so an owner-less lock is left only by a
+   crash inside that write or by a holder that never wrote a record. It is refused,
    for the same reason. The one exception is a lock directory that vanished
    between the probe and the owner read: that is a clean release, and reads
    as free.
@@ -168,7 +163,7 @@ command, read the decision table at the bottom first.
    refusal spares the read-only commands that are unconditionally allowed
    (`status`, `lint`, `typecheck`, `verify`): their verdict never consults
    marker fields, so an unreadable marker cannot change their answer, and
-   blocking them left the operator unable to diagnose the very tree that
+   blocking them would leave the operator unable to diagnose the very tree that
    needs inspecting. `conditional` verdicts can write, and stay refused.
    Enforced by `tree-guard.test.ts` (verdict drift gate and corrupt-marker
    refusal), `tree-store.integration.test.ts` (marker tri-state,
@@ -208,7 +203,7 @@ command, read the decision table at the bottom first.
    `GIT_INDEX_FILE` from the repository's own index so that every refresh
    lands there and is discarded. `typecheck` additionally ignores a
    jsconfig's own `incremental` and `tsBuildInfoFile`, so no sidecar is
-   written under `engine/`. Its incremental build info (0.48.0) lives in the
+   written under `engine/`. Its incremental build info lives in the
    project's `.fireforge/typecheck/`, outside the engine. The scope fails open, meaning an unresolvable git dir
    simply does not install it, and it is not reentrant. This exists so that
    invariant 8 stays evidential: a concurrent `fireforge test` must not be
@@ -221,16 +216,14 @@ command, read the decision table at the bottom first.
     in `<lock>.waiters/` named `<startedAtMs>-<pid>-<uuid>` and deregisters in
     a `finally` that covers both outcomes: acquired the lock, or timed out.
     A newcomer that finds live tickets takes one before trying the lock at
-    all. Since 0.50.0 the tickets decide the grant: only the waiter with no
+    all. The tickets decide the grant: only the waiter with no
     live ticket ahead of it (arrival time, then ticket name) attempts the
-    lock, so "You are next" is a promise. Before, every waiter raced `mkdir`
-    and a waiter whose poll had backed off lost each free moment to later
-    arrivals. Because a ticket now blocks the queue, a dead one must not: a
+    lock, so "You are next" is a promise. Because a ticket blocks the queue, a dead one must not: a
     ticket whose PID is gone (or reused, where the start tick can tell) is
     skipped and removed, and one its owner has not refreshed for 30 s (every
     waiter rewrites its ticket every 5 s) is skipped, which covers a stopped
     waiter and PID reuse elsewhere. A registry that cannot be written falls
-    back to the old unordered contention rather than failing an acquisition.
+    back to unordered contention rather than failing an acquisition.
     This applies to every `withFileLock` lock: the engine-session, patch,
     furnace and build locks among them. `fireforge status --lock` and the
     `--wait-lock` progress lines read it, and the lines name the ordering
@@ -258,7 +251,7 @@ command, read the decision table at the bottom first.
     Enforced by `patch-manifest-repair.test.ts` (real temp queues) and the
     repair cases in `doctor.test.ts`.
 
-## Lock release (0.44.0)
+## Lock release
 
 `releaseLockIfOwned(lockPath)` in `src/core/file-lock.ts` is the
 ownership-checked removal for callers that hold no acquisition token.
@@ -266,13 +259,12 @@ Currently that is the signal-time furnace sweeper
 (`forceReleaseFurnaceLocksForActiveOperations`). It verifies the PID before
 removing, which is the half of `releaseLock`'s guard a sweeper can still
 perform: the sweeper knows which lock paths its own operations opened, but
-not the per-acquisition UUID they minted. The bare `rm` it replaced could
+not the per-acquisition UUID they minted. A bare `rm` could
 delete a lock that a different process had acquired in the window between our
 operation dying and the sweep running.
 
 `completeJournalRollback` in `src/core/furnace-operation.ts` owns the
-mutation-body rollback sequence that eight furnace commands previously
-duplicated verbatim. The ordering is the invariant: `markRolledBack()` runs
+mutation-body rollback sequence that eight furnace commands share. The ordering is the invariant: `markRolledBack()` runs
 before the restore, so a restore that itself fails does not leave the
 lifecycle wrapper replaying the same journal on the way out, and the original
 error is rethrown unless the rollback is what failed.
@@ -297,7 +289,7 @@ seconds while waiting, so a holder dying mid-wait cannot strand waiters until
 The owner-record write is fatal. A failed or unverifiable write releases the
 just-created lock and throws a `GeneralError` instead of running the
 operation. Without that, a lock with no readable owner is reaped by the age
-heuristic after 5 minutes, which for a multi-hour build meant a second holder
+heuristic after 5 minutes, which for a multi-hour build would mean a second holder
 inside the critical section. Covered by `file-lock.test.ts`, "owner record
 write at acquisition": write failure, corrupt read-back, recorded acquisition
 time.
@@ -312,8 +304,7 @@ other layer.
 Wait ergonomics are opt-in: `pollMaxMs` (the poll interval doubles from
 `pollMs` up to the cap) and `waitProgressMs` with `onWaitProgress` (a periodic
 progress callback carrying the holder's PID, liveness, and owner-metadata
-lines from the pid file). All three are inert when unset, so existing callers
-keep byte-identical behavior. Within one poll iteration a due progress probe
+lines from the pid file). All three are inert when unset. Within one poll iteration a due progress probe
 runs before the deadline check, so a wait that times out has always reported
 the holder at least once when its budget exceeds `waitProgressMs`, however
 slow the host (`file-lock.test.ts`, "budget shorter than one iteration").
@@ -321,8 +312,8 @@ slow the host (`file-lock.test.ts`, "budget shorter than one iteration").
 ### `src/core/file-lock-owner.ts`
 
 The owner record (the `pid` file) itself: its format (PID, token,
-`acquired-at-ms=` and `start-tick=` lines, plus free-form metadata, and older
-records without the mechanical lines still parse), the write-and-verify
+`acquired-at-ms=` and `start-tick=` lines, plus free-form metadata; a record
+without the mechanical lines parses too), the write-and-verify
 contract described above (a read-back that errors is retried before it counts
 as a failed write, while a missing or mismatching record fails immediately),
 and PID-reuse liveness.
@@ -333,13 +324,13 @@ re-verification, status snapshot and timeout message uses. Beyond
 tick (`/proc/self/stat` field 22), and the probe reads the candidate's tick
 from `/proc/<pid>/stat`. A different tick means a different process, so the
 lock is stale. A crashed build's PID handed to a long-lived daemon therefore
-no longer keeps the dead lock honoured until the waiter's timeout. It uses
+does not keep the dead lock honoured until the waiter's timeout. It uses
 ticks rather than wall-clock times because `btime` moves with clock steps, and
 a wall-clock comparison would reap a live holder after NTP steps the clock
 forward. macOS and Windows have no cheap start-time source (a `ps` spawn per
 poll is not worth it) and keep the PID-only answer, and so do records without
-a start tick. Enforced by `file-lock-owner.test.ts`: backward-compatible
-parsing, forged mechanical lines dropped, transient read-back error retried
+a start tick. Enforced by `file-lock-owner.test.ts`: parsing of records without the
+mechanical lines, forged mechanical lines dropped, transient read-back error retried
 versus persistent error versus mismatch, fake-procfs tick parsing, reused-PID
 versus genuine-holder verdicts, stepped-clock immunity, and on Linux a
 real-procfs `withFileLock` reap of a live-PID stale record.
@@ -360,9 +351,9 @@ log or the engine-session lock shows one in the window (`re-export-purity-scope.
 
 Contention fails fast after about a second by default, with the fixed message
 "Another FireForge engine-mutating command is already running. Wait for it to
-finish, then retry `<command>`." That message contract is unchanged, and it
-also closes the bounded wait. Each of those commands accepts
-`--wait-lock [seconds]` (bare flag means 60, valid 1 to 3600) for a bounded
+finish, then retry `<command>`." The same message also closes the bounded
+wait. Each of those commands accepts
+`--wait-lock [seconds]` (bare flag means 60, valid 1 to 86400) for a bounded
 operator wait instead: polling backs off exponentially from 100 ms to 2 s, and
 roughly every 5 s a progress line identifies the holder from the lock's
 owner-metadata lines, in the form `Waiting for the FireForge engine lock held
@@ -432,7 +423,7 @@ hold it.
 The destructive-operation contract: `confirmDestructive` (summary, prompt,
 `--yes`, `--dry-run`, conflict refusal, `--force-unsafe`) and the
 append-only history log (`src/core/history-log-file.ts` resolves its path,
-migrates a legacy `patches/.fireforge-history.jsonl`, and stamps each
+moves a `patches/.fireforge-history.jsonl` it finds to that path, and stamps each
 record's invocation and session).
 
 ### `src/core/tree-store.ts`

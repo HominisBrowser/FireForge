@@ -73,12 +73,12 @@ function basename(token: string): string {
  * True when `command` IS a harness helper: its executable is a helper
  * binary, or an interpreter whose first argument is a helper script.
  *
- * Structural on purpose. An earlier version matched the helper names
- * anywhere in the command line, which is right for the httpd (`xpcshell -g
- * … -f …/server.js`) and wrong for everything that merely mentions such a
- * path: an editor opened on `server.js`, a shell whose command text quotes
- * it, a `grep` over the objdir. Report-only, that printed a misleading
- * `kill`; under the reap posture it terminated the operator's shell.
+ * Structural on purpose. Matching the helper names anywhere in the command
+ * line is right for the httpd (`xpcshell -g … -f …/server.js`) and wrong for
+ * everything that merely mentions such a path: an editor opened on
+ * `server.js`, a shell whose command text quotes it, a `grep` over the
+ * objdir. Report-only, that would print a misleading `kill`; under the reap
+ * posture it would terminate the operator's shell.
  */
 export function matchesHarnessHelper(command: string): boolean {
   const [exe, first] = command.trim().split(/\s+/);

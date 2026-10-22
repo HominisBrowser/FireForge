@@ -96,7 +96,7 @@ describe('ORPHANED_HARNESS_DOCTOR_CHECK', () => {
       ['-axo', 'pid=,ppid=,time=,command='],
       expect.anything()
     );
-    // 'warning' is the report-only assertion now: it is the single field that
+    // 'warning' is the report-only assertion: it is the single field that
     // decides the outcome, so a separate `passed` check would restate it.
     expect(check.severity).toBe('warning');
     expect(check.message).toContain('PID 4242');

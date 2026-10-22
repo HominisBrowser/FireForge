@@ -280,7 +280,7 @@ function buildWireSubscriptOptions(
 }
 
 /**
- * Surfaces any legacy parser fallbacks the wiring run consumed, so the
+ * Surfaces any regex parser fallbacks the wiring run consumed, so the
  * operator knows which files were mutated by the regex path rather than
  * the AST path.
  */

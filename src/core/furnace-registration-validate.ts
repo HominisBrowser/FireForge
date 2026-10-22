@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Shared validation for furnace custom element registration placement.
- * Used after both AST and legacy code paths to avoid duplicating logic.
+ * Shared by the AST registration editor and the registration validator to
+ * avoid duplicating logic.
  */
 
 import { FurnaceError } from '../errors/furnace.js';

@@ -53,7 +53,7 @@ function makeChild(): MockChild {
     exitCode: null as number | null,
     signalCode: null as NodeJS.Signals | null,
     // A non-zero pid lets the preflight exercise the process-group kill
-    // branch (`process.kill(-pid, …)`) that was added to stop Firefox
+    // branch (`process.kill(-pid, …)`) that stops Firefox
     // grandchildren from keeping the stderr pipe alive after PASS.
     pid: 4242,
     kill: vi.fn(() => true),

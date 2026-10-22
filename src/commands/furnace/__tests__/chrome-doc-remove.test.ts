@@ -298,7 +298,7 @@ describe('furnaceChromeDocRemoveCommand — absent, refused, and failing paths',
     ).rejects.toThrow(/restore failed too/);
 
     // Asserts the outcome (a pending-repair marker persisted to furnace
-    // state) rather than the internal call. The rollback sequence now lives
+    // state) rather than the internal call. The rollback sequence lives
     // in `completeJournalRollback`, whose call to the recorder is
     // intra-module and so invisible to a module-level spy.
     const updater = persistSpy.mock.calls.at(-1)?.[1] as

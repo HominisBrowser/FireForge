@@ -432,10 +432,9 @@ async function buildLockTimeoutError(
  *
  * The queue is read at the moment the budget expires rather than taken from
  * the last progress probe. A probe snapshot is up to one `waitProgressMs`
- * stale, and, the reason this changed, it may not exist at all: a short
- * budget can expire before the first probe lands (a slow runner's
- * `registerWaiter` alone can outlast it), and a caller that configured no
- * probe at all never had one. Both used to lose the position silently.
+ * stale, and it may not exist at all: a short budget can expire before the
+ * first probe lands (a slow runner's `registerWaiter` alone can outlast it),
+ * and a caller that configured no probe at all never has one.
  */
 function formatQueuePositionReached(queue: LockQueueState): string {
   if (queue.depth === 0) return '';
@@ -610,12 +609,10 @@ export async function withFileLock<T>(
         // buys a fresh budget, because the wait is working. Only a queue
         // that stops moving starves, which is the case the timeout is for.
         //
-        // The first observation is a seed, never an advance. `bestAhead`
-        // used to start `undefined`, so the opening probe always satisfied
-        // this test and handed out a free full budget: a `--wait-lock 300`
-        // run outlived its 300 s even against a queue that never moved
-        // once, which is the "it does not reliably give up after N
-        // seconds" behaviour a downstream fork reported.
+        // The first observation is a seed, never an advance. Counted as an
+        // advance, the opening probe would hand out a free full budget: a
+        // `--wait-lock 300` run would outlive its 300 s even against a queue
+        // that never moved once.
         if (hardDeadline !== undefined) {
           if (bestAhead === undefined) {
             bestAhead = probe.queue.ahead;

@@ -103,11 +103,10 @@ export function countTrailingSegmentMatches(a: string, b: string): number {
  *
  * Shared on purpose: this set governs two halves of one decision,
  * `scoreCandidate` (selection) and `isConfidentMatch` (confirmation, in
- * `build-audit.ts`). When the halves kept separate copies they disagreed,
- * so a source path could earn a selection bonus for a segment that
- * confirmation then rejected as meaningless, leaving the chosen artifact
- * unconfirmable. Any addition must apply to both halves, which is now
- * automatic.
+ * `build-audit.ts`). Separate copies would disagree, so a source path
+ * could earn a selection bonus for a segment that confirmation then
+ * rejected as meaningless, leaving the chosen artifact unconfirmable. One
+ * set makes every addition apply to both halves.
  */
 export const GENERIC_PATH_SEGMENTS: ReadonlySet<string> = new Set([
   'content',

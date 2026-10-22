@@ -87,8 +87,8 @@ export async function patchTierCommand(
 
   // Destructive-operation contract (docs/lifecycle-invariants.md): manifest
   // metadata mutations get summary + dry-run + confirmation/--yes + history
-  // uniformly. This command used to accept --yes without ever prompting, so
-  // the flag only appeared in the history record.
+  // uniformly, so --yes skips a real prompt rather than only appearing in
+  // the history record.
   const decision = await confirmDestructive({
     operation: 'patch-tier',
     title: `Patch tier: ${target.filename}`,

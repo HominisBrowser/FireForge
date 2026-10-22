@@ -85,7 +85,7 @@ describe('logger machine-output mode', () => {
       'cancelled: cancelled op\n',
     ]);
     // Nothing may touch clack's stdout-bound log helpers: a warning before
-    // the JSON body used to break every `status --json | jq` consumer.
+    // the JSON body would break every `status --json | jq` consumer.
     expect(clack.log.info).not.toHaveBeenCalled();
     expect(clack.log.warn).not.toHaveBeenCalled();
     expect(clack.log.error).not.toHaveBeenCalled();

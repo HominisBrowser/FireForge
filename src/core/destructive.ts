@@ -253,8 +253,8 @@ export async function confirmDestructive(input: DestructiveOpInput): Promise<Des
 /**
  * Appends a single JSONL record to the project's patch history log
  * (`.fireforge/history.jsonl` unless `fireforge.json#history.path` says
- * otherwise; a log at the pre-0.50 `patches/.fireforge-history.jsonl` is
- * moved there first).
+ * otherwise; a log found at `patches/.fireforge-history.jsonl` is moved
+ * there first).
  *
  * Call order matters: append only after the mutation succeeds, never
  * pre-emptively, so rolled-back failures do not leave ghost entries. The log

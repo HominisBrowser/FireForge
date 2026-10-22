@@ -196,9 +196,8 @@ describe('registerFile', () => {
   });
 
   it('dispatches test manifests to registerTestManifest', async () => {
-    // A real moz.build list, header included. A bare list body only parses
-    // under the lax legacy regex scanner. The tokenizer, now the only path,
-    // needs the header.
+    // A real moz.build list, header included. The tokenizer, the only
+    // parsing path, needs the header: a bare list body does not parse.
     mockReadText.mockResolvedValue(
       ['BROWSER_CHROME_MANIFESTS += [', '    "content/test/aaa/browser.toml",', ']', ''].join('\n')
     );

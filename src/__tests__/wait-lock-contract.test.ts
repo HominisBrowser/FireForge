@@ -36,9 +36,8 @@ const EXPECTED_WAIT_LOCK_COMMANDS = [
   'furnace deploy',
   'furnace sync',
   // These take only Furnace's own lock (`.fireforge/furnace.lock`, via
-  // `runFurnaceMutation`). They used to carry the accept-and-ignore
-  // registration, whose help claimed "no FireForge lock", while their lock
-  // budget came only from FIREFORGE_WAIT_LOCK.
+  // `runFurnaceMutation`), so they register --wait-lock for that lock rather
+  // than an accept-and-ignore flag whose help claims "no FireForge lock".
   'furnace create',
   'furnace remove',
   'furnace rename',

@@ -5,9 +5,8 @@
  * can take as their own later patch, and the exact `patch staged-dependency
  * --add` commands that declare the edges instead.
  *
- * The refusal used to end with "export them with --order <n> or run
- * patch staged-dependency --add", which left the operator to work out both
- * the number and every flag of the declaration from the finding text.
+ * Both the order number and every flag of the declaration are spelled out,
+ * so the operator does not have to work them out from the finding text.
  */
 
 import { STAGED_DEPENDENCY_REASON_PLACEHOLDER } from '../core/patch-lint-staged-registration.js';

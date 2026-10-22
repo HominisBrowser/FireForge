@@ -70,6 +70,47 @@ export interface SplitPlan {
    * unused. Populated by {@link runProjectedSplitLint}.
    */
   stagedMaintenance: SplitStagedMaintenance;
+  /**
+   * The command running the plan, named in the `reason` of every
+   * declaration it writes. Absent: `patch split`.
+   */
+  operation?: MoveOperation;
+  /**
+   * New engine files no patch owned that `move-files --scan-file` adopts
+   * into the new patch in the same transaction. Already part of
+   * `movedFiles`; listed apart only for the summary and the commit's
+   * still-unowned check.
+   */
+  adoptedFiles?: string[];
+}
+
+/** The commands that move files between patches and declare the edges they open. */
+export type MoveOperation = 'patch split' | 'patch move-files';
+
+/**
+ * The `reason` a move records on a forward declaration it writes, so the
+ * declaration explains itself in `patches.json` and `staged-dependency
+ * --add --from` accepts it without a hand-written `--reason`.
+ *
+ * @param source - Patch the files left
+ * @param destination - Patch the files moved into
+ * @param operation - The command that moved them
+ */
+export function moveDeclarationReason(
+  source: string,
+  destination: string,
+  operation: MoveOperation
+): string {
+  return `${source} → ${destination} by ${operation}`;
+}
+
+/** The {@link moveDeclarationReason} of a split plan. */
+export function splitDeclarationReason(plan: SplitPlan): string {
+  return moveDeclarationReason(
+    plan.source.filename,
+    plan.placement.newFilename,
+    plan.operation ?? 'patch split'
+  );
 }
 
 /**
@@ -199,7 +240,8 @@ function buildProjectedSplitEntries(
  */
 function computeSplitStagedDependencyAdditions(
   projectedEntries: PatchQueueEntry[],
-  newFilename: string
+  newFilename: string,
+  reason: string
 ): Map<string, PatchStagedForwardImport[]> {
   const additions = new Map<string, PatchStagedForwardImport[]>();
   for (const edge of collectForwardImportEdges({ entries: projectedEntries })) {
@@ -209,6 +251,7 @@ function computeSplitStagedDependencyAdditions(
       specifier: edge.specifier,
       creates: edge.creates,
       owner: newFilename,
+      reason,
     };
     const list = additions.get(edge.entry) ?? [];
     const dup = list.some(
@@ -282,17 +325,17 @@ export function runProjectedSplitLint(
   // the new patch, then inject them before linting so they resolve.
   const stagedDependencyAdditions = computeSplitStagedDependencyAdditions(
     projectedEntries,
-    plan.placement.newFilename
+    plan.placement.newFilename,
+    splitDeclarationReason(plan)
   );
   injectStagedDependencyAdditions(projectedEntries, stagedDependencyAdditions);
 
   const baselineAll = lintPatchQueue(baseCtx);
-  const projectedAll = lintPatchQueue({
-    entries: projectedEntries,
-    // Keep the projection patch-policy-aware whenever the baseline is, so
-    // computeProjectedLintRegressions compares symmetric rule sets.
-    ...(baseCtx.patchPolicy ? { patchPolicy: baseCtx.patchPolicy } : {}),
-  });
+  // Keep every queue-wide lint setting of the baseline (patch policy,
+  // forward-registration scope, token scales), so
+  // computeProjectedLintRegressions compares symmetric rule sets and a
+  // test-manifest suite entry is projected as the committed gate sees it.
+  const projectedAll = lintPatchQueue({ ...baseCtx, entries: projectedEntries });
   const baselineIssues = baselineAll.filter((i) => i.severity === 'error');
   const projectedIssues = projectedAll.filter((i) => i.severity === 'error');
   const oldNameByNew = new Map(
@@ -383,6 +426,12 @@ export function buildSplitSummary(plan: SplitPlan): string[] {
   const summary = [
     `split ${plan.source.filename}`,
     `moved files (${plan.movedFiles.length}): ${plan.movedFiles.join(', ')}`,
+    ...(plan.adoptedFiles?.length
+      ? [
+          `of which adopted from the worktree (no patch owned them) (${plan.adoptedFiles.length}): ` +
+            plan.adoptedFiles.join(', '),
+        ]
+      : []),
     `source keeps (${plan.remainingFiles.length}): ${plan.remainingFiles.join(', ')}`,
     `new patch: ${plan.placement.newFilename} (order ${plan.placement.insertionOrder})`,
   ];
@@ -411,9 +460,11 @@ export function buildSplitSummary(plan: SplitPlan): string[] {
 
 /**
  * Maps a declaration the split projection proposes back onto the queue as
- * it stands: renumbered patches take their current names, and an owner
- * that is the patch the split would create is dropped (it does not exist
- * until the split runs).
+ * it stands: renumbered patches take their current names. An owner that is
+ * the patch the split would create keeps the planned filename, so the
+ * report declares the owner the rerun creates (`staged-dependency --add`
+ * accepts an owner the queue does not hold yet, and the move then lands
+ * with the declaration already right).
  */
 export function splitDeclarationRenamer(plan: SplitPlan): DeclarationRenamer {
   const oldNameByNew = new Map(
@@ -423,6 +474,6 @@ export function splitDeclarationRenamer(plan: SplitPlan): DeclarationRenamer {
   return ({ owner, ...declaration }) => ({
     ...declaration,
     patch: current(declaration.patch),
-    ...(owner !== plan.placement.newFilename ? { owner: current(owner) } : {}),
+    owner: owner === plan.placement.newFilename ? owner : current(owner),
   });
 }

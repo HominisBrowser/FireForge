@@ -41,7 +41,7 @@ export function hasRawCssColors(content: string): boolean {
  * the line is blanked, corrupting whatever lint pass consumes the stripped
  * text. The source is tokenized as a module, then as a script. Firefox
  * chrome sources can contain constructs acorn tokenizes under neither goal.
- * Those fall back to the legacy regex strip, which handles strings but not
+ * Those fall back to the regex-only strip, which handles strings but not
  * regex literals.
  */
 export function stripJsComments(source: string): string {
@@ -56,7 +56,7 @@ export function stripJsComments(source: string): string {
  * legacy octal escape is a tokenizer error only under the module goal.
  * Callers that must not under-count when tokenizing fails (the code-line
  * size metric) read the `null` and pick their own fallback rather than the
- * legacy regex strip, which can blank code.
+ * regex-only strip, which can blank code.
  */
 export function stripJsCommentsParsed(source: string): string | null {
   const comments = collectJsComments(source, 'module') ?? collectJsComments(source, 'script');
@@ -100,7 +100,7 @@ function collectJsComments(
 }
 
 /**
- * Legacy pure-regex comment strip, used only when acorn cannot tokenize
+ * Pure-regex comment strip, used only when acorn cannot tokenize
  * the source (preprocessor directives, syntax errors). Strings survive.
  * Regex literals are not modeled, so `//` inside a regex blanks the rest
  * of the line.

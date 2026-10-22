@@ -109,10 +109,10 @@ function parseFirefoxBlock(rec: ParsedRecord): FireForgeConfig['firefox'] {
   }
 
   const firefoxProduct = requireConfigString(firefoxRec, 'product', 'firefox.product');
-  // Uses the shared guard rather than a fourth copy of the member list. This
-  // is the fireforge.json read path: a product added to the union but not to
-  // the copy that used to live here would have been silently rejected from
-  // every project config.
+  // Uses the shared guard rather than a separate copy of the member list.
+  // This is the fireforge.json read path: a product added to the union but
+  // not to a local copy would be silently rejected from every project
+  // config.
   if (!isValidFirefoxProduct(firefoxProduct)) {
     throw new ConfigError(
       `Config field "firefox.product" must be one of: ${FIREFOX_PRODUCTS.join(', ')}`

@@ -167,8 +167,8 @@ export async function downloadFirefoxSource(options: DownloadFirefoxSourceOption
     await removeDir(tempDir);
     // Only throw away the ~600 MB cached archive when the failure indicts
     // the archive, not the environment. ENOSPC, a permission problem in
-    // destDir, or tar disappearing mid-run used to invalidate a perfectly
-    // good download and force a full re-fetch on retry.
+    // destDir, or tar disappearing mid-run leaves a perfectly good download
+    // that a retry can reuse without a full re-fetch.
     if (isLikelyArchiveCorruptionError(error)) {
       await invalidateArchiveCache(archive, cacheDir);
     }

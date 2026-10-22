@@ -79,9 +79,10 @@ export interface GitStatusEntry {
 /**
  * In-flight or settled successful `git` availability probe.
  *
- * The probe spawns `which git` (or `where` on Windows), and every git wrapper
- * in this layer used to run it before each command, which meant dozens of
- * extra spawns per `fireforge export`. Only success is cached: a rejection
+ * The probe spawns `which git` (or `where` on Windows); running it before
+ * every command would mean dozens of extra spawns per `fireforge export`, so
+ * the result is shared by every git wrapper in this layer. Only success is
+ * cached: a rejection
  * clears the slot so a run that installs git mid-flight (or a test that flips
  * the probe) sees the new answer instead of a sticky refusal.
  */

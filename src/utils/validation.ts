@@ -24,8 +24,8 @@ export function isString(value: unknown): value is string {
  */
 export function isNumber(value: unknown): value is number {
   // Number.isFinite matches the documented contract: NaN and ±Infinity are
-  // excluded (a JSON config field of 1e999 parses to Infinity and used to
-  // validate as a legal number).
+  // excluded (a JSON config field of 1e999 parses to Infinity, which must
+  // not validate as a legal number).
   return typeof value === 'number' && Number.isFinite(value);
 }
 

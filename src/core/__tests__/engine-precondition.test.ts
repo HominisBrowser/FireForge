@@ -62,9 +62,9 @@ describe('assertEngineGitReady', () => {
   });
 
   it('ends in a single full stop when no suffix is supplied', async () => {
-    // The base message used to carry its own trailing period, so the rebase
-    // caller's `', then retry…'` suffix rendered as "cleanly., then retry".
-    // Moving the period to the default means neither form doubles it.
+    // The period lives in the default suffix, not the base message, so the
+    // rebase caller's `', then retry…'` suffix never renders as
+    // "cleanly., then retry" and neither form doubles it.
     await writeFiles(engineDir, { 'a.txt': 'x\n' });
     await runGit(engineDir, ['init']);
 

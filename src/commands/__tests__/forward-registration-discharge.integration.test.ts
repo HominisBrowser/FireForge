@@ -269,13 +269,13 @@ describe('forward-registration discharge', () => {
 
     const after = await lint();
     expect(findings(after, 'forward-registration')).toEqual([]);
-    // The regression this fixes: discharging used to trade the error for a
-    // warning on the very patch the remedy told the operator to edit.
+    // Discharging must not trade the error for a warning on the very patch
+    // the remedy told the operator to edit.
     expect(findings(after, 'staged-dependency-unused')).toEqual([]);
   });
 
   it('negative control: the pre-fix synthesised line is reported unused', async () => {
-    // What the rule printed before the fix, for the multi-line array.
+    // A naively synthesised one-line form of the multi-line array.
     await patchStagedDependencyCommand(projectRoot, '111-ui-beta.patch', {
       add: true,
       kind: 'registration',

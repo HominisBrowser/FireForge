@@ -5,10 +5,10 @@ import { sampleTestHost, stampPerfHost } from '../../core/test-host-state.js';
 
 // The run log is opened before any preflight and its path rides the
 // FIREFORGE-VERDICT line as ` log=<path>`, so these exact-string verdict
-// assertions require no log to be open. Stating that here replaces the
-// accident they used to rely on: `/project` is a filesystem root on POSIX,
-// so the best-effort open failed and degraded to "no log". On Windows the
-// same path resolves against the current drive and succeeds.
+// assertions require no log to be open. Stating that here rather than
+// relying on an accident: `/project` is a filesystem root on POSIX, so the
+// best-effort open fails and degrades to "no log", but on Windows the same
+// path resolves against the current drive and succeeds.
 vi.mock('../../core/test-host-state.js', () => ({
   sampleTestHost: vi.fn(() => Promise.resolve({ load: 0, power: 'unknown' })),
   reportTestHost: vi.fn(() => false),

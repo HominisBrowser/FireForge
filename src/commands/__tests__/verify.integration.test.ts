@@ -463,7 +463,7 @@ describe('verify command', () => {
     it('refuses a name that matches no patch, and a missing queue', async () => {
       await seedForwardImportQueue();
       await expect(verifyCommand(projectRoot, { patches: ['nope'] })).rejects.toThrow(
-        'No patch in the queue matches "nope"'
+        /No patch in the queue matches "nope"\. .*patches in (the )?queue/
       );
       await writeFile(
         join(patchesDir, 'patches.json'),

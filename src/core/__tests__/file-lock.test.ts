@@ -244,10 +244,10 @@ describe('file-lock', () => {
   });
 
   it('reaps a lock whose owner dies while waiters are already polling', async () => {
-    // The stale probe used to run exactly once per waiter: a holder that
-    // died after that single probe left the waiter polling a permanently
-    // dead lock until timeoutMs (24 h for the build lock). The periodic
-    // re-probe bounds that to staleReprobeMs.
+    // With a single stale probe per waiter, a holder that died after that
+    // probe would leave the waiter polling a permanently dead lock until
+    // timeoutMs (24 h for the build lock). The periodic re-probe bounds
+    // that to staleReprobeMs.
     const { writeFile } = await import('node:fs/promises');
     const { spawn } = await import('node:child_process');
     const tempDir = await makeTempDir('fireforge-midwait-death-');
@@ -599,11 +599,11 @@ describe('a wait whose queue position keeps improving', () => {
   });
 
   it('does not hand out a free budget on the FIRST probe of a stalled queue', async () => {
-    // Regression: `bestAhead` started `undefined`, so the opening probe
-    // always counted as an advance and granted a fresh full budget. A
-    // `--wait-lock 300` run therefore waited ~600s against a queue that
-    // never moved once. The wait must expire on roughly the budget asked
-    // for, not on double it.
+    // If `bestAhead` started `undefined`, the opening probe would always
+    // count as an advance and grant a fresh full budget, so a
+    // `--wait-lock 300` run would wait ~600s against a queue that never
+    // moved once. The wait must expire on roughly the budget asked for,
+    // not on double it.
     const tempDir = await makeTempDir('fireforge-firstprobe-lock-');
     const lockPath = join(tempDir, 'engine-session.lock');
     await mkdir(lockPath);
@@ -643,9 +643,9 @@ describe('a wait whose queue position keeps improving', () => {
     // Same shape as `runAdvancingQueue` above, for the same reasons: the
     // retirement is synchronous so the probe that follows it cannot land
     // first, and the budget spans two probes with ~300 ms of slack each.
-    // The un-awaited `rm` this used to do lost that race on a Windows
-    // runner: the second probe still saw both waiters, the wait expired
-    // "2 from the head of a queue of 3", and no extension was ever granted.
+    // An un-awaited `rm` loses that race on a Windows runner: the second
+    // probe still sees both waiters, the wait expires "2 from the head of a
+    // queue of 3", and no extension is ever granted.
     await withFileLock(lockPath, () => Promise.resolve('acquired'), {
       timeoutMs: 1_500,
       pollMs: 20,
@@ -711,11 +711,11 @@ describe('forceReleaseHeldLocksForSignal', () => {
 });
 
 describe('owner record write at acquisition', () => {
-  // The owner record used to be best-effort: a failed write left a lock
-  // directory with no readable PID, which the age heuristic reaps after five
-  // minutes regardless of the holder being alive. The build lock legitimately
-  // holds for hours, so a second `fireforge build` walked straight into the
-  // critical section. The write is now fatal and the lock is released.
+  // The owner record write is fatal and releases the lock: a lock directory
+  // with no readable PID is reaped by the age heuristic after five minutes
+  // regardless of the holder being alive. The build lock legitimately holds
+  // for hours, so a second `fireforge build` would walk straight into the
+  // critical section.
   it('releases the lock and refuses the operation when the owner record cannot be written', async () => {
     const tempDir = await makeTempDir('fireforge-owner-write-fail-');
     const lockPath = join(tempDir, 'state.json.fireforge.lock');

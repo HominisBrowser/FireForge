@@ -396,9 +396,9 @@ describe('reExportCommand integration', () => {
   });
 
   it('--scan-file names the FIRST missing path in argument order when several are missing', async () => {
-    // The existence probes now run through a bounded pool. The refusal
-    // must still deterministically name the first missing file in
-    // argument order, exactly as the serial loop did.
+    // The existence probes run through a bounded pool. The refusal must
+    // still deterministically name the first missing file in argument
+    // order, as a serial loop would.
     await writeFiles(join(projectRoot, 'engine'), {
       'tracked.txt': 'changed\n',
     });
@@ -1605,7 +1605,7 @@ describe('reExportCommand dry-run purity', () => {
   });
 
   it('withDryRunPurityGuard names the FIRST unreadable patch in sorted order when several fail', async () => {
-    // The hashing now runs through a bounded pool. Error selection happens
+    // The hashing runs through a bounded pool. Error selection happens
     // in a deterministic post-pool pass, so the refusal must name the
     // first failing file in sorted filename order, not whichever worker
     // happened to fail first.

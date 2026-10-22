@@ -3,14 +3,13 @@
  * Tracked binary files must round-trip through a real `GIT binary patch`
  * body, against a real git repository.
  *
- * The batched diff path used to route only untracked binaries through
- * `generateBinaryFilePatch`. A binary already tracked in HEAD fell through
- * to a plain `git diff HEAD`, which degrades to the informational
- * `Binary files a/x and b/x differ`. That body carries none of the bytes and
- * cannot be replayed by `git apply`, so a `re-export` silently replaced real
- * signing-certificate deltas with an un-appliable stub while every gate
- * stayed green. These tests pin the payload for both arms, and pin that
- * `--binary` did not disturb text sections.
+ * The batched diff path routes tracked binaries, not only untracked ones,
+ * through a binary-capable diff. A plain `git diff HEAD` degrades to the
+ * informational `Binary files a/x and b/x differ`, a body that carries none
+ * of the bytes and cannot be replayed by `git apply`, so a `re-export` would
+ * silently replace real signing-certificate deltas with an un-appliable stub
+ * while every gate stays green. These tests pin the payload for both arms,
+ * and pin that `--binary` does not disturb text sections.
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';

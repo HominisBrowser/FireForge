@@ -327,10 +327,10 @@ project_flag(
   });
 
   it('stamps generated files with the project license header', async () => {
-    // Regression: without a license in BrandingConfig, the scaffold wrote
-    // MPL-2.0 headers unconditionally. `patch-lint` then flagged every
-    // generated branding file for `missing-license-header` on the first
-    // export of a non-MPL project (0BSD, EUPL-1.2, GPL-2.0-or-later).
+    // The scaffold must not write MPL-2.0 headers unconditionally: `patch-lint`
+    // would flag every generated branding file for `missing-license-header`
+    // on the first export of a non-MPL project (0BSD, EUPL-1.2,
+    // GPL-2.0-or-later).
     vi.mocked(pathExists).mockImplementation((filePath: string) => {
       if (filePath.endsWith('unofficial')) return Promise.resolve(true);
       if (filePath.endsWith('mybrowser')) return Promise.resolve(false);

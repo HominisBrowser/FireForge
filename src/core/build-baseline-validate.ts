@@ -39,17 +39,15 @@ function isCoverageAnchor(value: unknown): boolean {
   );
 }
 
-function isCoverageRecordMap(value: unknown): boolean {
+/** A `controlBuild` stamp: the control's diff file, its targets and when it went in. */
+function isControlBuildStamp(value: unknown): boolean {
   return (
     isObject(value) &&
-    Object.entries(value).every(
-      ([path, record]) =>
-        isBaselinePath(path) &&
-        isCoverageAnchor(record) &&
-        isObject(record) &&
-        Array.isArray(record['inputs']) &&
-        record['inputs'].every(isBaselinePath)
-    )
+    typeof value['diffFile'] === 'string' &&
+    Array.isArray(value['targets']) &&
+    value['targets'].every(isBaselinePath) &&
+    typeof value['appliedAt'] === 'string' &&
+    Number.isFinite(Date.parse(value['appliedAt']))
   );
 }
 
@@ -63,47 +61,150 @@ function isBaselineRecorder(value: unknown): boolean {
   );
 }
 
-/** Validates persisted fields without converting malformed coverage into a full claim. */
-export function isBuildBaseline(value: unknown): value is BuildBaseline {
-  if (!isObject(value)) return false;
-  if (
-    typeof value['engineHeadSha'] !== 'string' ||
-    typeof value['builtAt'] !== 'string' ||
-    !Number.isFinite(Date.parse(value['builtAt'])) ||
-    typeof value['binaryName'] !== 'string' ||
-    !/^[a-z][a-z0-9-]*$/.test(value['binaryName'])
-  )
-    return false;
+/**
+ * The first field of a persisted baseline that fails validation, and the
+ * offending value: what a refusal names so the operator can tell a scoped
+ * coverage claim from a corrupt marker.
+ */
+export interface BuildBaselineProblem {
+  /** Field path, e.g. `testPackagingCoverage[2]` or `testCoverageRecords["a/"]`. */
+  field: string;
+  /** The offending value, as found (may be any JSON value). */
+  value: unknown;
+}
 
+/** Fields whose problem a scoped `test --build` can leave and a fresh one replaces. */
+const COVERAGE_FIELDS = ['testPackagingCoverage', 'testCoverageRecords', 'fullCoverageAnchor'];
+
+/** True when the problem sits in a packaging-coverage field. */
+export function isCoverageProblem(problem: BuildBaselineProblem): boolean {
+  return COVERAGE_FIELDS.some(
+    (field) =>
+      problem.field === field ||
+      problem.field.startsWith(`${field}[`) ||
+      problem.field.startsWith(`${field}.`)
+  );
+}
+
+/** Renders a problem for a refusal: the field and a bounded JSON rendering of its value. */
+export function describeBuildBaselineProblem(problem: BuildBaselineProblem): string {
+  let rendered: string;
+  try {
+    // JSON.stringify(undefined) returns undefined at runtime despite its type.
+    const json = JSON.stringify(problem.value) as string | undefined;
+    rendered = json ?? 'undefined';
+  } catch {
+    rendered = String(problem.value);
+  }
+  if (rendered.length > 120) rendered = `${rendered.slice(0, 117)}...`;
+  return `${problem.field} = ${rendered}`;
+}
+
+function findFingerprintMapProblem(
+  field: string,
+  value: unknown
+): BuildBaselineProblem | undefined {
+  if (!isObject(value)) return { field, value };
+  for (const [path, fingerprint] of Object.entries(value)) {
+    if (!isBaselinePath(path)) return { field: `${field}[${JSON.stringify(path)}]`, value: path };
+    if (!isFingerprint(fingerprint)) {
+      return { field: `${field}[${JSON.stringify(path)}]`, value: fingerprint };
+    }
+  }
+  return undefined;
+}
+
+function findCoverageRecordProblem(value: unknown): BuildBaselineProblem | undefined {
+  const field = 'testCoverageRecords';
+  if (!isObject(value)) return { field, value };
+  for (const [path, record] of Object.entries(value)) {
+    const entry = `${field}[${JSON.stringify(path)}]`;
+    if (!isBaselinePath(path)) return { field: entry, value: path };
+    if (!isCoverageAnchor(record) || !isObject(record) || !Array.isArray(record['inputs'])) {
+      return { field: entry, value: record };
+    }
+    const inputs: unknown[] = record['inputs'];
+    const input = inputs.find((item) => !isBaselinePath(item));
+    if (input !== undefined) return { field: `${entry}.inputs`, value: input };
+  }
+  return undefined;
+}
+
+/**
+ * Validates persisted fields without converting malformed coverage into a
+ * full claim, and returns the first failing field with its value, or
+ * undefined when the baseline is valid.
+ *
+ * @param value - The parsed `last-build.json`
+ */
+export function findBuildBaselineProblem(value: unknown): BuildBaselineProblem | undefined {
+  if (!isObject(value)) return { field: '(root)', value };
+  if (typeof value['engineHeadSha'] !== 'string') {
+    return { field: 'engineHeadSha', value: value['engineHeadSha'] };
+  }
+  if (typeof value['builtAt'] !== 'string' || !Number.isFinite(Date.parse(value['builtAt']))) {
+    return { field: 'builtAt', value: value['builtAt'] };
+  }
+  if (typeof value['binaryName'] !== 'string' || !/^[a-z][a-z0-9-]*$/.test(value['binaryName'])) {
+    return { field: 'binaryName', value: value['binaryName'] };
+  }
   for (const field of [
     'packageableFingerprints',
     'testInputFingerprints',
     'buildInputFingerprints',
   ]) {
-    if (value[field] !== undefined && !isFingerprintMap(value[field])) return false;
+    if (value[field] === undefined) continue;
+    const problem = findFingerprintMapProblem(field, value[field]);
+    if (problem !== undefined) return problem;
   }
   const coverage = value['testPackagingCoverage'];
-  if (
-    coverage !== undefined &&
-    coverage !== 'full' &&
-    !(Array.isArray(coverage) && coverage.every(isBaselinePath))
-  )
-    return false;
-  if (value['mozconfigHash'] !== undefined && !isFingerprint(value['mozconfigHash'])) return false;
-  if (value['recordedBy'] !== undefined && typeof value['recordedBy'] !== 'string') return false;
-  if (value['recorder'] !== undefined && !isBaselineRecorder(value['recorder'])) return false;
-  if (
-    value['testCoverageRecords'] !== undefined &&
-    !isCoverageRecordMap(value['testCoverageRecords'])
-  )
-    return false;
-  if (value['fullCoverageAnchor'] !== undefined && !isCoverageAnchor(value['fullCoverageAnchor']))
-    return false;
+  if (coverage !== undefined && coverage !== 'full') {
+    if (!Array.isArray(coverage)) return { field: 'testPackagingCoverage', value: coverage };
+    const index = coverage.findIndex((path) => !isBaselinePath(path));
+    if (index >= 0) {
+      return { field: `testPackagingCoverage[${index}]`, value: coverage[index] };
+    }
+  }
+  if (value['mozconfigHash'] !== undefined && !isFingerprint(value['mozconfigHash'])) {
+    return { field: 'mozconfigHash', value: value['mozconfigHash'] };
+  }
+  if (value['recordedBy'] !== undefined && typeof value['recordedBy'] !== 'string') {
+    return { field: 'recordedBy', value: value['recordedBy'] };
+  }
+  if (value['recorder'] !== undefined && !isBaselineRecorder(value['recorder'])) {
+    return { field: 'recorder', value: value['recorder'] };
+  }
+  if (value['testCoverageRecords'] !== undefined) {
+    const problem = findCoverageRecordProblem(value['testCoverageRecords']);
+    if (problem !== undefined) return problem;
+  }
+  if (value['fullCoverageAnchor'] !== undefined && !isCoverageAnchor(value['fullCoverageAnchor'])) {
+    return { field: 'fullCoverageAnchor', value: value['fullCoverageAnchor'] };
+  }
   const components = value['staticComponentsBaseline'];
-  return (
-    components === undefined ||
-    (isObject(components) &&
+  if (
+    components !== undefined &&
+    !(
+      isObject(components) &&
       typeof components['engineHeadSha'] === 'string' &&
-      isFingerprintMap(components['fingerprints']))
-  );
+      isFingerprintMap(components['fingerprints'])
+    )
+  ) {
+    return { field: 'staticComponentsBaseline', value: components };
+  }
+  if (value['controlBuild'] !== undefined && !isControlBuildStamp(value['controlBuild'])) {
+    return { field: 'controlBuild', value: value['controlBuild'] };
+  }
+  return undefined;
+}
+
+/**
+ * Validates persisted fields without converting malformed coverage into a
+ * full claim. The boolean form of {@link findBuildBaselineProblem}.
+ *
+ * @internal Exported only so tests can reach it. Production reads go
+ * through `findBuildBaselineProblem`, which names the failing field.
+ */
+export function isBuildBaseline(value: unknown): value is BuildBaseline {
+  return findBuildBaselineProblem(value) === undefined;
 }

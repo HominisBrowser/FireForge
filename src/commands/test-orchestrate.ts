@@ -16,6 +16,7 @@
  * body exactly as before.
  */
 
+import type { ControlBuildStamp } from '../core/build-baseline-types.js';
 import { getProjectPaths } from '../core/config.js';
 import {
   type ActiveNegativeControl,
@@ -37,6 +38,7 @@ import type { TestOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { info, notice, success } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
+import { controlBuildRecorded, runControlRestoreBuild } from './test-control-restore.js';
 import { classifyTestHarnesses } from './test-modes.js';
 import {
   type ControlOutcome,
@@ -76,6 +78,11 @@ export interface TestRunHooks {
    * compiles nothing, so a compiled control's binary needs the full one.
    */
   fullBuildReason?: string;
+  /**
+   * Stamp the pre-test build records on its baseline because it compiles a
+   * negative control in (see `BuildBaseline.controlBuild`).
+   */
+  controlBuild?: ControlBuildStamp;
   /** `--repeat` run this sub-run is (1-based), for `--results`. */
   repetition?: number;
   /** Where dispatches write their mozlog raw logs (`--results`, `--shard-size`). */
@@ -203,6 +210,36 @@ function controlHook(
   };
 }
 
+/** The stamp a compiled control's pre-test build records on its baseline. */
+function compiledControlStamp(
+  options: TestOptions,
+  compiled: readonly string[] | undefined
+): ControlBuildStamp | undefined {
+  if (compiled === undefined || options.negativeControl === undefined) return undefined;
+  return {
+    diffFile: options.negativeControl,
+    targets: [...compiled],
+    appliedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * After a compiled control was restored, rebuilds the binary that still
+ * carries it, when this run's control build recorded its stamp, and
+ * stamps `control-restore-build=done|failed` on the verdict.
+ */
+async function rebuildAfterCompiledControl(
+  projectRoot: string,
+  stamp: ControlBuildStamp | undefined,
+  options: TestOptions
+): Promise<void> {
+  if (stamp === undefined || !(await controlBuildRecorded(projectRoot, stamp))) return;
+  setVerdictRunAttribute(
+    'control-restore-build',
+    await runControlRestoreBuild(projectRoot, stamp, options.harnessRetries)
+  );
+}
+
 /**
  * Throws the invocation's error after the aggregate verdict, or returns
  * when the invocation succeeded (all runs green, or a control caught).
@@ -290,6 +327,7 @@ export async function orchestrateTestRuns(
     }
     setVerdictRunAttribute('control-build', 'compiled');
   }
+  const controlStamp = compiledControlStamp(options, compiled);
 
   const results: SubRunResult[] = [];
   let restoreError: unknown;
@@ -311,6 +349,7 @@ export async function orchestrateTestRuns(
             ? {
                 beforeBuild: controlHook(controlPaths, plan, slot),
                 fullBuildReason: formatCompiledControlBuildNotice(compiled),
+                ...(controlStamp === undefined ? {} : { controlBuild: controlStamp }),
               }
             : { beforeDispatch: controlHook(controlPaths, plan, slot) }),
       });
@@ -349,6 +388,11 @@ export async function orchestrateTestRuns(
     emitFailVerdict('inconclusive', 'negative-control-restore');
     throw toError(restoreError);
   }
+  // The source is back byte-exact, but the binary still carries the
+  // compiled control: rebuild it under this same hold (see
+  // test-control-restore.ts). Only after every run, since a later
+  // `--repeat` run tests the same control-built binary.
+  await rebuildAfterCompiledControl(projectRoot, controlStamp, options);
   const repetitions = options.repeat ?? 1;
   const control =
     plan === undefined

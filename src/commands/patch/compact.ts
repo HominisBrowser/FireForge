@@ -31,7 +31,7 @@ import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../ut
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { renameMapsEqual } from '../patch-rename-map.js';
 import { requirePatchQueue } from './patch-context.js';
-import { rebuildFilenameForOrder } from './reorder.js';
+import { rebuildFilenameForOrder } from './reorder-projection.js';
 
 /** True when `order` falls inside a configured reserved range. */
 function isReservedOrder(policyCfg: PatchPolicyConfig, order: number): boolean {

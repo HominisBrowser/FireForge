@@ -166,7 +166,7 @@ describe('classifyBinaryOwnedFile', () => {
   it('refuses to trust the index hash of a "Binary files … differ" stub', async () => {
     // The stub carries the CORRECT new-side hash, so a hash-only comparison
     // would report patch-backed for a body that cannot rebuild the file.
-    // Regression guard for the re-export degradation this shipped alongside.
+    // Re-export relies on this to never trade a binary body for such a stub.
     await seedPatch(
       [
         `diff --git a/${PNG} b/${PNG}`,

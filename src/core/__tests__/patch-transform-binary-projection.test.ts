@@ -2,11 +2,11 @@
 /**
  * The new-file text projection must skip binary sections.
  *
- * Vendoring a brand-new binary file (a WOFF2 font face, say) was impossible
- * before 0.45.0: every cross-patch-lint projection fed each detected new file
- * to the text extractor, which refuses binary sections by design, so
+ * Vendoring a brand-new binary file (a WOFF2 font face, say) depends on it:
+ * the text extractor refuses binary sections by design, so a cross-patch-lint
+ * projection that fed it every detected new file would make
  * `re-export --scan --scan-file`, `export --order`, `patch move-files-into`
- * and `patch split` all died on a file whose `GIT binary patch` the export
+ * and `patch split` all die on a file whose `GIT binary patch` the export
  * half had just written correctly.
  */
 import { describe, expect, it } from 'vitest';

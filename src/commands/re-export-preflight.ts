@@ -6,8 +6,7 @@
  * Under contention the lock wait runs to many minutes, and an argument the
  * run was always going to refuse (an empty patch name from an unquoted
  * `"$@"`, a changed-file path passed as a positional, a path flag that
- * swallowed the next flag) used to be reported only after that wait. These
- * checks read the manifest and a path-scoped `git status` without the lock.
+ * swallowed the next flag) is reported before that wait: these checks read the manifest and a path-scoped `git status` without the lock.
  * The command repeats its own resolution under the lock, so a manifest that
  * changes in between is still read fresh there.
  */

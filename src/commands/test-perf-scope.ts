@@ -101,7 +101,7 @@ export function perfGenerationTolerance(
  * (with a warning, and `drift-tolerated=<n>` on the verdict) when HEAD did
  * not move and every changed path is one the running browser cannot see.
  *
- * A peer deleting an unrelated chrome script used to make a whole run
+ * A peer deleting an unrelated chrome script must not make a whole run
  * inconclusive. What a running browser can see mid-run is narrower than
  * "anything under engine/": a file the objdir links to its source (`live`),
  * one the harness stages at dispatch (`at-dispatch`), and the run's own

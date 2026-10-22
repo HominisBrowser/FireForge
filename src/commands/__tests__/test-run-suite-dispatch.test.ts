@@ -216,8 +216,8 @@ describe('runTestsWithRetries under a parent exit', () => {
   // The watchdog has already written the killed verdict and reaped the
   // group; what comes back from mach is a corpse. Classifying it would call
   // it a harness crash and spend the retry budget under a parent that is
-  // gone, which is how a killed gate step used to leave a second harness
-  // tree running unsupervised.
+  // gone, leaving a second harness tree from a killed gate step running
+  // unsupervised.
   it('ends the run without classifying or retrying once the parent is gone', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue(RESOURCE_MONITOR_CRASH);
     vi.mocked(parentExited).mockReturnValue(true);

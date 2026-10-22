@@ -163,11 +163,11 @@ async function readBackLockOwner(lockPath: string): Promise<PresentLockOwner | u
  * time, own start tick, diagnostic metadata) into a lock directory it has
  * just created, and reads the record back to prove it landed.
  *
- * The write is fatal. It used to be best-effort, on the theory that stale
- * recovery would fall back to the age heuristic, but that heuristic reaps
- * any owner-less lock after five minutes, and the build lock legitimately
- * holds for hours. A holder whose record failed to write was therefore
- * reaped mid-build and a second process entered the critical section. On
+ * The write is fatal rather than best-effort. Stale recovery could fall
+ * back to the age heuristic, but that heuristic reaps any owner-less lock
+ * after five minutes, and the build lock legitimately holds for hours. A
+ * holder whose record failed to write would be reaped mid-build and a
+ * second process would enter the critical section. On
  * failure the just-created lock directory is removed (nothing else can own
  * it yet) and a {@link GeneralError} names the cause.
  *

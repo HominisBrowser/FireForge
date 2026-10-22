@@ -397,9 +397,9 @@ async function applyCustomBatch(
       }
 
       if (!dryRun) {
-        // Runs unconditionally. The `changed === true` path used to skip
-        // drift detection entirely, which is when a deployed engine-only
-        // fix gets silently replaced (J6).
+        // Runs unconditionally, including on the `changed === true` path:
+        // that is when a deployed engine-only fix gets silently replaced
+        // (J6).
         recordOverwriteWarnings(
           result,
           await findPatchOwnedOverwrites({

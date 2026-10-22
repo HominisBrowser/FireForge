@@ -3,12 +3,11 @@
  * A new non-UTF-8 text file must round-trip byte-for-byte through an
  * exported patch, against a real git repository.
  *
- * The synthesized new-file body used to be built from a UTF-8 decode (every
- * Latin-1 high byte became U+FFFD) while the `index` line's blob hash came
- * from `git hash-object` over the real bytes. The patch applied cleanly but
- * wrote different bytes than the tree held, so the blob hash never matched
- * and drift checks flagged the file forever. Such files now travel as a
- * `GIT binary patch`. These tests pin that every new-file arm agrees and
+ * The `index` line's blob hash comes from `git hash-object` over the real
+ * bytes. A new-file body synthesized from a UTF-8 decode (every Latin-1 high
+ * byte becomes U+FFFD) would apply cleanly but write different bytes than the
+ * tree holds, so the blob hash would never match and drift checks would flag
+ * the file forever. Such files therefore travel as a `GIT binary patch`. These tests pin that every new-file arm agrees and
  * that `git apply` in a fresh clone reproduces the original bytes.
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';

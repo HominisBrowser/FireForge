@@ -23,6 +23,9 @@
  * update.
  */
 
+import { stat } from 'node:fs/promises';
+import { join, relative } from 'node:path';
+
 import { toError } from '../utils/errors.js';
 import { verbose, warn } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
@@ -36,6 +39,8 @@ import type {
 import { hashEngineFile } from './coverage-extend.js';
 import { isTestManifestPath } from './coverage-records.js';
 import { collectChangedEnginePaths, dropPathsMatchingFingerprints } from './engine-changes.js';
+import { readLinkedAt } from './launchable-build.js';
+import { isCompiledSourcePath } from './negative-control-compiled.js';
 import {
   formatStaleExemptions,
   partitionStaleCandidates,
@@ -148,6 +153,104 @@ export function formatStaleBuildWarning(result: StaleBuildResult): string {
     'packaged chrome / jar.mn resources, rerun with "fireforge test --build" (or ' +
     '"fireforge build --ui") first. Passing --build skips this check.' +
     exemptLine
+  );
+}
+
+/** Result of {@link findCompiledSourcesNewerThanBinary}. */
+export interface StaleCompiledResult {
+  /** Engine-relative compiled sources modified after the binary was linked. Sorted. */
+  paths: string[];
+  /** Engine-relative file that anchored the comparison (the binary or its libxul). */
+  linkedPath: string;
+  /** When that file was last written. */
+  linkedAt: Date;
+}
+
+/**
+ * Path segments whose compiled sources never reach the binary under test
+ * (gtests, cppunittests, CI config YAML): an edit there must not make the
+ * browser read as stale.
+ */
+const NON_RUNTIME_SEGMENTS = new Set(['test', 'tests', 'gtest', 'testing', 'taskcluster']);
+
+/**
+ * Changed compiled sources (C++, Rust, IDL, WebIDL, IPDL, StaticPrefList
+ * YAML, …) whose mtime is newer than the launchable build's last link.
+ * `mach build faster` compiles none of them, so such a run tests the
+ * binary from before the edit, which reads as a failed fix rather than a
+ * stale build. Candidates are the engine paths changed since the baseline
+ * plus every workdir edit; a fork's persistent patch diff is older than any
+ * build that followed it, so only genuine post-build edits remain.
+ * Returns undefined when there is nothing to compare against (no
+ * launchable binary).
+ *
+ * @param engineDir - Absolute engine directory
+ * @param baseline - Last-build baseline, when one exists
+ * @param launchablePath - Engine-relative launchable binary path
+ */
+export async function findCompiledSourcesNewerThanBinary(
+  engineDir: string,
+  baseline: BuildBaseline | undefined,
+  launchablePath: string | undefined
+): Promise<StaleCompiledResult | undefined> {
+  if (launchablePath === undefined) return undefined;
+  const linked = await readLinkedAt(engineDir, launchablePath);
+  if (linked === undefined) return undefined;
+  const changed = await collectChangedEnginePaths(engineDir, baseline, 'Stale-compiled preflight');
+  const candidates = changed.filter(
+    (path) =>
+      isCompiledSourcePath(path) &&
+      !path.split('/').some((segment) => NON_RUNTIME_SEGMENTS.has(segment))
+  );
+  const paths: string[] = [];
+  for (const path of candidates) {
+    try {
+      const { mtimeMs } = await stat(join(engineDir, path));
+      if (mtimeMs > linked.mtimeMs) paths.push(path);
+    } catch {
+      // A deleted source cannot be newer than anything; the build that
+      // drops it is the stale-build check's business.
+    }
+  }
+  return {
+    paths: paths.sort(),
+    linkedPath: relative(engineDir, linked.path),
+    linkedAt: new Date(linked.mtimeMs),
+  };
+}
+
+/**
+ * The `stale-compiled` refusal (or, under `--allow-stale-build`, warning).
+ *
+ * @param result - A non-empty {@link StaleCompiledResult}
+ */
+export function formatStaleCompiledRefusal(result: StaleCompiledResult): string {
+  const head = result.paths.slice(0, STALE_PATHS_LIMIT).map((path) => `engine/${path}`);
+  const truncated = result.paths.length - head.length;
+  const list = head.join(', ') + (truncated > 0 ? `, … (+${truncated} more)` : '');
+  return (
+    `Compiled sources changed after the binary under test was linked ` +
+    `(engine/${result.linkedPath}, ${result.linkedAt.toISOString()}): ${list}.\n` +
+    'The run would test the binary from before those edits, so a red reads as a failed fix ' +
+    'and a green proves nothing about them. Run "fireforge build" first, or rerun with ' +
+    '"fireforge test --build", which escalates to a full mach build when compiled sources ' +
+    'changed. --allow-stale-build turns this refusal into a warning.'
+  );
+}
+
+/**
+ * The notice that explains why a `test --build` pre-test build escalated
+ * to a full `mach build` for stale compiled sources.
+ *
+ * @param result - A non-empty {@link StaleCompiledResult}
+ */
+export function formatStaleCompiledBuildNotice(result: StaleCompiledResult): string {
+  const head = result.paths.slice(0, STALE_PATHS_LIMIT).map((path) => `engine/${path}`);
+  const truncated = result.paths.length - head.length;
+  return (
+    `Compiled sources changed after the binary was linked (${head.join(', ')}` +
+    `${truncated > 0 ? `, … (+${truncated} more)` : ''}); escalating this pre-test build to a ` +
+    'full mach build, since mach build faster compiles nothing.'
   );
 }
 
@@ -296,7 +399,7 @@ export function formatTestCoverageRefusal(
   };
   const rebuildTargets = uncovered.filter((p) => p !== FULL_SUITE_REQUEST);
   // Per-path retention is the default, so rebuilding only the uncovered
-  // paths no longer costs anyone else's claim. Saying so is what keeps a
+  // paths costs no one else's claim. Saying so is what keeps a
   // peer from rebuilding everything "to be safe".
   const keepHint =
     rebuildTargets.length > 0

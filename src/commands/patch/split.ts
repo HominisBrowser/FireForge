@@ -53,7 +53,9 @@ import { normalizePatchDisplayName, parsePositiveIntegerFlag } from '../../utils
 import { withDeclarationsReport } from '../declarations-report.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
 import { placementPlansEqual, resolvePlacementPlan } from '../export-flow.js';
-import { runPatchLint } from '../export-shared.js';
+import { writeRenameMapFile } from '../patch-rename-map.js';
+import { assertAdoptedStillUnowned } from './move-files-adopt.js';
+import { runMoveSideLint } from './move-size-tier.js';
 import {
   assertSourceOwnsFiles,
   buildNewPatchMetadata,
@@ -62,6 +64,7 @@ import {
   mergeStagedForwardImports,
   projectSplitManifest,
   runProjectedSplitLint,
+  splitDeclarationReason,
   splitDeclarationRenamer,
   type SplitPlan,
 } from './split-plan.js';
@@ -131,6 +134,7 @@ export async function commitPatchSplit(
           'patch split'
         );
       }
+      assertAdoptedStillUnowned(manifest.patches, plan.adoptedFiles, 'patch split');
       const currentPlacement = await resolvePlacementPlan(
         patchesDir,
         plan.placementOptions,
@@ -376,9 +380,11 @@ export async function patchSplitCommand(
   // instead of linting each projected body blind.
   const patchQueueCtx = await buildPatchQueueContext(paths.patches, config);
   const ignoreChecks = buildLintIgnoreChecks(source.lintIgnore);
-  await runPatchLint({
+  await runMoveSideLint({
     engineDir: paths.engine,
     filesAffected: remainingFiles,
+    filesBefore: source.filesAffected,
+    role: 'source',
     diffContent: remainingDiff,
     config,
     skipLint: options.skipLint,
@@ -386,9 +392,10 @@ export async function patchSplitCommand(
     ignoreChecks,
     patchTier: source.tier,
   });
-  await runPatchLint({
+  await runMoveSideLint({
     engineDir: paths.engine,
     filesAffected: movedFiles,
+    role: 'new patch',
     diffContent: movedDiff,
     config,
     skipLint: options.skipLint,
@@ -405,6 +412,7 @@ export async function patchSplitCommand(
     regressions: projected.regressions,
     out: options.declarationsOut,
     rename: splitDeclarationRenamer(plan),
+    reason: splitDeclarationReason(plan),
   });
   const newMetadata = buildNewPatchMetadata(plan, config);
 
@@ -420,6 +428,12 @@ export async function patchSplitCommand(
   if (!proceedAfterDecision(decision, 'Split cancelled')) return;
 
   await commitPatchSplit(paths.patches, plan, newMetadata, options, config);
+  if (options.mapOut !== undefined) {
+    const written = await writeRenameMapFile(options.mapOut, plan.placement.renameMap);
+    info(
+      `Wrote the old-to-new filename map (${plan.placement.renameMap.size} rename(s)) to ${written}`
+    );
+  }
 
   success(
     `Split ${source.filename}: ${placement.newFilename} now owns ${plan.movedFiles.length} file(s)`
@@ -459,6 +473,10 @@ export function registerPatchSplit(parent: Command, context: CommandContext): vo
     .option(
       '--declarations-out <path>',
       'Where a refusal writes its one --from-ready staged-declaration report (default: .fireforge/declarations/<timestamp>.json)'
+    )
+    .option(
+      '--map-out <file>',
+      'Write the old-to-new filename map of the patches the split renumbers as JSON'
     );
   addWaitLockOption(command).action(
     withErrorHandling(
@@ -477,6 +495,7 @@ export function registerPatchSplit(parent: Command, context: CommandContext): vo
           forceUnsafe?: boolean;
           skipLint?: boolean;
           declarationsOut?: string;
+          mapOut?: string;
           waitLock?: number | boolean;
         }
       ) => {
@@ -494,6 +513,7 @@ export function registerPatchSplit(parent: Command, context: CommandContext): vo
             forceUnsafe: options.forceUnsafe,
             skipLint: options.skipLint,
             declarationsOut: options.declarationsOut,
+            mapOut: options.mapOut,
             waitLock: options.waitLock,
           }),
         });

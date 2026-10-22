@@ -149,10 +149,9 @@ export interface AuditEntry {
   status: 'updated' | 'stale' | 'missing' | 'skipped';
   /**
    * Why a `skipped` entry was skipped. Present only for `skipped`. The
-   * reasons used to exist only as verbose log strings, so the summary line
-   * could report `4 missing` on a run with zero real misses and nothing in
-   * the counts distinguished a structural non-input from an unregistered
-   * file an operator must act on.
+   * reason lets the counts distinguish a structural non-input from an
+   * unregistered file an operator must act on, so the summary line never
+   * reports skips as misses.
    */
   skipReason?: AuditSkipReason;
 }
@@ -310,8 +309,8 @@ interface AuditEvalContext {
   /**
    * Engine-relative branding path this objdir was configured with, or
    * undefined when the generated mozconfig could not be read. Undefined
-   * keeps the pre-0.46.0 behaviour: a skip that cannot name
-   * its evidence is a masked warning.
+   * disables the branding classifier: a skip that cannot name its evidence
+   * is a masked warning.
    */
   selectedBranding: string | undefined;
   /** `buildAudit.unpackaged` carve-outs from fireforge.json. */

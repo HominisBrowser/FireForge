@@ -14,6 +14,11 @@
 import { join } from 'node:path';
 
 import { type DisplaySleepState, probeDisplaySleepState } from '../core/display-state.js';
+import {
+  createHarnessPortTracker,
+  type HarnessPortTracker,
+  type HarnessServerPorts,
+} from '../core/harness-port-reservation.js';
 import { type MachCommandResult, type MachTestSuiteKind, runMachTestSuite } from '../core/mach.js';
 import { parentExited } from '../core/parent-exit-watchdog.js';
 import { activeRunLogLine, getActiveRunLogPath } from '../core/run-log.js';
@@ -115,6 +120,11 @@ export interface TestRunOutcome {
   displayState?: DisplaySleepState | undefined;
   /** Per-file results from the raw log, when the run wrote one. */
   fileResults?: RawTestResult[] | undefined;
+  /**
+   * The mochitest server ports the last attempt reported (its "falling
+   * back to port" lines), for the shard line's `ports=` key.
+   */
+  serverPorts?: HarnessServerPorts | undefined;
 }
 
 /**
@@ -163,13 +173,18 @@ async function runTestsWithRetriesInner(
 
   let rawLog: RawTestLog | undefined;
   let logLine: number;
+  let portTracker: HarnessPortTracker;
 
   for (;;) {
     attempts += 1;
     let tracker = createStartMarkerTracker();
+    portTracker = createHarnessPortTracker();
     const raw = rawLogDispatchArgs(ctx, extraArgs);
     logLine = activeRunLogLine();
-    const dispatched = await runTrackedMachTestSuite(ctx, kind, paths, raw.args, env, tracker);
+    const dispatched = await runTrackedMachTestSuite(ctx, kind, paths, raw.args, env, [
+      tracker,
+      portTracker,
+    ]);
     result = dispatched;
     // The parent that was reading this run is gone and the watchdog has
     // already killed the harness. Classifying the corpse would call it a
@@ -213,9 +228,15 @@ async function runTestsWithRetriesInner(
         ? { markers: rawLog.markers, source: 'raw' }
         : { markers: tracker.markers(), source: 'stream' }
     );
+    // A mochitest server that never came up is retried like a crash: no
+    // test ran, and a parallel instance's port race is not a result.
     if (verdict.kind !== 'harness-crash' || attempts >= maxAttempts) break;
+    const shape =
+      verdict.signature?.verdictReason === 'server-startup'
+        ? 'Harness server startup failed'
+        : 'Harness crash detected';
     warn(
-      `Harness crash detected (${verdict.signature?.reason ?? 'unknown shape'}): ` +
+      `${shape} (${verdict.signature?.reason ?? 'unknown shape'}): ` +
         `${verdict.signature?.line ?? ''}\n` +
         `Retrying (attempt ${attempts + 1} of ${maxAttempts})...`
     );
@@ -244,6 +265,7 @@ async function runTestsWithRetriesInner(
       run: ctx.repetition ?? 1,
       shard: label,
       logLine,
+      shardFiles: paths,
     });
   }
 
@@ -254,7 +276,14 @@ async function runTestsWithRetriesInner(
     appdirInjectionAttempted,
     displayState,
     ...(rawLog === undefined ? {} : { fileResults: rawLog.results }),
+    ...serverPortsOf(portTracker),
   };
+}
+
+/** The `serverPorts` field of an outcome, present only when a port was seen. */
+function serverPortsOf(tracker: HarnessPortTracker): { serverPorts?: HarnessServerPorts } {
+  const ports = tracker.ports();
+  return Object.keys(ports).length > 0 ? { serverPorts: ports } : {};
 }
 
 /** Sequence for raw-log file names, unique within the process. */
@@ -289,7 +318,7 @@ async function runTrackedMachTestSuite(
   paths: string[],
   extraArgs: string[],
   env: Record<string, string> | undefined,
-  tracker: StartMarkerTracker
+  trackers: readonly [StartMarkerTracker, HarnessPortTracker]
 ): Promise<MachCommandResult> {
   const teardown = createHarnessTeardown({
     objDir: ctx.objDir === undefined ? undefined : join(ctx.engineDir, ctx.objDir),
@@ -315,7 +344,7 @@ async function runTrackedMachTestSuite(
       teardown: {
         ...teardown.hooks,
         onOutputChunk: (stream, chunk) => {
-          tracker.onChunk(stream, chunk);
+          for (const tracker of trackers) tracker.onChunk(stream, chunk);
           teardown.hooks.onOutputChunk?.(stream, chunk);
         },
       },

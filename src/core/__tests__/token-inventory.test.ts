@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * The read half of token management. `token add` refuses an unknown
- * `--category`, and until 0.46.0 nothing reported the ones a project has,
+ * `--category`, and the inventory is what reports the ones a project has,
  * so the inventory walk must agree with the writer about what a banner is
  * and which block owns a declaration, or the report sends an author to a
  * section `token add` will not write into.

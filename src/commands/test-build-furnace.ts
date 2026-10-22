@@ -4,8 +4,7 @@
  * runs `furnace apply` over the whole `components/` tree, so a
  * `fireforge test --build` meant to capture the committed behaviour could
  * silently ship component edits nobody had deployed yet (another session's
- * included), and nothing in the test output said so. The applied names now
- * ride the verdict line, and `--no-furnace-apply` packages `engine/` as it
+ * included). The applied names therefore ride the verdict line, and `--no-furnace-apply` packages `engine/` as it
  * stands, naming the undeployed edits it left out.
  */
 

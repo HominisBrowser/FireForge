@@ -72,7 +72,7 @@ interface SourceScanSummary {
  * AbortError when the signal fires, so both shapes have to be recognised.
  */
 function isTimeoutError(error: unknown): boolean {
-  // `exec` now rejects with a typed ExecTimeoutError when its `timeout`
+  // `exec` rejects with a typed ExecTimeoutError when its `timeout`
   // option fires (the raw AbortError check below is kept for defence in
   // depth against other abort paths).
   if (error instanceof ExecTimeoutError) return true;

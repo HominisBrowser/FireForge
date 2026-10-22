@@ -3,17 +3,16 @@
  * Adopting a new binary file through `--scan --scan-file`, against a real
  * git repository.
  *
- * This is the reported 0.44.4 blocker: vendoring eight WOFF2 faces into a
- * patch failed after a clean lint pass with "Cannot extract text content from
- * binary patch section for …". The scan's forward-import projection fed every
- * detected new file to the text extractor, which refuses binary sections by
- * design, so a file whose `GIT binary patch` the export half had just
- * written correctly could not be adopted at all, and the faces stayed
- * unmanaged.
+ * Vendoring eight WOFF2 faces into a patch must not fail after a clean lint
+ * pass with "Cannot extract text content from binary patch section for …".
+ * Feeding every detected new file to the text extractor, which refuses
+ * binary sections by design, would leave a file whose `GIT binary patch`
+ * the export half had just written correctly impossible to adopt, and the
+ * faces unmanaged.
  *
- * The fix skips binary sections in the projection (a binary blob authors no
- * imports, so it contributes nothing to the rule the projection feeds). This
- * test fails on 0.44.4.
+ * The scan's forward-import projection skips binary sections (a binary blob
+ * authors no imports, so it contributes nothing to the rule the projection
+ * feeds).
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';

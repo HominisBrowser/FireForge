@@ -2,10 +2,10 @@
 /**
  * Shared holds on a FireForge directory lock.
  *
- * Every lock used to be exclusive, so two build-less `fireforge test` runs
- * on one objdir, each with its own profile and (under auto ports) its own
- * ports, still waited for each other: the gate's browser tiers ran strictly
- * serially on a 14-core host. A shared hold lets such runs overlap while
+ * Two build-less `fireforge test` runs on one objdir, each with its own
+ * profile and (under auto ports) its own ports, have no reason to wait for
+ * each other; with only exclusive holds the gate's browser tiers would run
+ * strictly serially on a many-core host. A shared hold lets such runs overlap while
  * anything that writes (a build, a re-export, a test run that builds)
  * still holds the lock alone.
  *

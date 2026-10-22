@@ -84,9 +84,9 @@ describe('withErrorHandling', () => {
   });
 
   it.each([
-    // Red, never-ran and thrown-away are three different facts. Two of them
-    // shared exit 1 before 0.44.0, which invited scripts to treat a discarded
-    // verdict as a failing suite.
+    // Red, never-ran and thrown-away are three different facts. A shared
+    // exit 1 would invite scripts to treat a discarded verdict as a failing
+    // suite.
     [new InconclusiveVerdictError('engine/ changed'), ExitCode.INCONCLUSIVE],
     [new LockContentionError('another command holds the lock'), ExitCode.LOCK_TIMEOUT],
   ])('gives %s its own exit code rather than a general failure', async (thrown, expected) => {

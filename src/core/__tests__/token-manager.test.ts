@@ -402,12 +402,12 @@ describe('addToken', () => {
   });
 
   it('mirrors an override into a QUALIFIED :root[data-theme="light"] block', async () => {
-    // Regression. `rootAttributeSelector` sliced the selector to the last
-    // `]` before the brace, so for
-    // `:root[data-theme="light"]:not([data-private])` the computed fragment
-    // was `:root[data-theme="light"]:not([data-private]` and the canonical
-    // comparison could never match. The unqualified dark block beside it
-    // matched fine, so an override wrote dark and silently skipped light.
+    // `rootAttributeSelector` must not slice the selector to the last `]`
+    // before the brace: for `:root[data-theme="light"]:not([data-private])`
+    // the computed fragment would be `:root[data-theme="light"]:not([data-private]`
+    // and the canonical comparison could never match. The unqualified dark
+    // block beside it would match fine, so an override would write dark and
+    // silently skip light.
     // A Light choice under a dark OS then inherited the new dark token, and
     // the operator learned about it from a theme bug rather than the tool.
     const cssWithQualifiedLight = `${MOCK_TOKENS_CSS}
@@ -836,11 +836,11 @@ describe('addToken --variant', () => {
   });
 
   it('accepts the grammar the block matcher parses: a fragment run and a pseudo-class tail', async () => {
-    // 0.44.2 widened `rootAttributeSelector` to consume consecutive `[…]`
-    // groups and stop at a pseudo-class tail, but the CLI validator kept its
-    // own single-fragment regex, so a block the tool could find was one it
-    // would not let you name, and the private-exclusion selectors this shape
-    // exists for had to be maintained by hand.
+    // `rootAttributeSelector` consumes consecutive `[…]` groups and stops at
+    // a pseudo-class tail, and the CLI validator must accept the same shape:
+    // otherwise a block the tool can find is one it will not let you name,
+    // and the private-exclusion selectors this shape exists for have to be
+    // maintained by hand.
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 
     const result = await addToken('/project', {
@@ -957,7 +957,7 @@ describe('addToken missing-category bypasses', () => {
   });
 
   it('a category name no longer matches a longer banner by substring', async () => {
-    // Bypass 1b: `--category "Colors"` used to prefix-match the longer
+    // Bypass 1b: `--category "Colors"` must not prefix-match the longer
     // canvas colors banner and write the token into the wrong section.
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
 

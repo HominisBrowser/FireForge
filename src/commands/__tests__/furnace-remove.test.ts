@@ -562,11 +562,10 @@ describe('furnaceRemoveCommand', () => {
   });
 
   it('snapshots the state file before clearing stale checksums so rollback can reverse it', async () => {
-    // Regression guard for B2: the state-file clear used to run post-commit
-    // as warn-and-continue, outside the transactional block. A failing
-    // update left furnace-state.json disagreeing with furnace.json. Now
-    // the state file is snapshotted into the journal before the update,
-    // and a failure triggers the full rollback.
+    // The state-file clear runs inside the transactional block: the state
+    // file is snapshotted into the journal before the update, and a failure
+    // triggers the full rollback, so furnace-state.json cannot be left
+    // disagreeing with furnace.json.
     vi.mocked(loadFurnaceConfig).mockResolvedValue({
       version: 1,
       componentPrefix: 'moz-',
@@ -883,7 +882,7 @@ describe('furnaceRemoveCommand — rollback failure', () => {
     ).rejects.toThrow(/could not restore moz-audit-widget\.mjs/);
 
     // Asserts the outcome (a pending-repair marker persisted to furnace
-    // state) rather than the internal call. The rollback sequence now lives
+    // state) rather than the internal call. The rollback sequence lives
     // in `completeJournalRollback`, whose call to the recorder is
     // intra-module and so invisible to a module-level spy.
     const updater = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1] as

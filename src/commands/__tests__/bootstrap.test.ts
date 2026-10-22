@@ -125,7 +125,7 @@ describe('bootstrapCommand', () => {
   it('throws a plain BootstrapError when exit code is non-zero but output has no known patterns', async () => {
     // Explicit: `mockReturnValue` from an earlier test survives
     // `clearAllMocks` (only `resetAllMocks` clears implementations), and the
-    // failure-message builder now consults this scanner rather than keeping
+    // failure-message builder consults this scanner rather than keeping
     // its own copy of the regexes.
     vi.mocked(detectBootstrapIssues).mockReturnValue([]);
     vi.mocked(bootstrapWithOutput).mockResolvedValue({
@@ -139,9 +139,9 @@ describe('bootstrapCommand', () => {
   });
 
   it('returns a non-success exit code when post-bootstrap checks report errors', async () => {
-    // Discarding reportDoctorResults' return used to make bootstrap exit 0
-    // with error-severity failures, so CI gating on bootstrap then proceeded
-    // to a build that could not succeed.
+    // Discarding reportDoctorResults' return would make bootstrap exit 0
+    // with error-severity failures, so CI gating on bootstrap would proceed
+    // to a build that cannot succeed.
     vi.mocked(bootstrapWithOutput).mockResolvedValue({
       exitCode: 0,
       stdout: 'HTTP 403 while fetching artifact',

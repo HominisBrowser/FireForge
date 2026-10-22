@@ -3,12 +3,11 @@
 /**
  * The single awaitable delay used across FireForge.
  *
- * Five modules had grown a private copy of this (`sleep`, `delay`,
- * `sweepDelay`) and four more sites inlined
- * `new Promise((resolve) => setTimeout(resolve, ms))`. The copies disagreed on
- * the one property that actually matters (whether the pending timer holds
- * the event loop open) and the disagreement was invisible at each call site.
- * Both behaviours now live here, and callers state which one they need.
+ * Callers use this rather than a private `sleep`/`delay` or an inline
+ * `new Promise((resolve) => setTimeout(resolve, ms))`, because such copies
+ * disagree on the one property that actually matters (whether the pending
+ * timer holds the event loop open) and the disagreement is invisible at each
+ * call site. Both behaviours live here, and callers state which one they need.
  *
  * The default is a ref'd timer, because the dangerous mistake is the other
  * one: an unref'd delay awaited between a SIGTERM and its escalation lets Node

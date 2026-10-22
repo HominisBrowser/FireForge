@@ -586,8 +586,8 @@ async function readFurnaceLockPid(lockPath: string): Promise<number | null> {
  *
  * This is the recovery path when the signal-handler sweep
  * (`forceReleaseFurnaceLocksForActiveOperations` in `bin/fireforge.ts`)
- * misses: a SIGKILL'd process that never ran the handler, or a lock created
- * by an older FireForge release without a PID file. SIGINT'ing `furnace
+ * misses: a SIGKILL'd process that never ran the handler, or a lock
+ * directory without a PID file. SIGINT'ing `furnace
  * preview` leaves the lock behind, and the next `fireforge test --build`
  * then times out waiting for it. `doctor --repair-furnace` clears it so the
  * next command runs immediately.
@@ -609,9 +609,9 @@ const furnaceStaleLockCheck: DoctorCheckDefinition = {
 
     // Two signals mark a lock as stale:
     //   1. PID file says owner is dead → unambiguous, remove immediately.
-    //   2. PID file absent and lock is older than 60s → older FireForge
-    //      releases (or an externally-created lock directory) fall into this
-    //      bucket. The age gate avoids false positives on a lock just
+    //   2. PID file absent and lock is older than 60s → a lock directory
+    //      written without a PID file (for example created externally)
+    //      falls into this bucket. The age gate avoids false positives on a lock just
     //      acquired by a concurrent process that has not written its PID yet.
     //
     // `isProcessAlive` treats EPERM as alive. Returning false for EPERM

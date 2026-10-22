@@ -429,10 +429,9 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 describe('addCustomElementRegistration — marker-tagged idempotency', () => {
-  // Regression: prior behaviour inserted a duplicate entry when the operator
-  // had appended a project marker comment to a previously-written entry. The
-  // duplicate caused setElementCreationCallback to throw NotSupportedError at
-  // every window-load.
+  // A project marker comment the operator appended to an existing entry must
+  // not lead to a duplicate entry: the duplicate makes
+  // setElementCreationCallback throw NotSupportedError at every window-load.
 
   async function makeEngineWithMultilineEntry(
     tagName: string,

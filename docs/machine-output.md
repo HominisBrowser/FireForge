@@ -2,12 +2,9 @@
 
 # Machine-readable output contract (internal)
 
-The `--json` surface is a contract with scripted consumers. Before 0.44.0 it
-was four unrelated shapes: `status --json` and `tree list --json` shared a
-`schemaVersion: 1` envelope but disagreed on failure, `test` emitted a
-`FIREFORGE-VERDICT:` line, and `lint --per-patch --report` wrote a versioned
-file that nothing ever reads back. This file states what a `--json` command
-has to do, so the next one added does not invent a fifth shape.
+The `--json` surface is a contract with scripted consumers. This file states
+what a `--json` command has to do, so the next one added does not invent a
+shape of its own.
 
 ## The rules
 
@@ -56,11 +53,11 @@ if (options.json === true) {
 | Surface                            | Shape                                                                                                                                                                                                                                                                             | Notes                                                                                                                                                                                                                              |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `status --json`                    | `{ schemaVersion: 1, … }`                                                                                                                                                                                                                                                         | Error envelope on three engine preconditions                                                                                                                                                                                       |
-| `status --json` under `--check`    | adds `check: { enabled, failOn, allow?, failOnUnknown?, failed, offenders }`                                                                                                                                                                                                      | Since 0.50.0 on the full payload too, not only `--summary`. `allow` and `failOnUnknown` appear only when set. An offender failing only through `--fail-on-unknown` carries `unnamed: true`. `--patches` adds `scope: { patches }`  |
+| `status --json` under `--check`    | adds `check: { enabled, failOn, allow?, failOnUnknown?, failed, offenders }`                                                                                                                                                                                                      | On the full payload too, not only `--summary`. `allow` and `failOnUnknown` appear only when set. An offender failing only through `--fail-on-unknown` carries `unnamed: true`. `--patches` adds `scope: { patches }`               |
 | `furnace validate --json`          | `{ schemaVersion: 1, passed, summary, maxWarnings?, components, issues, excepted, staleExceptions }`                                                                                                                                                                              | `issues` counts after `validationExceptions`, stale-exception warnings included. `excepted` carries each suppressed finding with its `reason`                                                                                      |
 | `check --json`                     | `{ schemaVersion: 1, verdict, reason?, summary, steps }`                                                                                                                                                                                                                          | One entry per step: `name`, `kind`, `command`, `status` (`pass`/`fail`/`skipped`), `exitCode`, `durationMs`, `detail`, and on failure `outputTail` (`timedOut` when killed at its budget). No verdict line under `--json`          |
 | `check` verdict line               | `FIREFORGE-VERDICT: PASS\|FAIL [reason=step-failures\|lock-timeout\|skipped-steps failed=<steps>] steps=<n> skipped=<n> [skipped-steps=<steps>]`                                                                                                                                  | Not JSON. The last stdout line, after the step table, sealed like `test`'s. Its `reason=` set is its own, not `test`'s                                                                                                             |
-| `tree list --json`                 | `{ schemaVersion: 1, trees }`                                                                                                                                                                                                                                                     | Error envelope added in 0.44.0                                                                                                                                                                                                     |
+| `tree list --json`                 | `{ schemaVersion: 1, trees }`                                                                                                                                                                                                                                                     | Error envelope on failure                                                                                                                                                                                                          |
 | `token list --json`                | `{ schemaVersion: 1, tokensCssPath, categories }`                                                                                                                                                                                                                                 | Categories in file order, each with its tokens (`name`, `line`, `value`)                                                                                                                                                           |
 | `token show --json`                | `{ schemaVersion: 1, name, category, declarations }`                                                                                                                                                                                                                              | One entry per declaring block, with its selector trail and line                                                                                                                                                                    |
 | `token lint --json`                | `{ schemaVersion: 1, tokensCssPath, tokenPrefix, filesScanned, findings }`                                                                                                                                                                                                        | Each finding has `check`, `file`, `line`, `token`, `message`. The document is written even when findings exist; the exit is then non-zero, as with `status --check --json`                                                         |
@@ -80,7 +77,7 @@ it. Follow the rules above rather than inventing a shape.
 
 The run logs behind `log=` are specified in [`run-logs.md`](run-logs.md).
 
-Additive keys since 0.51.0 outside `test`:
+Additive keys outside `test`:
 
 - `check --json`: a skipped step carries `skipKind`, `config` when
   `check.skip` names it and `unavailable` when the project has nothing for
@@ -92,7 +89,7 @@ Additive keys since 0.51.0 outside `test`:
   `@click`). An exception that matched an error adds a
   `validation-exception-on-error` error, and a full run under
   `furnace.json#minComponents` a `component-floor` error on `furnace.json`.
-- `furnace validate --json` (since 0.52.0): a `hardcoded-text` finding
+- `furnace validate --json`: a `hardcoded-text` finding
   carries `files`, the component's module file names it was found in.
 
 ## Versioning
@@ -110,6 +107,7 @@ moved.
 | Reason              | Meaning                                                                                                                                                                                                                                                                                                                                                           |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `crash`             | The harness or the browser died, so there is no trustworthy suite result.                                                                                                                                                                                                                                                                                         |
+| `server-startup`    | A mochitest server never came up (`could not start server on port`, `Timed out while waiting for server startup`) before any test ran. An infrastructure failure, retried like `crash` within `--harness-retries`; this reason is what is left once the budget is spent.                                                                                          |
 | `harness-arguments` | Profile or other harness argument setup failed before any tests could run; a rebuild is not the repair.                                                                                                                                                                                                                                                           |
 | `no-tests`          | The run dispatched but nothing ran.                                                                                                                                                                                                                                                                                                                               |
 | `test-failures`     | The suite ran and reported unexpected results.                                                                                                                                                                                                                                                                                                                    |
@@ -126,15 +124,19 @@ developer browser holding the objdir. An unattended reader whose pipe kept
 only the verdict line could not tell those apart, so a preflight refusal that
 can classify itself also emits `note=<class>`.
 
-`note=` is additive, like `log=`, `signal=` and `shards=`. `reason=` is
-unchanged and still comes from the closed set above, so a consumer that
+`note=` is additive, like `log=`, `signal=` and `shards=`. `reason=` always
+comes from the closed set above, so a consumer that
 tokenises `key=value` pairs is unaffected, and a gate that names no class
 emits no `note=` at all. The classes are not a closed set and may grow, so
 consumers should treat an unrecognised one as opaque. Current values:
 `browser-busy`, `stale-browser`, `stale-browser-kill-failed`, `marionette-port-busy`, `mochitest-port-busy`,
 `coverage-replaced`, `stale-build`, `stale-components`, `no-launchable-binary`, `negative-control` (the
 control diff was refused), `negative-control-pending` (an interrupted run's
-control could not be undone safely). `note=negative-control-restore` rides a
+control could not be undone safely). Also `stale-compiled`
+(compiled sources changed after the binary under test was linked) and
+`control-built` (the binary still carries a compiled negative control whose
+restore build never ran or failed). An `invalid-build-baseline` refusal
+names the first failing field and its value. `note=negative-control-restore` rides a
 `reason=inconclusive` line whose control could not be restored byte-exact.
 
 ### Multi-run invocations: `FIREFORGE-RUN:`, `runs=` and `control=`
@@ -153,7 +155,7 @@ A `FIREFORGE-RUN:` line is never a verdict: the invocation still ends with
 exactly one `FIREFORGE-VERDICT:` line. With more than one planned run it
 carries `runs=<passed>/<planned>` and no count keys; a failed aggregate takes
 the most structural reason among its runs (`inconclusive`, `preflight`,
-`crash`, `harness-arguments`, `no-tests`, `test-failures`) and that run's
+`crash`, `server-startup`, `harness-arguments`, `no-tests`, `test-failures`) and that run's
 `note=`. A run that never started (the invocation stopped at a refusal)
 counts toward `<planned>` but not `<passed>`.
 
@@ -185,7 +187,7 @@ A sharded run prints one `FIREFORGE-SHARD:` line per finished shard, before
 the verdict line:
 
 ```
-FIREFORGE-SHARD: PASS|FAIL [reason=…] [checks=<n>] [unexpected=<n>] shard=<i>/<n> path=<label> [failed-files=<path>,…]
+FIREFORGE-SHARD: PASS|FAIL [reason=…] [checks=<n>] [unexpected=<n>] shard=<i>/<n> path=<label> [failed-files=<path>,…] [ports=http:<n>,ssl:<n>,ws:<n>]
 ```
 
 `path=` is the shard's path argument (whitespace replaced by `_`), or a
@@ -195,15 +197,31 @@ aggregate verdict appends `failed-shards=<label>,…` after `shards=` when any
 shard did not pass; under `--shard-size` `shards=` counts files and
 `failed-shards=` names files. Both are absent on a green run.
 
+`ports=` names the mochitest HTTP server, ssltunnel and
+WebSocket ports the shard's harness reported (its "falling back to port"
+lines), in that order and only those it reported; it is absent when the
+harness reported none (an xpcshell shard, or a harness that died before its
+servers). A shard whose server never started says `reason=server-startup`,
+and the aggregate verdict does too when every crashed shard failed that way.
+
 ### Additive keys of parallel and per-file runs
 
 `jobs=<n>` marks a `--jobs` run, `lock=shared` a run that held the engine
-session lock shared, and `results=<path>` names the `--results` document. A
+session lock shared, and `results=<path>` names the `--results` document.
+A `--jobs` run whose caller set `MOZ_UPLOAD_DIR` appends
+`upload-dirs=<dir>,…`, the per-instance upload directories
+(`<MOZ_UPLOAD_DIR>/job-<i>`, one per instance that ran), and a `--results`
+record whose `test` is `automation.py` (a harness-level result) carries
+`shardFiles`, plus `file` when its shard has exactly one file. A
 run whose engine changed mid-run only in files the running browser cannot
 see keeps its verdict and appends `drift-tolerated=<n>`. A negative control
-on compiled source appends `control-build=compiled`. Since 0.52.0 a raw log
+on compiled source appends `control-build=compiled`, and
+`control-restore-build=done|failed` for the full build that recompiles the
+restored source after the last run. Every run that reaches
+dispatch appends `build-id=<BuildID>`, read from the launchable build's
+`application.ini` (absent when that file has no `BuildID`). A raw log
 that starts none of a dispatch's requested files counts as
-`started=0/<m> ... started-source=raw` instead of leaving the run uncounted.
+`started=0/<m> ... started-source=raw`.
 
 ### The additive `shuffle=` key
 
@@ -223,9 +241,8 @@ preflight, survivors of an earlier run in this objdir under `--reap-orphans`
 or `test.reapOrphans: "reap"`; at teardown, helpers this run's harness
 launched (httpd, websocket server, ssltunnel, process bridge, the browser,
 `moz-http2`) that were still alive after mach exited. Summed across the census, every
-retry attempt and every shard. Absent when nothing was reaped, so a green on
-a quiet machine prints the line it always did, and a green after a reap is
-distinguishable from it. A run ended by SIGTERM or by the parent-exit
+retry attempt and every shard. Absent when nothing was reaped, so a green after a reap is
+distinguishable from a green on a quiet machine. A run ended by SIGTERM or by the parent-exit
 watchdog writes its verdict before the teardown reap runs, so that line never
 carries the key; the reap is reported on stderr instead.
 
@@ -243,10 +260,10 @@ and measured CPU. These diagnostics annotate a test failure without changing
 its classifier reason.
 
 Perf runs append `power-source=ac|battery|unknown`. On macOS the source is
-read from `pmset -g ps`, so charging on AC is correctly `ac`. A known source
+read from `pmset -g ps`, so charging on AC reads `ac`. A known source
 transition appends `power-changed=true` and refuses the run as
-`reason=inconclusive`. The producer's sample JSON retains its fields and
-gains `fireforgeHost: { start, end, powerSourceChanged }`, where each host
+`reason=inconclusive`. The producer's sample JSON carries an additional
+`fireforgeHost: { start, end, powerSourceChanged }` object, where each host
 state includes `load`, `power` and an optional `topProcess` with CPU and
 command. Consumers should tolerate this additive object. Unknown power
 state is visible but never treated as a proven transition.

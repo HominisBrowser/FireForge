@@ -86,7 +86,7 @@ export async function probeDomFragmentInsertionPoint(
     return;
   }
 
-  // Check the tokenised and legacy insertion paths symmetrically with
+  // Check the tokenised and line-based insertion paths symmetrically with
   // the real run. Either helper returning without throwing is sufficient
   // evidence that the real run can land the directive.
   addDomFragmentTokenized(content, includeDirective);

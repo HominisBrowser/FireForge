@@ -459,7 +459,7 @@ describe('getDiffForFilesAgainstHead', () => {
 
   it('expands untracked directory entries before diffing', async () => {
     // `git status --porcelain=v1 -z` reports collapsed untracked dirs as
-    // `?? dir/`. A caller that hands that entry to this function used to
+    // `?? dir/`. A caller that hands that entry to this function must not
     // crash with EISDIR reading the directory as a file.
     mockGetUntrackedFilesInDir.mockResolvedValue([
       'browser/modules/fork/Foo.sys.mjs',

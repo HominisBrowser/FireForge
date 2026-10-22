@@ -451,9 +451,9 @@ describe('projectPlacementForLint', () => {
   });
 
   it('names the projected lint errors in the under-lock refusal, not just a count', async () => {
-    // The refusal used to report only "would introduce N cross-patch lint
-    // error(s)" and discard the per-issue details, forcing operators to
-    // re-derive the errors with a separate lint run.
+    // The refusal names each issue, not just "would introduce N cross-patch
+    // lint error(s)", so operators need not re-derive the errors with a
+    // separate lint run.
     await seed(patchesDir, [
       {
         metadata: makeMetadata('005-infra-b.patch', 5, ['foo/B.sys.mjs']),

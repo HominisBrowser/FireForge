@@ -206,7 +206,7 @@ async function decideJarEscalation(
   // build. Path-shape only: `evaluateJarManifestEscalation` decides whether a
   // given changed manifest actually forces one (a new manifest, or one that
   // redirects its install base directory), so an entry added to an existing
-  // `dist/bin` manifest no longer costs a ~10-minute build.
+  // `dist/bin` manifest does not cost a ~10-minute build.
   const decision = await evaluateJarManifestEscalation(
     engineDir,
     changed.filter(isJarManifestPath)
@@ -349,9 +349,9 @@ async function applyFurnaceBeforeBuild(
 
   // The apply computed these (patch-owned engine files whose content
   // differed from components/ and were replaced). `furnace apply`
-  // prints them; this path used to drop them, so a negative control
-  // that edited a deployed Furnace file ran against the shipped code
-  // with a green result and only a checksum could tell.
+  // prints them, and so does this path: dropped silently, a negative
+  // control that edited a deployed Furnace file would run against the
+  // shipped code with a green result and only a checksum could tell.
   const overwriteCount = logApplyWarnings(result.warnings);
   if (overwriteCount > 0) {
     notice(

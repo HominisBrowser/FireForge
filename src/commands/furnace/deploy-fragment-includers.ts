@@ -5,8 +5,8 @@
  * When `<tag>` includes a shared CSS fragment that changed, every other
  * deployed includer of that fragment still carries the old expansion after
  * the targeted deploy. Deploy-all refreshes all of them as a side effect of
- * deploying everything; the targeted form used to refresh exactly the named
- * component and say nothing about the rest. This module refreshes the other
+ * deploying everything; the targeted form refreshes only the named
+ * component. This module refreshes the other
  * stale includers through the same pipeline and reports them, so a stale
  * expansion is never left behind silently.
  */

@@ -7,18 +7,24 @@
  */
 
 import { createServer } from 'node:net';
+import { join } from 'node:path';
 
 import {
   assertEngineGenerationUnchanged,
   snapshotEngineGeneration,
 } from '../core/engine-session-lock.js';
-import { autoPortsRequested } from '../core/harness-port-fallback.js';
+import { autoPortsRequested, detectHarnessPortFallback } from '../core/harness-port-fallback.js';
+import {
+  type HarnessPortReservation,
+  reserveHarnessServerPorts,
+} from '../core/harness-port-reservation.js';
 import { extractForwardedMarionettePort } from '../core/marionette-port.js';
 import type { PostRebuildFailureContext } from '../core/test-harness-output.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
+import { ensureDir } from '../utils/fs.js';
 import { notice } from '../utils/logger.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from './test-diagnose.js';
 import { shuffleTestGroups } from './test-harness-env.js';
@@ -150,18 +156,45 @@ function testRunManifestArg(index: number): string {
 }
 
 /**
+ * The `MOZ_UPLOAD_DIR` the caller gave this run (its own env first, then
+ * the process environment), or undefined when there is none.
+ */
+function uploadDirBase(base: TestRunContext): string | undefined {
+  const dir = base.env?.['MOZ_UPLOAD_DIR'] ?? process.env['MOZ_UPLOAD_DIR'];
+  return dir === undefined || dir === '' ? undefined : dir;
+}
+
+/**
+ * `--jobs` instance `index`'s own upload directory, `<base>/job-<n>`. The
+ * harness writes per-run artifacts there under fixed names (the
+ * `modifiedPrefs.json` pref census among them), so instances sharing the
+ * caller's directory replace each other's files.
+ */
+function instanceUploadDir(uploadBase: string, index: number): string {
+  return join(uploadBase, `job-${index + 1}`);
+}
+
+/**
  * The context for `--jobs` instance `index` (0-based): its own output
- * prefix and test-list manifest, and from the second instance on its own
- * Marionette port, so browsers started at the same moment never race for
- * 2828. The mochitest server ports are left to the engine harness's
- * busy-port fallback, which `--jobs` requires (auto ports).
+ * prefix, upload directory (when the caller set `MOZ_UPLOAD_DIR`) and
+ * test-list manifest, and from the second instance on its own Marionette
+ * port, so browsers started at the same moment never race for 2828. The
+ * mochitest server ports are moved by the engine harness's busy-port
+ * fallback, which `--jobs` requires (auto ports), while
+ * {@link reserveHarnessServerPorts} holds the defaults.
  */
 async function instanceContext(
   base: TestRunContext,
   index: number,
   xpcshellOnly: boolean
 ): Promise<TestRunContext> {
-  const ctx: TestRunContext = { ...base, outputPrefix: `[job ${index + 1}] ` };
+  let ctx: TestRunContext = { ...base, outputPrefix: `[job ${index + 1}] ` };
+  const uploadBase = uploadDirBase(base);
+  if (uploadBase !== undefined) {
+    const uploadDir = instanceUploadDir(uploadBase, index);
+    await ensureDir(uploadDir);
+    ctx = { ...ctx, env: { ...base.env, MOZ_UPLOAD_DIR: uploadDir } };
+  }
   if (xpcshellOnly) return ctx;
   const own = [...base.baseExtraArgs, testRunManifestArg(index)];
   if (index === 0) return { ...ctx, baseExtraArgs: own };
@@ -170,6 +203,45 @@ async function instanceContext(
     ...ctx,
     baseExtraArgs: [...own, `--setpref=marionette.port=${port}`, `--marionette=127.0.0.1:${port}`],
   };
+}
+
+/**
+ * Stamps a `--jobs` run's verdict attributes: `jobs=<n>`, and
+ * `upload-dirs=<dir>,...` naming each instance's upload directory, so a
+ * caller can merge per-instance artifacts.
+ */
+function stampParallelAttributes(runCtx: TestRunContext, jobs: number, shards: number): void {
+  setVerdictRunAttribute('jobs', String(jobs));
+  const uploadBase = uploadDirBase(runCtx);
+  if (uploadBase === undefined) return;
+  const instances = Math.max(1, Math.min(jobs, shards));
+  setVerdictRunAttribute(
+    'upload-dirs',
+    Array.from({ length: instances }, (_, index) => instanceUploadDir(uploadBase, index)).join(',')
+  );
+}
+
+/**
+ * Holds the mochitest server ports for a browser run on more than one
+ * instance (see `harness-port-reservation.ts`). Only on an engine whose
+ * harness falls back from a busy server port: without that fallback a
+ * held port would fail every instance instead of moving it.
+ */
+async function reserveParallelServerPorts(
+  engineDir: string,
+  instances: number,
+  xpcshellOnly: boolean
+): Promise<HarnessPortReservation | undefined> {
+  if (instances < 2 || xpcshellOnly) return undefined;
+  if (!(await detectHarnessPortFallback(engineDir)).serverPorts) return undefined;
+  const reservation = await reserveHarnessServerPorts();
+  if (reservation.held.length > 0) {
+    notice(
+      `Holding mochitest server port(s) ${reservation.held.join(', ')} for the parallel run, so ` +
+        "each instance's harness moves to server ports of its own."
+    );
+  }
+  return reservation;
 }
 
 /** The shards to run, or undefined for one combined invocation. */
@@ -213,9 +285,14 @@ export async function dispatchTests(inputs: TestDispatchInputs): Promise<void> {
   if (shards !== undefined) {
     notice(describeSharding(shards.length, options, jobs));
     const base = jobs > 1 ? await instanceContext(runCtx, 0, inputs.xpcshellOnly) : runCtx;
-    if (jobs > 1) setVerdictRunAttribute('jobs', String(jobs));
+    if (jobs > 1) stampParallelAttributes(runCtx, jobs, shards.length);
     const generationBefore = await snapshotEngineGeneration(engineDir);
     let summary: ShardedRunSummary;
+    const reservation = await reserveParallelServerPorts(
+      engineDir,
+      Math.min(jobs, shards.length),
+      inputs.xpcshellOnly
+    );
     try {
       summary = await runShardedTests(
         base,
@@ -229,6 +306,7 @@ export async function dispatchTests(inputs: TestDispatchInputs): Promise<void> {
         }
       );
     } finally {
+      await reservation?.release();
       // Runs before the aggregate verdict below: a mutated engine/ emits
       // `FAIL reason=inconclusive` and throws, so an invalidated run can
       // never print `PASS shards=N/N` first. (A throw here masks an

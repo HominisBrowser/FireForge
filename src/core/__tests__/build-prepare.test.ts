@@ -551,9 +551,8 @@ describe('prepareBuildEnvironment unexported-drift belt', () => {
 });
 
 describe('prepareBuildEnvironment auto-configure', () => {
-  // The 0.41.0 rule escalated on any changed jar.mn. A downstream
-  // experiment showed `mach build faster` installs entries added to an
-  // existing dist/bin manifest, so only a new manifest still escalates.
+  // `mach build faster` installs entries added to an existing dist/bin
+  // manifest, so only a new jar.mn escalates.
   it('escalates for a NEW jar.mn', async () => {
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');
@@ -648,7 +647,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
     vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
     vi.mocked(hasChanges).mockResolvedValue(true);
     // The fingerprint gate is what this test is about. Mark the manifest
-    // new so the narrowed jar rule (0.45.0) also escalates and the
+    // new so the jar rule (new manifests only) also escalates and the
     // fingerprint assertion below stays the assertion under test.
     const { getUntrackedFilesInDir } = await import('../git-status.js');
     vi.mocked(getUntrackedFilesInDir).mockResolvedValueOnce(['toolkit/content/jar.mn']);
@@ -672,7 +671,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
     vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
     vi.mocked(hasChanges).mockResolvedValue(true);
     // The fingerprint gate is what this test is about. Mark the manifest
-    // new so the narrowed jar rule (0.45.0) also escalates and the
+    // new so the jar rule (new manifests only) also escalates and the
     // fingerprint assertion below stays the assertion under test.
     const { getUntrackedFilesInDir } = await import('../git-status.js');
     vi.mocked(getUntrackedFilesInDir).mockResolvedValueOnce(['toolkit/content/jar.mn']);
@@ -699,7 +698,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
     vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
     vi.mocked(hasChanges).mockResolvedValue(true);
     // The fingerprint gate is what this test is about. Mark the manifest
-    // new so the narrowed jar rule (0.45.0) also escalates and the
+    // new so the jar rule (new manifests only) also escalates and the
     // fingerprint assertion below stays the assertion under test.
     const { getUntrackedFilesInDir } = await import('../git-status.js');
     vi.mocked(getUntrackedFilesInDir).mockResolvedValueOnce(['toolkit/content/jar.mn']);
@@ -725,7 +724,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
     vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
     vi.mocked(hasChanges).mockResolvedValue(true);
     // The fingerprint gate is what this test is about. Mark the manifest
-    // new so the narrowed jar rule (0.45.0) also escalates and the
+    // new so the jar rule (new manifests only) also escalates and the
     // fingerprint assertion below stays the assertion under test.
     const { getUntrackedFilesInDir } = await import('../git-status.js');
     vi.mocked(getUntrackedFilesInDir).mockResolvedValueOnce(['toolkit/content/jar.mn']);
@@ -1003,8 +1002,8 @@ describe('prepareBuildEnvironment mozconfig before configure', () => {
   });
 
   it('configures after regenerating the mozconfig, not before', async () => {
-    // The 0.47.1 order ran configure against the previous engine/mozconfig,
-    // so a configs/ fix for a failing configure never reached it.
+    // Configure must run against the regenerated engine/mozconfig, or a
+    // configs/ fix for a failing configure never reaches it.
     const { git } = await import('../git-base.js');
     const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');

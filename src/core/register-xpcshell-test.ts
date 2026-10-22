@@ -3,7 +3,8 @@
  * xpcshell test-file registration. Without it, xpcshell test files (e.g.
  * `<module-dir>/test/unit/test_*.js`) are rejected by `fireforge register`
  * as "Unknown file pattern". This writer inserts the `["test_*.js"]` section
- * into the directory's `xpcshell.toml` (alphabetically, idempotently). With
+ * into the directory's `xpcshell.toml` (alphabetically or after the
+ * `--after` entry, idempotently). With
  * `--create-manifest` it also creates the manifest and wires
  * `XPCSHELL_TESTS_MANIFESTS` into the nearest moz.build.
  */
@@ -44,34 +45,100 @@ export async function isXpcshellTestRegistered(
   return content.includes(`["${fileName}"]`);
 }
 
-/**
- * Inserts the `["<fileName>"]` section into the manifest content in
- * mozbuild's case-insensitive sort order relative to the other test
- * sections, keeping one blank line between sections. Exported for direct
- * unit testing.
- */
-export function insertXpcshellManifestSection(content: string, fileName: string): string {
-  const lines = content.split('\n');
-  const sectionHeaderPattern = /^\["([^"]+)"\]\s*$/;
+/** Where a new section goes and what placed it there. */
+export interface XpcshellSectionPlacement {
+  /** The manifest content with the section inserted. */
+  content: string;
+  /** The `["…"]` header of the `--after` entry the section follows. */
+  previousEntry?: string | undefined;
+  /** `--after` named no entry, so the section went in sort order. */
+  afterFallback?: boolean | undefined;
+}
 
-  let insertIndex = -1;
-  for (let i = 0; i < lines.length; i += 1) {
-    const match = sectionHeaderPattern.exec(lines[i] ?? '');
-    if (!match) continue;
-    if (insertIndex === -1 && mozbuildSortCompare(fileName, match[1] ?? '') < 0) {
-      insertIndex = i;
+const SECTION_HEADER = /^\["([^"]+)"\]\s*$/;
+
+/**
+ * The line where the block headed at `headerIndex` starts: the header
+ * itself, or the first of the `#` comment lines directly above it. A
+ * comment describes the entry below it, so nothing is inserted between
+ * them.
+ */
+function blockStart(lines: readonly string[], headerIndex: number): number {
+  let start = headerIndex;
+  while (start > 0 && (lines[start - 1] ?? '').trimStart().startsWith('#')) start -= 1;
+  return start;
+}
+
+/** Index of the section header `after` names: exact name first, then a substring. */
+function findAfterHeader(lines: readonly string[], after: string): number {
+  const headers = lines
+    .map((line, index) => ({ index, line, name: SECTION_HEADER.exec(line)?.[1] }))
+    .filter((header) => header.name !== undefined);
+  const exact = headers.find((header) => header.name === after || header.line.trim() === after);
+  return (exact ?? headers.find((header) => header.line.includes(after)))?.index ?? -1;
+}
+
+function spliceSection(lines: string[], index: number, fileName: string): string {
+  if (index === -1) {
+    // Append after the last section (or at end of file when there are no
+    // sections yet), keeping exactly one trailing newline.
+    while (lines.length > 0 && (lines.at(-1) ?? '').trim() === '') lines.pop();
+    return [...lines, '', `["${fileName}"]`, ''].join('\n');
+  }
+  lines.splice(index, 0, `["${fileName}"]`, '');
+  return lines.join('\n');
+}
+
+/**
+ * Places the `["<fileName>"]` section in the manifest content.
+ *
+ * Without `after`, the section goes in mozbuild's case-insensitive sort
+ * order relative to the other test sections. With `after`, it goes right
+ * after the named entry's whole block (its keys included). Either way it
+ * is inserted ahead of the `#` comment lines that introduce the next
+ * entry, never between a comment and its entry, keeping one
+ * blank line between sections.
+ */
+export function placeXpcshellManifestSection(
+  content: string,
+  fileName: string,
+  after?: string
+): XpcshellSectionPlacement {
+  const lines = content.split('\n');
+  const headerIndexes = lines.flatMap((line, index) => (SECTION_HEADER.test(line) ? [index] : []));
+
+  if (after !== undefined) {
+    const afterIndex = findAfterHeader(lines, after);
+    if (afterIndex !== -1) {
+      const next = headerIndexes.find((index) => index > afterIndex);
+      return {
+        content: spliceSection(lines, next === undefined ? -1 : blockStart(lines, next), fileName),
+        previousEntry: (lines[afterIndex] ?? '').trim(),
+      };
     }
   }
 
-  if (insertIndex !== -1) {
-    lines.splice(insertIndex, 0, `["${fileName}"]`, '');
-    return lines.join('\n');
-  }
+  const before = headerIndexes.find(
+    (index) => mozbuildSortCompare(fileName, SECTION_HEADER.exec(lines[index] ?? '')?.[1] ?? '') < 0
+  );
+  return {
+    content: spliceSection(lines, before === undefined ? -1 : blockStart(lines, before), fileName),
+    ...(after !== undefined ? { afterFallback: true } : {}),
+  };
+}
 
-  // Append after the last section (or at end of file when there are no
-  // sections yet), keeping exactly one trailing newline.
-  while (lines.length > 0 && (lines.at(-1) ?? '').trim() === '') lines.pop();
-  return [...lines, '', `["${fileName}"]`, ''].join('\n');
+/**
+ * Inserts the `["<fileName>"]` section into the manifest content; see
+ * {@link placeXpcshellManifestSection}. Exported for direct unit testing.
+ *
+ * @internal
+ */
+export function insertXpcshellManifestSection(
+  content: string,
+  fileName: string,
+  after?: string
+): string {
+  return placeXpcshellManifestSection(content, fileName, after).content;
 }
 
 /**
@@ -84,7 +151,8 @@ export async function registerXpcshellTest(
   dirRel: string,
   fileName: string,
   dryRun = false,
-  createManifest = false
+  createManifest = false,
+  after?: string
 ): Promise<RegisterResult> {
   const manifestRel = `${dirRel}/xpcshell.toml`;
   const manifestPath = join(engineDir, manifestRel);
@@ -109,9 +177,15 @@ export async function registerXpcshellTest(
     return { manifest: manifestRel, entry, skipped: true };
   }
 
-  const updated = insertXpcshellManifestSection(content, fileName);
+  const placement = placeXpcshellManifestSection(content, fileName, after);
   if (!dryRun) {
-    await writeText(manifestPath, updated);
+    await writeText(manifestPath, placement.content);
   }
-  return { manifest: manifestRel, entry, skipped: false };
+  return {
+    manifest: manifestRel,
+    entry,
+    skipped: false,
+    previousEntry: placement.previousEntry,
+    afterFallback: placement.afterFallback,
+  };
 }

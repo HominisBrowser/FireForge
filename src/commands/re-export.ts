@@ -47,6 +47,7 @@ import {
   validateReExportOptionCombinations,
 } from './re-export-options.js';
 import { validateExpectedRemovals } from './re-export-removed.js';
+import { dropRetiredPathDeclarations } from './re-export-retired-declarations.js';
 import { normalizeEngineRelativeInput, normalizeScanFiles } from './re-export-scan.js';
 import { assignScanFileOwners, scanOptionsForPatch } from './re-export-scan-owner.js';
 import {
@@ -307,6 +308,10 @@ export async function reExportCommand(
     progress.error('Re-export failed');
     throw new GeneralError('All selected patches failed to re-export. Check the errors above.');
   }
+
+  // Declarations on a path this run retired can never be met; drop them
+  // now rather than leave them for the next per-patch lint to report.
+  await dropRetiredPathDeclarations({ paths, manifest, options, selectedPatches, isDryRun });
 
   // `--stamp` only fires on a run where every selected patch refreshed
   // cleanly. A partial success would leave some patches with a stale body

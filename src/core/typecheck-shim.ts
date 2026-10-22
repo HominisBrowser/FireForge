@@ -299,7 +299,7 @@ export const UNDEFINED_IDENTIFIER_CODES: ReadonlySet<number> = new Set([
 
 /**
  * Typed Lit, opt-in through `typecheck.litTypes`. Declares the two chrome
- * modules widgets import Lit from, so they no longer fall to the
+ * modules widgets import Lit from, so they do not fall to the
  * `chrome:*` wildcard as `any`: `LitElement` (with `ReactiveElement`'s
  * lifecycle) and `MozLitElement` carry closed member lists, so a misspelt
  * member of a widget host is TS2339, as `Cu` is in the built-in shim.

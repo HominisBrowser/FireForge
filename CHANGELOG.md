@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.53.0
+
+### Test harness
+
+- `test --jobs` gives each harness instance its own `MOZ_UPLOAD_DIR` (`<MOZ_UPLOAD_DIR>/job-<n>`, created up front) when the caller sets one, so instances no longer overwrite each other's fixed-name artifacts such as the `modifiedPrefs.json` pref census. The verdict names the directories as `upload-dirs=`.
+- `test --jobs` holds the mochitest HTTP, ssltunnel and WebSocket ports (8888, 4443, 9988) for the whole parallel run, so each instance's harness falls back to server ports of its own instead of racing for 8888. Each `FIREFORGE-SHARD:` line names the ports its instance took as `ports=http:N,ssl:N,ws:N`.
+- A harness whose mochitest server never starts (`could not start server on port`, `Timed out while waiting for server startup`) is an infrastructure failure, not `no-tests`: it is retried within `--harness-retries` and reports `reason=server-startup` once the budget is spent. A `--results` record for a harness-level result (`automation.py`) carries `shardFiles`, plus `file` when its shard has one file.
+- `test` refuses with `note=stale-compiled` when C++, Rust, IDL, WebIDL, IPDL or YAML sources changed after the binary under test was linked (the newer of the binary and its `libxul`). `--allow-stale-build` turns the refusal into a warning, and `test --build` escalates to a full `mach build`. Every run that reaches dispatch stamps `build-id=<BuildID>` from `application.ini` on its verdict.
+- A negative control on a header (`.h`, `.hh`, `.hpp`, `.ipdlh`) counts as compiled even when an `EXPORTS` manifest installs it, so it is applied before a full pre-test build instead of reporting `control=missed`.
+- After a compiled negative control is restored, `test` rebuilds the binary under the same lock hold and adds `control-restore-build=done|failed` to the verdict. A binary that still carries a control (the run was killed, or the restore build failed) is refused with `note=control-built` until `fireforge build`, and `test --build` escalates to a full build.
+- A scoped `test --build <dir>/` no longer leaves a baseline the next plain `test` refuses: coverage paths are recorded normalized, and non-ASCII dirty paths are fingerprinted unquoted. An invalid baseline's refusal names the failing field and its value, and offers `--build` when the field belongs to the coverage claim.
+
+### Patch queue
+
+- Every `patches.json` write puts every row and the manifest's own keys in the one canonical order, not only the rows it changed. A re-export no longer leaves an older writer's rows (`sourceProduct` after `filesAffected`) in the working copy while `patch stage` stages them canonical, so commits stop flipping key order on hundreds of rows. The `re-export --dry-run` purity guard hashes rows in canonical order.
+- `patch reorder --shift <n> --from <order> [--through <order>]` renumbers a run of patches up by `n` in one transaction, to open room for inserts. Retired and reserved slots inside the run move with it, a shift onto an occupied order past the run is refused, and under `patchPolicy.allowGaps: false` the opened orders are recorded as reservations, which the inserts that follow fill. `--map-out <file>` on `reorder` and `split` writes the old-to-new filename map as JSON.
+- `patch move-files --scan-file <path>` adopts new, unowned engine files into the destination in the same transaction, and both sides are linted as the transaction leaves them. `--retire-empty` lets a move empty the source: the declarations it owns re-point to the destination and its slot is retired as by `patch retire`. Without the flag, the refusal names it.
+- The projected lint of `patch move-files`, `patch split` and a placed `export` uses the queue's whole lint configuration. With `forwardRegistration: "extended"`, a shared test manifest's suite entries (`["browser_*.js"]`) are projected and written to the `--declarations-out` report instead of surfacing only after the move.
+- A refused `move-files --create` or `split` report names the patch the rerun creates as `owner`. The declarations `move-files` and `split` write, and every report entry, carry a `reason` naming the move, so the printed `--add --from` call needs no `--reason`.
+- A per-patch size refusal from `move-files` or `split` names a tier change behind it, for example "the source becomes test tier (it was general tier): 9634 lines against 6000".
+- `patch staged-dependency --add`, single or `--from`, on a declaration already present with a different `reason` replaces the reason in place, keeping the entry's position. The summary reports updated reasons apart from additions.
+- `re-export --expect-removed` drops every staged registration and forward import, in any patch, whose `creates` path it retires, names each one (`would drop` on a dry run) and records `re-export-staged-prune`. Before, the stale declaration waited for the next `lint --per-patch`.
+- A re-export keeps a staged registration whose `creates` file exists in `engine/` or is an `--expect-new` path of the run, and says so ("kept: file exists but no patch owns it yet"), instead of pruning the declaration the next scan needs.
+- `fireforge register` inserts an xpcshell section ahead of the `#` comments that introduce the next entry, never between a comment and its entry. `--after <entry>` now works for `xpcshell.toml` and places the section after that entry's whole block.
+- `--patches` on `lint --per-patch`, `status`, `verify` and `check` splits a list on whitespace as well as commas, so a list in one zsh word works. An unmatched name is refused with its nearest matches and the queue size instead of every patch in the queue.
+
 ## 0.52.0
 
 ### Test harness

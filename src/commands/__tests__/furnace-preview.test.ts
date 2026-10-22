@@ -287,10 +287,10 @@ describe('furnacePreviewCommand', () => {
   });
 
   it('cleans synced stories when syncStories fails mid-sync', async () => {
-    // Regression guard for non-atomic cleanup: syncStories writes files
-    // incrementally, so a mid-sync failure can leave partial files behind.
-    // The fix sets the cleanup flag before awaiting syncStories, so the
-    // finally block still runs cleanStories on partial state.
+    // syncStories writes files incrementally, so a mid-sync failure can
+    // leave partial files behind. The cleanup flag is set before awaiting
+    // syncStories, so the finally block still runs cleanStories on partial
+    // state.
     vi.mocked(syncStories).mockRejectedValueOnce(new Error('ENOSPC: disk full mid-write'));
 
     await expect(furnacePreviewCommand('/project')).rejects.toThrow(/disk full mid-write/i);
@@ -319,10 +319,9 @@ describe('furnacePreviewCommand', () => {
   });
 
   it('records a pendingRepair marker and points at doctor when the journal restore fails', async () => {
-    // Regression guard for B1: if `restoreRollbackJournal` throws during
-    // teardown, the engine is left with staged workspace files and there
-    // was no recovery path. The fix persists a `pendingRepair` marker so
-    // the next `fireforge doctor --repair-furnace` can reconcile.
+    // If `restoreRollbackJournal` throws during teardown, the engine is left
+    // with staged workspace files. A persisted `pendingRepair` marker gives
+    // the next `fireforge doctor --repair-furnace` a way to reconcile.
     vi.mocked(restoreRollbackJournal).mockRejectedValueOnce(
       new Error('EACCES: cannot write /project/engine/...')
     );

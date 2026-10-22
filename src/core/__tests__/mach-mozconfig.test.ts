@@ -41,8 +41,8 @@ const config = {
  * `--with-branding=browser/branding/<binaryName>` directive and (b) the
  * branding tree's `moz.build` exists under `engine/`. The existing tests
  * exercise the generator with minimal templates that do not carry a
- * branding directive. The legacy path through `generateMozconfig` now
- * runs the preflight at the tail, so every happy-path test needs a
+ * branding directive. The path through `generateMozconfig` runs the
+ * preflight at the tail, so every happy-path test needs a
  * concrete branding directive in its rendered output and a `true` return
  * from the branding-tree path probe. These helpers keep that plumbing in
  * one place so the individual tests stay focused on what they actually

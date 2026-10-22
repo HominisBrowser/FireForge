@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * The four 0.46.0 audit skip classes, against a downstream-shaped objdir.
+ * The four audit skip classes, against a downstream-shaped objdir.
  *
- * A successful fork build printed seven `Audit:` warnings and a
- * `4 missing` summary with zero real misses. The audit is warn-only, so
+ * Without them a successful fork build prints `Audit:` warnings and a
+ * `missing` summary with zero real misses. The audit is warn-only, so
  * each false positive is cheap alone and ruinous in aggregate: an operator
  * who learns these lines are usually wrong stops reading the one that is
  * right. The bar here is therefore zero warnings for the whole fixture,

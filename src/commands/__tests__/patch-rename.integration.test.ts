@@ -5,7 +5,7 @@
  * happen together. Without these tests the only way to verify the
  * "filename is renamed on disk and the manifest stays in sync" path
  * is to drive the CLI manually, which is exactly the brittle workflow
- * this verb was added to replace.
+ * this verb replaces.
  */
 
 import { access, readFile, writeFile } from 'node:fs/promises';

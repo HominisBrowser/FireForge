@@ -22,6 +22,7 @@ import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
 import { stagedDependencyDelta } from './staged-dependency-batch.js';
 import {
   applyMode,
+  countReasonUpdates,
   countStagedEntries,
   dependencyLabel,
   importView,
@@ -135,12 +136,14 @@ function requireRegistrationOptions(
  * Renders a one-line summary of a staged-dependency metadata change.
  */
 function describeStagedDependencyChange(
-  beforeCount: number,
-  afterCount: number,
+  before: PatchStagedDependencies | undefined,
+  after: PatchStagedDependencies | undefined,
   mode: StagedDependencyMode,
   kind: StagedDependencyKind,
   targets: readonly StagedEntryView[]
 ): string {
+  const beforeCount = countStagedEntries(before);
+  const afterCount = countStagedEntries(after);
   const noun = kind === 'import' ? 'staged forward-import' : 'staged registration';
   if (mode === 'clear') {
     return beforeCount === 0
@@ -150,9 +153,10 @@ function describeStagedDependencyChange(
   const label = targets.map((target) => dependencyLabel(kind, target)).join('; ');
   if (targets.length === 0) return 'stagedDependencies unchanged';
   if (mode === 'add') {
-    return afterCount === beforeCount
-      ? `${noun} already present: ${label}`
-      : `added ${noun}: ${label}`;
+    if (afterCount !== beforeCount) return `added ${noun}: ${label}`;
+    return countReasonUpdates(before, after) > 0
+      ? `updated 1 ${noun} reason in place: ${label}`
+      : `${noun} already present: ${label}`;
   }
   return afterCount === beforeCount
     ? `no ${noun} matched: ${label}`
@@ -194,7 +198,7 @@ export async function patchStagedDependencyCommand(
   const registrationDependency =
     mode === 'add' && kind === 'registration' ? requireRegistrationOptions(options) : undefined;
   // Shape-check --add declarations against the loaded queue: a
-  // patch-name-shaped --creates/--file is refused now instead of surfacing
+  // patch-name-shaped --creates/--file is refused here instead of surfacing
   // later as an undischargeable staged-dependency-unused.
   const added = importDependency ?? registrationDependency;
   if (added !== undefined) {
@@ -244,13 +248,7 @@ export async function patchStagedDependencyCommand(
 
   const existing = targetPatch.stagedDependencies;
   const projected = applyToStaged(existing);
-  const summary = describeStagedDependencyChange(
-    countStagedEntries(existing),
-    countStagedEntries(projected),
-    mode,
-    kind,
-    targets
-  );
+  const summary = describeStagedDependencyChange(existing, projected, mode, kind, targets);
 
   if (isDryRun) {
     info(`[dry-run] ${targetPatch.filename}: ${summary}.`);
@@ -282,8 +280,8 @@ export async function patchStagedDependencyCommand(
   const after = result.after.stagedDependencies;
   info(
     `${targetPatch.filename}: ${describeStagedDependencyChange(
-      countStagedEntries(before),
-      countStagedEntries(after),
+      before,
+      after,
       mode,
       kind,
       targets
@@ -358,7 +356,7 @@ export function registerPatchStagedDependency(parent: Command, context: CommandC
     .option('--owner <patch>', 'Exact later patch filename expected to create --creates')
     .option(
       '--reason <text>',
-      'Human-readable rationale stored with the declaration (with --from: the default for entries without one)'
+      'Human-readable rationale stored with the declaration; --add on a declaration already present replaces its reason in place (with --from: the default for entries without one)'
     )
     .option(
       '--from <json-file>',

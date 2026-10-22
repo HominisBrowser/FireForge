@@ -21,7 +21,7 @@ describe('maskCssComments', () => {
   });
 
   it('stays linear on many unclosed openers', () => {
-    // Regression for a lazy-regex mask that retried from every `/*` to EOF.
+    // Guards against a lazy-regex mask that retries from every `/*` to EOF.
     const source = '/*' + 'a/*'.repeat(200_000);
     const started = performance.now();
     expect(maskCssComments(source)).toBe(' '.repeat(source.length));

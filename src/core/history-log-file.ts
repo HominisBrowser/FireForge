@@ -2,12 +2,12 @@
 /**
  * Where the patch history log lives, and who wrote each record.
  *
- * The log used to be `patches/.fireforge-history.jsonl`, inside the tracked
- * patch queue, so it was committed with every export until consumers
- * gitignored it, and it grew to tens of megabytes. It now defaults to
- * `.fireforge/history.jsonl` (FireForge's own untracked data directory), or
- * `fireforge.json#history.path` when a project sets one. A log left at the
- * old path is moved on the first append.
+ * The log defaults to `.fireforge/history.jsonl` (FireForge's own untracked
+ * data directory), or `fireforge.json#history.path` when a project sets one.
+ * It stays out of the tracked patch queue because it grows to tens of
+ * megabytes and would otherwise be committed with every export. A log found
+ * at `patches/.fireforge-history.jsonl`, inside the queue, is moved on the
+ * first append.
  *
  * Several sessions sharing one checkout all append to the same log, so each
  * record carries the invocation that wrote it, plus a session hint, letting
@@ -23,7 +23,7 @@ import { info, verbose } from '../utils/logger.js';
 import { FIREFORGE_DIR } from './config-paths.js';
 import { isValidHistoryPath } from './config-validate-history.js';
 
-/** Filename of the history log at its pre-0.50 location, inside `patches/`. */
+/** Filename of a history log inside `patches/`, which is moved out of the queue. */
 export const LEGACY_HISTORY_LOG_FILENAME = '.fireforge-history.jsonl';
 
 /** Default history log location, relative to the project root. */
@@ -102,24 +102,24 @@ export async function resolveHistoryLogPath(projectRoot: string): Promise<string
 }
 
 /**
- * Moves a history log left at the legacy `patches/` path to `target`.
+ * Moves a history log found at the `patches/` path to `target`.
  *
  * Records are never dropped, whatever else is happening:
- * - The legacy file is first claimed by renaming it aside, so of two
+ * - The in-queue file is first claimed by renaming it aside, so of two
  *   commands migrating at once exactly one does the work and neither
  *   duplicates it.
  * - When `target` does not exist yet (the first run), the claimed file is
  *   hard-linked into place, which cannot overwrite a log another command
  *   created in the meantime, and keeps a large log a constant-time move.
- * - When both exist (an older FireForge appended to the legacy path after
- *   a migration, or `history.path` changed), the legacy records are
+ * - When both exist (a log reappeared at the `patches/` path after a
+ *   migration, or `history.path` changed), the in-queue records are
  *   appended to the target in one write. They then follow newer records;
  *   every record carries its own `ts`.
  *
  * A crash between the claim and the move leaves the records in a
- * `.migrating-*` file next to the legacy path, never deleted.
+ * `.migrating-*` file next to the in-queue path, never deleted.
  *
- * @param patchesDir - The patches directory that may hold a legacy log
+ * @param patchesDir - The patches directory that may hold an in-queue log
  * @param target - Absolute path of the history log
  */
 export async function migrateLegacyHistoryLog(patchesDir: string, target: string): Promise<void> {
@@ -164,8 +164,8 @@ export async function migrateLegacyHistoryLog(patchesDir: string, target: string
 }
 
 /**
- * Appends one serialized record to the project's history log, migrating a
- * legacy log first.
+ * Appends one serialized record to the project's history log, first moving
+ * a log found inside `patches/`.
  *
  * @param patchesDir - The project's `patches/` directory; the project root is
  *   its parent, as every caller derives it from `getProjectPaths`

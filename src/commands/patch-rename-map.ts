@@ -2,12 +2,14 @@
 /**
  * Structural equality for patch rename maps, shared by the placement-mode
  * export preview/commit check (`export-flow.ts`) and `patch reorder`'s
- * under-lock drift check. Both previously carried a byte-identical copy of
- * the sorted-entries comparison. One helper keeps the two commit gates from
- * drifting.
+ * under-lock drift check. One helper for the sorted-entries comparison
+ * keeps the two commit gates from drifting.
  */
 
+import { dirname, resolve } from 'node:path';
+
 import type { PatchRenameEntry } from '../core/patch-manifest.js';
+import { ensureDir, writeJson } from '../utils/fs.js';
 
 /**
  * Rename-map entries ordered by target order, so previews, history entries
@@ -44,4 +46,30 @@ export function renameMapsEqual(
       leftEntry.newOrder === rightEntry.newOrder
     );
   });
+}
+
+/**
+ * Writes a committed rename map as one JSON object, old filename to new
+ * filename in the queue's new order (`{}` when nothing was renumbered), so
+ * a session can rewrite its references to the renumbered patches from the
+ * file instead of from the printed summary. Used by `patch reorder
+ * --map-out` and `patch split --map-out`.
+ *
+ * @param path - Output path, relative to the working directory
+ * @param renameMap - The committed rename map
+ * @returns The absolute path written
+ */
+export async function writeRenameMapFile(
+  path: string,
+  renameMap: Map<string, PatchRenameEntry>
+): Promise<string> {
+  const absolute = resolve(path);
+  await ensureDir(dirname(absolute));
+  await writeJson(
+    absolute,
+    Object.fromEntries(
+      getSortedRenameEntries(renameMap).map(([from, entry]) => [from, entry.newFilename])
+    )
+  );
+  return absolute;
 }

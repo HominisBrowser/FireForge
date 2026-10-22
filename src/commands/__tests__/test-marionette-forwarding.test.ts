@@ -548,9 +548,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
 
   it('parses a forwarded --mach-arg --marionette-port=N as the effective port (no first-class option)', async () => {
     // The documented workaround: operator passes the port via --mach-arg.
-    // Pre-fix, the wrapper preflight checked the default 2828 before the
-    // forwarded arg ever reached mach. Now extractForwardedMarionettePort
-    // surfaces the value to the probe so the workaround actually works.
+    // extractForwardedMarionettePort surfaces the value to the probe, so the
+    // wrapper preflight checks that port rather than the default 2828.
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
       stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',

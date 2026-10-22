@@ -3,11 +3,11 @@
  * What `--refuse-adjacent-unmanaged` counts as adjacent, against a real
  * engine repository.
  *
- * The belt refused header-only re-exports over a peer session's unexported
- * test in a sibling directory (`test/hominis-tiles/` beside an owned
- * `test/hominis/`) and two directories down (`hominis/test/unit/` below an
- * owned `hominis/`), though neither file would ever be captured. Adjacent
- * now means what the re-export would plausibly have to capture: the same
+ * The belt must not refuse header-only re-exports over a peer session's
+ * unexported test in a sibling directory (`test/hominis-tiles/` beside an
+ * owned `test/hominis/`) or two directories down (`hominis/test/unit/` below
+ * an owned `hominis/`), since neither file would ever be captured. Adjacent
+ * means what the re-export would plausibly have to capture: the same
  * directory as an owned file, or a file a registration line the patch adds
  * names. The carve-outs (`--expect-new` for a file the next export adopts,
  * `--adjacent-ignore` for a reviewed ignore list) admit their files while

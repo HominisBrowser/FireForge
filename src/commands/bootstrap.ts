@@ -103,9 +103,8 @@ export async function bootstrapCommand(projectRoot: string): Promise<ExitCode> {
     if (hasErrors) {
       outro('Build dependencies installed with errors');
       // Propagate the failure (mirroring doctor's exit-code handling)
-      // instead of exiting 0. CI gating on bootstrap used to proceed to a
-      // build that could not succeed because error-severity check results
-      // were discarded here.
+      // instead of exiting 0, so CI gating on bootstrap does not proceed to
+      // a build that cannot succeed.
       return checksExitCode;
     }
     outro('Build dependencies installed with warnings');

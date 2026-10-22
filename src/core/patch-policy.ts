@@ -88,7 +88,7 @@ export function getPatchPolicyCategories(config: FireForgeConfig): string[] {
   );
 }
 
-/** Checks whether a category is accepted by legacy defaults or the policy ranges. */
+/** Checks whether a category is accepted by the built-in defaults or the policy ranges. */
 export function isCategoryAllowedByConfig(config: FireForgeConfig, category: string): boolean {
   if (!/^[a-z][a-z0-9-]*$/.test(category)) return false;
   const cfg = policy(config);

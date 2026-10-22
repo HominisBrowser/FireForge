@@ -125,10 +125,10 @@ export function createFsMock(): FsModule {
  *
  * A command suite that asserts the `FIREFORGE-VERDICT:` line by exact string
  * needs the run log absent, because the line carries an open log's path as a
- * ` log=<path>` suffix. Those suites used to get that for free: they pass
- * `/project` as the project root, and `mkdir('/project/.fireforge/logs')`
- * fails at the filesystem root on POSIX, so the best-effort open degraded to
- * "no log". On Windows the same path resolves against the current drive, the
+ * ` log=<path>` suffix. Those suites pass `/project` as the project root,
+ * and `mkdir('/project/.fireforge/logs')` fails at the filesystem root on
+ * POSIX, so without this mock the best-effort open degrades to "no log"
+ * there by accident. On Windows the same path resolves against the current drive, the
  * mkdir succeeds, and every one of those assertions fails, while the run
  * also leaves real directories behind on the runner's drive root. Saying "no
  * log" here states the precondition instead of inheriting it from a

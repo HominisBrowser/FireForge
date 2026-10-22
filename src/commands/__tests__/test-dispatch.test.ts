@@ -4,18 +4,34 @@
  * (combined, per-argument shards, `--shard-size` chunks, `--jobs`
  * instances), the `--jobs` usage refusals, and the run-scoped drift guard.
  */
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 vi.mock('../test-run.js', () => ({ runTestsWithRetries: vi.fn() }));
+vi.mock('../../core/harness-port-fallback.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/harness-port-fallback.js')>()),
+  detectHarnessPortFallback: vi.fn(() =>
+    Promise.resolve({ serverPorts: false, marionettePort: false })
+  ),
+}));
+vi.mock('../../core/harness-port-reservation.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/harness-port-reservation.js')>()),
+  reserveHarnessServerPorts: vi.fn(),
+}));
 vi.mock('../../core/engine-session-lock.js', () => ({
   snapshotEngineGeneration: vi.fn(() => Promise.resolve('before')),
   assertEngineGenerationUnchanged: vi.fn(() => Promise.resolve()),
 }));
 
 import { assertEngineGenerationUnchanged } from '../../core/engine-session-lock.js';
+import { detectHarnessPortFallback } from '../../core/harness-port-fallback.js';
+import { reserveHarnessServerPorts } from '../../core/harness-port-reservation.js';
 import { InvalidArgumentError } from '../../errors/base.js';
 import type { TestOptions } from '../../types/commands/index.js';
 import type { FireForgeConfig } from '../../types/config.js';
@@ -175,5 +191,73 @@ describe('dispatchTests', () => {
   it('makes a sharded run inconclusive when the drift guard throws', async () => {
     vi.mocked(assertEngineGenerationUnchanged).mockRejectedValueOnce(new Error('drift'));
     await expect(dispatchTests(inputs({}, [['a.js'], ['b.js']]))).rejects.toThrow('drift');
+  });
+
+  it('gives every --jobs instance its own MOZ_UPLOAD_DIR and names them on the verdict', async () => {
+    const upload = await mkdtemp(join(tmpdir(), 'ff-upload-'));
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      const base = { ...CTX, env: { MOZ_UPLOAD_DIR: upload } };
+      await dispatchTests({
+        ...inputs({ jobs: 2, autoPorts: true }, [['a.js'], ['b.js'], ['c.js']]),
+        runCtx: base,
+      });
+      const dirs = new Set(
+        vi.mocked(runTestsWithRetries).mock.calls.map(([ctx]) => ctx.env?.['MOZ_UPLOAD_DIR'])
+      );
+      const expected = [join(upload, 'job-1'), join(upload, 'job-2')];
+      expect(dirs).toEqual(new Set(expected));
+      for (const dir of expected) expect((await stat(dir)).isDirectory()).toBe(true);
+      expect(writes.join('')).toContain(`upload-dirs=${expected.join(',')}`);
+    } finally {
+      await rm(upload, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves MOZ_UPLOAD_DIR unset when the caller set none', async () => {
+    const saved = process.env['MOZ_UPLOAD_DIR'];
+    delete process.env['MOZ_UPLOAD_DIR'];
+    try {
+      await dispatchTests(inputs({ jobs: 2, autoPorts: true }, [['a.js'], ['b.js']]));
+      for (const [ctx] of vi.mocked(runTestsWithRetries).mock.calls) {
+        expect(ctx.env?.['MOZ_UPLOAD_DIR']).toBeUndefined();
+      }
+    } finally {
+      if (saved !== undefined) process.env['MOZ_UPLOAD_DIR'] = saved;
+    }
+  });
+
+  it('holds the mochitest server ports for a multi-instance browser run, and releases them', async () => {
+    const release = vi.fn(() => Promise.resolve());
+    vi.mocked(reserveHarnessServerPorts).mockResolvedValue({ held: [8888], release });
+    vi.mocked(detectHarnessPortFallback).mockResolvedValue({
+      serverPorts: true,
+      marionettePort: true,
+    });
+    const releasedDuringRun: boolean[] = [];
+    vi.mocked(runTestsWithRetries).mockImplementation(() => {
+      releasedDuringRun.push(release.mock.calls.length > 0);
+      return Promise.resolve(GREEN);
+    });
+    await dispatchTests(inputs({ jobs: 2, autoPorts: true }, [['a.js'], ['b.js']]));
+    expect(reserveHarnessServerPorts).toHaveBeenCalledTimes(1);
+    expect(releasedDuringRun).toEqual([false, false]);
+    expect(release).toHaveBeenCalledTimes(1);
+
+    // One instance (a single shard), xpcshell, or an engine without the
+    // fallback: nothing is held.
+    vi.mocked(reserveHarnessServerPorts).mockClear();
+    await dispatchTests(inputs({ jobs: 2, autoPorts: true, shard: false }, [['a.js']]));
+    await dispatchTests(inputs({ jobs: 2 }, [['test_a.js'], ['test_b.js']], true));
+    vi.mocked(detectHarnessPortFallback).mockResolvedValue({
+      serverPorts: false,
+      marionettePort: false,
+    });
+    await dispatchTests(inputs({ jobs: 2, autoPorts: true }, [['a.js'], ['b.js']]));
+    expect(reserveHarnessServerPorts).not.toHaveBeenCalled();
   });
 });

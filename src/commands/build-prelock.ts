@@ -4,9 +4,9 @@
  * session lock, not while holding it.
  *
  * A build queued behind a running objdir browser (a demo batch, an
- * end-to-end harness) used to wait inside `withEngineSessionLock`, so every
- * peer's build, test and re-export queued behind a run that was doing
- * nothing. The wait now happens first, and the in-lock objdir preflight
+ * end-to-end harness) that waited inside `withEngineSessionLock` would queue
+ * every peer's build, test and re-export behind a run that was doing
+ * nothing. The wait happens first, and the in-lock objdir preflight
  * re-checks once (the spent budget is stripped from the options it gets).
  */
 

@@ -243,7 +243,7 @@ describe('findStaleFurnaceComponentsForFiles', () => {
       { name: 'moz-hominis-dock', type: 'custom', prefix: 'browser/components/dock/' },
     ]);
 
-    // The default-dir path no longer matches under a configured base.
+    // The default-dir path does not match under a configured base.
     vi.mocked(hasComponentChanged).mockClear();
     const noMatch = await findStaleFurnaceComponentsForFiles('/project', [
       'toolkit/locales/en-US/toolkit/global/moz-hominis-dock.ftl',

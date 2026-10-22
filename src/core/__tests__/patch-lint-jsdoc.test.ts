@@ -349,9 +349,9 @@ describe('validateExportJsDoc — class-method enforcement', () => {
   });
 
   it('accepts inline object types with nested generics in @param', () => {
-    // The exact reported doc shape: nested braces inside the type used to
-    // truncate the flat-regex scan at the first inner "}", losing the
-    // param name and firing "@param message missing or misnamed".
+    // The exact reported doc shape: nested braces inside the type must not
+    // truncate the scan at the first inner "}", which would lose the
+    // param name and fire "@param message missing or misnamed".
     const source = wrapClass([
       '  /**',
       '   * Send a message.',

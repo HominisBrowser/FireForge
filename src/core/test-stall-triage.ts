@@ -43,9 +43,8 @@ const NO_OUTPUT_STALL_CONTROL_STEP =
  *  - (4) is mechanical and was root-caused downstream: the harness serves
  *    its manifest from `server.js` on 8888, and a survivor of an
  *    interrupted run keeps the port. Its probe is exact, and the preflight
- *    in `mochitest-server-port.ts` now refuses it before a run starts.
- *  - (3) is now mechanical and root-caused, replacing the correlation an
- *    earlier revision recorded. A `chrome://` (or `resource://`) URL that
+ *    in `mochitest-server-port.ts` refuses it before a run starts.
+ *  - (3) is mechanical and root-caused. A `chrome://` (or `resource://`) URL that
  *    resolves to nothing reaches `CheckForBrokenChromeURL`
  *    (netwerk/base/nsNetUtil.cpp), which outside automation only
  *    `printf_stderr`s `Missing chrome or resource URL: <uri>`, but under
@@ -53,9 +52,8 @@ const NO_OUTPUT_STALL_CONTROL_STEP =
  *    `MOZ_CRASH_UNSAFE_PRINTF("Missing chrome or resource URLs: %s")`. A
  *    downstream reproduction symbolicated the faulting frame as
  *    `CheckForBrokenChromeURL`, which is the established diagnosis the bar
- *    in `mach-error-hints.ts` asks for. The discredited "stalls first
- *    paint" story an even earlier revision asserted must not come back: a
- *    failed image load in Gecko fires `error` and does not gate the
+ *    in `mach-error-hints.ts` asks for. It is not a "stalls first paint"
+ *    problem: a failed image load in Gecko fires `error` and does not gate the
  *    document load event.
  *
  * Detection by log line is not specified for (3), because of the mechanism
@@ -68,7 +66,7 @@ const NO_OUTPUT_STALL_CONTROL_STEP =
  * the census points at the two artefacts that do carry it: the OS crash
  * report (whose faulting frame names `CheckForBrokenChromeURL`) and the
  * out-of-automation smoke probe (which prints the non-crashing spelling
- * and, since 0.45.0, counts it as an unallowed error so the exit code
+ * and counts it as an unallowed error so the exit code
  * agrees with the capture).
  */
 const NO_OUTPUT_STALL_TRIAGE = [

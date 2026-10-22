@@ -23,6 +23,7 @@ import {
 } from './staged-dependency-batch.js';
 import {
   applyMode,
+  countReasonUpdates,
   countStagedEntries,
   importView,
   registrationView,
@@ -40,7 +41,10 @@ const SINGLE_DECLARATION_FLAGS = [
   ['--owner', 'owner'],
 ] as const;
 
-/** Adds every `--from` declaration not already present, keyed like a single `--add`. */
+/**
+ * Adds every `--from` declaration not already present, keyed like a single
+ * `--add`; a present one whose `reason` differs takes the new reason in place.
+ */
 function mergeBatch(
   staged: PatchStagedDependencies | undefined,
   batch: StagedDependencyBatch
@@ -107,17 +111,22 @@ export async function runBatchAdd(
   }
 
   const existing = targetPatch.stagedDependencies;
-  const projectedCount = countStagedEntries(mergeBatch(existing, batch));
-  const describe = (beforeCount: number, afterCount: number): string =>
-    `added ${afterCount - beforeCount} of ${supplied} staged declaration(s) from ${from}` +
-    (supplied > afterCount - beforeCount
-      ? ` (${supplied - (afterCount - beforeCount)} already present or repeated)`
-      : '');
+  const describe = (
+    before: PatchStagedDependencies | undefined,
+    after: PatchStagedDependencies | undefined
+  ): string => {
+    const added = countStagedEntries(after) - countStagedEntries(before);
+    const updated = countReasonUpdates(before, after);
+    const unchanged = supplied - added - updated;
+    return (
+      `added ${added} of ${supplied} staged declaration(s) from ${from}` +
+      (updated > 0 ? `, updated the reason of ${updated}` : '') +
+      (unchanged > 0 ? ` (${unchanged} already present or repeated)` : '')
+    );
+  };
 
   if (options.dryRun === true) {
-    info(
-      `[dry-run] ${targetPatch.filename}: ${describe(countStagedEntries(existing), projectedCount)}.`
-    );
+    info(`[dry-run] ${targetPatch.filename}: ${describe(existing, mergeBatch(existing, batch))}.`);
     outro('Dry run complete — no changes made');
     return;
   }
@@ -142,9 +151,7 @@ export async function runBatchAdd(
   }
   const before = result.before.stagedDependencies;
   const after = result.after.stagedDependencies;
-  info(
-    `${targetPatch.filename}: ${describe(countStagedEntries(before), countStagedEntries(after))}.`
-  );
+  info(`${targetPatch.filename}: ${describe(before, after)}.`);
 
   await appendHistoryBestEffort(
     paths.patches,

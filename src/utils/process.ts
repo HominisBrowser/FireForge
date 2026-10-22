@@ -359,7 +359,7 @@ async function spawnTracked<C extends ChildProcess, T>(spec: TrackedSpawnSpec<C,
 
     child.on('error', (error) => {
       // Abort/startup failure: make sure a partially-started tree does not
-      // outlive the dispatch (a mach dying at startup used to strand
+      // outlive the dispatch (a mach dying at startup would otherwise strand
       // multiprocessing workers).
       if (options.processGroup === true) {
         killProcessTree(child, 'SIGKILL', usesProcessGroup);
@@ -418,7 +418,7 @@ export async function execStream(
     args,
     options,
     graceMs: 1500,
-    // A detached group leader no longer receives the terminal's Ctrl+C, so
+    // A detached group leader does not receive the terminal's Ctrl+C, so
     // the forwarder is mandatory (not just graceful-UX) when processGroup
     // is set. A plain streamed child does not get one.
     forwardWithoutProcessGroup: false,

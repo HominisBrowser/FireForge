@@ -158,8 +158,8 @@ describe('wireSubscript — transactional rollback', () => {
   });
 
   it('restores every touched file when the DOM fragment step fails', async () => {
-    // Chrome document without either anchor, so the tokenizer and the legacy
-    // regex fallback both fail. The legacy fallback substring-matches
+    // Chrome document without either anchor, so the tokenizer and the
+    // regex fallback both fail. The regex fallback substring-matches
     // `<html:body`, so the fixture cannot even mention that token in a
     // comment.
     const badChromeDoc = `<?xml version="1.0"?>

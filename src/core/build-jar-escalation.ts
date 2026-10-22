@@ -3,10 +3,10 @@
  * Decides whether a changed `jar.mn` really forces the pre-test build to
  * escalate from `mach build faster` to a full `mach build`.
  *
- * The 0.41.0 rule was `any changed jar.mn ⇒ full build`, which costs ~10
- * minutes against ~20 s for a chrome-only slice and is paid twice per
- * green/no-change pair on a Furnace-touching slice. A downstream experiment
- * (two clean runs, 2026-08-29, against 0.44.4) showed the rule is over-broad
+ * Escalating on every changed jar.mn (`any changed jar.mn ⇒ full build`)
+ * costs ~10 minutes against ~20 s for a chrome-only slice and is paid twice
+ * per green/no-change pair on a Furnace-touching slice. A downstream
+ * experiment (two clean runs, 2026-08-29) showed that rule is over-broad
  * for the common case: a jar-only registration of a new content file added
  * to an existing `dist/bin` manifest was installed by a plain
  * `fireforge build --ui` both times: `faster/install_dist_bin_browser` named

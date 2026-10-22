@@ -116,11 +116,18 @@ describe('patch split integration', () => {
       { metadata: makeMetadata('002-infra-later.patch', 2, ['unrelated.txt']), body: '(stale)' },
     ]);
 
+    const mapOut = join(projectRoot, 'out', 'split-map.json');
     await patchSplitCommand(projectRoot, '001-infra-feature.patch', {
       files: [FILE_B],
       name: 'feature-styles',
       yes: true,
       skipLint: true,
+      mapOut,
+    });
+
+    // --map-out records the renumbered later patch, old name to new.
+    expect(JSON.parse(await readFile(mapOut, 'utf-8'))).toEqual({
+      '002-infra-later.patch': '003-infra-later.patch',
     });
 
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
@@ -226,10 +233,10 @@ describe('patch split integration', () => {
   it('auto-declares the forward edge a split introduces into the new patch', async () => {
     // The remaining source still imports a helper that moves into the new
     // (later) patch, a forward edge the split itself creates, with no prior
-    // declaration. Before the fix, the projected lint flagged it and the
-    // split refused (the real per-patch gate would have been 0/0 once
-    // declared). Now the split auto-declares it: the dry-run projection is
-    // clean (no refusal) and the committed queue lints clean.
+    // declaration. The projected lint must not flag it and refuse the split
+    // (the real per-patch gate is 0/0 once declared): the split
+    // auto-declares it, so the dry-run projection is clean (no refusal) and
+    // the committed queue lints clean.
     const helperPath = 'browser/modules/Helper.sys.mjs';
     const importerPath = 'browser/modules/Importer.sys.mjs';
     const mozBuildPath = 'browser/modules/moz.build';
@@ -272,6 +279,8 @@ describe('patch split integration', () => {
       specifier: 'resource:///modules/Helper.sys.mjs',
       creates: helperPath,
       owner: '002-infra-helper.patch',
+      // The declaration names the move that needs it.
+      reason: '001-infra-feature.patch → 002-infra-helper.patch by patch split',
     });
 
     // The committed queue lints clean end to end, matching the real gate.

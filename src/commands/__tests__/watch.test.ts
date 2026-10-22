@@ -55,7 +55,7 @@ vi.mock('../../utils/logger.js', () => ({
   })),
 }));
 
-// `fireforge watch` now runs a furnace staleness check before entering
+// `fireforge watch` runs a furnace staleness check before entering
 // the watch loop. Stub the helper out so the watch tests don't have to
 // mock the full furnace-config / apply-helpers dependency graph.
 vi.mock('../../core/furnace-staleness.js', () => ({

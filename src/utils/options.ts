@@ -82,8 +82,8 @@ export const WAIT_LOCK_ENV_VAR = 'FIREFORGE_WAIT_LOCK';
 /**
  * Bounds shared by the flag and the environment variable. The ceiling is a
  * day: on a shared engine a re-export or `test --build` queued behind a
- * peer's long series can need more than the hour the cap used to be, and a
- * longer wait then had to be a requeue after exit 15.
+ * peer's long series can need more than an hour, and a cap below that turns
+ * a longer wait into a requeue after exit 15.
  */
 const MIN_WAIT_LOCK_SECONDS = 1;
 export const MAX_WAIT_LOCK_SECONDS = 86_400;

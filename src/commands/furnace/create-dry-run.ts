@@ -36,8 +36,8 @@ export interface DryRunPlanInput {
    * Resolved `--test-dir` override (engine-relative, already validated by
    * `resolveValidatedTestDir`). Omit for the default `<binaryName>`-derived
    * scaffold directory. The formatters must receive the same value the
-   * scaffolders get. The plan used to recompute the default from
-   * `binaryName` and named a directory the real run never wrote to.
+   * scaffolders get; recomputing the default from `binaryName` would name a
+   * directory the real run never writes to.
    */
   testDir?: string;
 }

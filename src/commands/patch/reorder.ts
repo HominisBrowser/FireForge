@@ -7,6 +7,10 @@
  * renumbered to make room. Pre-flights the projected order through
  * `lintPatchQueue` so reorders that would introduce a forward-import fail
  * before any bytes move.
+ *
+ * `fireforge patch reorder --shift <n> --from <order> [--through <order>]`
+ * renumbers a whole run instead (see reorder-shift.ts). Every mode takes
+ * `--map-out <file>` for the committed old-to-new filename map.
  */
 
 import { Command, Option } from 'commander';
@@ -22,8 +26,6 @@ import {
   buildPatchQueueContext,
   formatPatchLintIssue,
   lintPatchQueue,
-  type PatchQueueContext,
-  type PatchQueueEntry,
 } from '../../core/patch-lint.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
@@ -31,7 +33,6 @@ import {
   type PatchRenameEntry,
   renumberPatchesInManifest,
   resolvePatchIdentifier,
-  rewriteStagedDependencyOwners,
 } from '../../core/patch-manifest.js';
 import { applyRenameMapToManifest, enforcePatchPolicy } from '../../core/patch-policy.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
@@ -47,22 +48,14 @@ import {
 } from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
 import { proceedAfterDecision } from '../destructive-decision.js';
-import { getSortedRenameEntries, renameMapsEqual } from '../patch-rename-map.js';
+import {
+  getSortedRenameEntries,
+  renameMapsEqual,
+  writeRenameMapFile,
+} from '../patch-rename-map.js';
 import { requirePatchQueue, requirePatchTarget } from './patch-context.js';
-
-/** Zero-pads an ordinal number to the given width. */
-function padOrder(value: number, width: number): string {
-  return String(value).padStart(width, '0');
-}
-
-/** Builds a new patch filename by replacing the numeric prefix with `newOrder`. */
-export function rebuildFilenameForOrder(existing: PatchMetadata, newOrder: number): string {
-  const currentPrefixMatch = /^(\d+)-/.exec(existing.filename);
-  const currentPrefix = currentPrefixMatch?.[1] ?? '001';
-  const width = Math.max(3, currentPrefix.length, String(newOrder).length);
-  const rest = existing.filename.replace(/^\d+-/, '');
-  return `${padOrder(newOrder, width)}-${rest}`;
-}
+import { projectReorder, rebuildFilenameForOrder } from './reorder-projection.js';
+import { patchReorderShiftCommand } from './reorder-shift.js';
 
 /**
  * Computes a rename map that moves `target` to `destinationOrder` with a
@@ -134,40 +127,6 @@ function computeRenameMap(
   });
 
   return renames;
-}
-
-/**
- * Applies a rename map to a {@link PatchQueueContext} so cross-patch lint
- * can run against the projected state without touching disk. Exported for
- * `patch rename --order`, which projects the same single-row move shape.
- */
-export function projectReorder(
-  base: PatchQueueContext,
-  renameMap: Map<string, PatchRenameEntry>
-): PatchQueueContext {
-  const ownerLookup = (oldFilename: string): string | undefined =>
-    renameMap.get(oldFilename)?.newFilename;
-  const projectedEntries: PatchQueueEntry[] = base.entries.map((entry) => {
-    // Project staged-dependency owner references through the rename map on
-    // every entry. Owners point at other patches' filenames, so a
-    // projection that skips non-renamed entries would lint against stale
-    // owners and report false forward-import regressions.
-    const metadata = entry.metadata
-      ? rewriteStagedDependencyOwners(entry.metadata, ownerLookup)
-      : entry.metadata;
-    const rename = renameMap.get(entry.filename);
-    if (!rename) {
-      return metadata === entry.metadata ? entry : { ...entry, metadata };
-    }
-    return {
-      ...entry,
-      metadata,
-      filename: rename.newFilename,
-      order: rename.newOrder,
-    };
-  });
-  projectedEntries.sort((a, b) => a.order - b.order || a.filename.localeCompare(b.filename));
-  return { entries: projectedEntries };
 }
 
 /**
@@ -255,10 +214,12 @@ interface CommitReorderPlanOptions {
  *
  * @param commitOptions - See {@link CommitReorderPlanOptions}
  */
-async function commitReorderPlan(commitOptions: CommitReorderPlanOptions): Promise<void> {
+async function commitReorderPlan(
+  commitOptions: CommitReorderPlanOptions
+): Promise<Map<string, PatchRenameEntry>> {
   const { patchesDir, target, renameMap, anchorFilename, options, config, buildHistoryEntry } =
     commitOptions;
-  await withPatchDirectoryLock(
+  return withPatchDirectoryLock(
     patchesDir,
     async () => {
       const currentManifest = await loadPatchesManifest(patchesDir);
@@ -344,26 +305,66 @@ async function commitReorderPlan(commitOptions: CommitReorderPlanOptions): Promi
         buildHistoryEntry(currentRenameMap),
         `patch reorder committed`
       );
+      return currentRenameMap;
     },
     { waitLockSeconds: resolveWaitLockSeconds(options.waitLock), command: 'patch reorder' }
   );
 }
 
 /**
+ * Validates the `--shift` flag set and runs the shift, or returns false
+ * when no shift flag was given.
+ */
+async function runShiftMode(
+  projectRoot: string,
+  identifier: string | undefined,
+  options: PatchReorderOptions
+): Promise<boolean> {
+  const { shift, from } = options;
+  if (shift === undefined && from === undefined && options.through === undefined) return false;
+  if (shift === undefined || from === undefined) {
+    throw new InvalidArgumentError(
+      '--shift <n> and --from <order> go together (--through <order> is optional).',
+      shift === undefined ? '--shift' : '--from'
+    );
+  }
+  if (
+    identifier !== undefined ||
+    options.to !== undefined ||
+    options.before !== undefined ||
+    options.after !== undefined
+  ) {
+    throw new InvalidArgumentError(
+      '--shift renumbers a run of orders and takes no patch name, --to, --before or --after.',
+      '--shift'
+    );
+  }
+  await patchReorderShiftCommand(projectRoot, { ...options, shift, from });
+  return true;
+}
+
+/**
  * Runs the `patch reorder` command: computes a rename map moving the
  * target patch to the requested slot, projects the new order through
  * cross-patch lint, confirms, and then renames under the patch directory
- * lock.
+ * lock. With `--shift` it renumbers a run instead (see reorder-shift.ts).
  *
  * @param projectRoot - Project root directory
- * @param identifier - Patch filename or ordinal number to move
- * @param options - Command options (mutually exclusive --to/--before/--after)
+ * @param identifier - Patch filename or ordinal number to move (none with `--shift`)
+ * @param options - Command options (mutually exclusive --to/--before/--after/--shift)
  */
 export async function patchReorderCommand(
   projectRoot: string,
-  identifier: string,
+  identifier: string | undefined,
   options: PatchReorderOptions = {}
 ): Promise<void> {
+  if (await runShiftMode(projectRoot, identifier, options)) return;
+  if (identifier === undefined) {
+    throw new InvalidArgumentError(
+      'Name the patch to move, or renumber a run with --shift <n> --from <order>.',
+      'patch reorder'
+    );
+  }
   intro(options.dryRun ? 'FireForge patch reorder (dry run)' : 'FireForge patch reorder');
 
   const specifiedTargets = [
@@ -472,7 +473,7 @@ export async function patchReorderCommand(
     };
   };
 
-  await commitReorderPlan({
+  const committed = await commitReorderPlan({
     patchesDir: paths.patches,
     target,
     renameMap,
@@ -481,6 +482,10 @@ export async function patchReorderCommand(
     config,
     buildHistoryEntry,
   });
+  if (options.mapOut !== undefined) {
+    const written = await writeRenameMapFile(options.mapOut, committed);
+    info(`Wrote the old-to-new filename map (${committed.size} rename(s)) to ${written}`);
+  }
 
   info(`Reordered ${renameMap.size} patch(es).`);
   outro('Reorder complete');
@@ -495,8 +500,11 @@ export async function patchReorderCommand(
 export function registerPatchReorder(parent: Command, context: CommandContext): void {
   const { getProjectRoot, withErrorHandling } = context;
   const command = parent
-    .command('reorder <name>')
-    .description('Move a patch to a different position in the queue (destructive)')
+    .command('reorder [name]')
+    .description(
+      'Move a patch to a different position in the queue, or shift a run of patches up with ' +
+        '--shift <n> --from <order> (destructive)'
+    )
     .addOption(
       new Option('--to <order>', 'Destination ordinal').argParser(
         commanderArgParser((v) => parsePositiveIntegerFlag('--to', v))
@@ -504,6 +512,26 @@ export function registerPatchReorder(parent: Command, context: CommandContext): 
     )
     .option('--before <anchor>', 'Place the patch immediately before <anchor>')
     .option('--after <anchor>', 'Place the patch immediately after <anchor>')
+    .addOption(
+      new Option(
+        '--shift <n>',
+        'Renumber the run starting at --from up by <n> orders (no patch name); under ' +
+          'patchPolicy.allowGaps: false the opened orders are reserved'
+      ).argParser(commanderArgParser((v) => parsePositiveIntegerFlag('--shift', v)))
+    )
+    .addOption(
+      new Option('--from <order>', 'First order of the run --shift moves').argParser(
+        commanderArgParser((v) => parsePositiveIntegerFlag('--from', v))
+      )
+    )
+    .addOption(
+      new Option(
+        '--through <order>',
+        'Last order of the run --shift moves (default: the end of the run of consecutive ' +
+          "orders of --from's category)"
+      ).argParser(commanderArgParser((v) => parsePositiveIntegerFlag('--through', v)))
+    )
+    .option('--map-out <file>', 'Write the committed old-to-new filename map as JSON')
     .option('--dry-run', 'Show what would happen without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
     .option(
@@ -511,7 +539,7 @@ export function registerPatchReorder(parent: Command, context: CommandContext): 
       'Bypass the refusal when the projected order introduces a lint error'
     );
   addWaitLockOption(command).action(
-    withErrorHandling(async (name: string, options: PatchReorderOptions) => {
+    withErrorHandling(async (name: string | undefined, options: PatchReorderOptions) => {
       await patchReorderCommand(getProjectRoot(), name, pickDefined(options));
     })
   );

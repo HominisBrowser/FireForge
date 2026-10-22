@@ -417,7 +417,7 @@ describe('commit', () => {
 
 describe('getFileContentAtRef', () => {
   it('reads file content from an arbitrary commit, not just HEAD', async () => {
-    // Regression guard for the furnace diff fix: when an override has been
+    // Furnace diff depends on this: when an override has been
     // applied to the working tree, reading from HEAD would return the
     // override content. Reading from the original baseCommit must still
     // return the pre-override content.

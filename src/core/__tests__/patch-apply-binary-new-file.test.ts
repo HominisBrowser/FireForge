@@ -7,8 +7,8 @@
  * FireForge resolves the conflict by putting the patch's intended content in
  * place and retrying. For a text file that means overwriting with the
  * extracted content. For a binary file there is nothing to extract, since
- * the payload is base85, so before 0.45.0 the recovery threw and the import
- * failed on a patch `git apply` could have completed itself.
+ * the payload is base85, and throwing there would fail the import on a
+ * patch `git apply` could have completed itself.
  *
  * The binary resolution is to remove the blocking file and let `git apply`
  * decode the `GIT binary patch` payload, which is the same outcome the text

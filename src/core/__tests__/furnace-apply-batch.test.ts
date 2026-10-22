@@ -373,7 +373,7 @@ describe('applyAllComponents', () => {
   });
 
   it('records patch-owned overwrite warnings even when the component source changed', async () => {
-    // The changed === true path used to skip drift detection entirely,
+    // The changed === true path must still run drift detection: it is
     // exactly the case where a deployed engine-only fix gets replaced.
     vi.mocked(hasComponentChanged).mockResolvedValue(true);
     vi.mocked(applyOverrideComponent).mockResolvedValue({
@@ -567,10 +567,10 @@ describe('applyAllComponents', () => {
   });
 
   it('prunes renamed helper files and stale jar.mn lines in named (componentName) mode', async () => {
-    // `furnace deploy <name>` must not bypass the batch
-    // deletion path entirely, so renaming a multi-file helper left the old
-    // deployed file and its jar.mn line in the engine. Named deploys now
-    // run this same pipeline with a componentName filter.
+    // `furnace deploy <name>` must not bypass the batch deletion path, or
+    // renaming a multi-file helper leaves the old deployed file and its
+    // jar.mn line in the engine. Named deploys run this same pipeline with
+    // a componentName filter.
     vi.mocked(hasComponentChanged).mockResolvedValue(true);
     vi.mocked(extractComponentChecksums).mockReturnValue({
       'moz-panel.mjs': 'mjs-hash',
@@ -937,9 +937,9 @@ describe('applyAllComponents', () => {
   });
 
   it('rolls back when a POST-APPLY consistency check flags a blocking step error', async () => {
-    // Ordering regression: hasStepErrors snapshotted BEFORE
-    // runPostApplyConsistencyChecks mutates entry.stepErrors persists state
-    // for a component known to be broken while the CLI reports failure.
+    // Ordering: a hasStepErrors snapshot taken BEFORE
+    // runPostApplyConsistencyChecks mutates entry.stepErrors would persist
+    // state for a component known to be broken while the CLI reports failure.
     vi.mocked(hasComponentChanged).mockResolvedValue(true);
     vi.mocked(applyOverrideComponent).mockResolvedValue({ affectedPaths: ['moz-card.css'] });
     vi.mocked(applyCustomComponent).mockResolvedValue({

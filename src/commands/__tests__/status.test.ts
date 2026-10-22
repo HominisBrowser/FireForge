@@ -2111,8 +2111,9 @@ describe('statusCommand', () => {
 
     it('refuses a --patches name that matches no patch', async () => {
       seedTwoPatchQueue();
+      // The nearest matches and the queue size, never every patch name.
       await expect(statusCommand(projectRoot, { patches: ['999'] })).rejects.toThrow(
-        'No patch in the queue matches "999"'
+        /^No patch in the queue matches "999"\. .*patches in (the )?queue[^,]*$/
       );
     });
 

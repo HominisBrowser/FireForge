@@ -509,10 +509,10 @@ describe('Firefox workflow fixtures', () => {
   });
 
   it('export --dry-run --before <anchor> prints the placement summary for single-rename runs', async () => {
-    // Regression: the placement dry-run preview used to fire only when
-    // renameCount > 1, silently exiting with "Dry run complete" otherwise.
-    // A single-renumber dry-run now routes through confirmDestructive and
-    // prints the new filename, order, and rename row.
+    // The placement dry-run preview fires for renameCount === 1 too, rather
+    // than silently exiting with "Dry run complete": a single-renumber
+    // dry-run routes through confirmDestructive and prints the new
+    // filename, order, and rename row.
     const engineDir = join(projectRoot, 'engine');
     await initCommittedRepo(engineDir, {
       'browser/a.js': 'const a = 1;\n',
@@ -528,8 +528,7 @@ describe('Firefox workflow fixtures', () => {
     });
 
     // Second export: a modification of b.js that we will try to place before
-    // the existing first patch in dry-run mode. This forces a single rename,
-    // which is the previously-silent case.
+    // the existing first patch in dry-run mode. This forces a single rename.
     await writeFiles(engineDir, { 'browser/b.js': 'const b = 2;\n' });
 
     const logger = await import('../../utils/logger.js');

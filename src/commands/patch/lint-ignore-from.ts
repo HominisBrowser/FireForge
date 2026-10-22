@@ -3,10 +3,9 @@
  * Batch and per-entry input for `patch lint-ignore --add`. Split out of
  * `lint-ignore.ts` for the per-file line budget.
  *
- * A rebaseline that sets a ceiling per rule used to take one call per rule,
- * each taking the patch lock and rewriting `patches.json` (138 calls on one
- * consumer's queue), because `--max` applied to every `--add` of a call.
- * Two forms lift that:
+ * `--max` applies to every `--add` of a call, so a rebaseline that sets a
+ * ceiling per rule would take one call per rule, each taking the patch lock
+ * and rewriting `patches.json`. Two forms avoid that:
  *
  * - `--add <rule>=<max>` gives each entry its own ceiling in one call.
  * - `--from <json-file>` reads every entry from a file, under one lock hold

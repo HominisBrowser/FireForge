@@ -33,7 +33,7 @@ import {
  *
  * Derived from {@link TOKEN_MODES} so the runtime allowlist and the type
  * cannot drift: adding a member here without updating the list (or the
- * reverse) is no longer possible, because there is only one list.
+ * reverse) is impossible, because there is only one list.
  */
 export const TOKEN_MODES = ['auto', 'static', 'override'] as const;
 
@@ -53,7 +53,7 @@ export interface AddTokenOptions {
   value: string;
   /**
    * Token category matching section headers in the CSS file. Required for a
-   * base declaration. Ignored, and no longer required, under
+   * base declaration. Ignored, and not required, under
    * {@link AddTokenOptions.variant}, which routes into a `:root<selector>`
    * block and never touches a category section.
    */
@@ -208,12 +208,10 @@ function normalizeVariantOption(options: AddTokenOptions): string | undefined {
  * Narrows {@link AddTokenOptions.category} for the base-declaration path,
  * which cannot proceed without one.
  *
- * `--category` used to be unconditionally required, including under
- * `--variant`, where the declaration is routed into a `:root<selector>`
- * block and the category names nothing about where the token lands. The
- * requirement existed so the argument would not be silently discarded,
- * a fair goal that produced a mandatory argument describing nothing. Under
- * a variant it is now optional. Everywhere else this states the reason
+ * `--category` is optional under `--variant`, where the declaration is
+ * routed into a `:root<selector>` block and the category names nothing
+ * about where the token lands, so requiring it there would make a
+ * mandatory argument describing nothing. Everywhere else this states the reason
  * rather than leaving commander to print a bare "required option not
  * specified".
  *

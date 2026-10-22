@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -10,6 +13,7 @@ import {
   writeFiles,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
+import { info } from '../../utils/logger.js';
 import { reExportCommand } from '../re-export.js';
 
 vi.mock('../../utils/logger.js', () => ({
@@ -105,6 +109,55 @@ describe('re-export --expect-removed across several selected patches', () => {
     expect(await readProjectText(projectRoot, 'patches/002-ui-second.patch')).not.toContain(
       'two.svg'
     );
+  });
+
+  it('drops every declaration on a retired path, in any patch, and names each', async () => {
+    const kept = { file: 'jar.mn', line: '  content/kept.svg', creates: 'kept.svg' };
+    const holder = {
+      ...row('003-ui-holder.patch', 3, ['jar.mn', 'kept.svg']),
+      stagedDependencies: {
+        forwardImports: [{ file: 'x.mjs', specifier: 'resource:///two.svg', creates: 'two.svg' }],
+        registrations: [{ file: 'jar.mn', line: '  content/one.svg', creates: 'one.svg' }, kept],
+      },
+    };
+    const manifest = JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+      patches: unknown[];
+    };
+    await writeFiles(projectRoot, {
+      'patches/patches.json': JSON.stringify({
+        version: 1,
+        patches: [...manifest.patches, holder],
+      }),
+      'patches/003-ui-holder.patch': newFileDiff('kept.svg', '<svg/>'),
+    });
+    const options = { expectRemoved: ['one.svg', 'two.svg'] };
+    const messages = (): string =>
+      vi
+        .mocked(info)
+        .mock.calls.map((call) => call[0])
+        .join('\n');
+
+    const before = await readProjectText(projectRoot, 'patches/patches.json');
+    await reExportCommand(projectRoot, ['001', '002'], { ...options, dryRun: true });
+    expect(await readProjectText(projectRoot, 'patches/patches.json')).toBe(before);
+    expect(messages()).toContain(
+      '003-ui-holder.patch: would drop staged registration jar.mn "content/one.svg": ' +
+        '--expect-removed retires one.svg.'
+    );
+
+    vi.mocked(info).mockClear();
+    await reExportCommand(projectRoot, ['001', '002'], options);
+    const after = JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+      patches: { filename: string; stagedDependencies?: unknown }[];
+    };
+    expect(after.patches[2]?.stagedDependencies).toEqual({ registrations: [kept] });
+    expect(messages()).toContain(
+      '003-ui-holder.patch: drops staged forward-import x.mjs "resource:///two.svg": ' +
+        '--expect-removed retires two.svg.'
+    );
+    const history = await readFile(join(projectRoot, '.fireforge/history.jsonl'), 'utf8');
+    expect(history).toContain('"operation":"re-export-staged-prune"');
+    expect(history).toContain('"kind":"import"');
   });
 
   it('refuses a path no selected patch owns and names its unselected owner', async () => {

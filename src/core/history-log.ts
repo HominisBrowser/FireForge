@@ -8,13 +8,13 @@ import { appendHistory } from './destructive.js';
  * Appends a history entry for a mutation that has already committed, degrading
  * to a warning when the log cannot be written.
  *
- * Eleven call sites across `export-flow` and the `patch` subcommands had each
- * grown the same `try { await appendHistory(...) } catch { warn(...) }` block.
+ * This is the one `try { await appendHistory(...) } catch { warn(...) }`
+ * block for every call site across `export-flow` and the `patch` subcommands.
  * The swallow is intentional: the patch files and the manifest
  * are already on disk by the time this runs, so letting a failed log write
  * reject would report a completed, irreversible mutation as a failure and send
  * the operator looking for damage that is not there. Because that reasoning is
- * easy to lose in a copy, it now lives in one place.
+ * easy to lose in a copy, it lives in one place.
  * @param patchesDir - The project's `patches/` directory (the log itself lives
  *   under `.fireforge/` or `history.path`; see `history-log-file.ts`).
  * @param entry - The entry to append.

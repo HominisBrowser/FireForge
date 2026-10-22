@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
@@ -33,9 +37,11 @@ import {
   checkStaleBuildForTest,
   checkStaticComponentsStale,
   findChangedTestManifestsForPaths,
+  findCompiledSourcesNewerThanBinary,
   findUncoveredRequestPaths,
   formatPostMutationStaticComponentsWarning,
   formatStaleBuildWarning,
+  formatStaleCompiledRefusal,
   formatStaticComponentsRefusal,
   formatTestCoverageRefusal,
   FULL_SUITE_REQUEST,
@@ -382,14 +388,14 @@ describe('formatTestCoverageRefusal', () => {
       'The current record was written by "fireforge test --build browser/components/tiles/test/browser/browser_a.js" ' +
         'at 2026-10-20T08:00:00.000Z (pid 4242, still running, session lane-b, invocation inv-1).'
     );
-    // A record from before 0.52.0 carries no recorder: nothing is invented.
+    // A record that carries no recorder: nothing is invented.
     expect(
       formatTestCoverageRefusal(['a/test/browser_x.js'], ['b/test/browser_y.js'])
     ).not.toContain('The current record was written by');
   });
 
   it('says a scoped rebuild of the uncovered paths keeps every other unchanged claim', () => {
-    // Per-path retention is the default since 0.50.0: rebuilding only the
+    // Per-path retention is the default: rebuilding only the
     // uncovered paths costs nobody else's coverage, and the refusal says so
     // (and how to package without running).
     const message = formatTestCoverageRefusal(
@@ -746,5 +752,71 @@ describe('findChangedTestManifestsForPaths', () => {
     expect(
       await findChangedTestManifestsForPaths('/engine', baseline, ['browser/x/test_a.js'])
     ).toEqual([]);
+  });
+});
+
+describe('findCompiledSourcesNewerThanBinary', () => {
+  const BINARY = 'obj-x/dist/bin/mybrowser';
+  let engineDir: string;
+
+  async function touch(path: string, seconds: number): Promise<void> {
+    await mkdir(dirname(join(engineDir, path)), { recursive: true });
+    await writeFile(join(engineDir, path), path);
+    await utimes(join(engineDir, path), seconds, seconds);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    engineDir = await mkdtemp(join(tmpdir(), 'ff-stale-compiled-'));
+    mockHasChanges.mockResolvedValue(true);
+    mockGetUntracked.mockResolvedValue([]);
+    return async () => {
+      await rm(engineDir, { recursive: true, force: true });
+    };
+  });
+
+  it('keeps compiled sources edited after the last link, against the newest of binary and libxul', async () => {
+    await touch(BINARY, 1_000);
+    await touch('obj-x/dist/bin/libxul.so', 2_000);
+    await touch('gfx/old.cpp', 1_500);
+    await touch('gfx/new.cpp', 3_000);
+    await touch('modules/libpref/init/StaticPrefList.yaml', 3_000);
+    await touch('browser/base/content/new.js', 3_000);
+    await touch('gfx/tests/gtest/TestNew.cpp', 3_000);
+    mockGit.mockResolvedValue(
+      [
+        'gfx/old.cpp',
+        'gfx/new.cpp',
+        'modules/libpref/init/StaticPrefList.yaml',
+        'browser/base/content/new.js',
+        'gfx/tests/gtest/TestNew.cpp',
+        'gfx/deleted.cpp',
+      ].join('\n')
+    );
+    const result = await findCompiledSourcesNewerThanBinary(engineDir, undefined, BINARY);
+    expect(result?.paths).toEqual(['gfx/new.cpp', 'modules/libpref/init/StaticPrefList.yaml']);
+    expect(result?.linkedPath).toBe('obj-x/dist/bin/libxul.so');
+    expect(result?.linkedAt.getTime()).toBe(2_000_000);
+  });
+
+  it('returns undefined without a launchable binary to compare against', async () => {
+    await expect(
+      findCompiledSourcesNewerThanBinary(engineDir, undefined, undefined)
+    ).resolves.toBeUndefined();
+    await expect(
+      findCompiledSourcesNewerThanBinary(engineDir, undefined, 'obj-x/dist/bin/missing')
+    ).resolves.toBeUndefined();
+  });
+
+  it('renders a refusal that names the files and both remedies', () => {
+    const message = formatStaleCompiledRefusal({
+      paths: ['gfx/new.cpp'],
+      linkedPath: 'obj-x/dist/bin/libxul.so',
+      linkedAt: new Date(0),
+    });
+    expect(message).toContain('engine/gfx/new.cpp');
+    expect(message).toContain('"fireforge build"');
+    expect(message).toContain('"fireforge test --build"');
+    expect(message).toContain('--allow-stale-build');
   });
 });

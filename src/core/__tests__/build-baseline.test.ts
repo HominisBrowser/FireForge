@@ -154,7 +154,7 @@ describe('build-baseline', () => {
       const gitStatus = await import('../git-status.js');
       vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(true);
       vi.spyOn(gitBase, 'git').mockResolvedValue(
-        'browser/base/content/vanishing.js\nbrowser/base/content/present.js\n'
+        'browser/base/content/vanishing.js\0browser/base/content/present.js\0'
       );
       vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
 
@@ -187,7 +187,7 @@ describe('build-baseline', () => {
       const gitStatus = await import('../git-status.js');
       vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(true);
       vi.spyOn(gitBase, 'git').mockResolvedValue(
-        'browser/components/mybrowser/components.conf\nbrowser/base/content/browser-main.js\n'
+        'browser/components/mybrowser/components.conf\0browser/base/content/browser-main.js\0'
       );
       vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
 
@@ -297,7 +297,7 @@ describe('build-baseline', () => {
       const gitStatus = await import('../git-status.js');
       vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(true);
       vi.spyOn(gitBase, 'git').mockResolvedValue(
-        `${JAR}\n${MOZBUILD}\nbrowser/base/content/x.js\n`
+        `${JAR}\0${MOZBUILD}\0browser/base/content/x.js\0`
       );
       vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
       const { writeText, ensureDir: ensureDirLocal } = await import('../../utils/fs.js');
@@ -423,7 +423,7 @@ describe('build-baseline', () => {
       const gitBase = await import('../git-base.js');
       const gitStatus = await import('../git-status.js');
       vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(true);
-      vi.spyOn(gitBase, 'git').mockResolvedValue('browser/base/content/browser-main.js\n');
+      vi.spyOn(gitBase, 'git').mockResolvedValue('browser/base/content/browser-main.js\0');
       vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
 
       // Create the packageable file so the fingerprint hash has content
@@ -455,10 +455,78 @@ describe('build-baseline', () => {
     vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
     const gitBase = await import('../git-base.js');
     const gitStatus = await import('../git-status.js');
-    vi.spyOn(gitBase, 'git').mockResolvedValue('browser/tests/broken.js\n');
+    vi.spyOn(gitBase, 'git').mockResolvedValue('browser/tests/broken.js\0');
     vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
     await writeBuildBaseline({ projectRoot, engineDir, binaryName: 'mybrowser' });
     const stored = await readBuildBaseline(projectRoot, 'refuse');
     expect(stored?.testInputFingerprints).toBeUndefined();
+  });
+
+  it('names the failing coverage field and offers --build when refusing a scoped baseline', async () => {
+    // A baseline whose coverage holds a raw trailing-slash request path, as
+    // `test --build browser/base/content/test/hominis/` would record it.
+    await ensureDir(join(projectRoot, FIREFORGE_DIR));
+    await writeJson(getBuildBaselinePath(projectRoot), {
+      engineHeadSha: 'abc',
+      builtAt: '2026-10-22T00:00:00.000Z',
+      binaryName: 'mybrowser',
+      testPackagingCoverage: ['browser/base/content/test/hominis/'],
+    });
+    const refusal = readBuildBaseline(projectRoot, 'refuse');
+    await expect(refusal).rejects.toThrow(
+      'testPackagingCoverage[0] = "browser/base/content/test/hominis/"'
+    );
+    await expect(readBuildBaseline(projectRoot, 'refuse')).rejects.toThrow(/with --build/);
+  });
+
+  it('keeps advising fireforge build for a non-coverage field', async () => {
+    await ensureDir(join(projectRoot, FIREFORGE_DIR));
+    await writeJson(getBuildBaselinePath(projectRoot), {
+      engineHeadSha: 'abc',
+      builtAt: 'not a date',
+      binaryName: 'mybrowser',
+    });
+    const refusal = readBuildBaseline(projectRoot, 'refuse');
+    await expect(refusal).rejects.toThrow('builtAt = "not a date"');
+    await expect(readBuildBaseline(projectRoot, 'refuse')).rejects.toThrow(/Run "fireforge build"/);
+  });
+
+  it('fingerprints non-ASCII dirty paths unquoted, so the baseline stays valid', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    const path = 'browser/base/content/caf\u00e9.js';
+    await ensureDir(join(engineDir, 'browser/base/content'));
+    const { writeText } = await import('../../utils/fs.js');
+    await writeText(join(engineDir, path), '// cafe\n');
+    vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
+    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
+    const gitBase = await import('../git-base.js');
+    const gitSpy = vi
+      .spyOn(gitBase, 'git')
+      .mockImplementation((args) => Promise.resolve(args.includes('diff') ? `${path}\0` : ''));
+    await writeBuildBaseline({ projectRoot, engineDir, binaryName: 'mybrowser' });
+    expect(gitSpy).toHaveBeenCalledWith(
+      expect.arrayContaining(['-c', 'core.quotePath=false', '-z']),
+      engineDir
+    );
+    const stored = await readBuildBaseline(projectRoot, 'refuse');
+    expect(Object.keys(stored?.packageableFingerprints ?? {})).toEqual([path]);
+  });
+
+  it('records a controlBuild stamp only when given one', async () => {
+    vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
+    const stamp = {
+      diffFile: 'controls/first-key.diff',
+      targets: ['gfx/layers/apz/src/APZCTreeManager.cpp'],
+      appliedAt: '2026-10-22T10:00:00.000Z',
+    };
+    await writeBuildBaseline({
+      projectRoot,
+      engineDir: '/engine',
+      binaryName: 'mybrowser',
+      controlBuild: stamp,
+    });
+    expect((await readBuildBaseline(projectRoot, 'refuse'))?.controlBuild).toEqual(stamp);
+    await writeBuildBaseline({ projectRoot, engineDir: '/engine', binaryName: 'mybrowser' });
+    expect((await readBuildBaseline(projectRoot, 'refuse'))?.controlBuild).toBeUndefined();
   });
 });

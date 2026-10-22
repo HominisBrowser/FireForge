@@ -84,7 +84,7 @@ const RAW_COLOR_IGNORE_MARKER = 'fireforge-ignore: raw-color-value';
  * comment spanning the context/added boundary suppresses its hex, then
  * only the patch's added line numbers are scanned. Returns undefined
  * when any added line number falls outside the on-disk file (patch not
- * applied / drifted). The caller then falls back to the legacy
+ * applied / drifted). The caller then falls back to the
  * joined-added-lines scan rather than misattributing lines.
  */
 function buildAddedLinesScanSource(
@@ -141,7 +141,7 @@ function checkRawColorValues(input: RawColorCheckInput): void {
     suppressedContent = buildAddedLinesScanSource(rawCss, addedNumbers);
   }
   if (suppressedContent === undefined) {
-    // Legacy scan: full file (no diff), or the joined added lines when
+    // Fallback scan: full file (no diff), or the joined added lines when
     // the diff and on-disk file disagree. Waiver lines are filtered
     // against the pre-strip text so the CSS comment marker is present.
     const sourceForSuppression = addedLinesByFile

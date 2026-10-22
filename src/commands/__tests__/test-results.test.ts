@@ -62,6 +62,42 @@ describe('test results collector', () => {
     expect(collectedTestResults().files).toEqual([]);
   });
 
+  it('attributes a harness pseudo-record (automation.py) to the shard files', () => {
+    const harness = {
+      test: 'automation.py',
+      status: 'TIMEOUT',
+      expected: 'PASS',
+      unexpected: true,
+      unexpectedSubtests: 0,
+    };
+    const file = { ...harness, test: 'd/browser_a.js', status: 'OK', expected: 'OK' };
+    recordTestResults([harness, file], [], {
+      run: 1,
+      shard: 'd/browser_a.js',
+      logLine: 3,
+      shardFiles: ['d/browser_a.js'],
+    });
+    recordTestResults([harness], [], {
+      run: 1,
+      shard: 'd/browser_b.js+1',
+      logLine: 9,
+      shardFiles: ['d/browser_b.js', 'd/browser_c.js'],
+    });
+    const [single, plain, chunk] = collectedTestResults().files;
+    expect(single).toMatchObject({
+      test: 'automation.py',
+      shardFiles: ['d/browser_a.js'],
+      file: 'd/browser_a.js',
+    });
+    expect(plain).not.toHaveProperty('shardFiles');
+    expect(plain).not.toHaveProperty('file');
+    expect(chunk).toMatchObject({
+      test: 'automation.py',
+      shardFiles: ['d/browser_b.js', 'd/browser_c.js'],
+    });
+    expect(chunk).not.toHaveProperty('file');
+  });
+
   it('removes the raw-log scratch directory even when the body throws', async () => {
     let seen = '';
     await expect(

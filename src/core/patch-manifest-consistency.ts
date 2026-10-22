@@ -124,7 +124,7 @@ export async function validatePatchesManifestConsistency(
  *
  * Drift that is only in `filesAffected` is a derived value disagreeing with
  * the diff it describes, and the narrow repair fixes exactly that. Naming the
- * whole-manifest rebuild for it (as this hint used to, unconditionally) puts
+ * whole-manifest rebuild for it puts
  * an operator one keystroke from rewriting every row in the manifest to
  * correct one list.
  */
@@ -197,7 +197,7 @@ export interface RebuildPatchesManifestOptions extends PatchDirectoryLockOptions
  * becomes a whole-manifest reinvention. Pass `allowMetadataLoss` to accept it.
  *
  * @param patchesDir - Path to the patches directory
- * @param fallbackSourceEsrVersion - source version to use for recovered legacy entries
+ * @param fallbackSourceEsrVersion - source version to use for recovered entries that carry none
  * @param options - Lock options plus `allowMetadataLoss` / `dryRun`
  * @returns {@link RebuildPatchesManifestResult}: the rebuilt manifest, the
  *   filenames that were reconstructed from generic defaults, and the rows

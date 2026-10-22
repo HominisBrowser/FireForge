@@ -253,9 +253,9 @@ describe('removeJarMnEntries', () => {
 
 describe('removeJarMnEntries — renamed helpers', () => {
   it('removes helper lines whose basename does not start with the tag name', async () => {
-    // The field bug: `foo-utils.mjs` under (widgets/moz-panel/...) survived
-    // the tag-prefixed remove pass and left a stale line that broke
-    // packaging. Removal now keys on the source-mapping segment.
+    // `foo-utils.mjs` under (widgets/moz-panel/...) escapes a tag-prefixed
+    // remove pass and leaves a stale line that breaks packaging, so removal
+    // keys on the source-mapping segment.
     const jar = [
       'toolkit.jar:',
       '% content global %content/global/',

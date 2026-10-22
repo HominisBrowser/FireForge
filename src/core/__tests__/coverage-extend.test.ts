@@ -18,6 +18,7 @@ import {
   writeFiles,
 } from '../../test-utils/index.js';
 import type { BuildBaseline, CoverageRecord } from '../build-baseline-types.js';
+import { isBuildBaseline } from '../build-baseline-validate.js';
 import {
   applyMozconfigAnchor,
   baselineAnchor,
@@ -207,7 +208,7 @@ describe('per-path coverage retention', () => {
       testInputFingerprints: { [A_HEAD]: sha256('dirty at build\n'), [PEER]: sha256('peer\n') },
     });
     const plan = await planCoverageRetention(engineDir, previous, [B_TEST]);
-    // The peer edit is outside A's inputs, so it no longer voids A's claim.
+    // The peer edit is outside A's inputs, so it does not void A's claim.
     expect(plan.dropped).toEqual([]);
     expect(plan.retained[A_TEST]).toMatchObject({
       inputs: ['browser/a/test', 'browser/shared/fixture.txt'],
@@ -400,6 +401,31 @@ describe('per-path coverage retention', () => {
           [B_TEST, A_TEST]
         )
       ).resolves.toEqual({ testPackagingCoverage: [B_TEST, A_TEST] });
+    });
+
+    it('normalizes a directory request with a trailing slash, so the baseline stays readable', async () => {
+      // Recording the raw `browser/b/test/` from `fireforge test --build
+      // browser/b/test/` would fail isBaselinePath, so the next plain
+      // `fireforge test` would refuse with "invalid baseline fields".
+      await writeFiles(engineDir, { [B_TEST]: 'test b edit\n' });
+      const recorded = await recordScopedCoverage(
+        engineDir,
+        { keepFull: false, retained: {}, fullAnchor: undefined, narrowedBy: [], dropped: [] },
+        ['browser/b/test/', './browser/a/test']
+      );
+      expect(recorded.testPackagingCoverage).toEqual(['browser/b/test', 'browser/a/test']);
+      expect(Object.keys(recorded.testCoverageRecords ?? {})).toEqual([
+        'browser/b/test',
+        'browser/a/test',
+      ]);
+      expect(
+        isBuildBaseline({
+          engineHeadSha: head,
+          builtAt: '2026-10-22T00:00:00.000Z',
+          binaryName: 'mybrowser',
+          ...recorded,
+        })
+      ).toBe(true);
     });
   });
 });

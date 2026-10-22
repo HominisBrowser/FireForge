@@ -2,11 +2,10 @@
 /**
  * Per-path packaging-coverage anchors for scoped `fireforge test --build`.
  *
- * A scoped build used to carry one claim anchored to the whole engine, so
- * any edit outside the new scope (a peer's, on a shared engine, nearly
- * always) replaced it. Each staged request path now carries its own anchor
- * restricted to its own staging inputs, and a claim is dropped only when
- * one of those inputs changed.
+ * Each staged request path carries its own anchor restricted to its own
+ * staging inputs, and a claim is dropped only when one of those inputs
+ * changed. One claim anchored to the whole engine would be replaced by any
+ * edit outside the new scope (a peer's, on a shared engine, nearly always).
  *
  * The staging inputs of a request path are its manifest directory (the
  * nearest directory at or above it that holds a test manifest) plus every

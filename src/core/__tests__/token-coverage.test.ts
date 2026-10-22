@@ -126,8 +126,8 @@ describe('measureTokenCoverage', () => {
   it('respects an explicit furnace.json platformPrefixes override', async () => {
     // Forks that host multiple platform-style prefixes (e.g. their own
     // `--in-content-*` fork) can extend the default list. An explicit
-    // empty list re-classifies `--moz-*` as unknown (the pre-0.17.x
-    // contract) for forks that want the stricter count.
+    // empty list re-classifies `--moz-*` as unknown for forks that want the
+    // stricter count.
     mockedLoadFurnaceConfig.mockResolvedValue({
       tokenPrefix: '--freshforge-',
       tokenAllowlist: [],

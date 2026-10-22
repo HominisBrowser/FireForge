@@ -251,9 +251,9 @@ describe('runCheckJs', () => {
 
   it('carries JSDoc type-guard predicates across owned chrome:// module boundaries', async () => {
     // Per-patch lint must not type all cross-module imports
-    // as `any` (noResolve + wildcard ambient modules), so `value is Element`
-    // guards lost their narrowing and call sites accumulated false
-    // checkjs-type-errors. Owned imports now resolve to real sources.
+    // as `any` (noResolve + wildcard ambient modules), or `value is Element`
+    // guards lose their narrowing and call sites accumulate false
+    // checkjs-type-errors. Owned imports resolve to real sources.
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
 

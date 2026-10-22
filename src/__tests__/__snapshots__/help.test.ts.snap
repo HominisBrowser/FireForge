@@ -40,12 +40,12 @@ fireforge patch:
 fireforge patch compact: --dry-run | --force-unsafe | --wait-lock | -y, --yes
 fireforge patch delete: --delete-created | --dry-run | --force-unsafe | --wait-lock | -y, --yes
 fireforge patch lint-ignore: --add | --clear | --dry-run | --from | --max | --reason | --remove | --share | --wait-lock | -y, --yes
-fireforge patch move-files: --category | --create | --declarations-out | --dry-run | --file | --force-unsafe | --order | --skip-lint | --wait-lock | -d, --description | -y, --yes
+fireforge patch move-files: --category | --create | --declarations-out | --dry-run | --file | --force-unsafe | --order | --retire-empty | --scan-file | --skip-lint | --wait-lock | -d, --description | -y, --yes
 fireforge patch rename: --category | --dry-run | --force-unsafe | --order | --to | --wait-lock | -d, --description | -y, --yes
-fireforge patch reorder: --after | --before | --dry-run | --force-unsafe | --to | --wait-lock | -y, --yes
+fireforge patch reorder: --after | --before | --dry-run | --force-unsafe | --from | --map-out | --shift | --through | --to | --wait-lock | -y, --yes
 fireforge patch reserve: --category | --dry-run | --owner | --reason | --release | --wait-lock
 fireforge patch retire: --delete-created | --dry-run | --force-unsafe | --reason | --wait-lock | -y, --yes
-fireforge patch split: --after | --before | --category | --declarations-out | --description | --dry-run | --files | --force-unsafe | --name | --order | --skip-lint | --wait-lock | -y, --yes
+fireforge patch split: --after | --before | --category | --declarations-out | --description | --dry-run | --files | --force-unsafe | --map-out | --name | --order | --skip-lint | --wait-lock | -y, --yes
 fireforge patch stage: --dry-run | --wait-lock
 fireforge patch staged-dependency: --add | --clear | --creates | --dry-run | --file | --from | --kind | --line | --owner | --reason | --remove | --specifier | --wait-lock | -y, --yes
 fireforge patch tier: --clear | --dry-run | --tier | --wait-lock | -y, --yes

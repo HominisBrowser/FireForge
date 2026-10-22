@@ -487,8 +487,8 @@ describe('furnace registration validation helpers', () => {
     };
 
     it('does not warn about missing CSS entry when the source has no CSS file', async () => {
-      // Regression for the false positive that warned for every registered
-      // custom component regardless of whether the component had a .css file.
+      // A registered custom component without a .css file must not be
+      // warned about: the CSS check applies only when the source exists.
       vi.mocked(pathExists).mockImplementation((filePath: string) => {
         // jar.mn exists. The component CSS source does not.
         if (filePath === nativePath('/engine/toolkit/content/jar.mn')) return Promise.resolve(true);
@@ -634,7 +634,7 @@ describe('furnace registration validation helpers', () => {
     });
 
     it('reports a registered component that the file never mentions', async () => {
-      // This used to expect [], which is the blind spot that made a
+      // An empty result here would be a blind spot that makes a
       // registration-only defect invisible to validate and unreachable for
       // the scoped `--fix`.
       vi.mocked(pathExists).mockResolvedValue(true);
@@ -954,9 +954,9 @@ document.addEventListener("DOMContentLoaded", () => {});
     }
 
     it('scans the chrome-document directory once per batch, not once per component', async () => {
-      // `validateAllComponents` walks every component, and each token-using one
-      // used to re-scan `browser/base/content/*.xhtml` and re-parse
-      // fireforge.json. That work depends on the project and engine, never
+      // `validateAllComponents` walks every component, and no token-using one
+      // may re-scan `browser/base/content/*.xhtml` or re-parse
+      // fireforge.json on its own. That work depends on the project and engine, never
       // on the component.
       stubTokenLinkFixture();
       const before = vi.mocked(readdir).mock.calls.length;

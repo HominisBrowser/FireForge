@@ -62,8 +62,8 @@ async function normalizeTokenNameForProject(
  *
  * A variant skip has no category to name, because the declaration lives in
  * a `:root<selector>` block, so the location reads as that block. The
- * variant path used to report no location at all, so a re-run meant to
- * change a value exited 0 having silently changed nothing.
+ * location matters: without it a re-run meant to change a value exits 0
+ * having silently changed nothing.
  *
  * @param tokenName - Full token name including prefix
  * @param result - Result carrying the skip location, when known

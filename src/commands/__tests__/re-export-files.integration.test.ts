@@ -2,7 +2,7 @@
 /**
  * Integration coverage for `re-export --files`. Uses a real runGit repo so
  * the diff-generation path runs, and exercises the destructive-safety
- * contract plus the projection-lint fix: the lint pass must now run
+ * contract plus the projection lint: the lint pass must run
  * against the shrunken/expanded state, not the current queue.
  */
 
@@ -292,16 +292,14 @@ describe('re-export --files integration', () => {
   });
 
   it('--files captures a DELETION of a tracked file instead of silently dropping it', async () => {
-    // Regression, in two layers. The command first wrote filesAffected:
-    // requested while omitting the missing path from the body, desyncing
-    // patches.json from the patch. The fix for that dropped the path from
-    // both, which was correct as bookkeeping but fatal as a capability: a
-    // deletion then had nowhere to go. `rm` on an upstream file left status
-    // "D" with classification "unmanaged", which `check-engine-clean`
-    // refuses, while a re-export naming the path reported success and wrote
-    // a patch that silently claimed a file it did not restore. On a fresh
-    // clone that patch applies cleanly and resurrects exactly what the
-    // change removed.
+    // Writing filesAffected: requested while omitting the missing path from
+    // the body desyncs patches.json from the patch. Dropping the path from
+    // both is correct bookkeeping but leaves a deletion nowhere to go: `rm`
+    // on an upstream file leaves status "D" with classification
+    // "unmanaged", which `check-engine-clean` refuses, while a re-export
+    // naming the path reports success and writes a patch that silently
+    // claims a file it does not restore. On a fresh clone that patch
+    // applies cleanly and resurrects exactly what the change removed.
     //
     // A path absent from disk but tracked in HEAD is a deletion, and
     // `git diff HEAD` renders it. Only a never-tracked path is undiffable.
@@ -384,12 +382,12 @@ describe('re-export --files integration', () => {
   });
 
   it('--files --force does NOT block on a pre-existing issue in an unrelated patch', async () => {
-    // Fix 2: a dirty queue with a cross-patch forward-import error
-    // between two other patches must not prevent shrinking a third,
-    // unrelated patch. Before the fix, `reExportFilesInPlace` treated
-    // any error anywhere in the projected queue as a conflict, so users
-    // could not reach for `re-export --files` to repair a broken queue,
-    // which is one of the main reasons the command exists.
+    // A dirty queue with a cross-patch forward-import error between two
+    // other patches must not prevent shrinking a third, unrelated patch.
+    // If `reExportFilesInPlace` treated any error anywhere in the projected
+    // queue as a conflict, users could not reach for `re-export --files` to
+    // repair a broken queue, which is one of the main reasons the command
+    // exists.
     //
     // Queue shape:
     //   001 creates foo/Helper.sys.mjs with `import ... Target.sys.mjs`

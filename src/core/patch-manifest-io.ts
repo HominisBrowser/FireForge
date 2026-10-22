@@ -23,7 +23,7 @@ import { pathExistsStrict, readJson, removeFile, writeJson } from '../utils/fs.j
 import { warn } from '../utils/logger.js';
 import { isArray, isObject } from '../utils/validation.js';
 import { assertPatchDirectoryLockHeld } from './patch-lock.js';
-import { canonicalizeManifest, canonicalizePatchRow } from './patch-manifest-key-order.js';
+import { canonicalizeManifest } from './patch-manifest-key-order.js';
 import { validatePatchesManifest } from './patch-manifest-validate.js';
 import { manifestWithRetiredSlots } from './patch-retired.js';
 
@@ -128,10 +128,14 @@ export async function savePatchesManifest(
 }
 
 /**
- * Mutates selected manifest rows while preserving the raw JSON shape of every
+ * Mutates selected manifest rows while preserving the raw JSON fields of every
  * untouched row. This avoids serializing reader-only fallback fields, such as
  * `sourceVersion` derived from legacy `sourceEsrVersion`, into unrelated patch
  * entries during partial metadata updates.
+ *
+ * Every row's keys (and the manifest's own) are written in canonical order,
+ * not only the changed rows', so the working copy matches what `patch stage`
+ * and full saves write and no commit flips untouched rows' key order.
  */
 export async function mutatePatchRowsInManifest(
   patchesDir: string,
@@ -191,16 +195,14 @@ export async function mutatePatchRowsInManifest(
 
   if (changedIndexes.length === 0) return [];
 
-  // Only the rows this call changed are put in canonical order, so a key
-  // it sets lands where every other writer puts it; untouched rows keep
-  // their raw shape.
-  for (const index of changedIndexes) {
-    rawPatches[index] = canonicalizePatchRow(rawPatches[index] as Record<string, unknown>);
-  }
-  const nextRawManifest = {
+  // Every row is put in canonical key order, not only the changed ones:
+  // `patch stage` and full saves canonicalize the whole manifest, so a
+  // row left in any other order flips back and forth between the
+  // working copy and the index. Reordering keys adds no field.
+  const nextRawManifest = canonicalizeManifest({
     ...rawManifest,
     patches: rawPatches,
-  };
+  });
   const afterManifest = validatePatchesManifest(nextRawManifest);
   await writeJson(manifestPath, nextRawManifest);
 

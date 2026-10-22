@@ -6,7 +6,9 @@ import { setStdoutSealed } from '../utils/logger.js';
 
 /**
  * Reason codes the emission layer can put on a `FIREFORGE-VERDICT: FAIL`
- * line. The first three mirror the harness classifier. `preflight` covers
+ * line. The first three mirror the harness classifier, as does
+ * `server-startup`: a harness-crash-class infrastructure failure where a
+ * mochitest server never came up, so no test ran. `preflight` covers
  * every failure before harness classification (missing/stale builds,
  * invalid paths, port conflicts, config errors, spawn failures),
  * `inconclusive` marks a run whose harness result exists but cannot be
@@ -21,6 +23,7 @@ export type FireforgeVerdictReason =
   | 'harness-arguments'
   | 'no-tests'
   | 'test-failures'
+  | 'server-startup'
   | 'preflight'
   | 'inconclusive'
   | 'lock-timeout'
@@ -54,9 +57,12 @@ export type VerdictRunAttributeKey =
   | 'furnace-apply'
   | 'furnace-skipped'
   | 'control-build'
+  | 'control-restore-build'
+  | 'build-id'
   | 'drift-tolerated'
   | 'lock'
   | 'jobs'
+  | 'upload-dirs'
   | 'results';
 
 /** Records an additive attribute for this run's verdict line. */

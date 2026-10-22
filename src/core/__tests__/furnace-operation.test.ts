@@ -610,10 +610,9 @@ describe('recordFurnaceRollbackFailure', () => {
 
 describe('waitLockMutationOptions', () => {
   it('converts a wait budget in seconds to the furnace lock timeout in ms', () => {
-    // The half of `--wait-lock` that used to be missing: the flag reached
-    // the engine session lock and stopped there, so a contended mutation
-    // met `.fireforge/furnace.lock` with a fixed 30 s after paying the
-    // entire advertised wait.
+    // `--wait-lock` must reach Furnace's lock as well as the engine session
+    // lock, or a contended mutation meets `.fireforge/furnace.lock` with a
+    // fixed 30 s after paying the entire advertised wait.
     expect(waitLockMutationOptions(1800)).toEqual({ lockTimeoutMs: 1_800_000 });
   });
 

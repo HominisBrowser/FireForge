@@ -14,6 +14,7 @@
  * and `failed-shards=` names the files that failed.
  */
 
+import { formatHarnessServerPorts } from '../core/harness-port-reservation.js';
 import { getActiveRunLogPath, writeToActiveRunLog } from '../core/run-log.js';
 import {
   buildHarnessCrashMessage,
@@ -58,6 +59,13 @@ const SHARD_STATUS_LABEL: Record<HarnessRunVerdict['kind'], string> = {
   'harness-arguments': 'ARGUMENTS',
 };
 
+/** The summary box's status word; a server that never started is not a crash. */
+function shardStatusLabel(verdict: HarnessRunVerdict): string {
+  return verdict.signature?.verdictReason === 'server-startup'
+    ? 'SERVER'
+    : SHARD_STATUS_LABEL[verdict.kind];
+}
+
 /** Aggregate result of a sharded run, verdict emission deferred to the caller. */
 export interface ShardedRunSummary {
   shards: ShardOutcome[];
@@ -87,12 +95,22 @@ export interface ShardRunOptions {
  * `tests-ran-ok`. Otherwise the most structural failure wins. A crashed
  * shard makes the whole run `harness-crash`, then `no-tests`, then plain
  * `test-failures`, so the aggregate `reason=` keeps the classifier-driven
- * contract instead of collapsing every failure to `test-failures`.
+ * contract instead of collapsing every failure to `test-failures`. When
+ * every crashed shard is a server that never started, the aggregate keeps
+ * that signature, so its line says `reason=server-startup` too.
  */
 export function deriveAggregateShardVerdict(shards: ShardOutcome[]): HarnessRunVerdict {
   const kinds = new Set(shards.map(({ outcome }) => outcome.verdict.kind));
   if (kinds.has('harness-arguments')) return { kind: 'harness-arguments' };
-  if (kinds.has('harness-crash')) return { kind: 'harness-crash' };
+  if (kinds.has('harness-crash')) {
+    const crashes = shards.filter(({ outcome }) => outcome.verdict.kind === 'harness-crash');
+    const signature = crashes[0]?.outcome.verdict.signature;
+    return crashes.every(
+      ({ outcome }) => outcome.verdict.signature?.verdictReason === 'server-startup'
+    ) && signature !== undefined
+      ? { kind: 'harness-crash', signature }
+      : { kind: 'harness-crash' };
+  }
   if (kinds.has('no-tests')) return { kind: 'no-tests' };
   if (kinds.has('test-failures')) return { kind: 'test-failures' };
   return { kind: 'tests-ran-ok' };
@@ -100,8 +118,10 @@ export function deriveAggregateShardVerdict(shards: ShardOutcome[]): HarnessRunV
 
 /**
  * The `FIREFORGE-SHARD:` line for one finished shard: the verdict it would
- * have printed alone, plus `shard=<i>/<n>` and `path=<label>`. Never a
- * `FIREFORGE-VERDICT:` line, so the run keeps exactly one.
+ * have printed alone, plus `shard=<i>/<n>` and `path=<label>`, and
+ * `ports=http:N,ssl:N,ws:N` when the harness reported the mochitest server
+ * ports it took. Never a `FIREFORGE-VERDICT:` line, so the run keeps
+ * exactly one.
  */
 export function formatShardLine(
   shard: ShardOutcome,
@@ -116,7 +136,8 @@ export function formatShardLine(
     failedFiles !== undefined && failedFiles.length > 0
       ? ` failed-files=${failedFiles.join(',')}`
       : '';
-  return `FIREFORGE-SHARD: ${body} shard=${index + 1}/${total} path=${shard.label.replace(/\s+/g, '_')}${files}`;
+  const ports = formatHarnessServerPorts(shard.outcome.serverPorts);
+  return `FIREFORGE-SHARD: ${body} shard=${index + 1}/${total} path=${shard.label.replace(/\s+/g, '_')}${files}${ports === undefined ? '' : ` ports=${ports}`}`;
 }
 
 function writeShardLine(line: string): void {
@@ -251,7 +272,7 @@ function reportProgress(finished: number, total: number, jobs: number): void {
 function summarizeShards(shards: ShardOutcome[], perFile: boolean): ShardedRunSummary {
   const lines = shards.map(
     ({ label, outcome }) =>
-      `${SHARD_STATUS_LABEL[outcome.verdict.kind].padEnd(8)} ${label}` +
+      `${shardStatusLabel(outcome.verdict).padEnd(8)} ${label}` +
       (outcome.attempts > 1 ? `  (${outcome.attempts} attempts)` : '')
   );
   const failingShards = shards.filter(({ outcome }) => outcome.verdict.kind !== 'tests-ran-ok');

@@ -47,6 +47,7 @@ import {
   scanPatchFilesForReExport,
 } from './re-export-scan.js';
 import {
+  findPendingRegistrationCreates,
   planStaleRegistrationDrop,
   recordStaleRegistrationDrop,
   reportStaleRegistrationDrop,
@@ -285,7 +286,18 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
 
   const { updates, ignoreChecks, effectiveTier, existingIgnoreSet, flagIgnoreSet } =
     computeReExportUpdates(patch, options, currentFilesAffected);
-  const stalePlan = planStaleRegistrationDrop(manifest, patch, currentFilesAffected);
+  const stalePlan = planStaleRegistrationDrop(
+    manifest,
+    patch,
+    currentFilesAffected,
+    await findPendingRegistrationCreates(
+      paths.engine,
+      manifest,
+      patch,
+      currentFilesAffected,
+      adjacentCtx.expectedNew
+    )
+  );
   if (stalePlan !== undefined) reportStaleRegistrationDrop(patch.filename, stalePlan, isDryRun);
   const unset = applyStaleRegistrationDrop(stalePlan, updates);
 

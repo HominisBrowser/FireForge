@@ -36,7 +36,7 @@ import { buildPatchClaims } from './status-classify.js';
 
 /** How one status entry's canonical path will be restored. */
 export type DiscardKind =
-  | 'unmanaged' // no patch claims either path → legacy git mechanics
+  | 'unmanaged' // no patch claims either path → plain git mechanics
   | 'patch-backed' // tracked in HEAD, claimed → rewrite to patched content
   | 'patch-created' // not in HEAD, claimed, baseline exists → re-materialize
   | 'patch-deleted'; // claimed, baseline is absence → remove
@@ -55,7 +55,7 @@ export interface DiscardBaselinePlan {
   expectedOriginalContent?: string | null;
 }
 
-/** Builds an all-unmanaged plan set, the `--to-upstream` (legacy) shape. */
+/** Builds an all-unmanaged plan set, the `--to-upstream` shape. */
 export function planUpstreamDiscards(entries: readonly GitStatusEntry[]): DiscardBaselinePlan[] {
   return entries.map((entry) => ({ entry, kind: 'unmanaged', owners: [], conflicted: false }));
 }
@@ -210,7 +210,7 @@ export async function planDiscardBaselines(
  * Applies one restore plan. Patch-claimed paths end up exactly as `import`
  * leaves them: patched content as an unstaged worktree state (tracked files
  * read ` M`, created files `??`), nothing staged. Unmanaged plans delegate
- * to the legacy {@link discardStatusEntry} mechanics.
+ * to the plain git {@link discardStatusEntry} mechanics.
  */
 export async function applyDiscardBaseline(
   engineDir: string,
@@ -238,7 +238,7 @@ export async function applyDiscardBaseline(
   }
 
   // A rename/copy's original side restores to its baseline too: the patch
-  // baseline when claimed, else the legacy HEAD restore (matching what
+  // baseline when claimed, else the HEAD restore (matching what
   // discardStatusEntry does for that side).
   if (entry.originalPath !== undefined) {
     if (plan.expectedOriginalContent !== undefined) {

@@ -315,9 +315,10 @@ export async function storeReExportLintResult(
  * when the projection introduces error-severity cross-patch findings the
  * current queue does not have (a forward import an earlier owner gained,
  * say). Mirrors `re-export --files` (its projected-state conflict) and the
- * `--scan` adoption gate, which only covered files a scan adopted: a plain
- * re-export of an unchanged file set with new CONTENT used to pass, and the
- * queue carried the error until the next `export` placement refused it.
+ * `--scan` adoption gate, which only covers files a scan adopted: without
+ * this a plain re-export of an unchanged file set with new CONTENT would
+ * pass, and the queue would carry the error until the next `export`
+ * placement refused it.
  *
  * Runs in dry-run. `--force-unsafe` downgrades the refusal to warnings;
  * `--skip-lint` does not bypass it, same as `--files`. The baseline is the

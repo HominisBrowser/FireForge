@@ -2,23 +2,25 @@
 /**
  * Regression tests for the tokens-CSS scanners' worst-case running time.
  *
- * The category, dark-mode and variant scanners each carried a regex whose
- * backtracking was super-linear in the length of a single line (CodeQL
- * `js/polynomial-redos`, alerts 1-6), and CodeQL flagged the root-bounds
- * string stripper's ambiguous alternation the same way (alert 13). The input is not adversarial in the
+ * The category, dark-mode and variant scanners must stay linear: a regex
+ * whose backtracking is super-linear in the length of a single line is what
+ * CodeQL `js/polynomial-redos` flags (alerts 1-6), and an ambiguous
+ * alternation in the root-bounds string stripper is flagged the same way
+ * (alert 13). The input is not adversarial in the
  * usual sense. `tokens.css` and `docs/design/SRC_TOKENS.md` are files
  * FireForge reads out of a consumer's engine tree, so a line that happens to
  * repeat `:root`, `var(` or `/*=` is enough to wedge `token add` with no
- * attacker anywhere. Each case below is a witness that hangs the old
- * implementation for seconds at these sizes and returns instantly now.
+ * attacker anywhere. Each case below is a witness that hangs a super-linear
+ * implementation for seconds at these sizes and returns instantly from the
+ * linear scanners.
  *
  * The assertions are about growth, not absolute time: each witness is run at
  * a size N and at 16N (after a warm-up, best of several repetitions) and the
  * ratio of the two timings must stay nearer the linear 16x than the
- * quadratic 256x. Absolute budgets were the previous shape and flaked on
- * loaded CI boxes for reasons unrelated to the scanners. Every call here
- * returns the same answer before and after the fix, and the paired
- * behaviour tests pin that answer.
+ * quadratic 256x. Absolute budgets flake on loaded CI boxes for reasons
+ * unrelated to the scanners. Every call here returns the same answer as a
+ * super-linear scanner would, and the paired behaviour tests pin that
+ * answer.
  *
  * The separation is 16x rather than 4x because 4x put the linear and
  * quadratic outcomes only ~2.5x apart, and a constant-factor effect that

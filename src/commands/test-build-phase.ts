@@ -6,7 +6,11 @@
  */
 
 import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
-import type { TestPackagingCoverage } from '../core/build-baseline-types.js';
+import type {
+  BuildBaseline,
+  ControlBuildStamp,
+  TestPackagingCoverage,
+} from '../core/build-baseline-types.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import {
   applyMozconfigAnchor,
@@ -17,10 +21,15 @@ import {
   type RecordedCoverage,
   recordScopedCoverage,
 } from '../core/coverage-extend.js';
+import { normalizeRequestPath } from '../core/coverage-records.js';
 import { hasBuildArtifacts } from '../core/mach.js';
 import { runProtectedMachBuild, withBuildLock } from '../core/mach.js';
 import { assertHealthyPartialConfig, pruneDanglingTestLinks } from '../core/objdir-maintenance.js';
 import { buildHarnessCrashMessage } from '../core/test-harness-crash.js';
+import {
+  findCompiledSourcesNewerThanBinary,
+  formatStaleCompiledBuildNotice,
+} from '../core/test-stale-check.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
@@ -63,6 +72,11 @@ interface RunPreTestBuildOptions {
   furnace: PreTestFurnacePlan;
   /** Forces a full `mach build`, with this notice (a compiled negative control). */
   fullBuildReason?: string | undefined;
+  /**
+   * Stamp for a build that compiles a negative control in: recorded on the
+   * baseline this build writes. See {@link BuildBaseline.controlBuild}.
+   */
+  controlBuild?: ControlBuildStamp | undefined;
 }
 
 /**
@@ -82,6 +96,7 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
     extend,
     furnace,
     fullBuildReason,
+    controlBuild,
   } = options;
   await withBuildLock(projectRoot, async () => {
     // Pass the previous baseline exactly like `fireforge build` does, so
@@ -186,6 +201,7 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
               ? 'carry-forward'
               : 'auto',
           buildKind,
+          controlBuild,
         });
       } catch (baselineError: unknown) {
         verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
@@ -303,9 +319,16 @@ export async function runTestBuildPhase(
     normalizedPaths: string[];
     /** Forces a full pre-test build (a compiled negative control). */
     fullBuildReason?: string;
+    /** Recorded on the pre-test build's baseline (a compiled negative control). */
+    controlBuild?: ControlBuildStamp;
+    /**
+     * Engine-relative launchable binary: anchors the stale-compiled check,
+     * which refuses a build-less run and escalates a `--build` one.
+     */
+    launchablePath?: string | undefined;
   }
 ): Promise<boolean> {
-  const { classification, normalizedPaths, fullBuildReason } = request;
+  const { classification, normalizedPaths, controlBuild, launchablePath } = request;
   const extending = options.extendCoverage === true;
   if (extending) {
     assertExtendCoverageUsage(options, normalizedPaths);
@@ -318,19 +341,30 @@ export async function runTestBuildPhase(
     // rebuild also cannot regenerate the compiled StaticComponents table,
     // so it runs the components.conf gate up-front (the path-less shape
     // refreshes the anchor itself and skips it).
-    const coverage: TestPackagingCoverage = normalizedPaths.length === 0 ? 'full' : normalizedPaths;
-    if (normalizedPaths.length > 0) {
+    // Coverage paths are recorded normalized (no trailing slash, no `./`):
+    // the baseline validator refuses the raw `dir/` CLI shape, which would
+    // block every later plain `fireforge test`. A request
+    // for the engine root (`.`) packages everything, so it records `'full'`.
+    const coveragePaths = normalizedPaths.map(normalizeRequestPath);
+    const coverage: TestPackagingCoverage =
+      coveragePaths.length === 0 || coveragePaths.includes('')
+        ? 'full'
+        : [...new Set(coveragePaths)];
+    if (coverage !== 'full') {
       const previousBaseline = await readBuildBaseline(projectRoot);
       await enforceStaticComponentsGate(paths.engine, previousBaseline, options);
       if (extending) {
         // Staging-input half of the plan, before the build lock: a refusal
         // here costs neither build time nor the lock.
-        const plan = await planCoverageRetention(paths.engine, previousBaseline, normalizedPaths);
+        const plan = await planCoverageRetention(paths.engine, previousBaseline, coverage);
         if (plan.dropped.length > 0) {
           throw new GeneralError(formatExtendCoverageRefusal(plan.dropped));
         }
       }
     }
+    const fullBuildReason =
+      request.fullBuildReason ??
+      (await describeCompiledEscalation(projectRoot, paths.engine, launchablePath));
     await runPreTestBuild({
       projectRoot,
       paths,
@@ -338,8 +372,9 @@ export async function runTestBuildPhase(
       harnessRetries,
       testPackagingCoverage: coverage,
       refuseUnexportedDrift: options.refuseUnexportedDrift === true,
-      extend: extending ? { requestedPaths: normalizedPaths } : undefined,
+      extend: extending && coverage !== 'full' ? { requestedPaths: coverage } : undefined,
       fullBuildReason,
+      controlBuild,
       furnace: await planPreTestFurnace(
         projectRoot,
         paths,
@@ -359,7 +394,35 @@ export async function runTestBuildPhase(
       return true;
     }
   } else {
-    await enforceStaleBuildGate(projectRoot, paths.engine, options, normalizedPaths);
+    await enforceStaleBuildGate(projectRoot, paths.engine, options, normalizedPaths, {
+      launchablePath,
+    });
   }
   return false;
+}
+
+/**
+ * Why a `--build` run's pre-test build must be a full `mach build` although
+ * nothing asked for one: compiled sources changed after the binary was
+ * linked, or the binary still carries a negative control a killed run (or a
+ * failed restore build) left compiled in. `mach build faster` compiles
+ * nothing, so either would otherwise survive the build.
+ */
+async function describeCompiledEscalation(
+  projectRoot: string,
+  engineDir: string,
+  launchablePath: string | undefined
+): Promise<string | undefined> {
+  const baseline: BuildBaseline | undefined = await readBuildBaseline(projectRoot);
+  const stale = await findCompiledSourcesNewerThanBinary(engineDir, baseline, launchablePath);
+  if (stale !== undefined && stale.paths.length > 0) return formatStaleCompiledBuildNotice(stale);
+  const stamp = baseline?.controlBuild;
+  if (stamp !== undefined) {
+    return (
+      `The binary was built with the negative control ${stamp.diffFile} applied and not ` +
+      'rebuilt since; escalating this pre-test build to a full mach build so it recompiles ' +
+      'the restored source.'
+    );
+  }
+  return undefined;
 }

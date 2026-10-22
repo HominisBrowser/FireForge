@@ -10,7 +10,7 @@ import type { PatchLintIssue } from '../types/commands/index.js';
  * whose message text can drift between otherwise-equivalent runs (for
  * example because the message embeds later-owner filenames or positional
  * detail). Falling back to the full tuple keeps the helper conservative
- * for older/non-fingerprinted rules: if their message changes, we would
+ * for non-fingerprinted rules: if their message changes, we would
  * rather surface a potential regression than silently swallow it.
  *
  * Consumption order within the projected list is stable (the input

@@ -210,9 +210,8 @@ describe('furnaceDiffCommand', () => {
   });
 
   it('emits multiple hunks when edits are scattered across the file', async () => {
-    // Regression guard for the single-region coalescing limitation that used
-    // to collapse unrelated edits into one giant hunk. With the LCS-based
-    // renderer, two edits more than 2*context=6 lines apart must produce two
+    // Unrelated edits must not collapse into one giant hunk. The LCS-based
+    // renderer gives two edits more than 2*context=6 lines apart two
     // distinct `@@ … @@` headers.
     vi.mocked(readdir).mockResolvedValue([
       { name: 'moz-card.css', isFile: () => true },

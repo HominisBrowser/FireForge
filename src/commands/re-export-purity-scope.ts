@@ -2,10 +2,9 @@
 /**
  * The scoped half of the `re-export --dry-run` purity guard.
  *
- * A dry run takes no engine-session lock since 0.51.0, so peers keep
- * writing while it runs. The whole-tree fingerprint then reported every
- * peer's write as "invariant violated … This is a FireForge bug", and an
- * immediate repeat was clean. The scoped fingerprint covers only what the
+ * A dry run takes no engine-session lock, so peers keep writing while it
+ * runs. A whole-tree fingerprint would report every peer's write as
+ * "invariant violated … This is a FireForge bug". The scoped fingerprint covers only what the
  * dry run could touch: the selected patches' bodies and manifest rows, the
  * engine files they own, the engine HEAD and the engine index. A mismatch
  * that remains is attributed to a foreign writer when the history log or
@@ -18,6 +17,7 @@ import { readEngineSessionLockStatus } from '../core/engine-session-lock.js';
 import { git } from '../core/git-base.js';
 import { historyRecordIdentity, resolveHistoryLogPath } from '../core/history-log-file.js';
 import { PATCHES_MANIFEST } from '../core/patch-manifest-io.js';
+import { canonicalizePatchRow } from '../core/patch-manifest-key-order.js';
 import { GeneralError } from '../errors/base.js';
 import type { PatchMetadata } from '../types/commands/index.js';
 import { getNodeErrorCode, toError } from '../utils/errors.js';
@@ -44,7 +44,11 @@ async function hashOrAbsent(path: string, label: string): Promise<string> {
   }
 }
 
-/** The selected rows of `patches.json`, so a peer's write to another row is not a violation. */
+/**
+ * The selected rows of `patches.json`, so a peer's write to another row is
+ * not a violation. Rows are hashed in canonical key order: a peer's write
+ * that only canonicalizes a selected row's key order changes no content.
+ */
 async function selectedRowsFingerprint(
   patchesDir: string,
   filenames: ReadonlySet<string>
@@ -59,10 +63,12 @@ async function selectedRowsFingerprint(
   try {
     const parsed: unknown = JSON.parse(raw);
     const rows = isObject(parsed) && isArray(parsed['patches']) ? parsed['patches'] : [];
-    const selected = rows.filter(
-      (row) =>
-        isObject(row) && typeof row['filename'] === 'string' && filenames.has(row['filename'])
-    );
+    const selected = rows
+      .filter(
+        (row) =>
+          isObject(row) && typeof row['filename'] === 'string' && filenames.has(row['filename'])
+      )
+      .map((row) => (isObject(row) ? canonicalizePatchRow(row) : row));
     return sha256Hex(JSON.stringify(selected));
   } catch {
     // A manifest that no longer parses changed, whoever wrote it.
@@ -149,7 +155,7 @@ async function foreignHistoryRecords(projectRoot: string, sinceMs: number): Prom
 /**
  * Names whoever else wrote during the dry run: history records from other
  * invocations since it started, and a live holder of the engine-session
- * lock (which a dry run no longer takes). Empty when there is no evidence.
+ * lock (which a dry run does not take). Empty when there is no evidence.
  */
 export async function describeForeignWriters(
   patchesDir: string,

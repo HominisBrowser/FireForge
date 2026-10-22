@@ -46,9 +46,9 @@ export async function registerCommand(
 
   // Accept either repo-root-relative (`engine/browser/...`) or
   // engine-relative (`browser/...`) inputs. Operators frequently paste
-  // the former from the output of tab completion or `git status`, and
-  // the mismatch used to produce a "File not found" error that named
-  // the original path with no hint that dropping `engine/` would fix it.
+  // the former from the output of tab completion or `git status`, so
+  // both shapes resolve to the same path instead of a "File not found"
+  // error.
   const engineRelativePath = stripEnginePrefix(filePath);
 
   // Verify the file exists in engine/ (skip for dry-run)
@@ -126,7 +126,8 @@ export function registerRegister(
     .option('--dry-run', 'Show what would be changed without writing')
     .option(
       '--after <entry>',
-      'Place entry after line containing this substring (instead of alphabetical)'
+      'Place entry after line containing this substring (instead of alphabetical); for an ' +
+        'xpcshell test, after the whole section of the xpcshell.toml entry it names'
     )
     .option(
       '--create-manifest',

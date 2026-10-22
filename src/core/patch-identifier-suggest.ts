@@ -128,11 +128,22 @@ export function formatPatchNotFoundError(
   identifier: string,
   patches: readonly PatchMetadata[]
 ): string {
-  const accepted = collectAcceptedIdentifiers(patches);
-  const suggestions = rankSuggestions(identifier, accepted);
   const lead = `Patch "${identifier}" not found. Accepted identifiers: ordinal (e.g. 2), filename (e.g. 002-ui-foo.patch), or manifest name (e.g. ui-foo).`;
+  return `${lead} ${formatPatchSuggestions(identifier, patches)}`;
+}
+
+/**
+ * The nearest-match half of {@link formatPatchNotFoundError}: the closest
+ * accepted identifiers and the queue size, never the full queue. For
+ * callers that word their own lead, such as the `--patches` subset.
+ */
+export function formatPatchSuggestions(
+  identifier: string,
+  patches: readonly PatchMetadata[]
+): string {
+  const suggestions = rankSuggestions(identifier, collectAcceptedIdentifiers(patches));
   if (suggestions.length > 0) {
-    return `${lead} Did you mean: ${suggestions.join(', ')}? (${patches.length} patches in queue — run "fireforge patch list" for the full list.)`;
+    return `Did you mean: ${suggestions.join(', ')}? (${patches.length} patches in queue — run "fireforge patch list" for the full list.)`;
   }
-  return `${lead} No close match found among ${patches.length} patches in the queue. Run "fireforge patch list" to see them.`;
+  return `No close match found among ${patches.length} patches in the queue. Run "fireforge patch list" to see them.`;
 }

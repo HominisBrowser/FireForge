@@ -1258,8 +1258,8 @@ describe('metadata-only patch subcommand contract', () => {
 describe('destructive-operation contract', () => {
   // Both commands mutate manifest metadata and append history. They must
   // follow the same summary + dry-run + confirmation/--yes contract as
-  // patch delete/reorder/compact. They used to accept --yes without ever
-  // prompting, so the flag only appeared in the history record.
+  // patch delete/reorder/compact, so --yes skips a real prompt rather than
+  // only appearing in the history record.
   let projectRoot: string;
   let patchesDir: string;
 

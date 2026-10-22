@@ -644,7 +644,7 @@ describe('furnaceCreateCommand --xpcshell', () => {
     // path reliably fails with `ReferenceError: window is not defined` for
     // every Lit-based component. Assert there is no
     // `await ChromeUtils.importESModule(` call. The explanatory header
-    // comment may still name the now-avoided API.
+    // comment may still name the API it avoids.
     expect(testContent).not.toMatch(/await\s+ChromeUtils\.importESModule\(/);
     expect(testContent).toContain('Services.dirsvc.get("XCurProcD"');
     // Both the primary (dist/bin/browser) and fallback (app-bundle)

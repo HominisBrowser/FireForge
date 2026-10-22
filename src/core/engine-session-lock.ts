@@ -348,7 +348,7 @@ export function generationDeltaPaths(
 /**
  * Describes what moved between two generation tokens, in operator terms.
  *
- * The refusal used to say only that the engine changed, which left the
+ * A refusal that said only that the engine changed would leave the
  * operator to reconstruct the writer by hand: `find -newermt` against the
  * run window, minus the objdir, minus git's own bookkeeping. Everything
  * needed to answer it is already in the two tokens, so the refusal answers

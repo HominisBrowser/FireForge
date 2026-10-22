@@ -10,7 +10,7 @@
  *
  * Separated from `patch-lint.ts` to keep both files within the
  * project's per-file line budget. The shim itself and the suppressed
- * diagnostic code list now live in `typecheck-shim.ts` and are shared
+ * diagnostic code list live in `typecheck-shim.ts` and are shared
  * with the whole-project `fireforge typecheck` command, keeping a
  * single source of truth for the Firefox-globals coverage.
  * `patchLint.checkJsStrict` only tightens `strict` / `noImplicitAny`

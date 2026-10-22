@@ -94,12 +94,37 @@ describe('registerCommand', () => {
     expect(outro).toHaveBeenCalledWith('Done');
   });
 
+  it('passes --after through for an xpcshell test and names the entry it follows', async () => {
+    vi.mocked(registerFile).mockResolvedValue({
+      manifest: 'toolkit/components/foo/tests/xpcshell.toml',
+      entry: '["test_b.js"]',
+      previousEntry: '["test_a.js"]',
+      skipped: false,
+    });
+
+    await registerCommand('/project', 'toolkit/components/foo/tests/test_b.js', {
+      after: 'test_a.js',
+    });
+
+    expect(registerFile).toHaveBeenCalledWith(
+      '/project',
+      'toolkit/components/foo/tests/test_b.js',
+      undefined,
+      'test_a.js',
+      {}
+    );
+    expect(success).toHaveBeenCalledWith(
+      'Registered toolkit/components/foo/tests/test_b.js in ' +
+        'toolkit/components/foo/tests/xpcshell.toml (after ["test_a.js"])'
+    );
+  });
+
   it('accepts a repo-root-relative path with a leading engine/ segment', async () => {
     // Operators frequently paste paths copied from `git status` or shell
-    // completion, which include the `engine/` prefix. Previously the
-    // command rejected these with a misleading "File not found in engine:
-    // engine/browser/..." error pointing at a doubled path. The prefix is
-    // now stripped so both forms resolve to the same engine-relative path.
+    // completion, which include the `engine/` prefix. The prefix is
+    // stripped so both forms resolve to the same engine-relative path,
+    // rather than a misleading "File not found in engine:
+    // engine/browser/..." error pointing at a doubled path.
     vi.mocked(registerFile).mockResolvedValue({
       manifest: 'browser/base/jar.mn',
       entry: 'content/browser/new-widget.js',

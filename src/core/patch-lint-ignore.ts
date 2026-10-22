@@ -4,9 +4,9 @@
  *
  * An entry is either a bare check ID, which suppresses that rule at any
  * size, or a ceiling `{ rule, max, reason }`, which suppresses a size rule
- * only while its measurement is at or below `max`. The bare form let a
- * waived file grow without bound: nothing re-examined the waiver once it
- * was written, so a 950-line file waived at review time was still waived at
+ * only while its measurement is at or below `max`. The bare form lets a
+ * waived file grow without bound: nothing re-examines the waiver once it
+ * is written, so a 950-line file waived at review time is still waived at
  * 2,000 lines. The ceiling makes growth past the reviewed size fire again,
  * and lets a gate say when the waiver is no longer needed at all.
  *

@@ -468,11 +468,10 @@ export interface PatchLintFileSizeTier {
 /**
  * Overrides for the `file-too-large` thresholds, per file class.
  *
- * These were module constants until 0.45.0, and nothing in `fireforge.json`
- * could move them. That is a problem specifically because the recommended
- * gate posture is `--max-warnings 0`: under it the `warning` band is not a
- * soft limit at all, so a project whose controllers legitimately sit a few
- * lines over 750 has a hard failure with no dial, at exactly the moment
+ * Configurable because the recommended gate posture is `--max-warnings 0`:
+ * under it the `warning` band is not a soft limit at all, so with fixed
+ * thresholds a project whose controllers legitimately sit a few lines over
+ * 750 would have a hard failure with no dial, at exactly the moment
  * someone is deciding whether to restructure a file.
  */
 export interface PatchLintFileSizeThresholds {
@@ -505,8 +504,7 @@ export interface PatchLintPatchSizeTier {
 /**
  * Overrides for the patch-size thresholds, per tier.
  *
- * Module constants until 0.50.0. The defaults are the old constants: lines
- * general 800/1500/3000, test 1500/3000/6000, branding 8000/18000/30000;
+ * Defaults: lines general 800/1500/3000, test 1500/3000/6000, branding 8000/18000/30000;
  * files warn above 5 (general, test) or 60 (branding). The files triple has
  * no notice or error band by default: an unset `files.notice` follows the
  * effective `files.warning`, and an unset `files.error` never fires.

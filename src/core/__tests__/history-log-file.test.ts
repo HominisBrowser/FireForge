@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * The patch history log moved out of the tracked patch queue: it was
- * committed with every export and grew to tens of megabytes. These tests pin
- * the new location, the configurable path, the migration of a legacy log
- * (no record lost, whichever files exist), and the per-invocation identity
+ * The patch history log lives outside the tracked patch queue: committed
+ * with every export it would grow to tens of megabytes. These tests pin its
+ * location, the configurable path, the migration of a log at the legacy
+ * location (no record lost, whichever files exist), and the per-invocation identity
  * that lets a session pick out its own lines.
  */
 import { link, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';

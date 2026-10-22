@@ -2,14 +2,12 @@
 /**
  * Optional Prettier pass over patch-owned `.sys.mjs` modules.
  *
- * Until 0.45.0 no tier of the chain ran Prettier on `.sys.mjs` at all, so
- * module formatting drift was caught by nothing and survived to a human
- * reviewer. Worse, the obvious manual check was misleading in the same
- * direction: a fork's root `.prettierignore` typically excludes `engine/`,
+ * Without this pass no tier of the chain runs Prettier on `.sys.mjs`, so
+ * module formatting drift survives to a human reviewer. The obvious manual
+ * check is misleading in the same direction: a fork's root `.prettierignore` typically excludes `engine/`,
  * so `prettier --check --config engine/.prettierrc.js <engine files>` run
  * from the repo root reports "all files use Prettier code style" for files
- * that fail the identical check run from inside `engine/`. A root-level
- * spot-check falsely refuted a correct reviewer finding on exactly this.
+ * that fail the identical check run from inside `engine/`.
  *
  * This pass therefore runs prettier with `cwd` set to the engine directory,
  * so the engine's own `.prettierrc*` and `.prettierignore` resolve the way

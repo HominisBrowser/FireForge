@@ -29,9 +29,7 @@ them:
 - **Mixed harnesses.** xpcshell and browser/mochitest paths in one request
   run as two consecutive mach invocations, the xpcshell half first. With
   `--build`, one pre-test build packages both halves (its coverage claim is
-  the union), and the second half runs build-less against it. Before 0.50.0
-  a mixed request was refused, and the documented split lost its coverage
-  claim to peers' scoped builds between the steps.
+  the union), and the second half runs build-less against it.
 - **`--repeat <n>`** runs the same selection n times. A `--build` builds
   once, and `--doctor` probes once. Every run is reported, so a flaky suite's
   rate is visible from one invocation.
@@ -108,15 +106,30 @@ and reports `missed`: that result is the signal to target the file the
 browser actually loads.
 
 A control on compiled source (C/C++, Rust, IDL, WebIDL, IPDL or YAML that no
-install manifest ships) can only reach the binary through a build. Without
+install manifest ships) can only reach the binary through a build. A
+header (`.h`, `.hh`, `.hpp`, `.ipdlh`) counts as compiled even when an
+`EXPORTS` install manifest copies it into `dist/include`: that copy only feeds
+other compiles. Without
 `--build` it is refused before the lock. With `--build` it is applied before
 the pre-test build, so the binary under test carries it, stays applied for
 every `--repeat` run, and is restored with a fresh mtime so the next build
-recompiles the original. Since 0.52.0 that pre-test build is a full
+recompiles the original. That pre-test build is a full
 `mach build`, with a notice naming the control's files: the default
-`mach build faster` compiles nothing, so before, the control still tested
-the previous binary and reported `missed`. The verdict adds
-`control-build=compiled`. A
+`mach build faster` compiles nothing, so the control would still test
+the previous binary and report `missed`. The verdict adds
+`control-build=compiled`.
+
+FireForge also rebuilds after such a control. Restoring the
+source byte-exact does not unbuild the binary, which would keep the mutation
+until the next full build, so every later run would test the control. After the last
+run's restore, still under the same lock hold, it runs one more full
+`mach build` and records a fresh baseline. The verdict adds
+`control-restore-build=done` (or `=failed`). The baseline the control's build
+writes carries a `controlBuild` stamp (diff file, targets, time applied) that
+only a full build clears: if the run is killed before the restore build, or
+that build fails, the next `fireforge test` refuses with `note=control-built`
+until `fireforge build` succeeds, and a `test --build` escalates to a full
+build. `fireforge build --ui` compiles nothing and keeps the stamp. A
 build-less control whose packaging is not current is refused before the
 lock with the advice to add `--build`, instead of ending `inconclusive`
 after a full queue.
@@ -155,15 +168,18 @@ copy outside `engine/` and `components/`, the control targets the old side.
   signal pipeline after the harness has shut down and before the held
   locks are released. A restore already in flight is awaited, not
   repeated.
+- **The binary too.** A compiled control's binary is rebuilt
+  after the restore, under the same hold, and a binary still carrying a
+  control is refused (`note=control-built`) rather than tested. See above.
 - **Even after SIGKILL.** A SIGKILLed FireForge cannot restore, but the
   journal survives it. Every later `fireforge test` checks for it first,
   under the lock, before any gate or build: a file still holding the
   control's bytes is restored, with a notice; any other state refuses with
   `note=negative-control-pending` rather than guess.
 
-The shorthand `--mutate <file> <old> <new>` that was proposed alongside this
-was not added. Commander options take one value, so a three-value option
-would have to swallow the positional test paths. A one-hunk diff expresses
+There is no `--mutate <file> <old> <new>` shorthand. Commander options take
+one value, so a three-value option would have to swallow the positional test
+paths. A one-hunk diff expresses
 the same edit and can be reviewed before it runs.
 
 ## Pathless runs must choose a mode
@@ -200,10 +216,30 @@ the run (and in the refusal, when other edits are stale). On a
 inputs of the sampled test and which lie elsewhere, so a sample whose fixture
 is unaffected can proceed knowingly under `--allow-stale-build`.
 
+### Compiled sources newer than the binary
+
+The packaging check above judges packaged files only. Every run
+also compares the compiled sources changed since the last build (C/C++,
+Rust, IDL, WebIDL, IPDL, and YAML such as `StaticPrefList.yaml`) with the
+time the binary under test was last linked: the newer of the launchable
+binary and the `libxul` beside it. Sources under `test`, `tests`, `gtest`,
+`testing` or `taskcluster` directories never reach that binary and are not
+counted. A newer source means the run would test the binary from before the
+edit, where a red reads as a failed fix. Without `--build` the run refuses
+with `note=stale-compiled`, naming the files and the link time, and suggests
+`fireforge build` or `test --build`; `--allow-stale-build` turns the refusal
+into a warning. With `--build` the pre-test build escalates to a full
+`mach build` with a notice, since `mach build faster` compiles nothing.
+
+Every run that reaches dispatch also stamps the binary's `BuildID` (from the
+`application.ini` beside it, the `moz:buildID` the browser reports) on its
+verdict line as `build-id=`, so a result can be matched to the build it ran
+against.
+
 ### Packaging coverage
 
 `--build-only` packages mixed-harness paths once, and then each harness half
-can run without `--build`. A plain mixed `test --build` now does both in one
+can run without `--build`. A plain mixed `test --build` does both in one
 invocation (see [Several runs under one lock hold](#several-runs-under-one-lock-hold)). Coverage is kept per staged path. Each path of a
 scoped build records its own staging inputs: its manifest directory (the
 nearest directory at or above it with a test manifest) plus whatever a
@@ -214,7 +250,7 @@ moved elsewhere in the engine, including a peer's edits and an engine HEAD
 move that touches none of them. A path whose inputs changed is dropped and
 named, with the inputs that changed. Changed inputs this build restages are
 allowed, and a scoped build of one file restages that file's test manifest
-too: a manifest that gained an entry for the new file no longer drops the
+too: a manifest that gained an entry for the new file does not drop the
 claims of its sibling files. A build-less run's packaging gates also run
 before the lock is requested, so a `coverage-replaced` or `stale-build`
 refusal arrives before the run queues.
@@ -223,20 +259,23 @@ A scoped build after a full build keeps the claim full while nothing outside
 its scope moved. Otherwise it carries the full build's anchor forward, and a
 later build-less run over any path stays covered while that path's own
 staging inputs are unchanged since the full build. A refusal names the inputs
-that did change, and since 0.52.0 who wrote the coverage record: its
+that did change, and who wrote the coverage record: its
 invocation, when, and the writing process's pid (marked `still running`
 while it is), `FIREFORGE_SESSION_ID` and invocation id, the id its history
 records carry. `status --test-coverage` shows the pid and session too. A
 peer whose run a scoped build or a test-file edit refused can tell whose
 build to wait for.
 
-`--extend-coverage` remains accepted. Retention is now the default, so the
-flag only turns a drop into a refusal before the build. Before 0.50.0 a
-scoped build without the flag replaced the claim whenever anything outside
-its scope had changed, and the flag refused unless engine HEAD, the
-mozconfig and every staging input recorded by the previous build were
-unchanged. Baselines without complete staging-input fingerprints (older than
-0.49.0) cannot prove anything unchanged and are dropped once.
+Retention is the default, so `--extend-coverage` only turns a drop into a
+refusal before the build. A baseline without complete staging-input
+fingerprints cannot prove anything unchanged, so its claims are dropped once.
+
+A scoped build records its request paths normalized (no trailing `/`, no
+`./`), as the baseline validator requires. An invalid baseline's refusal
+names the first failing field and its value, and when that field is part of
+the coverage claim it offers rerunning with `--build` as well as
+`fireforge build`. Dirty paths are fingerprinted unquoted, so a non-ASCII
+file name does not make the baseline invalid.
 
 ### Furnace components in a pre-test build
 
@@ -308,22 +347,21 @@ do something better instead: `testing/mochitest/runtests.py` bind-probes
 the HTTP server, ssltunnel and WebSocket ports before starting its servers,
 and the Marionette port before launching the browser, moves each busy one to
 a free port, and routes `mochi.test:8888` to wherever the server landed.
-FireForge's own refusal used to fire before that fallback could. In auto
-mode the mochitest-server and Marionette gates step aside, with a notice
+In the default mode FireForge's own refusal fires before that fallback can.
+In auto mode the mochitest-server and Marionette gates step aside, with a notice
 naming the holder, when the holder is not this checkout's own (a sibling
 checkout's live suite or an unrelated listener). This checkout's own
-leftovers are refused exactly as before, and `--kill-stale-marionette`
+leftovers are refused exactly as in the default mode, and `--kill-stale-marionette`
 still applies to them. Auto mode takes effect only when the engine's
 `runtests.py` carries the fallback; otherwise a notice says so and the
 default refusal stays. It never applies to `--doctor`'s Marionette probe,
-which launches its own browser on that port. The default (`"fixed"`) is
-unchanged.
+which launches its own browser on that port. The default is `"fixed"`.
 
 Every suite samples host load and the highest CPU process before and after
 dispatch. Load at least 4 or a process at least 90% CPU produces a warning;
 verdicts include `host-load` and, when needed, `host-cpu-warning=true`.
 Perf runs include `power-source=ac|battery|unknown`; on macOS this comes from
-`pmset -g ps`, including charging on AC. Sample JSON gains a `fireforgeHost`
+`pmset -g ps`, including charging on AC. Sample JSON carries a `fireforgeHost`
 object with start/end states and `powerSourceChanged`. A known power-source
 transition produces `FAIL reason=inconclusive power-changed=true`.
 Unknown power state is reported without inventing a transition.
@@ -358,7 +396,7 @@ Furnace-applied components:
   (untracked in the engine repo, so no install manifest exists for it yet),
   or when its jar declaration carries a bracketed base-directory prefix,
   which redirects the install destination away from the default chrome root.
-  An entry added to an existing `dist/bin` manifest no longer escalates. Any
+  An entry added to an existing `dist/bin` manifest does not escalate. Any
   probe failure (an unreadable manifest, no git) escalates, and the notice
   names the manifest and the reason.
 
@@ -370,16 +408,13 @@ carried forward from the previous full build, so a registration made between
 a `build --ui` and the next `test --build` still triggers the full build
 once.
 
-The 0.44.0 changelog left an open question here: whether a full build is
-really required for an entry added to an existing `dist/bin` `jar.mn`. It was
-settled downstream by exactly the experiment that entry asked for. In two
-clean runs, a jar-only registration of a new content file was installed by a
-plain `fireforge build --ui` (`faster/install_dist_bin_browser` named the
-destination, and the file reached `dist/bin` and the `.app` bundle) and then
-fetched over `chrome://` by a plain `fireforge test`. That case no longer
-escalates. The two halves the experiment did not cover, a new `jar.mn` file
-and a non-default install destination, still escalate, for the reason the
-original entry gives: relaxing a stale-artifact guard without evidence trades
+An entry added to an existing `dist/bin` `jar.mn` needs no full build: a
+jar-only registration of a new content file is installed by a plain
+`fireforge build --ui` (`faster/install_dist_bin_browser` names the
+destination, and the file reaches `dist/bin` and the `.app` bundle) and is
+then fetched over `chrome://` by a plain `fireforge test`. A new `jar.mn`
+file and a non-default install destination have no such evidence and
+escalate: relaxing a stale-artifact guard without evidence trades
 a slow build for a silently wrong test.
 
 ## Resilience
@@ -474,9 +509,9 @@ FIREFORGE-VERDICT: PASS|FAIL reason=… [note=<class>] [started=<n>/<m> first-un
 ```
 
 The start count reads every line the harness printed, not the last 2 MB of
-captured output: a suite printing more than that (a large browser directory,
-or any run under `--full-output`) used to report files that ran and passed
-as never started. `started-source=` names the evidence. A sharded run also
+captured output, so a suite printing more than that (a large browser
+directory, or any run under `--full-output`) does not report files that ran
+and passed as never started. `started-source=` names the evidence. A sharded run also
 prints a `FIREFORGE-SHARD:` line per shard and names the shards that did not
 pass as `failed-shards=`; see [`machine-output.md`](machine-output.md).
 
@@ -591,16 +626,38 @@ helpers.
 `--jobs <n>` runs a request's shards on n harness instances inside one lock
 hold. Each instance has its own profile and its own Marionette port, and
 auto ports (required) move each instance's mochitest server ports; output
-lines carry a `[job <i>]` prefix in the terminal and the run log. Since
-0.52.0 each instance also writes its own mochitest test list
+lines carry a `[job <i>]` prefix in the terminal and the run log. Each
+instance also writes its own mochitest test list
 (`--testrun-manifest-file`): on the harness's shared default
-`_tests/testing/mochitest/tests.json`, the second instance ran the first
-shard's file and passed, or found none. A `--jobs` run always reads each
+`_tests/testing/mochitest/tests.json`, the second instance would run the
+first shard's file and pass, or find none. A `--jobs` run always reads each
 dispatch's mozlog raw log, and a dispatch whose raw log starts none of its
 requested files fails with `started=0/<m>` instead of passing on another
 shard's results. With `--no-shard`, or a single directory argument, the
 files are split in order into n contiguous chunks. Parallel browsers raise
 host load, so measure before relying on it.
+
+When the caller sets `MOZ_UPLOAD_DIR`, each `--jobs` instance gets its own
+`<MOZ_UPLOAD_DIR>/job-<i>` (created up front) instead of the shared
+directory, where instances would replace each other's fixed-name artifacts
+such as the `modifiedPrefs.json` pref census. The verdict names them as
+`upload-dirs=<dir>,<dir>,...` so a caller can merge per-instance artifacts.
+Without `MOZ_UPLOAD_DIR` nothing changes.
+
+A browser `--jobs` run on more than one instance also holds
+placeholder listeners on `127.0.0.1` on the mochitest HTTP, ssltunnel and
+WebSocket ports (8888, 4443, 9988) for the whole parallel hold, after the
+server-port preflight. Desktop mochitest has no flags for these ports, and
+its busy-port probe passes for instances that start together, which then
+race for 8888 and die with `could not start server on port 8888`. With the
+ports held, every instance's probe fails and each falls back to its own
+port; a port that is already busy is left alone. Each `FIREFORGE-SHARD:`
+line carries the ports its instance took as `ports=http:<n>,ssl:<n>,ws:<n>`.
+A harness whose server still fails to start (`could not start server on
+port` or `Timed out while waiting for server startup`, before any test) is
+an infrastructure failure, not `no-tests`: it is retried within the
+`--harness-retries` budget like a harness crash, and reported as
+`reason=server-startup` once the budget is spent.
 
 `--shard-size <n>` dispatches n files per mach invocation (mochitest restarts
 the browser between files), paying the harness start once per chunk instead
@@ -612,7 +669,9 @@ of once per file, and judges each file from mozlog's structured log:
 run-log line where the dispatch began) from mozlog's structured log, which
 each dispatch then writes with `--log-raw`, and names it on the verdict as
 `results=<path>`. A `--log-raw <file>` already forwarded with `--mach-arg` is
-read instead. The checks that need no lock run before it is
+read instead. A harness-level record (`test` is `automation.py`,
+such as a hung browser's no-output TIMEOUT) also carries `shardFiles`, the
+shard's dispatched files, and `file` when the shard has exactly one. The checks that need no lock run before it is
 requested: the launchable binary, the named-file checkJs pass, and the
 `--wait-browser`/`--wait-port` budgets. The run log is open from the start,
 so a `reason=lock-timeout` line carries `log=` too.

@@ -2,12 +2,11 @@
 /**
  * One `--from`-ready declaration report for a refused queue change.
  *
- * Moving a test out of a patch that owns a shared manifest refused with one
- * `forward-registration` error per manifest line, and each line needed its
- * own `patch staged-dependency --add` call: a slice that added seven suites
- * wrote eighteen declarations by hand. `patch move-files`, `patch split`
- * and `re-export --scan` now write every declaration their refusal proposes
- * into one lint-report-shaped JSON (`queueIssues[].stagedDeclarations`) and
+ * Moving a test out of a patch that owns a shared manifest refuses with one
+ * `forward-registration` error per manifest line, and each line would need
+ * its own `patch staged-dependency --add` call. `patch move-files`,
+ * `patch split` and `re-export --scan` write every declaration their refusal
+ * proposes into one lint-report-shaped JSON (`queueIssues[].stagedDeclarations`) and
  * name the single `patch staged-dependency <holder> --add --from <file>`
  * call per holding patch that discharges them.
  */
@@ -35,10 +34,15 @@ export interface DeclarationsReport {
 }
 
 /**
- * A declaration as the report records it. `owner` is dropped when it names
- * a patch the refused change would have created, which does not exist yet.
+ * A declaration as the report records it. `owner` is optional for renamers
+ * that cannot name one; `reason` is the rationale `staged-dependency --add
+ * --from` records with the declaration (an entry's own reason wins over the
+ * call's `--reason`).
  */
-export type ReportedDeclaration = Omit<PatchLintStagedDeclaration, 'owner'> & { owner?: string };
+export type ReportedDeclaration = Omit<PatchLintStagedDeclaration, 'owner'> & {
+  owner?: string;
+  reason?: string;
+};
 
 /** Rewrites a projected declaration into the names the current queue uses. */
 export type DeclarationRenamer = (declaration: PatchLintStagedDeclaration) => ReportedDeclaration;
@@ -51,20 +55,29 @@ export type DeclarationRenamer = (declaration: PatchLintStagedDeclaration) => Re
  * @param issues - The refusal's findings
  * @param out - `--declarations-out`, relative to the working directory
  * @param rename - Maps projected patch names back to current ones
+ * @param reason - Rationale stamped on every declaration that carries none
+ *   (`patch move-files` and `patch split` name the move that needs it)
  */
 export async function writeDeclarationsReport(
   projectRoot: string,
   issues: readonly PatchLintIssue[],
   out?: string,
-  rename: DeclarationRenamer = (declaration) => declaration
+  rename: DeclarationRenamer = (declaration) => declaration,
+  reason?: string
 ): Promise<DeclarationsReport | undefined> {
+  const withReason = (declaration: ReportedDeclaration): ReportedDeclaration =>
+    reason === undefined || declaration.reason !== undefined
+      ? declaration
+      : { ...declaration, reason };
   const queueIssues = issues
     .filter((issue) => DECLARABLE_CHECKS.has(issue.check))
     .map((issue) => ({
       check: issue.check,
       file: issue.file,
       message: issue.message,
-      stagedDeclarations: (issue.stagedDeclarations ?? []).map(rename),
+      stagedDeclarations: (issue.stagedDeclarations ?? []).map((declaration) =>
+        withReason(rename(declaration))
+      ),
     }))
     .filter((issue) => issue.stagedDeclarations.length > 0);
   const declarations = queueIssues.flatMap((issue) => issue.stagedDeclarations);
@@ -81,13 +94,15 @@ export async function writeDeclarationsReport(
   await ensureDir(resolve(path, '..'));
   await writeJson(path, { queueIssues });
   const holders = [...new Set(declarations.map((declaration) => declaration.patch))].sort();
+  // A report whose every entry carries its reason needs no `--reason`.
+  const reasonFlag = declarations.every((declaration) => declaration.reason !== undefined)
+    ? ''
+    : ` ${STAGED_DEPENDENCY_REASON_PLACEHOLDER}`;
   return {
     path,
     count: declarations.length,
     commands: holders.map(
-      (holder) =>
-        `fireforge patch staged-dependency ${holder} --add --from ${path} ` +
-        STAGED_DEPENDENCY_REASON_PLACEHOLDER
+      (holder) => `fireforge patch staged-dependency ${holder} --add --from ${path}${reasonFlag}`
     ),
   };
 }
@@ -113,6 +128,7 @@ export async function withDeclarationsReport(
     regressions: readonly PatchLintIssue[];
     out?: string | undefined;
     rename?: DeclarationRenamer;
+    reason?: string;
   }
 ): Promise<ConflictReport | null> {
   if (conflicts === null) return null;
@@ -120,7 +136,8 @@ export async function withDeclarationsReport(
     args.projectRoot,
     args.regressions,
     args.out,
-    args.rename
+    args.rename,
+    args.reason
   );
   if (report === undefined) return conflicts;
   return { ...conflicts, details: [...conflicts.details, ...formatDeclarationsReport(report)] };

@@ -598,7 +598,7 @@ export function registerStatus(
     )
     .option(
       '--patches <names...>',
-      'Judge only the named patches: keeps the files each owns or claims and the ownership rows naming it (filename, stem, order number, manifest name, or slug; repeat or comma-separate). Unmanaged files belong to no patch and drop out. Default view, --json and --ownership only'
+      'Judge only the named patches: keeps the files each owns or claims and the ownership rows naming it (filename, stem, order number, manifest name, or slug; repeat, or separate with commas or whitespace). Unmanaged files belong to no patch and drop out. Default view, --json and --ownership only'
     )
     .action(
       withErrorHandling(async (options: StatusOptions) => {

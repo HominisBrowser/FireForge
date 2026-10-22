@@ -537,6 +537,8 @@ export interface PatchSplitOptions extends Confirmable, PatchLockWaitable, Unsaf
   skipLint?: boolean;
   /** Where a refusal writes its one `--from`-ready declaration report. */
   declarationsOut?: string;
+  /** Write the committed old-to-new filename map of renumbered patches here as JSON. */
+  mapOut?: string;
 }
 
 /**
@@ -563,6 +565,16 @@ export interface PatchMoveFilesOptions extends Confirmable, PatchLockWaitable, U
   skipLint?: boolean;
   /** Where a refusal writes its one `--from`-ready declaration report. */
   declarationsOut?: string;
+  /**
+   * New engine files no patch owns, adopted into the destination in the
+   * same transaction (engine-relative, repeatable).
+   */
+  scanFile?: string[];
+  /**
+   * Allow the move to empty the source: re-point the declarations it owns
+   * to the destination and retire its slot. Not valid with `create`.
+   */
+  retireEmpty?: boolean;
 }
 
 /**
@@ -698,8 +710,8 @@ export interface TestOptions extends EngineLockWaitable {
    * build would overwrite engine content recorded in neither a patch body
    * nor the pristine baseline. Same meaning as `fireforge build`'s flag of
    * the same name. A scripted `test --build` is exactly the shape the
-   * multi-session hazard shows up in, and until now it was the one shape
-   * that could not arm the refusal. Valid only with `--build`/`--build-only`.
+   * multi-session hazard shows up in, so it must be able to arm the
+   * refusal too. Valid only with `--build`/`--build-only`.
    */
   refuseUnexportedDrift?: boolean;
   /**
@@ -1115,7 +1127,7 @@ export interface PatchRenameOptions
   /**
    * New category (validated against configured categories). Rewrites
    * the filename prefix and the manifest row in one transaction, so
-   * recategorising no longer requires `patch delete` + fresh export.
+   * recategorising does not require `patch delete` + fresh export.
    */
   category?: string;
   /**
@@ -1139,6 +1151,17 @@ export interface PatchReorderOptions extends PatchLockWaitable {
   to?: number;
   before?: string;
   after?: string;
+  /**
+   * Shift a run of patches up by this many orders (`--shift <n> --from
+   * <order> [--through <order>]`) instead of moving one patch.
+   */
+  shift?: number;
+  /** First order of the run `shift` moves. */
+  from?: number;
+  /** Last order of the run `shift` moves (default: the end of the run). */
+  through?: number;
+  /** Write the committed old-to-new filename map here as JSON. */
+  mapOut?: string;
   yes?: boolean;
   dryRun?: boolean;
   forceUnsafe?: boolean;

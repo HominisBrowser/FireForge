@@ -100,7 +100,7 @@ export function addSubscriptAST(
 }
 
 /**
- * Legacy regex/line-based implementation preserved as fallback.
+ * Regex/line-based fallback implementation.
  */
 export function legacyAddSubscript(
   content: string,

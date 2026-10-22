@@ -2,10 +2,9 @@
 /**
  * In-place edits to a widget's `toolkit/content/jar.mn` block.
  *
- * Undeploying one file and renaming a component used to drop every line of
- * the widget and re-add the live ones, which re-sorted the whole block and
- * left the owning patch carrying reorder hunks. These helpers touch only
- * the lines that change: a deleted file's line goes, a renamed component's
+ * Dropping every line of the widget and re-adding the live ones would
+ * re-sort the whole block and leave the owning patch carrying reorder
+ * hunks. These helpers touch only the lines that change: a deleted file's line goes, a renamed component's
  * lines are rewritten where they stand, and anything still missing is left
  * for `addJarMnEntries` to insert.
  */
@@ -17,8 +16,8 @@ import { JAR_MN } from './furnace-constants.js';
 
 /**
  * The file a widget jar.mn line registers: the `(widgets/<tag>/<file>)`
- * source mapping, or the legacy `content/global/elements/<tag>.<ext>`
- * target written before the mapping existed. Undefined when the line is
+ * source mapping, or the `content/global/elements/<tag>.<ext>` target of a
+ * line that carries no source mapping. Undefined when the line is
  * not one of this tag's.
  */
 function registeredFile(line: string, tagName: string): string | undefined {

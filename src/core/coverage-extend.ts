@@ -8,7 +8,7 @@
  * collapsing to this build's paths. `--extend-coverage` turns any drop into
  * a refusal before the build.
  *
- * Fingerprints must be complete: a legacy packageable-only record cannot
+ * Fingerprints must be complete: a record of packageable inputs only cannot
  * prove that a test fixture or manifest still matches its staged copy.
  */
 
@@ -237,14 +237,19 @@ export interface RecordedCoverage {
  *
  * @param engineDir - Path to the engine directory
  * @param plan - Plan after {@link applyMozconfigAnchor}
- * @param requested - Normalized request paths this build packaged
+ * @param requestedPaths - Request paths this build packaged. Normalized
+ *   here (no trailing slash, no `./`): the baseline validator rejects the
+ *   raw CLI shapes, and a baseline it rejects refuses every later run.
  */
 export async function recordScopedCoverage(
   engineDir: string,
   plan: CoverageRetentionPlan,
-  requested: string[]
+  requestedPaths: string[]
 ): Promise<RecordedCoverage> {
   if (plan.keepFull) return { testPackagingCoverage: 'full' };
+  const requested = [
+    ...new Set(requestedPaths.map(normalizeRequestPath).filter((path) => path.length > 0)),
+  ];
   const records: Record<string, CoverageRecord> = { ...plan.retained };
   try {
     const state = await readEngineContentState(engineDir);

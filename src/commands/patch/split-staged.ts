@@ -15,8 +15,8 @@
  *    the imported file landed in one patch) is dropped
  *    ({@link findDeclarationsMadeUnused}).
  *
- * Without this the move wrote the bodies and left the queue audit and the
- * per-patch lint to report `queue-dependency-creates-unowned` and
+ * Without this the move would write the bodies and leave the queue audit
+ * and the per-patch lint to report `queue-dependency-creates-unowned` and
  * `staged-dependency-unused` afterwards, one `--remove`/`--add` pair per
  * entry to repair by hand.
  */

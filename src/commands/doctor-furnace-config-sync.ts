@@ -187,10 +187,10 @@ function emptyOutcome(): RepairOutcome {
  *    under `custom` would leave it in both maps, a state nothing validates.
  *    Every orphan is therefore re-checked against `freshConfig` inside the
  *    lock and skipped when it is no longer orphaned.
- * 2. Delete custom directories outside the lock. `repairCustomOrphans` used to
- *    run after the lock was released, so a `furnace create` that had
- *    registered a name and not yet populated its directory had that directory
- *    deleted underneath it.
+ * 2. Delete custom directories outside the lock. `repairCustomOrphans` runs
+ *    after the lock is released, so it must not delete the directory of a
+ *    name a concurrent `furnace create` has registered but not yet
+ *    populated.
  */
 async function repairOrphans(
   projectRoot: string,

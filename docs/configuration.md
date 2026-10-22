@@ -21,11 +21,10 @@ uncommitted pin, and the tree is then building a different version than the
 config claims.
 
 `fireforge source set`, `fireforge config <key> <value>` and `furnace init`
-edit `fireforge.json` in place (since 0.50.0). Only the values that change
+edit `fireforge.json` in place. Only the values that change
 are rewritten. Indentation, key order, and objects or arrays kept on one
 line stay as they are, so a pin move is a diff of the `firefox` block alone.
-New keys follow the layout of the object they land in. Before 0.50.0 every
-write re-serialized the whole file and expanded every compact section.
+New keys follow the layout of the object they land in.
 
 `fireforge doctor`'s "Source pin matches engine" check compares the pin with
 the engine's committed `browser/config/version.txt`. That file never carries
@@ -93,7 +92,7 @@ Most globals in it are `any`. `Cu` is typed as `CuShim`, the members of
 `nsIXPCComponents_Utils` (`js/xpconnect/idl/xpccomponents.idl`) with loose
 parameter and result types, so a call to a member `Cu` does not have (such
 as `Cu.now()`, which is `ChromeUtils.now()`) fails `typecheck` and per-patch
-lint instead of throwing at runtime (since 0.50.0). The same shim backs
+lint instead of throwing at runtime. The same shim backs
 `fireforge typecheck`.
 
 - `patchLint.checkJsExtraShim` adds members to the structured shim globals
@@ -137,7 +136,7 @@ lint instead of throwing at runtime (since 0.50.0). The same shim backs
   structured `stagedDeclarations`, so a `lint --per-patch --report` file
   can be applied with one `patch staged-dependency <patch> --add --from
 <report>` per patch instead of one call per edge. The setting is opt-in because a queue
-  that predates it can carry many such edges, and a new error would red a
+  that was never checked for these carriers can carry many such edges, and a new error would red a
   `--max-warnings 0` gate on install. The same census is on the public API as
   `findForwardRegistrations(patchesDir, { scope })`, which defaults to
   `'extended'`, for a consumer that keeps its own ratchet over these edges.
@@ -168,7 +167,7 @@ lint instead of throwing at runtime (since 0.50.0). The same shim backs
   what `file-too-large` counts. `'raw'` counts every line, the way `wc -l`
   does. `'code'` blanks comments with acorn's tokenizer (module first, then
   script, since chrome subscripts are scripts) and counts the lines left
-  non-blank, so JSDoc and blank lines stop counting. A file acorn cannot
+  non-blank, so JSDoc and blank lines do not count. A file acorn cannot
   tokenize is counted in raw lines, the upper bound, and a
   `file-size-unparsed` notice names it. Every message says which unit it
   counted ("lines" or "code lines"). The counter is on the public API as
@@ -260,7 +259,7 @@ lint instead of throwing at runtime (since 0.50.0). The same shim backs
   `@font-feature-values`, `@font-palette-values`, `@page` and its margin
   boxes) are descriptors, not properties, and are not judged.
 
-  Since 0.51.0 a scale also takes:
+  A scale also takes:
 
   - `prefix` as a list (`["--mybrowser-space-", "--mybrowser-gap-"]`) for a
     scale whose steps are spelled more than one way.
@@ -297,9 +296,9 @@ FireForge version. Diagnostics always use a fresh project
 program: prior incremental diagnostic state is never restored. Cached and
 `--no-cache` runs therefore check the same complete file set. `--no-cache`
 also disables build-info writes. A jsconfig's own `incremental` and
-`tsBuildInfoFile` remain ignored.
+`tsBuildInfoFile` are ignored.
 
-`typecheck.litTypes: true` (since 0.51.0, default off) types Lit in the
+`typecheck.litTypes: true` (default off) types Lit in the
 shim: `LitElement` and the helpers of
 `chrome://global/content/vendor/lit.all.mjs`, and `MozLitElement` of
 `chrome://global/content/lit-utils.mjs`. The element classes carry closed
@@ -307,7 +306,7 @@ member lists, as `Cu` does, so a misspelt member of a widget host is an
 error rather than `any`. Template helpers and directives stay loose. It is
 off by default because a reactive property declared only in
 `static properties` or `static queries` then needs a declaration to be
-known. Since 0.52.0 the shim declares the global type
+known. The shim declares the global type
 `MozLitElementWith<Extra>`: a widget casts its base to it, and its
 instances carry `Extra` beside MozLitElement's members. A query getter
 cannot be declared any other way: a class field redefines the getter
@@ -327,7 +326,7 @@ checks in both. A project shim can add members by merging
 `interface LitElementShimMembers`; a jsconfig `paths` entry that maps these
 URLs to real sources takes precedence.
 
-Per-patch checkJs gives each test script its own program. Since 0.51.0 a
+Per-patch checkJs gives each test script its own program. A
 test's `resource:///` and `chrome://` imports (including a
 `typeof import("…")` cast) resolve to the modules the queue creates up to
 the test's own patch, so a test of an earlier patch's module is checked
@@ -441,11 +440,11 @@ carries `invocationId` (shared by every record one command writes), `pid`,
 `ppid`, and `sessionId` when the environment sets `FIREFORGE_SESSION_ID`, so
 a session sharing the checkout can select its own lines.
 
-Before 0.50.0 the log was `patches/.fireforge-history.jsonl`, inside the
-tracked queue. The first append after upgrading moves it to `history.path`;
-when both files exist, the old records are appended to the new file rather
-than either being overwritten. Setting `history.path` to
-`patches/.fireforge-history.jsonl` keeps the old location.
+If a log exists at `patches/.fireforge-history.jsonl`, inside the tracked
+queue, the next append moves it to `history.path`; when both files exist, its
+records are appended to the `history.path` file rather than either being
+overwritten. Setting `history.path` to `patches/.fireforge-history.jsonl`
+keeps the log at that location.
 
 ## `buildAudit`
 
@@ -611,7 +610,7 @@ The dark and variant blocks mirror it and appear in `token show`.
 - `token-undeclared`: a `var(--<prefix>…)` in the tokens CSS, or in any CSS
   file a patch in the queue touches, names a token no block of the tokens
   CSS declares. A property declared in the same file, and the `furnace.json`
-  `tokenAllowlist` and `runtimeVariables` names, are exempt. Since 0.51.0 a
+  `tokenAllowlist` and `runtimeVariables` names, are exempt. A
   reference with a fallback (`var(--x, 0)`) is optional and not reported,
   and a token a sibling sheet declares counts as declared. Sheets are
   siblings when one queue document links both (`<link rel="stylesheet">`,
@@ -633,7 +632,7 @@ non-CI launches print a warning saying so. Exit codes 12 and 13 separate a
 console regression from a launch failure. See
 [`exit-codes.md`](exit-codes.md).
 
-A smoke run starts on a fresh temporary profile by default (since 0.48.0).
+A smoke run starts on a fresh temporary profile by default.
 The step exists to prove what the build does on a clean start. The
 developer's `obj-*/tmp/profile-default` carries whatever the last session
 left (a pre-reset database, a restored hand-made applet), and those reds
@@ -649,7 +648,7 @@ owning process is gone.
 
 - `--profile <path>` launches with a named profile directory and leaves it
   in place. Under `--smoke-exit` it replaces the fresh default. Firefox also
-  gets `-purgecaches` (since 0.50.0), which discards the profile's startup
+  gets `-purgecaches`, which discards the profile's startup
   cache of compiled chrome scripts. That cache is keyed on the build id, and
   a `build --ui` does not change it, so without the purge a kept profile runs
   the chrome scripts an earlier build cached. `--no-purge-caches` keeps the
@@ -659,12 +658,11 @@ owning process is gone.
   profile.
 
 A smoke run whose browser exits with a clean status before the window
-elapses, without printing any console output, fails with exit 13 (since
-0.50.0). Lines from mach's own log (the timestamped command echo) do not
+elapses, without printing any console output, fails with exit 13.
+Lines from mach's own log (the timestamped command echo) do not
 count as output. A launch that exits silently never reached a window: a
 stale `.parentlock`, or a profile whose run of SIGTERM-ended smoke runs
-counts as a startup-crash streak (`toolkit.startup.recent_crashes`). Before
-0.50.0 such a run passed as a clean exit.
+counts as a startup-crash streak (`toolkit.startup.recent_crashes`).
 
 A plain `run` without either flag keeps mach's `profile-default`. `mach run`'s
 desktop parser has no `--profile` option (its `--profile/-P` belongs to the

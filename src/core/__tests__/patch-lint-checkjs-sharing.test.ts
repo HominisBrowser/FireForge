@@ -50,8 +50,8 @@ describe('runCheckJsTestFilesGrouped source-file sharing', () => {
     try {
       await runCheckJsTestFilesGrouped(root, new Set([...TESTS, HEAD]), { checkJs: true }, root);
       const libReads = readFile.mock.calls.filter(([path]) => /[/\\]lib\.es5\.d\.ts$/.test(path));
-      // One program per test file (four, head.js included); 0.47.1 read
-      // and parsed the lib files once per program.
+      // One program per test file (four, head.js included); the lib files
+      // are read and parsed once, not once per program.
       expect(libReads).toHaveLength(1);
     } finally {
       readFile.mockRestore();

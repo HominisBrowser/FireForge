@@ -841,7 +841,7 @@ describe('download extraction behavior', () => {
       cacheDir: '/tmp/cache',
     });
 
-    // Temp dir now includes a UUID suffix for concurrency safety
+    // Temp dir includes a UUID suffix for concurrency safety
     const renameArgs = mockRename.mock.calls.map((c) => c as unknown as [string, string]);
     const renameCall = renameArgs.find(
       ([src, dest]) => src.startsWith('/tmp/dest.tmp-') && dest === '/tmp/dest'

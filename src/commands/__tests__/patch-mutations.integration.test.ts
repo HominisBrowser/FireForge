@@ -326,11 +326,10 @@ describe('patch delete', () => {
   });
 
   it('refuses when a later patch MODIFIES an existing file to import a target leaf', async () => {
-    // Fix 1: the dependency scan used to only walk later patches'
-    // `newFiles` map, so a later patch that added an import into a
-    // pre-existing file (browser.js) slid straight through and the
-    // target could be deleted silently. The scan now also walks
-    // `modifiedFileAdditions` and must refuse this shape.
+    // The dependency scan walks later patches' `modifiedFileAdditions` as
+    // well as their `newFiles` map, so a later patch that adds an import
+    // into a pre-existing file (browser.js) cannot slip through and let the
+    // target be deleted silently. It must refuse this shape.
     restoreTTY = setInteractiveMode(false);
     const diffA = createDiff('foo/Helper.sys.mjs', 'export const H = 1;');
     const diffB = createModificationDiff('browser/base/content/browser.js', 'existing;', [
@@ -929,9 +928,9 @@ describe('patch reorder', () => {
   });
 
   // Self-reference footgun: `--before <target>` resolves to the target's
-  // own order, which hit computeRenameMap's silent no-op branch.
-  // `--after <target>` set destinationOrder = order + 1 and renumbered
-  // the target plus everything after it. Both are rejected loudly now
+  // own order, which would hit computeRenameMap's silent no-op branch.
+  // `--after <target>` would set destinationOrder = order + 1 and renumber
+  // the target plus everything after it. Both are rejected loudly
   // so typos and scripted misuse don't mutate (or silently no-op) the
   // queue.
   it('rejects --before referencing the target itself', async () => {
@@ -979,7 +978,7 @@ describe('patch reorder', () => {
       })
     ).rejects.toThrow(/relative to itself/);
 
-    // Queue must be untouched: previously the --after branch bumped the
+    // Queue must be untouched: the --after branch must not bump the
     // target and everything after it by one.
     const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch')).sort();
     expect(entries).toEqual(['001-infra-a.patch', '002-infra-b.patch', '003-infra-c.patch']);

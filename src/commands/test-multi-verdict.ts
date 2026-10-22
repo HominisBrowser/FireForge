@@ -70,6 +70,7 @@ const REASON_RANK = [
   'inconclusive',
   'preflight',
   'crash',
+  'server-startup',
   'harness-arguments',
   'no-tests',
   'test-failures',

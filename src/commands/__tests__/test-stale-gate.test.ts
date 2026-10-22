@@ -9,6 +9,7 @@ vi.mock('../../core/test-stale-check.js', async (importOriginal) => ({
   checkStaleBuildForTest: vi.fn(),
   checkStaticComponentsStale: vi.fn(() => Promise.resolve({ stale: false, changedManifests: [] })),
   findChangedTestManifestsForPaths: vi.fn(() => Promise.resolve([])),
+  findCompiledSourcesNewerThanBinary: vi.fn(() => Promise.resolve(undefined)),
 }));
 vi.mock('../../core/coverage-dispatch.js', () => ({ filterByCarriedFullCoverage: vi.fn() }));
 vi.mock('../test-perf-scope.js', () => ({
@@ -17,7 +18,11 @@ vi.mock('../test-perf-scope.js', () => ({
 
 import type { BuildBaseline } from '../../core/build-baseline-types.js';
 import { filterByCarriedFullCoverage } from '../../core/coverage-dispatch.js';
-import { checkStaleBuildForTest, type StaleBuildResult } from '../../core/test-stale-check.js';
+import {
+  checkStaleBuildForTest,
+  findCompiledSourcesNewerThanBinary,
+  type StaleBuildResult,
+} from '../../core/test-stale-check.js';
 import { PreflightRefusalError } from '../../errors/base.js';
 import { info, warn } from '../../utils/logger.js';
 import { describePerfStaleImpact } from '../test-perf-scope.js';
@@ -135,5 +140,65 @@ describe('enforceStaleBuildGate', () => {
     expect(error.note).toBe('coverage-replaced');
     expect(error.message).toContain(`${TEST} (browser/base/content/test/perf/head.js)`);
     expect(error.message).toContain('plus earlier full coverage');
+  });
+});
+
+describe('stale-compiled and control-built gates', () => {
+  const STALE_COMPILED = {
+    paths: ['gfx/layers/apz/src/AsyncPanZoomController.cpp'],
+    linkedPath: 'obj-x/dist/bin/libxul.so',
+    linkedAt: new Date('2026-10-20T14:29:34.000Z'),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(filterByCarriedFullCoverage).mockResolvedValue([]);
+  });
+
+  it('refuses compiled sources newer than the binary, naming them', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(staleResult());
+    vi.mocked(findCompiledSourcesNewerThanBinary).mockResolvedValueOnce(STALE_COMPILED);
+    const error = await refusal(
+      enforceStaleBuildGate('/p', '/p/engine', {}, [TEST], {
+        launchablePath: 'obj-x/dist/bin/mybrowser',
+      })
+    );
+    expect(error.note).toBe('stale-compiled');
+    expect(error.message).toContain('engine/gfx/layers/apz/src/AsyncPanZoomController.cpp');
+    expect(findCompiledSourcesNewerThanBinary).toHaveBeenCalledWith(
+      '/p/engine',
+      BASELINE,
+      'obj-x/dist/bin/mybrowser'
+    );
+  });
+
+  it('downgrades the stale-compiled refusal to a warning under --allow-stale-build', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(staleResult());
+    vi.mocked(findCompiledSourcesNewerThanBinary).mockResolvedValueOnce(STALE_COMPILED);
+    await expect(
+      enforceStaleBuildGate('/p', '/p/engine', { allowStaleBuild: true }, [TEST])
+    ).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('AsyncPanZoomController.cpp'));
+  });
+
+  it('refuses a binary a negative control was compiled into, even with --allow-stale-build', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(
+      staleResult({
+        baseline: {
+          ...BASELINE,
+          controlBuild: {
+            diffFile: 'controls/first-key.diff',
+            targets: ['gfx/layers/apz/src/APZCTreeManager.cpp'],
+            appliedAt: '2026-10-22T10:00:00.000Z',
+          },
+        },
+      })
+    );
+    const error = await refusal(
+      enforceStaleBuildGate('/p', '/p/engine', { allowStaleBuild: true }, [TEST])
+    );
+    expect(error.note).toBe('control-built');
+    expect(error.message).toContain('controls/first-key.diff');
+    expect(error.message).toContain('"fireforge build"');
   });
 });

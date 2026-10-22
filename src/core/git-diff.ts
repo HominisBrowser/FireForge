@@ -598,7 +598,7 @@ async function generateBinaryFilePatchWithConfig(
  * "absent", and this branch only runs for files untracked in HEAD). A prior
  * stage-0 entry is re-pointed at its recorded mode and blob. Unmerged entries
  * (stages 1 to 3) cannot be rebuilt through `--cacheinfo`. That degenerate
- * state keeps the legacy reset-to-HEAD behavior rather than corrupting the
+ * state falls back to the reset-to-HEAD restore rather than corrupting the
  * conflict.
  * @param repoDir - Repository directory
  * @param filePath - File path (relative to repo root)

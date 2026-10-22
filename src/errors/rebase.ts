@@ -63,7 +63,7 @@ export class CorruptRebaseSessionError extends RebaseError {
 
 /**
  * Thrown by `rebase --dry-run` when the replay rejects at least one patch.
- * A dry run that exited 0 regardless used to read as "the rebase is ready".
+ * A dry run that exited 0 regardless would read as "the rebase is ready".
  */
 export class RebaseDryRunRejectError extends RebaseError {
   constructor(readonly rejected: readonly string[]) {

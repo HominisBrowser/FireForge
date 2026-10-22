@@ -145,7 +145,7 @@ function bootstrapBrowser() {
 
   it('falls back to the legacy scanner when acorn cannot parse the source', async () => {
     // Firefox chrome sources carry preprocessor directives acorn rejects.
-    // That raw SyntaxError is exactly what the legacy path exists for, so the
+    // That raw SyntaxError is exactly what the fallback path exists for, so the
     // `rethrowIf` predicate must let it through to the fallback.
     vi.mocked(readText).mockResolvedValue(
       ['#ifdef XP_WIN', 'function bootstrapBrowser() {', '  try {', '  } catch (e) {}', '}'].join(

@@ -120,8 +120,8 @@ function contentFromSections(sections: readonly DiffSection[]): string {
  * `binary-body-not-reconstructable` queue lint, and
  * `buildPatchQueueContext` already tolerates them for real queue entries.
  *
- * One parse for the whole diff, rather than one per new file as the five
- * call sites previously did.
+ * One parse for the whole diff, rather than one per new file, shared by
+ * every call site.
  */
 export function buildNewFileTextProjection(diff: string): Map<string, string> {
   const newFiles = new Map<string, string>();

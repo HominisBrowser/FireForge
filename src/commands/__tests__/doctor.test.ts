@@ -129,8 +129,8 @@ vi.mock('../../core/furnace-apply.js', () => ({
   applyAllComponents: vi.fn(() => Promise.resolve({ applied: [], skipped: [], errors: [] })),
 }));
 
-// The manifest-sync repair now performs its load→mutate→write under the
-// furnace lock (it previously raced the very lost-write it repairs). This
+// The manifest-sync repair performs its load→mutate→write under the
+// furnace lock so it cannot race the very lost-write it repairs. This
 // suite mocks the filesystem, so a real lock cannot be acquired. Run the
 // body directly.
 vi.mock('../../core/file-lock.js', async (importOriginal) => ({
@@ -422,7 +422,7 @@ describe('doctorCommand', () => {
   }
 
   it('reports an unreadable test tree as unreadable, not as "no browser.toml files"', async () => {
-    // An EACCES on the walk root used to degrade into "no browser.toml files
+    // An EACCES on the walk root must not degrade into "no browser.toml files
     // found", the opposite diagnosis from "could not look".
     mockCleanShapeProbes();
     vi.mocked(readdir).mockRejectedValue(

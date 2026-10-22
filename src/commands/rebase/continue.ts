@@ -37,9 +37,9 @@ export async function handleContinue(
 ): Promise<void> {
   intro('FireForge Rebase — Continue');
 
-  // A present-but-unreadable session is not "no session in progress". That
-  // conflation is what made a corrupt file unrecoverable. Name the file and
-  // point at --abort, which can now clear it.
+  // A present-but-unreadable session is not "no session in progress":
+  // treating it as one leaves a corrupt file unrecoverable. Name the file
+  // and point at --abort, which can clear it.
   const read = await readRebaseSession(projectRoot);
   if (!read.present) throw new NoRebaseSessionError();
   if (!read.valid) {

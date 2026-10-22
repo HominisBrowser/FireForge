@@ -64,7 +64,7 @@ vi.mock('../../core/config.js', () => ({
     src: '/project/src',
     componentsDir: '/project/components',
   })),
-  // `furnaceInitCommand` now probes `fireforge.json` to derive the
+  // `furnaceInitCommand` probes `fireforge.json` to derive the
   // tokenPrefix default. We resolve a typical config so the derived
   // `tokenPrefix` can be asserted directly. Individual tests can
   // override the mock to simulate a missing `fireforge.json`.

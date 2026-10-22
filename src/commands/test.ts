@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
+import { readBuildId } from '../core/launchable-build.js';
 import { hasBuildArtifacts } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
 import { ensureLaunchableBrowserNotRunning } from '../core/marionette-port.js';
@@ -484,9 +485,17 @@ async function runTestCommandBody(
       classification,
       normalizedPaths: hooks.coveragePaths ?? normalizedPaths,
       ...(hooks.fullBuildReason === undefined ? {} : { fullBuildReason: hooks.fullBuildReason }),
+      ...(hooks.controlBuild === undefined ? {} : { controlBuild: hooks.controlBuild }),
+      launchablePath,
     })
   ) {
     return;
+  }
+  // Which binary this run exercises, read after the pre-test build so it
+  // names the build the tests actually ran against (`moz:buildID`).
+  if (launchablePath !== undefined) {
+    const buildId = await readBuildId(paths.engine, launchablePath);
+    if (buildId !== undefined) setVerdictRunAttribute('build-id', buildId);
   }
 
   const { forwardedPort, effectivePort } = await ensureTestBrowserEnvironment(

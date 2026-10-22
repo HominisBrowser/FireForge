@@ -317,7 +317,7 @@ const gBrowserInit = {
   it('idempotency check recognises a previously coerced call when re-running with the bare form', async () => {
     // Simulate: the first `wire --init EvalStartup.init` coerced and
     // persisted `EvalStartup.init();`. Re-running with the same bare form
-    // should be a no-op. The idempotency regex now matches the coerced
+    // should be a no-op. The idempotency regex matches the coerced
     // shape stored in the file.
     vi.mocked(readText).mockResolvedValue(`${BASE_BROWSER_INIT}\n    EvalStartup.init();\n`);
 

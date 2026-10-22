@@ -209,8 +209,8 @@ describe('connected Firefox workflow integration', () => {
       await discardCommand(projectRoot, SYNTHETIC_FIREFOX_PATHS.browserScript, { yes: true });
 
       // Discard on a patch-claimed file restores the PATCH-APPLIED
-      // baseline directly (not pristine HEAD), so the recovery no longer
-      // needs the re-import round trip to get the patch content back.
+      // baseline directly (not pristine HEAD), so the recovery needs no
+      // re-import round trip to get the patch content back.
       await expect(
         readProjectText(join(projectRoot, 'engine'), SYNTHETIC_FIREFOX_PATHS.browserScript)
       ).resolves.toBe('export const browserTitle = "patched";\n');

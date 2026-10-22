@@ -578,7 +578,7 @@ describe('lintCommand — ad-hoc input resolution and verdict', () => {
       await expect(
         lintCommand('/project', ['browser/themes/x.css'], { perPatch: true })
       ).rejects.toThrow(
-        /No patch in the queue matches "browser\/themes\/x\.css".*drop --per-patch to lint engine paths/s
+        /No patch in the queue matches "browser\/themes\/x\.css".*drop --per-patch to lint engine paths.*1 patches in the queue/s
       );
     });
 
@@ -1135,7 +1135,7 @@ describe('lintCommand — default-mode branding exclusion', () => {
     // With nothing to lint after exclusion, the command surfaces a
     // targeted "nothing to lint" banner and does not call
     // lintExportedPatch. The wording covers both branding and Furnace
-    // exclusions now that the aggregate-mode filter drops both buckets
+    // exclusions because the aggregate-mode filter drops both buckets
     // (see lint.ts: "No non-branding, non-Furnace changes to lint.").
     expect(info).toHaveBeenCalledWith(
       expect.stringContaining('No non-branding, non-Furnace changes')

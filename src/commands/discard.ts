@@ -54,7 +54,7 @@ async function confirmDiscard(
 /**
  * Plans the restore baseline for `entries`: the patch-applied baseline for
  * patch-claimed paths, or pristine HEAD when `--to-upstream`
- * explicitly requests the legacy semantics.
+ * explicitly requests it.
  */
 async function planDiscards(
   patchesDir: string,
@@ -239,8 +239,8 @@ export async function discardCommand(
 
   if (options.dryRun) {
     // Show the rename pair regardless of which side the operator passed.
-    // Passing the new path of a rename used to hide that discarding also
-    // resurrects the old path, exactly when the full picture matters most.
+    // Discarding the new path of a rename also resurrects the old path, so
+    // the preview names both, exactly when the full picture matters most.
     info(`Would discard changes to: ${dryRunLabel(plan)}`);
     outro('Dry run complete — no changes made');
     return;

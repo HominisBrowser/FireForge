@@ -14,7 +14,7 @@
  * The per-file byte comparison already exists:
  * `checkRegistrationConsistency` for custom components (fragment- and
  * ftl-aware) and the copy-candidate walk for overrides. This module only
- * surfaces what was previously computed and thrown away.
+ * surfaces what those comparisons compute.
  */
 
 import { readdir } from 'node:fs/promises';

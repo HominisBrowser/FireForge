@@ -17,6 +17,7 @@ import {
   extractSummaryCounts,
   findCrashMarkerLine,
   formatFireforgeVerdictLine,
+  type HarnessCrashSignature,
   hasCompletedGreenSummary,
   headedDisplayAsleepVerdictNote,
   headedNoOutputTimeoutHint,
@@ -902,10 +903,10 @@ describe('known teardown noise on a clean suite', () => {
   });
 
   // Every belt condition is all-or-nothing, so a rejected run's verdict is
-  // identical whichever one rejected it. A downstream report hit exactly
-  // this: recognized teardown noise, zero unexpected, and a FAIL nobody
-  // could diagnose from outside. The re-run was green and the log was
-  // gone. The verdict line now names the rejecting condition.
+  // identical whichever one rejected it. Recognized teardown noise, zero
+  // unexpected, and a bare FAIL cannot be diagnosed from outside once the
+  // re-run is green and the log is gone, so the verdict line names the
+  // rejecting condition.
   describe('rejection reasons', () => {
     it('names a real failure line as the rejecting condition', () => {
       const output = [
@@ -988,9 +989,9 @@ describe('known teardown noise on a clean suite', () => {
   });
 
   it('passes a green suite whose diagnostic contains the ordinary word "assertion"', () => {
-    // Regression: the assertion arm used to be a case-insensitive word match,
-    // so a test's own passing diagnostic manufactured a red run and the
-    // verdict then named that diagnostic as the first real test failure.
+    // The assertion arm must not be a case-insensitive word match, or a
+    // test's own passing diagnostic manufactures a red run and the verdict
+    // names that diagnostic as the first real test failure.
     const output = [
       'TEST_START: browser/base/content/test/test_a.js',
       'If an assertion below times out, this is why: the delivery guard is armed.',
@@ -1163,5 +1164,45 @@ describe('headedNoOutputTimeoutHint', () => {
         { headless: false, platform: 'darwin' }
       )
     ).toBeUndefined();
+  });
+});
+
+describe('server-startup infrastructure failures', () => {
+  const SERVER_STARTUP = [
+    ' 0:01.10 INFO runtests.py | Server pid: 4242',
+    '',
+    '!!! could not start server on port 8888: [Exception... "Component returned failure code"]',
+    '',
+    ' 0:46.12 ERROR TEST-UNEXPECTED-FAIL | runtests.py | Timed out while waiting for server startup.',
+  ].join('\n');
+
+  it('classifies a server that never came up as a retriable harness-crash, not no-tests', () => {
+    const verdict = classifyHarnessRun(1, SERVER_STARTUP, PATHS);
+    expect(verdict.kind).toBe('harness-crash');
+    expect(verdict.signature).toMatchObject({
+      verdictReason: 'server-startup',
+      line: expect.stringContaining('could not start server on port 8888') as string,
+    });
+    const timeoutOnly = classifyHarnessRun(
+      1,
+      ' 0:46.12 ERROR TEST-UNEXPECTED-FAIL | runtests.py | Timed out while waiting for server startup.',
+      PATHS
+    );
+    expect(timeoutOnly.signature?.verdictReason).toBe('server-startup');
+  });
+
+  it('prints reason=server-startup on the verdict line and an infrastructure message', () => {
+    const verdict = classifyHarnessRun(1, SERVER_STARTUP, PATHS);
+    expect(formatFireforgeVerdictLine(verdict)).toBe(
+      'FIREFORGE-VERDICT: FAIL reason=server-startup'
+    );
+    const message = buildHarnessCrashMessage(verdict.signature as HarnessCrashSignature, 3);
+    expect(message).toContain('could not start a mochitest server on all 3 attempt(s)');
+    expect(message).toContain('--harness-retries');
+  });
+
+  it('leaves a run whose tests started to the regular chain', () => {
+    const started = `${SERVER_STARTUP}\n 0:50.00 INFO TEST-START | ${PATHS[0] ?? ''}`;
+    expect(classifyHarnessRun(1, started, PATHS).signature?.verdictReason).toBeUndefined();
   });
 });

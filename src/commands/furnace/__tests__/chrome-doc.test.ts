@@ -375,7 +375,7 @@ describe('furnaceChromeDocCreateCommand', () => {
     // current emit (no `*` preprocessor flag on xhtml/js, `../shared/` source
     // path on the CSS). The idempotency helper compares by exact substring so
     // the pre-populated lines must mirror what `jarMnEntriesForChromeDoc` /
-    // `jarIncMnEntryForChromeDoc` now produce.
+    // `jarIncMnEntryForChromeDoc` produce.
     await writeText(
       join(engineDir, 'browser/base/jar.mn'),
       '#header\n    content/browser/mybrowser.xhtml                (content/mybrowser.xhtml)\n    content/browser/mybrowser.js                   (content/mybrowser.js)\n'

@@ -313,9 +313,7 @@ async function probeWithLsof(port: number): Promise<MarionettePortProbeResult> {
   } catch {
     // `lsof` missing, or its stdout did not parse. Either way the port state
     // is unknown, and an unknown port is reported as free so the probe never
-    // blocks a run on its own uncertainty. (The errno test that used to sit
-    // here returned the same value as this fallthrough, so it decided
-    // nothing.)
+    // blocks a run on its own uncertainty.
     return { inUse: false };
   }
 }

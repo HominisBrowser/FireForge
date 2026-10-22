@@ -196,9 +196,9 @@ describe('exec', () => {
   });
 
   it('carries the output captured before the timeout on the ExecTimeoutError', async () => {
-    // A `git add -A` killed at its budget used to reject with nothing but the
-    // budget: the partial stdout/stderr that said what git was doing when it
-    // died had already been collected and was dropped on the floor.
+    // A `git add -A` killed at its budget must reject with more than the
+    // budget: the partial stdout/stderr already collected says what git was
+    // doing when it died.
     const child = makeChild();
     mockSpawn.mockReturnValue(child);
 

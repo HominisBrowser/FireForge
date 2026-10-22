@@ -33,8 +33,8 @@ import { parseMaxWarnings } from './validate-report.js';
  * Splits the raw `--wait-lock` value off a furnace leaf's parsed options and
  * resolves it into `waitLockSeconds` (flag, else `FIREFORGE_WAIT_LOCK`, else
  * undefined) for the furnace lock `runFurnaceMutation` takes. Used by the
- * leaves that take only Furnace's lock, where the flag used to be accepted
- * and ignored.
+ * leaves that take only Furnace's lock, so the flag is honoured there rather
+ * than accepted and ignored.
  */
 function withFurnaceLockBudget<T extends { waitLock?: number | boolean }>(
   options: T

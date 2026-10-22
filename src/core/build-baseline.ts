@@ -35,18 +35,23 @@ import {
 import {
   type BaselineRecorder,
   type BuildBaseline,
+  type ControlBuildStamp,
   type CoverageAnchor,
   type CoverageRecord,
   DELETED_FILE_FINGERPRINT,
   type StaticComponentsBaseline,
   type TestPackagingCoverage,
 } from './build-baseline-types.js';
-import { isBuildBaseline } from './build-baseline-validate.js';
+import {
+  type BuildBaselineProblem,
+  describeBuildBaselineProblem,
+  findBuildBaselineProblem,
+  isCoverageProblem,
+} from './build-baseline-validate.js';
 import { FIREFORGE_DIR } from './config-paths.js';
 import { hashEngineFile } from './coverage-extend.js';
 import { getHead, hasChanges, isMissingHeadError } from './git.js';
 import { git } from './git-base.js';
-import { getUntrackedFiles } from './git-status.js';
 import { historyRecordIdentity } from './history-log-file.js';
 
 /*
@@ -81,7 +86,7 @@ export function getBuildBaselinePath(projectRoot: string): string {
  * Reads the last-build baseline if present. Returns undefined when no
  * previous successful build has been recorded. Builds can replace invalid
  * markers; dispatch preflights pass `refuse` so invalid coverage never
- * becomes the legacy implicit full claim.
+ * becomes the implicit full claim of a baseline without coverage.
  * @param projectRoot - Root directory of the project
  */
 export async function readBuildBaseline(
@@ -89,15 +94,26 @@ export async function readBuildBaseline(
   invalid: 'ignore' | 'refuse' = 'ignore'
 ): Promise<BuildBaseline | undefined> {
   const path = getBuildBaselinePath(projectRoot);
+  let problem: BuildBaselineProblem | undefined;
   try {
     const value = await readJson<unknown>(path);
-    if (!isBuildBaseline(value)) throw new Error('invalid baseline fields');
-    return value;
+    problem = findBuildBaselineProblem(value);
+    if (problem !== undefined) {
+      throw new Error(`invalid baseline field ${describeBuildBaselineProblem(problem)}`);
+    }
+    return value as BuildBaseline;
   } catch (error: unknown) {
     if (getNodeErrorCode(error) === 'ENOENT') return undefined;
     if (invalid === 'refuse') {
+      // A coverage field is what a scoped `test --build` writes, so a fresh
+      // scoped build over the requested paths replaces it as well as a full
+      // one does.
+      const remedy =
+        problem !== undefined && isCoverageProblem(problem)
+          ? 'The field is part of the packaging-coverage claim a scoped "fireforge test --build" records. Rerun this test with --build to record a fresh claim for its paths, or run "fireforge build" to record a full baseline.'
+          : 'Run "fireforge build" to record a fresh baseline before dispatching tests.';
       throw new PreflightRefusalError(
-        `Build baseline ${path} is invalid: ${toError(error).message}. Run "fireforge build" to record a fresh baseline before dispatching tests.`,
+        `Build baseline ${path} is invalid: ${toError(error).message}. ${remedy}`,
         'invalid-build-baseline'
       );
     }
@@ -152,6 +168,12 @@ export interface WriteBuildBaselineOptions {
    * escalation no full build has honoured.
    */
   buildKind?: BaselineBuildKind | undefined;
+  /**
+   * Stamp for a build that compiled a negative control into the binary.
+   * Omitted → field left off, which is how every other build clears it.
+   * See {@link BuildBaseline.controlBuild}.
+   */
+  controlBuild?: ControlBuildStamp | undefined;
 }
 
 /** This process's {@link BuildBaseline.recorder} stamp. */
@@ -180,6 +202,7 @@ export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Pr
     recordedBy,
     staticComponentsHandling = 'auto',
     buildKind = 'full',
+    controlBuild,
   } = options;
   let engineHeadSha = '';
   try {
@@ -206,7 +229,7 @@ export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Pr
     buildKind
   );
 
-  // A full-coverage write (and the legacy no-claim `fireforge build` shape)
+  // A full-coverage write (and a no-claim `fireforge build` record)
   // just recompiled the StaticComponents table, so it anchors the table to
   // the current engine state. A scoped write did not, so carry the previous
   // anchor forward verbatim.
@@ -233,6 +256,7 @@ export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Pr
     ...(staticComponentsBaseline !== undefined ? { staticComponentsBaseline } : {}),
     ...(recordedBy !== undefined ? { recordedBy } : {}),
     recorder: baselineRecorder(),
+    ...(controlBuild !== undefined ? { controlBuild } : {}),
   };
   await writeJson(getBuildBaselinePath(projectRoot), baseline);
 }
@@ -330,13 +354,19 @@ async function collectDirtyFingerprints(
   try {
     const dirtyPaths = new Set<string>();
     if (await hasChanges(engineDir)) {
-      const worktreeDiff = await git(['diff', '--name-only', 'HEAD'], engineDir);
-      for (const line of worktreeDiff.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed) dirtyPaths.add(trimmed);
-      }
-      for (const untracked of await getUntrackedFiles(engineDir)) {
-        dirtyPaths.add(untracked);
+      // NUL-separated and unquoted: git's default output backslash-quotes a
+      // non-ASCII path (`"a/\303\251.js"`), which is neither the file on
+      // disk nor a key the baseline validator accepts.
+      const worktreeDiff = await git(
+        ['-c', 'core.quotePath=false', 'diff', '--name-only', '-z', 'HEAD'],
+        engineDir
+      );
+      const untracked = await git(
+        ['-c', 'core.quotePath=false', 'ls-files', '--others', '--exclude-standard', '-z'],
+        engineDir
+      );
+      for (const path of `${worktreeDiff}\0${untracked}`.split('\0')) {
+        if (path.length > 0) dirtyPaths.add(path);
       }
     }
 

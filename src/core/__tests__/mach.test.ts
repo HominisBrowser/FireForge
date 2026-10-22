@@ -987,8 +987,8 @@ describe('mach command execution', () => {
 
   it('omits optional keys from forwarded runMachSmoke options when unset', async () => {
     // Mirrors the exactOptionalPropertyTypes contract: a missing option
-    // must leave its key absent rather than set it to undefined. Previously
-    // we relied on this implicitly. The test pins it down.
+    // must leave its key absent rather than set it to undefined. The test
+    // pins it down.
     const { execSmokeRun } = await import('../../utils/process.js');
     await primePythonResolution();
     vi.mocked(execSmokeRun).mockResolvedValueOnce({

@@ -2,13 +2,13 @@
 /**
  * Per-run output logs under `.fireforge/logs/`.
  *
- * A run's diagnosis used to exist in exactly one place: the terminal. Piping
- * through `tail`/`grep`, the ergonomic default when output is long, keeps
- * the summary and discards the `TEST-UNEXPECTED-FAIL` lines that say what
- * broke, and it launders the exit code besides. The operator rule ("never
- * pipe a run") was written down three times downstream and broken after each
- * writing, so this is not an operator problem: the tool is the only party
- * that can make the log survive the mistake.
+ * Without a log, a run's diagnosis exists in exactly one place: the terminal.
+ * Piping through `tail`/`grep`, the ergonomic default when output is long,
+ * keeps the summary and discards the `TEST-UNEXPECTED-FAIL` lines that say
+ * what broke, and it launders the exit code besides. An operator rule
+ * ("never pipe a run") does not hold in practice, so this is not an operator
+ * problem: the tool is the only party that can make the log survive the
+ * mistake.
  *
  * So `test` and `build` write their own complete copy as they stream, and the
  * `FIREFORGE-VERDICT:` line names the path. A piped, truncated, or
@@ -17,7 +17,7 @@
  * Everything here is best-effort. A log is a diagnostic aid, and a run must
  * never fail because one could not be opened, written, or pruned.
  * Every entry point swallows its errors and degrades to "no log", which is
- * exactly the behaviour that existed before this module.
+ * exactly the behaviour of a run without this module.
  */
 
 import { createWriteStream, type WriteStream } from 'node:fs';

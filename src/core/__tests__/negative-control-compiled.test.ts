@@ -7,6 +7,7 @@ vi.mock('../objdir-install-manifests.js', () => ({ classifyRuntimeDelivery: vi.f
 import {
   findCompiledControlTargets,
   formatCompiledControlRefusal,
+  isCompiledSourcePath,
 } from '../negative-control-compiled.js';
 import { classifyRuntimeDelivery } from '../objdir-install-manifests.js';
 import { loadEngineInstallIndex } from '../test-stale-exempt.js';
@@ -38,6 +39,36 @@ describe('findCompiledControlTargets', () => {
     await expect(
       findCompiledControlTargets('/engine', ['gfx/a.cpp', 'shipped.yaml', 'dom/b.webidl'])
     ).resolves.toEqual(['gfx/a.cpp', 'dom/b.webidl']);
+  });
+});
+
+describe('exported headers', () => {
+  it('treats a header an install manifest exports as compiled', async () => {
+    vi.mocked(loadEngineInstallIndex).mockResolvedValueOnce({} as never);
+    vi.mocked(classifyRuntimeDelivery).mockResolvedValue('packaged');
+    await expect(
+      findCompiledControlTargets('/engine', [
+        'docshell/base/BrowsingContext.h',
+        'ipc/x.ipdlh',
+        'shipped.yaml',
+      ])
+    ).resolves.toEqual(['docshell/base/BrowsingContext.h', 'ipc/x.ipdlh']);
+  });
+
+  it('skips the manifest probe when every target is a header', async () => {
+    await expect(findCompiledControlTargets('/engine', ['a.hpp', 'b.hh'])).resolves.toEqual([
+      'a.hpp',
+      'b.hh',
+    ]);
+    expect(loadEngineInstallIndex).not.toHaveBeenCalled();
+  });
+});
+
+describe('isCompiledSourcePath', () => {
+  it('matches compiled extensions only', () => {
+    expect(isCompiledSourcePath('gfx/a.cpp')).toBe(true);
+    expect(isCompiledSourcePath('modules/libpref/init/StaticPrefList.yaml')).toBe(true);
+    expect(isCompiledSourcePath('browser/a.sys.mjs')).toBe(false);
   });
 });
 

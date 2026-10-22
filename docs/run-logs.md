@@ -8,16 +8,15 @@
 
 ## Why the tool holds the log, not the operator
 
-A run's diagnosis used to exist in exactly one place: the terminal. The
-convenient thing to do when output is long is
+Without a log, a run's diagnosis exists in exactly one place: the terminal.
+The convenient thing to do when output is long is
 `fireforge test … 2>&1 | tail -40`, which keeps the summary, discards the
 `TEST-UNEXPECTED-FAIL` lines that say what broke, and launders the exit code
-as well. Nothing else held the output: `runMachCapture` keeps a 2 MB
+as well. Nothing else holds the output: `runMachCapture` keeps a 2 MB
 in-memory tail that dies with the process, and the shard retry loop discards
 earlier attempts outright.
 
-The operator rule ("never pipe a run") was written down three times
-downstream and broken after each writing. That is a sign it is not an
+An operator rule ("never pipe a run") gets broken, so this is not an
 operator problem. The tool is the only party that can make the log survive
 the mistake.
 
@@ -25,7 +24,7 @@ the mistake.
 
 - **Complete output, never the echo filter's collapsed form.** The artifact
   exists so that whoever is diagnosing the run can re-read it. Shortening it
-  would bring back the loss it prevents. The one transformation applied is
+  would lose what it is kept for. The one transformation applied is
   the secret-masking pass below, which changes values but never line
   structure.
 - **Secret-shaped values are masked in the file, and only in the file.** The
@@ -94,11 +93,11 @@ away. The refusal's own explanatory text is written into the log, and to
 stdout, before the verdict line seals stdout.
 
 Both halves matter. The verdict seal routes everything the CLI error boundary
-renders afterwards to stderr, so a run captured with `> file` used to keep
+renders afterwards to stderr, so a run captured with `> file` would keep
 `FIREFORGE-VERDICT: FAIL reason=preflight` and nothing else. That rendering
 also happens after the run log is closed, so the artifact the verdict's own
-`log=` key pointed at held only the pre-test build. Writing before the seal
-fixes both without giving up the contract: the reason lands on both channels,
+`log=` key points at would hold only the pre-test build. Writing before the
+seal avoids both without giving up the contract: the reason lands on both channels,
 and the verdict is still the run's last stdout line.
 
 ## Where the path is announced

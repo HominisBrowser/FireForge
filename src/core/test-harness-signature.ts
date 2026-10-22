@@ -21,6 +21,12 @@ export interface HarnessCrashSignature {
   reason: string;
   /** The concrete output line the recognition was based on. */
   line: string;
+  /**
+   * The verdict line's `reason=` for an infrastructure shape that is not a
+   * crash of the harness: `server-startup` when a mochitest server never
+   * came up. Unset: `reason=crash`.
+   */
+  verdictReason?: 'server-startup';
 }
 
 /**

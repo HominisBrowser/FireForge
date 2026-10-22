@@ -61,10 +61,10 @@ export function extractOrder(filename: string): number {
  * The write-side counterpart to {@link extractOrder}. That one answers
  * `Infinity` for a prefix-less filename, which sorts such a patch last and
  * is the right answer for a read: an unparseable name should not crash a
- * status listing. Persisting `Infinity` (or the `0` some call sites used to
- * fall back to) is a different matter: it puts an order in the manifest
+ * status listing. Persisting `Infinity` (or a fallback `0`) is a different
+ * matter: it puts an order in the manifest
  * that no filename on disk agrees with, and the queue then applies in an
- * order the operator cannot see. Callers here have always just built or
+ * order the operator cannot see. Callers here have just built or
  * looked up a real prefixed filename, so absence is a bug, not input.
  *
  * @param filename - Patch filename carrying a numeric order prefix

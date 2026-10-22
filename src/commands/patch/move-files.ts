@@ -4,6 +4,9 @@
  * re-export choreography needed to move file ownership between two
  * patches. With `--create --order <n>` the target patch is created and
  * the files move into it as one transaction (see move-files-create.ts).
+ * `--scan-file` adopts new, unowned engine files into the destination in
+ * the same transaction, and `--retire-empty` lets the move empty the
+ * source and retire its slot.
  */
 
 import { relative } from 'node:path';
@@ -25,6 +28,7 @@ import {
   stringListOption,
 } from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
+import { resolveAdoptedFiles } from './move-files-adopt.js';
 import { patchMoveFilesCreateCommand } from './move-files-create.js';
 import { runMoveFilesInto } from './move-files-into.js';
 
@@ -86,13 +90,37 @@ function assertTargetDoesNotAlreadyOwnFiles(target: PatchMetadata, files: readon
 function computeFileMovePlan(
   source: PatchMetadata,
   target: PatchMetadata,
-  files: readonly string[]
+  files: readonly string[],
+  adoptedFiles: readonly string[]
 ): { sourceAfter: string[]; targetAfter: string[] } {
   const moved = new Set(files);
   return {
     sourceAfter: source.filesAffected.filter((file) => !moved.has(file)).sort(),
-    targetAfter: [...new Set([...target.filesAffected, ...files])].sort(),
+    targetAfter: [...new Set([...target.filesAffected, ...files, ...adoptedFiles])].sort(),
   };
+}
+
+/** Refuses a move that empties the source unless `--retire-empty` asks for it, and the flag on a move that does not. */
+function assertEmptySourceIntent(
+  source: PatchMetadata,
+  sourceAfter: readonly string[],
+  retireEmpty: boolean
+): void {
+  if (sourceAfter.length === 0 && !retireEmpty) {
+    throw new InvalidArgumentError(
+      `${source.filename} would have no filesAffected after this move. Pass --retire-empty to ` +
+        'fold it into the destination in one transaction: the declarations it owns re-point to ' +
+        'the destination and its order stays spent as a retired slot.',
+      'patch move-files'
+    );
+  }
+  if (sourceAfter.length > 0 && retireEmpty) {
+    throw new InvalidArgumentError(
+      `--retire-empty applies only to a move that empties the source; ${source.filename} would ` +
+        `keep ${sourceAfter.length} file(s).`,
+      '--retire-empty'
+    );
+  }
 }
 
 /**
@@ -117,6 +145,13 @@ export async function patchMoveFilesCommand(
   }
   if (options.create !== true && options.order !== undefined) {
     throw new InvalidArgumentError('--order is only valid together with --create.', '--order');
+  }
+  if (options.create === true && options.retireEmpty === true) {
+    throw new InvalidArgumentError(
+      '--retire-empty folds the source into an existing patch. To move a whole patch to a new ' +
+        'name or order, use "fireforge patch rename" or "fireforge patch reorder".',
+      '--retire-empty'
+    );
   }
   if (options.create === true && options.order !== undefined) {
     await patchMoveFilesCreateCommand(projectRoot, fromIdentifier, toIdentifier, {
@@ -175,14 +210,16 @@ export async function patchMoveFilesCommand(
 
   assertPatchHasFiles(source, files);
   assertTargetDoesNotAlreadyOwnFiles(target, files);
+  const adoptedFiles = await resolveAdoptedFiles(
+    options.scanFile,
+    manifest.patches,
+    paths.engine,
+    files
+  );
 
-  const { sourceAfter, targetAfter } = computeFileMovePlan(source, target, files);
-  if (sourceAfter.length === 0) {
-    throw new InvalidArgumentError(
-      `${source.filename} would have no filesAffected after this move. Delete or re-export that patch explicitly instead.`,
-      'patch move-files'
-    );
-  }
+  const { sourceAfter, targetAfter } = computeFileMovePlan(source, target, files, adoptedFiles);
+  const retireSource = options.retireEmpty === true;
+  assertEmptySourceIntent(source, sourceAfter, retireSource);
 
   for (const file of files) {
     if (!(await pathExists(`${paths.engine}/${file}`))) {
@@ -194,7 +231,11 @@ export async function patchMoveFilesCommand(
   info(`Moving ownership in ${relativePatchesDir}/patches.json.`);
   info(`Move ${files.length} file(s) from ${source.filename} to ${target.filename}:`);
   note(formatFiles(files), 'Files');
-  note(formatFiles(sourceAfter), `${source.filename} files after move`);
+  if (adoptedFiles.length > 0) note(formatFiles(adoptedFiles), 'Adopted new files');
+  note(
+    retireSource ? '(none: retired)' : formatFiles(sourceAfter),
+    `${source.filename} files after move`
+  );
   note(formatFiles(targetAfter), `${target.filename} files after move`);
 
   // Manual fallback (e.g. when the worktree cannot carry both patches'
@@ -202,15 +243,17 @@ export async function patchMoveFilesCommand(
   // executable order. The shrink must land before the grow, or the
   // projected cross-patch lint refuses the pair with
   // duplicate-new-file-creation.
-  const applySource = formatReExportCommand(source.filename, sourceAfter, [
-    '--allow-shrink',
-    '--yes',
-  ]);
   const applyTarget = formatReExportCommand(target.filename, targetAfter, ['--yes']);
-  note(
-    `1. ${applySource}\n2. ${applyTarget}\n(the shrink must land first)`,
-    'Equivalent manual commands'
-  );
+  if (!retireSource) {
+    const applySource = formatReExportCommand(source.filename, sourceAfter, [
+      '--allow-shrink',
+      '--yes',
+    ]);
+    note(
+      `1. ${applySource}\n2. ${applyTarget}\n(the shrink must land first)`,
+      'Equivalent manual commands'
+    );
+  }
 
   const config = await loadConfig(projectRoot);
   await runMoveFilesInto({
@@ -221,6 +264,8 @@ export async function patchMoveFilesCommand(
     files,
     sourceAfter,
     targetAfter,
+    adoptedFiles,
+    retireSource,
     options,
     config,
   });
@@ -257,6 +302,15 @@ export function registerPatchMoveFiles(parent: Command, context: CommandContext)
     .option('-d, --description <desc>', 'Description for the created patch')
     .option('--dry-run', 'Show what would happen without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)')
+    .option(
+      '--scan-file <path>',
+      'New engine file no patch owns, adopted into <to> in the same transaction (repeatable)',
+      ...stringListOption()
+    )
+    .option(
+      '--retire-empty',
+      'Allow the move to empty <from>: re-point the declarations it owns to <to> and retire its slot'
+    )
     .option('--force-unsafe', 'Bypass projected-lint refusals')
     .option('--skip-lint', 'Skip per-patch lint of the projected bodies')
     .option(
@@ -279,6 +333,8 @@ export function registerPatchMoveFiles(parent: Command, context: CommandContext)
           forceUnsafe?: boolean;
           skipLint?: boolean;
           declarationsOut?: string;
+          scanFile?: string[];
+          retireEmpty?: boolean;
           waitLock?: number | boolean;
         }
       ) => {
@@ -294,6 +350,8 @@ export function registerPatchMoveFiles(parent: Command, context: CommandContext)
             forceUnsafe: options.forceUnsafe,
             skipLint: options.skipLint,
             declarationsOut: options.declarationsOut,
+            scanFile: options.scanFile,
+            retireEmpty: options.retireEmpty,
             waitLock: options.waitLock,
           }),
         });

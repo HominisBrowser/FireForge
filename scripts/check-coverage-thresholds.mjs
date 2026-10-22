@@ -217,8 +217,8 @@ const MODULE_THRESHOLDS = {
   // Severity resolution for every doctor check: one resolver shared by
   // `doctor.ts` and `bootstrap.ts`, which are easy to drift apart.
   'src/commands/doctor-check-core.ts': { lines: 98, branches: 80, functions: 100 },
-  // Each of these was a coverage outlier with no pin, so the global aggregate
-  // could not see a regression in it.
+  // Each of these is a coverage outlier whose regression the global aggregate
+  // alone would not see.
   //
   // Pure config validator with zero I/O that runs on every config load.
   'src/core/config-validate-test-toolchains.ts': { lines: 98, branches: 95, functions: 100 },
@@ -308,10 +308,9 @@ const UNPINNED_FLOOR = { lines: 70, branches: 55 };
 /**
  * Modules exempted from {@link UNPINNED_FLOOR}, with the reason.
  *
- * Seeded from the modules already below the floor when it was introduced, so
- * the gate starts green and catches regressions rather than demanding a
- * coverage push as the price of adding the check. Each is a candidate for
- * removal once its coverage comes up.
+ * These modules sit below the floor, so exempting them keeps the gate green
+ * and catching regressions rather than demanding a coverage push for them.
+ * Each is a candidate for removal once its coverage comes up.
  */
 const UNPINNED_FLOOR_EXEMPT = new Map([
   // Branch-heavy toolchain probing whose arms need real external binaries.

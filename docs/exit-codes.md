@@ -29,8 +29,7 @@ which error class produces each one.
 
 Usage errors that commander detects itself (an unknown command, an unknown
 or malformed option, a missing required argument) never reach a command
-action. Before 0.46.0 commander terminated the process with its own exit 1
-and printed no refusal envelope under `--json`. `createProgram` now installs
+action. `createProgram` installs
 commander's `exitOverride()`, and the entry point maps the resulting
 `CommanderError` to `INVALID_ARGUMENT` (8) with the standard envelope on
 stdout. `--help` and `--version` take the same path and still exit 0, and so
@@ -46,10 +45,10 @@ action.
 change something, and a retry may then help. `INTERNAL_ERROR` means nothing
 they could change would have helped. Escalate it, do not retry.
 
-**Red, never ran, or thrown away.** These are three different facts, and
-before 0.44.0 two of them shared exit 1.
+**Red, never ran, or thrown away.** These are three different facts, each
+with its own code.
 
-- `BUILD_ERROR` (5) is a suite that failed. Since 0.45.0 it is thrown as
+- `BUILD_ERROR` (5) is a suite that failed. It is thrown as
   `TestFailureError`, which keeps the code but carries test remedies rather
   than build ones (`--json` reports it as `test-failure`).
 - `LOCK_TIMEOUT` (15) is a run that never started, because another FireForge
@@ -59,18 +58,16 @@ before 0.44.0 two of them shared exit 1.
   `engine/` moved underneath it. The code may be perfectly green, so
   reporting it as red is wrong.
 
-A summary line reading `FAIL - exit 1` beside `FAIL - exit 5` invited
-treating opposite facts as the same kind of thing. The codes now separate
-them. The `FIREFORGE-VERDICT:` line's `reason=` key carries the same
+Separate codes keep a summary line from showing opposite facts as the same
+kind of failure, such as `FAIL - exit 1` beside `FAIL - exit 5`. The `FIREFORGE-VERDICT:` line's `reason=` key carries the same
 distinction for humans.
 
 `LockContentionError` backs every lock in FireForge (engine session, patch
 directory, build, furnace), so all four exit 15. That is intentional: the
 fact is the same whichever lock was contended.
 
-**Interrupted or declined.** Before 0.44.0 a Ctrl+C and a deliberate "no" at
-a confirmation both returned the same value and exited 0, so a script could
-not tell them apart. They are now distinct: an interrupt raises
+**Interrupted or declined.** A Ctrl+C and a deliberate "no" at a
+confirmation are distinct, so a script can tell them apart: an interrupt raises
 `CancellationError` and exits 130, and a declined confirmation returns
 normally and exits 0, because the run did what it was asked and the answer
 was no.

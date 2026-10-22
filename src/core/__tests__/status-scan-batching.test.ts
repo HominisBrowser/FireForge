@@ -125,7 +125,7 @@ describe('status scan batching', () => {
     expect(classified.map((entry) => entry.classification)).toEqual(
       files.map((_, i) => (i % 2 === 0 ? 'patch-backed' : 'patch-owned-drift'))
     );
-    // One cat-file for the HEAD blobs; 0.47.1 spawned a `git show` per file.
+    // One cat-file for the HEAD blobs, not a `git show` per file.
     expect(gitSpawns().length).toBeLessThanOrEqual(3);
     expect(gitSpawns().filter(([, sub]) => sub === 'show')).toHaveLength(0);
   });

@@ -88,7 +88,7 @@ export function addDestroyAST(
 }
 
 /**
- * Legacy regex/line-based implementation preserved as fallback.
+ * Regex/line-based fallback implementation.
  */
 export function legacyAddDestroy(
   content: string,

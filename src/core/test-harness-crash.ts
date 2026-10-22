@@ -24,6 +24,7 @@
  */
 
 import { hasKnownTeardownNoise } from './mach-known-noise-filter.js';
+import { detectServerStartupFailure } from './test-harness-infra.js';
 import {
   type GreenTeardownOverride,
   truncateEvidence,
@@ -40,6 +41,10 @@ import {
   type HarnessCrashSignature,
   type IncompleteRunEvidence,
 } from './test-harness-signature.js';
+
+// The operator message after exhausted retries lives beside the
+// server-startup shape in `test-harness-infra.ts`.
+export { buildHarnessCrashMessage } from './test-harness-infra.js';
 
 // The no-output-stall triage text lives in `test-stall-triage.ts` (it is
 // operator advice, not classification) and is re-exported here so the
@@ -578,7 +583,10 @@ export function detectHarnessCrashSignature(output: string): HarnessCrashSignatu
  * 1. A recognized crash signature wins regardless of exit code (the
  *    shutdown re-entry shape exits non-zero on an otherwise green run,
  *    and the hang shape can even exit zero with a `Passed: 0` summary).
- * 2. No execution signal with explicit paths requested means no test ran:
+ * 2. No execution signal with explicit paths requested means no test ran.
+ *    A mochitest server that failed to start explains that, and is a
+ *    retriable infrastructure failure (`harness-crash` with
+ *    `reason=server-startup` on the verdict line). Otherwise it is
  *    `no-tests`, even when the exit code is zero. The execution signal is
  *    a `TEST-START` line (generic `mach test` / browser-chrome dispatch)
  *    or the suite-specific xpcshell result-summary block (the xpcshell
@@ -644,7 +652,10 @@ export function classifyHarnessRun(
 
   const ranTests = hasExecutionSignal(output);
   if (!ranTests && requestedPaths.length > 0) {
-    return { kind: 'no-tests', ...counts };
+    const serverStartup = detectServerStartupFailure(output);
+    return serverStartup === undefined
+      ? { kind: 'no-tests', ...counts }
+      : { kind: 'harness-crash', signature: serverStartup, ...counts };
   }
 
   if (exitCode === 0) {
@@ -813,7 +824,8 @@ export function formatFireforgeVerdictLine(
     (verdict.unexpected !== undefined ? ` unexpected=${verdict.unexpected}` : '');
   const tail = `${formatShardsSuffix(shards)}${verdict.note !== undefined ? ` (${verdict.note})` : ''}`;
   if (verdict.kind === 'tests-ran-ok') return `FIREFORGE-VERDICT: PASS${counts}${tail}`;
-  const reason = verdict.kind === 'harness-crash' ? 'crash' : verdict.kind;
+  const reason =
+    verdict.kind === 'harness-crash' ? (verdict.signature?.verdictReason ?? 'crash') : verdict.kind;
   return `FIREFORGE-VERDICT: FAIL reason=${reason}${counts}${formatIncompleteSuffix(verdict.incomplete)}${tail}`;
 }
 
@@ -848,24 +860,6 @@ export function buildGreenSummaryRejectedMessage(
     'files that ran before the run died, so the summary is not a suite result. Treat this as a ' +
     'FAILED run — check the crash/truncation point in the output above, then re-run the ' +
     'remaining files.'
-  );
-}
-
-/** Builds the operator-facing failure message after retries are exhausted. */
-export function buildHarnessCrashMessage(
-  signature: HarnessCrashSignature,
-  attempts: number,
-  commandLabel = 'mach test'
-): string {
-  return (
-    `${commandLabel} crashed in the harness itself (not in your tests) on all ${attempts} attempt(s).\n\n` +
-    `Detected shape: ${signature.reason}\n` +
-    `Evidence line: ${signature.line}\n\n` +
-    'This failure mode is environmental (mozlog resource monitor / psutil on macOS, focus-stall ' +
-    'shutdown re-entry, or a pre-test hang) rather than a test regression. Re-run the command, ' +
-    'raise the retry budget with --harness-retries <n>, or run the file in isolation. ' +
-    'If it persists across many runs, inspect the mach virtualenv (mach resyncs psutil on its own; ' +
-    'patching it manually does not stick).'
   );
 }
 

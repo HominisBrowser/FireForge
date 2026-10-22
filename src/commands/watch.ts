@@ -245,7 +245,7 @@ export async function watchCommand(projectRoot: string): Promise<void> {
     );
   }
 
-  // On Ctrl+C the bin signal handler now waits for the mach child to shut
+  // On Ctrl+C the bin signal handler waits for the mach child to shut
   // down (waitForActiveChildShutdown) before exiting, so this continuation
   // can run and whitelist the SIGINT exit code, though the bin may still
   // win the race and terminate first. Both outcomes are acceptable.

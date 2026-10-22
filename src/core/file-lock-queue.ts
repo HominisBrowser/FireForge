@@ -3,18 +3,16 @@
  * Waiter tickets for `withFileLock`: who is queued for a contended lock, in
  * what order, and whose turn it is.
  *
- * The queue started as a display: waiters advertised themselves so the wait
- * line could say "You are next", but the grant itself was a free-for-all of
- * `mkdir` polls. A waiter whose poll interval had backed off to 2 s lost
- * every free moment to later arrivals polling at 100 ms, so a run told it
- * was next for twenty minutes watched three later runs take the lock in
- * turn. The tickets now decide the grant: only the head of the queue may
- * attempt the lock, so the position printed is the position honoured.
+ * The tickets decide the grant: only the head of the queue may attempt the
+ * lock, so the position printed is the position honoured. A free-for-all of
+ * `mkdir` polls would let later arrivals polling at 100 ms take every free
+ * moment from a waiter whose poll interval had backed off to 2 s, so a run
+ * told it was next could watch later runs take the lock in turn.
  *
  * A ticket is a file in `<lock>.waiters/` named
  * `<startedAtMs>-<pid>-<uuid>`. Arrival order is the wait start, with the
  * whole name as a tie-break so every reader sorts the queue identically.
- * Because a ticket now blocks everyone behind it, a ticket whose owner is
+ * Because a ticket blocks everyone behind it, a ticket whose owner is
  * gone must not hold the queue: a dead PID (or a reused one, where the
  * start-tick check can tell) drops out and its ticket is removed, and a
  * ticket its owner has stopped refreshing drops out without being removed,

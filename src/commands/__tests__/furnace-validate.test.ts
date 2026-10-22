@@ -452,7 +452,7 @@ describe('furnaceValidateCommand', () => {
     it('auto-fixes jar.mn mjs issues and reports fixed count from a true re-validation', async () => {
       // Initial validation surfaces the fixable issue. Re-validation after
       // the fix returns no issues, which is what justifies the "Auto-fixed"
-      // count. The fix counter is now derived from the actual drop in
+      // count. The fix counter is derived from the actual drop in
       // fixable issues, not from autoFixIssues' return value.
       vi.mocked(validateComponent)
         .mockResolvedValueOnce([mjsIssue('moz-sidebar')])
@@ -474,8 +474,8 @@ describe('furnaceValidateCommand', () => {
     it('warns when an auto-fix attempt did not actually clear the fixable issue', async () => {
       // autoFixIssues returns a positive number, but the underlying issue
       // remains on re-validation. The user must learn that the reported
-      // fix did not actually land. The previous behaviour silently
-      // inflated the fixed count.
+      // fix did not actually land, rather than see an inflated fixed
+      // count.
       vi.mocked(validateComponent)
         .mockResolvedValueOnce([mjsIssue('moz-sidebar')])
         .mockResolvedValueOnce([mjsIssue('moz-sidebar')]);

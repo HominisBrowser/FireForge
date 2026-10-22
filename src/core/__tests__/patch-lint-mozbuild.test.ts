@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Pins the `mozbuild-unsorted-list` per-patch check: an unsorted
- * `EXTRA_JS_MODULES` insertion previously surfaced only as
+ * Pins the `mozbuild-unsorted-list` per-patch check: without it an unsorted
+ * `EXTRA_JS_MODULES` insertion surfaces only as
  * `mozbuild.util.UnsortedError` at configure time, after a multi-minute
- * build had already been dispatched.
+ * build has already been dispatched.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -190,8 +190,8 @@ describe('lintMozBuildSortedLists', () => {
   });
 
   it('does not let a bracket inside a comment truncate the list', async () => {
-    // `foo[0]` in a comment used to close the list early, so `Alpha.cpp`
-    // never entered the item set and the real disorder went unreported.
+    // `foo[0]` in a comment must not close the list early, or `Alpha.cpp`
+    // never enters the item set and the real disorder goes unreported.
     await writeFiles(repoDir, {
       'browser/modules/moz.build': [
         'EXTRA_JS_MODULES += [',
@@ -260,8 +260,8 @@ describe('lintMozBuildSortedLists', () => {
   });
 
   it('still checks lists that follow an unterminated one', async () => {
-    // The scan used to advance the outer loop counter past end-of-file for an
-    // unterminated list, so every later list in the file was skipped.
+    // An unterminated list must not advance the outer loop counter past
+    // end-of-file, or every later list in the file is skipped.
     await writeFiles(repoDir, {
       'browser/modules/moz.build': [
         'EXTRA_JS_MODULES += [',
@@ -281,13 +281,12 @@ describe('lintMozBuildSortedLists', () => {
   });
 
   it('does not let an unterminated list borrow the next list’s bracket', async () => {
-    // Two different variables, and the second list is correctly sorted. The
-    // forward scan used to read straight through the second opener, merge its
-    // items into the first list, and accept its `]` as the first list's
-    // close. That reported a sorting error against EXTRA_COMPONENTS for items
-    // that only ever belonged to EXTRA_JS_MODULES, and skipped the second
-    // list. The
-    // pre-existing test above missed this because both of its lists share one
+    // Two different variables, and the second list is correctly sorted. A
+    // forward scan that reads straight through the second opener merges its
+    // items into the first list and accepts its `]` as the first list's
+    // close. That reports a sorting error against EXTRA_COMPONENTS for items
+    // that only ever belong to EXTRA_JS_MODULES, and skips the second list.
+    // The test above cannot catch this because both of its lists share one
     // variable name and it only asserts on an item name.
     await writeFiles(repoDir, {
       'browser/modules/moz.build': [

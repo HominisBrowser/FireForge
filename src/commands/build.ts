@@ -511,6 +511,10 @@ async function recordFullBuildBaseline(
       recordedBy: ui ? 'fireforge build --ui' : 'fireforge build',
       staticComponentsHandling: 'auto',
       buildKind: ui ? 'faster' : 'full',
+      // A full build recompiles a negative control's restored source, so
+      // it drops the control-built stamp; `--ui` compiles nothing and
+      // keeps it.
+      controlBuild: ui ? previousBaseline?.controlBuild : undefined,
     });
   } catch (baselineError: unknown) {
     verbose(`Could not persist build baseline: ${toError(baselineError).message}`);

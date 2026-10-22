@@ -88,8 +88,7 @@ export interface ClassifiedFile extends StatusFile {
  * Builds the file → owning-patch-filenames multimap from manifest rows.
  * Single source of truth for cross-patch claim detection: status
  * classification, verify's cross-claim check, and the ownership table all
- * consume this builder (they used to each rebuild it, one drift away from
- * disagreeing about what "claimed" means).
+ * consume this builder, so they cannot disagree about what "claimed" means.
  */
 export function buildPatchClaims(
   manifestPatches: ReadonlyArray<{ filename: string; filesAffected: string[] }>

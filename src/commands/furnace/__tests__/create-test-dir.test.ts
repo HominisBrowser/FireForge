@@ -18,8 +18,7 @@ import { scaffoldXpcshellTestFiles } from '../create-xpcshell.js';
 /**
  * Extracts the `engine/...` directory a formatter printed for the test
  * files. Used to pin the printed path to the directory the scaffolder
- * really wrote. The two used to be computed independently and disagreed
- * under `--test-dir`.
+ * really wrote, so the two cannot disagree under `--test-dir`.
  */
 function printedTestRoot(text: string): string {
   const match = /test files in (engine\/[^\s:]+)\/:?/i.exec(text);

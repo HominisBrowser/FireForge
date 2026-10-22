@@ -143,11 +143,10 @@ function isToolManagedPath(
 /**
  * One unmanaged file and the owned directory that made it adjacent.
  *
- * The anchor is what an unattended run could not previously recover: the
- * notice named the offending file and the patch, but not which of the
- * patch's owned locations the file sits beside, so triaging a refusal on a
- * patch that owns files in several directories meant re-deriving the
- * adjacency by hand from the manifest.
+ * The anchor names which of the patch's owned locations the file sits
+ * beside, so an unattended run can triage a refusal on a patch that owns
+ * files in several directories without re-deriving the adjacency by hand
+ * from the manifest.
  */
 export interface AdjacentUnmanagedFile {
   /** Engine-relative path of the unmanaged file. */

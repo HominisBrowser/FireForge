@@ -100,6 +100,18 @@ describe('planStaleRegistrationDrop', () => {
       planStaleRegistrationDrop({ version: 1, patches: [later] }, later, ['kept.mjs'])
     ).toBeUndefined();
   });
+
+  it('keeps a pending registration and names it instead of dropping it', () => {
+    const plan = planStaleRegistrationDrop(
+      { version: 1, patches: [holder, later] },
+      holder,
+      ['jar.mn'],
+      new Set(['gone.mjs'])
+    );
+    expect(plan?.dropped).toEqual([]);
+    expect(plan?.pending).toEqual([STALE]);
+    expect(plan?.stagedDependencies).toEqual(holder.stagedDependencies);
+  });
 });
 
 describe('re-export drops a staged registration the queue no longer satisfies', () => {
@@ -149,4 +161,30 @@ describe('re-export drops a staged registration the queue no longer satisfies', 
     expect(history).toContain('"operation":"re-export-staged-prune"');
     expect(history).toContain('"creates":"gone.mjs"');
   });
+
+  it.each([
+    ['exists in engine/', {}, (root: string) => writeFiles(root, { 'engine/gone.mjs': 'x\n' })],
+    [
+      'is an --expect-new path of the run',
+      { expectNew: ['gone.mjs'], refuseAdjacentUnmanaged: true },
+      async () => {},
+    ],
+  ])(
+    'keeps a registration whose creates file %s, though no patch owns it yet',
+    async (_label, extra, arrange) => {
+      await arrange(projectRoot);
+      await reExportCommand(projectRoot, ['001'], { skipLint: true, ...extra });
+      const [holder] = await rows(projectRoot);
+      expect(holder?.stagedDependencies?.registrations).toEqual([STALE]);
+      expect(
+        vi
+          .mocked(info)
+          .mock.calls.map((call) => call[0])
+          .join('\n')
+      ).toContain(
+        'staged registration jar.mn "content/gone.mjs (gone.mjs)" for gone.mjs kept: ' +
+          'file exists but no patch owns it yet.'
+      );
+    }
+  );
 });

@@ -3,10 +3,10 @@
  * Lets `export --order` land a new system module whose moz.build line is
  * still unexported working-tree drift in the patch that registers it.
  *
- * The two refusals used to deadlock: the module's export failed
- * `unregistered-system-module` because no patch body carried its moz.build
- * line yet, and the registering patch could not be re-exported first
- * because its line named a file no patch created. The way through is
+ * Without this the two refusals deadlock: the module's export fails
+ * `unregistered-system-module` because no patch body carries its moz.build
+ * line yet, and the registering patch cannot be re-exported first because
+ * its line names a file no patch creates. The way through is
  * declared intent plus evidence: when the registering patch carries a
  * staged registration for the module and the working tree's moz.build has
  * exactly that line, the export is accepted and the operator is told to

@@ -363,7 +363,7 @@ describe('rebase integration', () => {
     await rebaseCommand(projectRoot, { abort: true, yes: true });
     expect(await sessionFileExists(projectRoot)).toBe(false);
 
-    // And a fresh rebase is no longer blocked by the session check: it now
+    // And a fresh rebase is not blocked by the session check: it
     // reaches the manifest, failing on the empty queue instead of claiming a
     // rebase is already in progress.
     await expect(rebaseCommand(projectRoot, { yes: true })).rejects.toThrow(

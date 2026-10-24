@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { nativePath } from '../../test-utils/index.js';
 import { applicationIniPath, readBuildId, readLinkedAt } from '../launchable-build.js';
 
 let engineDir: string;
@@ -26,9 +27,11 @@ afterEach(async () => {
 describe('applicationIniPath', () => {
   it('uses Contents/Resources inside a macOS bundle and the binary directory elsewhere', () => {
     expect(applicationIniPath('/o/dist/Nightly.app/Contents/MacOS/firefox')).toBe(
-      '/o/dist/Nightly.app/Contents/Resources/application.ini'
+      nativePath('/o/dist/Nightly.app/Contents/Resources/application.ini')
     );
-    expect(applicationIniPath('/o/dist/bin/firefox')).toBe('/o/dist/bin/application.ini');
+    expect(applicationIniPath('/o/dist/bin/firefox')).toBe(
+      nativePath('/o/dist/bin/application.ini')
+    );
   });
 });
 

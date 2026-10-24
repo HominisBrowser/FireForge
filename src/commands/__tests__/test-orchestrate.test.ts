@@ -117,6 +117,16 @@ describe('orchestrateTestRuns', () => {
     expect(lines('FIREFORGE-VERDICT')).toEqual(['FIREFORGE-VERDICT: PASS runs=3/3']);
   });
 
+  it('gives every later run the wait budgets the pre-lock pass spent', async () => {
+    const body = vi.fn<TestRunBody>(() => pass());
+    const spentWaits = { waitBrowser: 3600, waitPort: 600 };
+    await run(['a.js'], { repeat: 2, build: true, spentWaits }, body);
+    expect(body.mock.calls.map(([, options]) => options)).toEqual([
+      { repeat: 2, build: true, spentWaits },
+      { repeat: 2, waitBrowser: 3600, waitPort: 600 },
+    ]);
+  });
+
   it('--repeat reports each red run and fails the aggregate', async () => {
     const body = vi
       .fn<TestRunBody>(() => pass())

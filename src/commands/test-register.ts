@@ -96,7 +96,8 @@ const TEST_HELP_TEXT = [
   'launchable binary (with the build that left it missing, when one is',
   'recorded), the named-file checkJs pass of --build, and the',
   '--wait-browser/--wait-port budgets. Each is re-checked once under the',
-  'lock.',
+  'lock; the checks after a pre-test build or an earlier run of the',
+  'sequence wait the budgets out again.',
 ].join('\n');
 
 function registerTestMultiRunOptions(test: Command): Command {

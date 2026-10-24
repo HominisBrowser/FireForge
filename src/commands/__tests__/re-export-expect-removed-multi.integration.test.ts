@@ -111,6 +111,41 @@ describe('re-export --expect-removed across several selected patches', () => {
     );
   });
 
+  it('retires a file from one patch while --scan-file adopts a new one into another', async () => {
+    await writeFiles(projectRoot, {
+      'engine/new.mjs': 'export const x = 1;\n',
+      'engine/two.svg': '<svg/>\n',
+    });
+    await reExportCommand(projectRoot, ['001', '002'], {
+      expectRemoved: ['one.svg'],
+      scan: true,
+      scanFiles: ['002:new.mjs'],
+      skipLint: true,
+    });
+    const manifest = JSON.parse(
+      await readProjectText(projectRoot, 'patches/patches.json')
+    ) as ManifestShape;
+    expect(manifest.patches.map((patch) => patch.filesAffected)).toEqual([
+      ['a.txt'],
+      ['b.txt', 'new.mjs', 'two.svg'],
+    ]);
+    expect(await readProjectText(projectRoot, 'patches/001-ui-first.patch')).not.toContain(
+      'one.svg'
+    );
+    expect(await readProjectText(projectRoot, 'patches/002-ui-second.patch')).toContain(
+      '+export const x = 1;'
+    );
+  });
+
+  it('still refuses --expect-removed beside --all or --files', async () => {
+    await expect(
+      reExportCommand(projectRoot, [], { expectRemoved: ['one.svg'], all: true })
+    ).rejects.toThrow(/cannot combine with --files or --all/);
+    await expect(
+      reExportCommand(projectRoot, ['001'], { expectRemoved: ['one.svg'], files: ['a.txt'] })
+    ).rejects.toThrow(/cannot combine with --files or --all/);
+  });
+
   it('drops every declaration on a retired path, in any patch, and names each', async () => {
     const kept = { file: 'jar.mn', line: '  content/kept.svg', creates: 'kept.svg' };
     const holder = {

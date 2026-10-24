@@ -83,7 +83,10 @@ Furnace deployed it to, since that is what the run reads; the component
 source itself is never touched. Only modifications of existing text files
 are accepted: a created, deleted, renamed or binary file, or a symlinked
 target, is refused. Hunks must match exactly; the only tolerance is a line
-offset, as in `git apply`, never fuzz.
+offset, as in `git apply`, never fuzz. A file named by more than one
+section (a generator that writes one section per edit) is applied as one
+section with every hunk in file order; sections whose hunks overlap are
+refused, with the advice to write one section for the file.
 
 The verdict says how the control came out with `control=`:
 
@@ -329,7 +332,11 @@ engine session lock is requested, so a run waiting out a browser or a port
 does not hold every peer's build, test and re-export behind it. The run then
 joins the lock queue and re-checks once under the lock; the normal preflight
 refusal and its remedy apply if the resource is busy again (or still busy)
-there. With `--kill-stale-marionette` a reapable stale browser counts as
+there. A check that follows work the run already did under the lock waits
+the budgets out again instead: the browser and port checks after a
+`--build` run's pre-test build, and those of every later run of a `--repeat`
+or `--negative-control` sequence, so a peer's browser that started during
+the build does not throw the build away. With `--kill-stale-marionette` a reapable stale browser counts as
 clear before the lock, and the port waits stay under the lock, where the
 stale listener can be reaped.
 

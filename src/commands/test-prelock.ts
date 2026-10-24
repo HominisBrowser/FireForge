@@ -266,12 +266,35 @@ async function refuseStalePackagingBeforeLock(
   }
 }
 
-/** `options` without one wait budget, which this pass already spent. */
+/**
+ * `options` without one wait budget, which this pass already spent. The
+ * budget moves to `spentWaits`, for {@link rearmSpentWaits}.
+ */
 function withoutOption(options: TestOptions, key: 'waitBrowser' | 'waitPort'): TestOptions {
-  const rest = { ...options };
+  const rest = { ...options, spentWaits: { ...options.spentWaits, [key]: options[key] } };
   if (key === 'waitBrowser') delete rest.waitBrowser;
   else delete rest.waitPort;
   return rest;
+}
+
+/**
+ * `options` with the wait budgets the pre-lock pass spent put back, for a
+ * browser or port check that follows work this invocation already did
+ * under the lock: its pre-test build, or an earlier run of a sequence. A
+ * busy browser there is a peer that started after the lock was taken, and
+ * refusing would throw the build away, so it is waited out like the first
+ * check's.
+ *
+ * @param options - In-lock run options
+ */
+export function rearmSpentWaits(options: TestOptions): TestOptions {
+  const spent = options.spentWaits;
+  if (spent === undefined) return options;
+  const rearmed: TestOptions = { ...options };
+  if (spent.waitBrowser !== undefined) rearmed.waitBrowser = spent.waitBrowser;
+  if (spent.waitPort !== undefined) rearmed.waitPort = spent.waitPort;
+  delete rearmed.spentWaits;
+  return rearmed;
 }
 
 /**

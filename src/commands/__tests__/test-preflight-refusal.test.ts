@@ -274,6 +274,21 @@ describe('preflight refusals reach the captured stream and the run log', () => {
   });
 });
 
+it('waits out a browser that appeared during the pre-test build with the spent --wait-browser budget', async () => {
+  // The pre-lock wait and the in-lock pre-build check see no browser; a
+  // peer's starts during the build, and the post-build check waits for it.
+  vi.mocked(ensureLaunchableBrowserNotRunning)
+    .mockResolvedValueOnce()
+    .mockResolvedValueOnce()
+    .mockRejectedValueOnce(new PreflightRefusalError('busy browser', 'browser-busy'));
+  await testCommand(projectRoot, ['browser/base/content/test/browser_a.js'], {
+    build: true,
+    waitBrowser: 30,
+  }).catch(() => undefined);
+  expect(stdout).not.toContain('note=browser-busy');
+  expect(vi.mocked(ensureLaunchableBrowserNotRunning).mock.calls.length).toBeGreaterThanOrEqual(4);
+});
+
 it('build-only protects the browser without probing or reaping harness ports', async () => {
   await expect(
     ensureTestBrowserEnvironment(

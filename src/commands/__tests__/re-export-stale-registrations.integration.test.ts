@@ -162,6 +162,34 @@ describe('re-export drops a staged registration the queue no longer satisfies', 
     expect(history).toContain('"creates":"gone.mjs"');
   });
 
+  it('keeps the registration through a multi-patch call whose later patch adopts the file', async () => {
+    // The holder re-exports first in the call, while the module is still
+    // unowned; the later patch's --scan-file then adopts it.
+    await writeFiles(projectRoot, {
+      'patches/patches.json': JSON.stringify({
+        version: 1,
+        patches: [
+          row('001-ui-jar.patch', 1, ['jar.mn'], {
+            stagedDependencies: { registrations: [STALE] },
+          }),
+          row('002-ui-gone.patch', 2, ['jar.mn']),
+        ],
+      }),
+      'patches/002-ui-gone.patch': 'diff --git a/jar.mn b/jar.mn\n',
+      'engine/gone.mjs': 'export const gone = 1;\n',
+    });
+
+    await reExportCommand(projectRoot, ['001', '002'], {
+      skipLint: true,
+      scan: true,
+      scanFiles: ['002:gone.mjs'],
+    });
+
+    const [holder, adopter] = await rows(projectRoot);
+    expect(holder?.stagedDependencies?.registrations).toEqual([STALE]);
+    expect(adopter?.filesAffected).toContain('gone.mjs');
+  });
+
   it.each([
     ['exists in engine/', {}, (root: string) => writeFiles(root, { 'engine/gone.mjs': 'x\n' })],
     [

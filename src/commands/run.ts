@@ -167,6 +167,7 @@ async function runInteractive(
   const exitCode = await run(engineDir, [
     ...(options.headless ? ['--headless'] : []),
     ...profile.args,
+    ...(options.args ?? []),
   ]);
 
   // Exit-code whitelist:
@@ -297,7 +298,12 @@ async function runSmokeExit(
   const startedAt = Date.now();
   let result;
   try {
-    const machArgs = ['run', ...(options.headless ? ['--headless'] : []), ...profile.args];
+    const machArgs = [
+      'run',
+      ...(options.headless ? ['--headless'] : []),
+      ...profile.args,
+      ...(options.args ?? []),
+    ];
     result = await runMachSmoke(machArgs, engineDir, {
       smokeTimeoutMs,
       onStdoutLine: (line) => {
@@ -495,6 +501,10 @@ export function registerRun(
   program
     .command('run')
     .description('Launch the built browser')
+    .argument(
+      '[args...]',
+      'Arguments passed to the browser after the profile ones, given after "--" (e.g. -- -marionette -remote-allow-system-access)'
+    )
     .option(
       '--smoke-exit <seconds>',
       'Smoke-run mode (POSIX only): launch, capture console, SIGTERM the process group after <seconds>. Exit 0 on a clean window, 12 on unallowed errors, 13 on launch failure.',
@@ -540,9 +550,12 @@ export function registerRun(
     .action(
       withErrorHandling(
         // `args` is the variadic positional, not a Commander flag, so it
-        // never appears in this object.
-        async (options: Omit<RunOptions, 'args'>) => {
-          await runCommand(getProjectRoot(), pickDefined(options));
+        // arrives apart from the options object.
+        async (args: string[], options: Omit<RunOptions, 'args'>) => {
+          await runCommand(
+            getProjectRoot(),
+            pickDefined({ ...options, ...(args.length > 0 ? { args } : {}) })
+          );
         }
       )
     );

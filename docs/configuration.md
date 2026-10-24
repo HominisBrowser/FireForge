@@ -656,6 +656,13 @@ owning process is gone.
   every run, and a temporary profile starts without one.
 - `--temp-profile` gives a plain `run` the same fresh, removed-afterwards
   profile.
+- Arguments after `--` go to the browser, after the profile ones. A headed
+  session on a kept profile that a chrome-context Marionette client drives
+  is `fireforge run --profile <dir> -- -marionette -remote-allow-system-access`,
+  with `marionette.port` set in the profile's `user.js` so peers' harnesses
+  keep 2828. The objdir app launched directly gets neither `-purgecaches`
+  nor the startup-cache cleanup, so it can serve a widget script an earlier
+  launch cached.
 
 A smoke run whose browser exits with a clean status before the window
 elapses, without printing any console output, fails with exit 13.

@@ -103,8 +103,8 @@ export function parseControlDiff(
         '`git -C engine diff -- <file> > control.diff` after making the edit, then revert the edit.'
     );
   }
-  const seen = new Set<string>();
-  return sections.map((section) => {
+  const files = new Map<string, ControlDiffFile & { sections: number }>();
+  for (const section of sections) {
     let path = normalizePathSlashes(section.targetPath);
     if (section.isBinary) refuse(`${path} is a binary section.`);
     if (section.isNewFile || section.isDeletedFile) {
@@ -121,10 +121,38 @@ export function parseControlDiff(
       refuse(`${path} is not a contained relative path.`);
     }
     if (section.hunks.length === 0) refuse(`${path} has no hunks.`);
-    if (seen.has(path)) refuse(`${path} appears in more than one section.`);
-    seen.add(path);
-    return { path, hunks: section.hunks };
+    const existing = files.get(path);
+    if (existing === undefined) {
+      files.set(path, { path, hunks: [...section.hunks], sections: 1 });
+    } else {
+      existing.hunks.push(...section.hunks);
+      existing.sections += 1;
+    }
+  }
+  return [...files.values()].map(({ path, hunks, sections: count }) => ({
+    path,
+    hunks: count === 1 ? hunks : mergeSectionHunks(path, hunks),
+  }));
+}
+
+/**
+ * Orders the hunks of a file that several sections name (a generator that
+ * writes one section per edit) as one section's would be. Hunks that
+ * overlap cannot be applied one after another, so they are refused.
+ */
+function mergeSectionHunks(path: string, hunks: readonly ParsedHunk[]): ParsedHunk[] {
+  const ordered = [...hunks].sort((left, right) => left.oldStart - right.oldStart);
+  ordered.forEach((hunk, index) => {
+    const previous = ordered[index - 1];
+    if (previous !== undefined && previous.oldStart + previous.oldCount > hunk.oldStart) {
+      refuse(
+        `${path} appears in more than one section, and hunks from them overlap ` +
+          `(@@ -${previous.oldStart},${previous.oldCount} @@ and @@ -${hunk.oldStart},${hunk.oldCount} @@). ` +
+          'Make every edit to the file, then write one section for it with `git -C engine diff -- <file>`.'
+      );
+    }
   });
+  return ordered;
 }
 
 interface HunkSides {

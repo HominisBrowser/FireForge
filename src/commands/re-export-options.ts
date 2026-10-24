@@ -141,13 +141,19 @@ function validatePathFlagValues(options: ReExportOptions): void {
   }
 }
 
+/**
+ * A retirement names its owner among explicitly selected patches. It
+ * combines with `--scan`: the retired path leaves the scan's base first,
+ * and the scan cannot adopt it back, since a retired created file is absent
+ * and a retired upstream file is clean at HEAD.
+ */
 function validateExpectedRemovalUsage(patches: readonly string[], options: ReExportOptions): void {
   if (
     options.expectRemoved?.length &&
-    (options.scan || options.all || options.files !== undefined || patches.length === 0)
+    (options.all || options.files !== undefined || patches.length === 0)
   ) {
     throw new InvalidArgumentError(
-      '--expect-removed requires explicit selected patches and the scan-less path (no --scan, --files, or --all).',
+      '--expect-removed requires explicit selected patches and cannot combine with --files or --all.',
       '--expect-removed'
     );
   }

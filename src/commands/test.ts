@@ -60,6 +60,7 @@ import {
 } from './test-modes.js';
 import { orchestrateTestRuns, type TestRunHooks } from './test-orchestrate.js';
 import {
+  rearmSpentWaits,
   resolveLaunchablePathForTests,
   runTestPreLockPreflight,
   TEST_BUILD_PREFLIGHT,
@@ -498,12 +499,14 @@ async function runTestCommandBody(
     if (buildId !== undefined) setVerdictRunAttribute('build-id', buildId);
   }
 
+  // After a pre-test build, a busy browser or port is a peer that started
+  // during it; waiting it out keeps the build this run just paid for.
   const { forwardedPort, effectivePort } = await ensureTestBrowserEnvironment(
     paths.engine,
     launchablePath,
     xpcshellOnly,
     projectConfig,
-    options,
+    options.build === true ? rearmSpentWaits(options) : options,
     buildCheck.objDir
   );
 

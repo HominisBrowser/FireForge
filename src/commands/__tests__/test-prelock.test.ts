@@ -71,7 +71,11 @@ import { PreflightRefusalError } from '../../errors/base.js';
 import { info } from '../../utils/logger.js';
 import { checkRequestedTestTypes } from '../test-checkjs.js';
 import { classifyBeforeDispatch } from '../test-modes.js';
-import { resolveLaunchablePathForTests, runTestPreLockPreflight } from '../test-prelock.js';
+import {
+  rearmSpentWaits,
+  resolveLaunchablePathForTests,
+  runTestPreLockPreflight,
+} from '../test-prelock.js';
 import { enforceStaleBuildGate } from '../test-stale-gate.js';
 
 const ROOT = '/project';
@@ -183,7 +187,11 @@ describe('runTestPreLockPreflight', () => {
       marionettePort: 2838,
       headless: true,
     });
-    expect(result).toEqual({ headless: true, marionettePort: 2838 });
+    expect(result).toEqual({
+      headless: true,
+      marionettePort: 2838,
+      spentWaits: { waitBrowser: 120, waitPort: true },
+    });
     expect(waitBeforeLock).toHaveBeenNthCalledWith(1, expect.any(Function), 120, []);
     expect(waitBeforeLock).toHaveBeenNthCalledWith(2, expect.any(Function), 60);
     expect(waitBeforeLock).toHaveBeenNthCalledWith(3, expect.any(Function), 60);
@@ -202,7 +210,11 @@ describe('runTestPreLockPreflight', () => {
     });
     expect(waitBeforeLock).toHaveBeenCalledTimes(1);
     expect(waitBeforeLock).toHaveBeenCalledWith(expect.any(Function), 10, ['stale-browser']);
-    expect(result).toEqual({ waitPort: 10, killStaleMarionette: true });
+    expect(result).toEqual({
+      waitPort: 10,
+      killStaleMarionette: true,
+      spentWaits: { waitBrowser: 10 },
+    });
   });
 
   it('skips the browser and mochitest waits for an xpcshell-only run, keeping the --doctor port probe', async () => {
@@ -218,7 +230,15 @@ describe('runTestPreLockPreflight', () => {
     expect(ensureLaunchableBrowserNotRunning).not.toHaveBeenCalled();
     expect(ensureMochitestServerPortAvailable).not.toHaveBeenCalled();
     expect(assertMarionettePortAvailable).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ waitBrowser: 10, doctor: true });
+    expect(result).toEqual({ waitBrowser: 10, doctor: true, spentWaits: { waitPort: 10 } });
+  });
+
+  it('puts the spent budgets back for a check that follows work under the lock', async () => {
+    const spent = await runTestPreLockPreflight(ROOT, [FILE], { waitBrowser: 120, waitPort: 30 });
+    expect(spent).not.toHaveProperty('waitBrowser');
+    expect(rearmSpentWaits(spent)).toEqual({ waitBrowser: 120, waitPort: 30 });
+    const untouched = { waitBrowser: 5 };
+    expect(rearmSpentWaits(untouched)).toBe(untouched);
   });
 
   it('leaves both waits to the lock when the request cannot be classified', async () => {

@@ -1,6 +1,25 @@
 # Changelog
 
-## 0.53.0
+## 0.54.0
+
+### Test harness
+
+- The browser and port checks that follow work a `fireforge test` already did under the lock wait out `--wait-browser` and `--wait-port` again, instead of probing once: the checks after a `--build` run's pre-test build, and those of every later run of a `--repeat` or `--negative-control` sequence. The pre-lock pass spent the budgets and the in-lock checks only probed, so a peer's browser that started during the build ended the run `reason=preflight note=browser-busy` (`control=inconclusive` for a control) and threw the build away.
+- A negative-control diff that names one file in more than one section (a generator that writes one section per edit) is applied as one section with its hunks in file order, instead of being refused. Sections whose hunks overlap are still refused, naming both hunks and the one-section remedy.
+- Windows: the `stale-compiled` refusal names the linked binary with forward slashes (`engine/obj-x/dist/bin/libxul.so`), not with mixed separators.
+
+### Patch queue
+
+- `patch staged-dependency --remove` without `--kind` takes the kind from its matcher: `--specifier` selects imports and `--line` registrations. A selection with neither, such as `--creates` alone, searches both kinds, as the flag's help says. It used to search imports only, so removing a stale registration by `--creates` was refused until `--kind registration` was added. A miss lists the patch's declarations of every kind it searched.
+- `re-export --expect-removed` combines with `--scan`, so one call can retire a widget's files from one patch while `--scan-file` adopts a new module into another. The retired path leaves its owner's file list before the scan, which cannot adopt it back. `--files`, `--all` and an implicit selection are still refused.
+
+### Run
+
+- `fireforge run` passes the arguments after `--` to the browser, after the profile ones: `fireforge run --profile <dir> -- -marionette -remote-allow-system-access` drives a headed session on a kept profile, with `-purgecaches`, from chrome-context Marionette.
+
+### Other
+
+- Tests: the `git diff --no-index` negative-control test no longer fails when the temp root's random suffix ends in `b`, which its fixture rewrite matched inside the old side's absolute path. The `application.ini` path test compares native paths on Windows.
 
 ### Test harness
 

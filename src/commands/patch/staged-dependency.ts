@@ -32,7 +32,12 @@ import {
   type StagedEntryView,
 } from './staged-dependency-entries.js';
 import { runBatchAdd } from './staged-dependency-from.js';
-import { selectRemovalEntries } from './staged-dependency-remove.js';
+import {
+  declarationNoun,
+  inferRemovalKinds,
+  type KindedEntryView,
+  selectRemovalEntries,
+} from './staged-dependency-remove.js';
 import { validateStagedDependencyAdd } from './staged-dependency-validate.js';
 
 /** Joins the names of the missing flags for error attribution. */
@@ -139,18 +144,19 @@ function describeStagedDependencyChange(
   before: PatchStagedDependencies | undefined,
   after: PatchStagedDependencies | undefined,
   mode: StagedDependencyMode,
-  kind: StagedDependencyKind,
-  targets: readonly StagedEntryView[]
+  kinds: readonly StagedDependencyKind[],
+  targets: readonly KindedEntryView[]
 ): string {
   const beforeCount = countStagedEntries(before);
   const afterCount = countStagedEntries(after);
-  const noun = kind === 'import' ? 'staged forward-import' : 'staged registration';
+  const targetKinds = [...new Set(targets.map((target) => target.kind))];
+  const noun = declarationNoun(targetKinds.length > 0 ? targetKinds : kinds);
   if (mode === 'clear') {
     return beforeCount === 0
       ? 'stagedDependencies was already empty — no change'
       : `cleared ${beforeCount} staged dependency declaration(s)`;
   }
-  const label = targets.map((target) => dependencyLabel(kind, target)).join('; ');
+  const label = targets.map(({ kind, view }) => dependencyLabel(kind, view)).join('; ');
   if (targets.length === 0) return 'stagedDependencies unchanged';
   if (mode === 'add') {
     if (afterCount !== beforeCount) return `added ${noun}: ${label}`;
@@ -185,7 +191,11 @@ export async function patchStagedDependencyCommand(
     await runBatchAdd(projectRoot, identifier, mode, options);
     return;
   }
-  const kind = kindFromOptions(options);
+  // Without --kind, --remove searches the kind its matcher names, or both.
+  const kinds = (mode === 'remove' ? inferRemovalKinds(options) : undefined) ?? [
+    kindFromOptions(options),
+  ];
+  const kind = kinds.length === 1 ? kinds[0] : undefined;
 
   // The patch queue loads before the declaration fields resolve so
   // `--remove` can infer `--creates` from the target patch's staged
@@ -204,24 +214,25 @@ export async function patchStagedDependencyCommand(
   if (added !== undefined) {
     validateStagedDependencyAdd(added, manifest.patches);
   }
-  const targets: StagedEntryView[] =
+  const targets: KindedEntryView[] =
     mode === 'remove'
-      ? selectRemovalEntries(kind, options, targetPatch.stagedDependencies)
+      ? selectRemovalEntries(kinds, options, targetPatch.stagedDependencies)
       : importDependency !== undefined
-        ? [importView(importDependency)]
+        ? [{ kind: 'import', view: importView(importDependency) }]
         : registrationDependency !== undefined
-          ? [registrationView(registrationDependency)]
+          ? [{ kind: 'registration', view: registrationView(registrationDependency) }]
           : [];
 
   const applyKind = <T>(
     entries: readonly T[],
-    own: boolean,
+    entryKind: StagedDependencyKind,
     toView: (entry: T) => StagedEntryView,
     addition: T | undefined
   ): T[] => {
-    if (!own) return [...entries];
-    if (mode !== 'remove') return applyMode(entries, mode, targets[0], toView, addition);
-    return targets.reduce<T[]>(
+    if (!kinds.includes(entryKind)) return [...entries];
+    const own = targets.filter((target) => target.kind === entryKind).map(({ view }) => view);
+    if (mode !== 'remove') return applyMode(entries, mode, own[0], toView, addition);
+    return own.reduce<T[]>(
       (remaining, target) => applyMode(remaining, 'remove', target, toView, undefined),
       [...entries]
     );
@@ -230,13 +241,13 @@ export async function patchStagedDependencyCommand(
     if (mode === 'clear') return {};
     const forwardImports = applyKind(
       staged?.forwardImports ?? [],
-      kind === 'import',
+      'import',
       importView,
       importDependency
     );
     const registrations = applyKind(
       staged?.registrations ?? [],
-      kind === 'registration',
+      'registration',
       registrationView,
       registrationDependency
     );
@@ -248,7 +259,7 @@ export async function patchStagedDependencyCommand(
 
   const existing = targetPatch.stagedDependencies;
   const projected = applyToStaged(existing);
-  const summary = describeStagedDependencyChange(existing, projected, mode, kind, targets);
+  const summary = describeStagedDependencyChange(existing, projected, mode, kinds, targets);
 
   if (isDryRun) {
     info(`[dry-run] ${targetPatch.filename}: ${summary}.`);
@@ -283,7 +294,7 @@ export async function patchStagedDependencyCommand(
       before,
       after,
       mode,
-      kind,
+      kinds,
       targets
     )}.`
   );
@@ -305,7 +316,8 @@ export async function patchStagedDependencyCommand(
       args: {
         filename: targetPatch.filename,
         mode,
-        kind,
+        // A kind-less --remove searched both kinds; the delta names which.
+        ...(kind !== undefined ? { kind } : {}),
         ...stagedDependencyDelta(before, after),
       },
       ...(options.yes === true ? { yes: true } : {}),
@@ -338,7 +350,7 @@ export function registerPatchStagedDependency(parent: Command, context: CommandC
     .option('--clear', 'Drop the stagedDependencies field entirely')
     .option(
       '--kind <kind>',
-      'Declaration shape: "import" (forward import, the default) or "registration" (jar.mn packaging line, customElements or actor registration)'
+      'Declaration shape: "import" (forward import, the default) or "registration" (jar.mn packaging line, customElements or actor registration); --remove without it takes the kind --specifier or --line names, or both kinds'
     )
     .option('--file <path>', 'Declaring file path relative to engine/')
     .option(

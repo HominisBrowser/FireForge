@@ -169,7 +169,7 @@ list rather than the subset left after filtering, so nothing dropped upstream
 can pass as a silent success.
 
 A file can be retired from a selected patch with repeatable
-`--expect-removed <path>` on scan-less re-export. This works for an absent
+`--expect-removed <path>`. This works for an absent
 file the patch created, and for an upstream file the patch modified or
 deleted whose engine copy is back at HEAD:
 
@@ -190,7 +190,10 @@ validated before writes, in dry-run too. Other paths keep
 both refusal checks; retirement grants no unmanaged or foreign-drift
 exception. Removing every file would empty the patch and requires `patch
 delete` (or `patch retire`, which keeps the order number) instead.
-`--expect-removed` cannot combine with `--scan`, `--files` or `--all`.
+`--expect-removed` cannot combine with `--files` or `--all`. It combines
+with `--scan`, so one call can retire a widget's files from one patch while
+`--scan-file` adopts a new module into another: the retired path leaves the
+owner's file list before its scan, which cannot adopt it back.
 
 The same run drops every staged declaration, registration or forward
 import, in any patch of the queue, whose `creates` path it retired and no
@@ -386,11 +389,14 @@ hash-object` and `git update-index`. A collision (two rows at one order) or
   copy and the index do not differ on key order alone.
 - `patch staged-dependency <name> --remove` names the entries to remove by
   any of `--file`, `--specifier`/`--line`, `--creates` and `--owner`. It needs
-  `--creates`, or `--file` with the matcher. `--creates` alone removes every
-  declaration for that created path, which is the cleanup after a merge
-  deletes it. Registration lines compare whitespace-insensitively, as the
-  lint does. A selection that matches nothing is refused with exit 8, on a
-  dry run too.
+  `--creates`, or `--file` with the matcher. Without `--kind`, `--specifier`
+  selects imports, `--line` selects registrations, and a selection with
+  neither searches both kinds, so `--creates` alone removes every
+  declaration for that created path, imports and registrations alike, which
+  is the cleanup after a merge deletes it. Registration lines compare
+  whitespace-insensitively, as the lint does. A selection that matches
+  nothing is refused with exit 8, on a dry run too, and the refusal lists
+  the patch's declarations of every kind it searched.
 - `patch staged-dependency <name> --add --from <json-file>` adds many
   declarations in one call under one lock hold. The file is a `lint
 --per-patch --report` document (its findings' `stagedDeclarations` for

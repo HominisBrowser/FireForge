@@ -673,6 +673,15 @@ export interface TestOptions extends EngineLockWaitable {
   waitBrowser?: number | boolean;
   /** Queue behind the mochitest/Marionette port holder. */
   waitPort?: number | boolean;
+  /**
+   * The `--wait-browser`/`--wait-port` budgets the pre-lock pass already
+   * spent (and stripped from `waitBrowser`/`waitPort`). The first in-lock
+   * check probes once; a check that follows work this invocation did under
+   * the lock (its pre-test build, or an earlier run of a `--repeat` or
+   * `--negative-control` sequence) waits them out again, because refusing
+   * there throws that work away.
+   */
+  spentWaits?: { waitBrowser?: number | boolean; waitPort?: number | boolean };
   /** Also write the run log here, outside `.fireforge/logs/` retention. */
   keepLog?: string;
   /** Forward mochitest's `--restart-between-tests` (mochitest dispatch only). */

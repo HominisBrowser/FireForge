@@ -50,6 +50,7 @@ import {
   type SubRunResult,
   worstRun,
 } from './test-multi-verdict.js';
+import { rearmSpentWaits } from './test-prelock.js';
 import {
   emitAggregateVerdict,
   emitFailVerdict,
@@ -145,7 +146,9 @@ async function splitHarnesses(
 
 /** Options for every run after the first: the build and doctor run once. */
 function laterRunOptions(options: TestOptions): TestOptions {
-  const later = { ...options };
+  // A later run follows the earlier runs' work under the same lock hold, so
+  // its browser and port checks wait out the budgets again.
+  const later = { ...rearmSpentWaits(options) };
   delete later.build;
   delete later.extendCoverage;
   delete later.refuseUnexportedDrift;

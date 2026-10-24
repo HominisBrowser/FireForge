@@ -59,9 +59,26 @@ describe('parseControlDiff', () => {
     ['a rename', 'diff --git a/old.js b/new.js\nsimilarity index 90%\n@@ -1 +1 @@\n-a\n+b\n'],
     ['an escaping path', diffOf('../outside.js', '@@ -1 +1 @@\n-a\n+b\n')],
     ['a hunk-less section', 'diff --git a/m.js b/m.js\nold mode 100644\nnew mode 100755\n'],
-    ['a repeated file', NEUTER + NEUTER],
+    ['a repeated file whose sections overlap', NEUTER + NEUTER],
   ])('refuses %s', (_label, diff) => {
     expect(() => parseControlDiff(diff)).toThrow(/^Negative control diff refused: /);
+  });
+
+  it('merges the sections of one file into one, in file order', () => {
+    const later = diffOf('browser/x.mjs', '@@ -6,2 +6,2 @@\n six\n-seven\n+SEVEN\n');
+    const earlier = diffOf('browser/x.mjs', '@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n');
+    const files = parseControlDiff(later + earlier);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.hunks.map((hunk) => hunk.oldStart)).toEqual([1, 6]);
+    expect(applyControlHunks(FILE, files[0]?.hunks ?? [], 'browser/x.mjs')).toBe(
+      ['ONE', 'two', 'three', 'four', 'five', 'six', 'SEVEN'].join('\n') + '\n'
+    );
+  });
+
+  it('names the overlap and the one-section remedy for sections that overlap', () => {
+    expect(() => parseControlDiff(NEUTER + NEUTER)).toThrow(
+      /appears in more than one section, and hunks from them overlap.*one section for it/s
+    );
   });
 });
 

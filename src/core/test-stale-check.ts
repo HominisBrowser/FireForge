@@ -214,7 +214,7 @@ export async function findCompiledSourcesNewerThanBinary(
   }
   return {
     paths: paths.sort(),
-    linkedPath: relative(engineDir, linked.path),
+    linkedPath: normalizePathSlashes(relative(engineDir, linked.path)),
     linkedAt: new Date(linked.mtimeMs),
   };
 }

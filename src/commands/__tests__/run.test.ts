@@ -966,6 +966,34 @@ describe('runCommand', () => {
       ]);
     });
 
+    itPosix('forwards the arguments after -- to the browser, after the profile ones', async () => {
+      vi.mocked(run).mockResolvedValue(0);
+      const program = new Command();
+      registerRun(program, {
+        getProjectRoot: () => '/project',
+        withErrorHandling: <T extends unknown[]>(fn: (...args: T) => Promise<void>) => fn,
+      });
+
+      await program.parseAsync([
+        'node',
+        'fireforge',
+        'run',
+        '--profile',
+        '/profiles/shots',
+        '--',
+        '-marionette',
+        '-remote-allow-system-access',
+      ]);
+
+      expect(vi.mocked(run).mock.calls[0]?.[1]).toEqual([
+        '-profile',
+        '/profiles/shots',
+        '-purgecaches',
+        '-marionette',
+        '-remote-allow-system-access',
+      ]);
+    });
+
     it('rejects --smoke-exit with a non-integer value at parse time', async () => {
       const program = new Command();
       program.exitOverride(); // Commander normally calls process.exit on parse error.

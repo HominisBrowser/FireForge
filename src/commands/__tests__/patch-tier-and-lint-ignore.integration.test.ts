@@ -1004,6 +1004,120 @@ describe('patch staged-dependency', () => {
     ]);
   });
 
+  it('--remove --creates without --kind drops the declarations of both kinds', async () => {
+    await seed(patchesDir, [
+      makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'], {
+        stagedDependencies: {
+          forwardImports: [
+            {
+              file: 'toolkit/content/a-host.mjs',
+              specifier: 'chrome://global/content/a.js',
+              creates: 'toolkit/content/a.js',
+            },
+          ],
+          registrations: [
+            {
+              file: 'toolkit/content/jar.mn',
+              line: 'content/global/a.js (a.js)',
+              creates: 'toolkit/content/a.js',
+            },
+            {
+              file: 'toolkit/content/jar.mn',
+              line: 'content/global/b.js (b.js)',
+              creates: 'toolkit/content/b.js',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+      remove: true,
+      creates: 'toolkit/content/a.js',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]?.stagedDependencies).toEqual({
+      registrations: [
+        {
+          file: 'toolkit/content/jar.mn',
+          line: 'content/global/b.js (b.js)',
+          creates: 'toolkit/content/b.js',
+        },
+      ],
+    });
+  });
+
+  it('--remove without --kind takes the registration kind from --line', async () => {
+    await seed(patchesDir, [
+      makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'], {
+        stagedDependencies: {
+          registrations: [
+            {
+              file: 'toolkit/content/jar.mn',
+              line: 'content/global/a.js (a.js)',
+              creates: 'toolkit/content/a.js',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+      remove: true,
+      file: 'toolkit/content/jar.mn',
+      line: 'content/global/a.js (a.js)',
+    });
+
+    const manifest = await loadManifest(patchesDir);
+    expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
+  });
+
+  it('a kind-less --remove that matches nothing lists the declarations of both kinds', async () => {
+    await seed(patchesDir, [
+      makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'], {
+        stagedDependencies: {
+          forwardImports: [
+            {
+              file: 'toolkit/content/a-host.mjs',
+              specifier: 'chrome://global/content/a.js',
+              creates: 'toolkit/content/a.js',
+            },
+          ],
+          registrations: [
+            {
+              file: 'toolkit/content/jar.mn',
+              line: 'content/global/a.js (a.js)',
+              creates: 'toolkit/content/a.js',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+        remove: true,
+        creates: 'toolkit/content/missing.js',
+      })
+    ).rejects.toThrow(
+      /matched no staged declaration\. This patch's staged declarations:.*imports "chrome:\/\/global\/content\/a\.js".*registers "content\/global\/a\.js \(a\.js\)"/s
+    );
+  });
+
+  it('a kind-less --remove refuses --specifier together with --line', async () => {
+    await seed(patchesDir, [makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'])]);
+
+    await expect(
+      patchStagedDependencyCommand(projectRoot, '200-ui-jar.patch', {
+        remove: true,
+        file: 'toolkit/content/jar.mn',
+        specifier: 'chrome://global/content/a.js',
+        line: 'content/global/a.js (a.js)',
+      })
+    ).rejects.toThrow(/--specifier names an import and --line a registration/);
+  });
+
   it('--remove that matches nothing refuses on a dry run too', async () => {
     await seed(patchesDir, [makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'])]);
 

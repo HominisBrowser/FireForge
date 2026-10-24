@@ -96,17 +96,23 @@ describe('planNegativeControl', () => {
     // its new side; absolute paths lose their leading slash under a/ and b/
     // (`a/Users/…`), while a Windows drive path keeps its drive (`a/C:/Users/…`).
     const absolute = normalizePathSlashes(join(root, 'engine', target)).replace(/^\//, '');
+    // Only the new side's own `b/` (after a space, or `+++ `) is replaced:
+    // a temp root whose random suffix ends in `b` puts `…b/engine/…` inside
+    // the absolute old side too.
+    const newSide = (diff: string, path: string): string =>
+      diff.replace(/(^\+\+\+ | )b\/engine\/browser\/modules\/Check\.sys\.mjs/gm, `$1b/${path}`);
     await writeFiles(root, {
-      'relative.diff': controlDiff(`engine/${target}`).replace(
-        /b\/engine\/browser\/modules\/Check\.sys\.mjs/g,
-        'b/scratch/Check.sys.mjs'
+      'relative.diff': newSide(controlDiff(`engine/${target}`), 'scratch/Check.sys.mjs'),
+      'absolute.diff': newSide(
+        controlDiff(`engine/${target}`).replace(
+          /a\/engine\/browser\/modules\/Check\.sys\.mjs/g,
+          `a/${absolute}`
+        ),
+        'private/tmp/Check.sys.mjs'
       ),
-      'absolute.diff': controlDiff(`engine/${target}`)
-        .replace(/a\/engine\/browser\/modules\/Check\.sys\.mjs/g, `a/${absolute}`)
-        .replace(/b\/engine\/browser\/modules\/Check\.sys\.mjs/g, 'b/private/tmp/Check.sys.mjs'),
-      'rename.diff': controlDiff(`engine/${target}`).replace(
-        /b\/engine\/browser\/modules\/Check\.sys\.mjs/g,
-        'b/engine/browser/modules/Other.sys.mjs'
+      'rename.diff': newSide(
+        controlDiff(`engine/${target}`),
+        'engine/browser/modules/Other.sys.mjs'
       ),
     });
     for (const file of ['relative.diff', 'absolute.diff']) {

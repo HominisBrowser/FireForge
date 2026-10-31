@@ -61,6 +61,27 @@ describe('normalizeReExportFilesPositionals', () => {
   });
 });
 
+describe('--scan-files', () => {
+  it('accepts positional patches beside the manifest', () => {
+    expect(() => {
+      validateReExportOptionCombinations(['001-a.patch'], {
+        scan: true,
+        scanFilesManifest: 'assignments.json',
+      });
+    }).not.toThrow();
+  });
+
+  it('is refused with --all', () => {
+    expect(() => {
+      validateReExportOptionCombinations([], {
+        all: true,
+        scan: true,
+        scanFilesManifest: 'assignments.json',
+      });
+    }).toThrow(/--scan-files .*cannot be combined with --all/);
+  });
+});
+
 describe('--expect-unmanaged', () => {
   it('is refused without --refuse-adjacent-unmanaged', () => {
     // A carve-out for a refusal that was never armed is worse than an error:

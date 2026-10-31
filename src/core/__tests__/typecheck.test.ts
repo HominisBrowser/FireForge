@@ -359,6 +359,42 @@ describe('runTypecheck', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('matches a projectOverrides key by the path it resolves to', async () => {
+    const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const root = await mkdtemp(join(tmpdir(), 'ff-typecheck-override-path-'));
+    try {
+      await writeFile(
+        join(root, 'hub.d.ts'),
+        'declare class HubBase { tag(init: { mode: "x" }): void; }\n'
+      );
+      await writeFile(
+        join(root, 'b-only.d.ts'),
+        'declare class HubBase { tag(init: { mode: "y" }): void; }\n'
+      );
+      await writeShimProject(root, 'b', mkdir, writeFile);
+
+      for (const spelling of ['./b/jsconfig.json', join(root, 'b', 'jsconfig.json')]) {
+        const [b] = await runTypecheck(
+          root,
+          {
+            projects: [spelling],
+            extraShim: 'hub.d.ts',
+            projectOverrides: { 'b/jsconfig.json': 'b-only.d.ts' },
+          },
+          { noCache: true }
+        );
+        expect(
+          b?.issues.filter((i) => i.category === 'error'),
+          spelling
+        ).toHaveLength(0);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('runTypecheck incremental build info', () => {

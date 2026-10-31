@@ -360,6 +360,75 @@ export function parseDiffSections(diffContent: string): DiffSection[] {
   return sections;
 }
 
+/** A `---`/`+++` file name, without a trailing timestamp or git's `a/`/`b/`. */
+function plainDiffPath(raw: string): string {
+  const name = raw.split('\t')[0]?.trim() ?? '';
+  return name.startsWith('a/') || name.startsWith('b/') ? name.slice(2) : name;
+}
+
+/** The git header block for one plain `---`/`+++` pair. */
+function gitHeaderFor(oldPath: string, newPath: string): string[] {
+  if (oldPath !== '/dev/null' && newPath !== '/dev/null') {
+    return [`diff --git a/${oldPath} b/${newPath}`, `--- a/${oldPath}`, `+++ b/${newPath}`];
+  }
+  // A side on /dev/null is a create or delete; consumers decide by the
+  // `new file mode` / `deleted file mode` marker whether they accept it.
+  const path = oldPath === '/dev/null' ? newPath : oldPath;
+  return [
+    `diff --git a/${path} b/${path}`,
+    oldPath === '/dev/null' ? 'new file mode 100644' : 'deleted file mode 100644',
+    oldPath === '/dev/null' ? '--- /dev/null' : `--- a/${path}`,
+    newPath === '/dev/null' ? '+++ /dev/null' : `+++ b/${path}`,
+  ];
+}
+
+/**
+ * Gives a plain unified diff (`diff -u`, no `diff --git` lines) the git
+ * header {@link parseDiffSections} keys on, one per `---`/`+++` pair. A
+ * diff that already carries `diff --git` headers is returned unchanged.
+ * Hunk bodies are skipped by their header counts, so a removed line that
+ * reads `-- x` is never taken for a file header.
+ *
+ * The two sides keep the names the diff gives them, so a section written
+ * as `diff -u <(body) engine/<file>` has a different path on each side;
+ * the caller decides which side names the file.
+ *
+ * @param content - The diff file's text
+ * @returns The diff with a `diff --git` header before each file
+ */
+export function withGitHeaders(content: string): string {
+  const lines = content.split('\n');
+  if (lines.some((line) => line.startsWith('diff --git '))) return content;
+  const out: string[] = [];
+  let oldLeft = 0;
+  let newLeft = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    if (oldLeft > 0 || newLeft > 0) {
+      const marker = line[0];
+      if (marker !== '+' && marker !== '\\') oldLeft -= 1;
+      if (marker !== '-' && marker !== '\\') newLeft -= 1;
+      out.push(line);
+      continue;
+    }
+    const hunk = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+    if (hunk) {
+      oldLeft = parseInt(hunk[1] ?? '1', 10);
+      newLeft = parseInt(hunk[2] ?? '1', 10);
+      out.push(line);
+      continue;
+    }
+    const next = lines[index + 1] ?? '';
+    if (line.startsWith('--- ') && next.startsWith('+++ ')) {
+      out.push(...gitHeaderFor(plainDiffPath(line.slice(4)), plainDiffPath(next.slice(4))));
+      index += 1;
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
 /**
  * Checks whether a specific file is a new-file addition within a patch.
  * For multi-file patches, only inspects the section belonging to targetFile.

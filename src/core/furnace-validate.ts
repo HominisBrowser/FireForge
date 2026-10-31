@@ -9,7 +9,8 @@ import { extractComponentChecksums } from './furnace-checksum-utils.js';
 import { getFurnacePaths, loadFurnaceConfig, loadFurnaceState } from './furnace-config.js';
 import { resolveFtlDir, xpcshellTestParentDir } from './furnace-constants.js';
 import { validateCssFragments } from './furnace-css-fragments.js';
-import { findJsconfigPathsDrift } from './furnace-jsconfig.js';
+import { findJsconfigPathsDrift, typecheckJsconfigList } from './furnace-jsconfig.js';
+import { syncFurnaceTagMap } from './furnace-tag-map.js';
 import {
   validateAccessibility,
   validateCompatibility,
@@ -253,38 +254,69 @@ export async function validateAllComponents(root: string): Promise<Map<string, V
     }
 
     // jsconfig chrome-module paths drift: when `typecheckJsconfig` is
-    // configured, deploy maintains a paths mapping per deployed module file.
-    // Missing or stale entries mean typed cross-module imports are silently
-    // degrading to `any` in the consumer's typecheck.
-    if (config.typecheckJsconfig) {
-      try {
-        const drift = await findJsconfigPathsDrift(root, config);
-        if (drift.changed) {
-          const detail = [
-            ...drift.added.map((key) => `missing: ${key}`),
-            ...drift.updated.map((key) => `stale: ${key}`),
-            ...drift.pruned.map((key) => `orphaned: ${key}`),
-          ].join('; ');
-          const issue: ValidationIssue = {
-            component: 'furnace',
-            severity: 'warning',
-            check: 'jsconfig-paths-drift',
-            message:
-              `${config.typecheckJsconfig} chrome-module paths are out of sync with the workspace (${detail}). ` +
-              'Run "fireforge furnace deploy" to update them.',
-          };
-          const existing = results.get(issue.component) ?? [];
-          existing.push(issue);
-          results.set(issue.component, existing);
-        }
-      } catch {
-        // Drift detection must not break validation when the jsconfig is
-        // missing or unparsable. Deploy reports those cases with guidance.
-      }
+    // configured, deploy maintains a paths mapping per deployed module file
+    // in each listed jsconfig. Missing or stale entries mean typed
+    // cross-module imports are silently degrading to `any` in the
+    // consumer's typecheck. The tag map is checked the same way.
+    for (const issue of await findTypecheckArtifactDrift(root, config)) {
+      const existing = results.get(issue.component) ?? [];
+      existing.push(issue);
+      results.set(issue.component, existing);
     }
 
     return results;
   });
+}
+
+/**
+ * Drift findings for the Furnace-maintained typecheck files: one
+ * `jsconfig-paths-drift` warning per out-of-date `typecheckJsconfig` file,
+ * and a `tag-map-drift` warning when `typecheckTagMap` is out of date.
+ * Detection never breaks validation: a missing or unparsable jsconfig is
+ * reported by deploy, with guidance.
+ */
+async function findTypecheckArtifactDrift(
+  root: string,
+  config: FurnaceConfig
+): Promise<ValidationIssue[]> {
+  const issues: ValidationIssue[] = [];
+  for (const jsconfig of typecheckJsconfigList(config)) {
+    try {
+      const drift = await findJsconfigPathsDrift(root, config, jsconfig);
+      if (!drift.changed) continue;
+      const detail = [
+        ...drift.added.map((key) => `missing: ${key}`),
+        ...drift.updated.map((key) => `stale: ${key}`),
+        ...drift.pruned.map((key) => `orphaned: ${key}`),
+      ].join('; ');
+      issues.push({
+        component: 'furnace',
+        severity: 'warning',
+        check: 'jsconfig-paths-drift',
+        message:
+          `${jsconfig} chrome-module paths are out of sync with the workspace (${detail}). ` +
+          'Run "fireforge furnace deploy" to update them.',
+      });
+    } catch {
+      continue;
+    }
+  }
+  try {
+    const tagMap = await syncFurnaceTagMap(root, config, { dryRun: true });
+    if (tagMap?.changed === true) {
+      issues.push({
+        component: 'furnace',
+        severity: 'warning',
+        check: 'tag-map-drift',
+        message:
+          `${tagMap.file} is out of date with the workspace's custom element definitions. ` +
+          'Run "fireforge furnace deploy" to rewrite it.',
+      });
+    }
+  } catch {
+    // An unreadable component module is reported by the other checks.
+  }
+  return issues;
 }
 
 /**

@@ -115,6 +115,17 @@ function normalizeText(text: string): string {
 }
 
 /**
+ * Replaces each comment continuation-line break with a single space: a
+ * newline, optional indentation, then a ` * ` star prefix or the ` - `
+ * dash prefix Mozilla's dashed license blocks use.
+ *
+ * @param text - Comment text with `\n` line breaks
+ */
+function collapseCommentContinuations(text: string): string {
+  return text.replace(/\n[ \t]*[*-][ \t]*/g, ' ');
+}
+
+/**
  * The canonical upstream MPL-2.0 notice as a single normalized sentence
  * (including the `http://mozilla.org/MPL/2.0/.` URL). Wrap-agnostic
  * header checks match against this instead of an exact rendering.
@@ -128,9 +139,9 @@ const MPL_HEADER_NORMALIZED = normalizeText(HEADER_LINES['MPL-2.0'].join(' '));
  * - `js`:   a leading run of `//` lines (markers stripped), or (when the
  *           file opens with a block comment instead) the first
  *           `/* … *\/` block.
- * - `css`:  the first `/* … *\/` block, with the ` * ` continuation-line
- *           prefixes stripped (same collapsing
- *           {@link normalizeLicenseHeadForScan} does).
+ * - `css`:  the first `/* … *\/` block, with the ` * ` or ` - `
+ *           continuation-line prefixes and a leading ` - ` stripped (same
+ *           collapsing {@link normalizeLicenseHeadForScan} does).
  * - `hash`: a leading run of `#` lines (markers stripped).
  *
  * A non-comment first line yields `''`. This lets callers accept a known
@@ -159,7 +170,9 @@ function normalizeCommentHead(content: string, style: CommentStyle): string {
   }
   const block = /^[ \t]*\/\*([\s\S]*?)\*\//.exec(src);
   if (!block) return '';
-  return normalizeText((block[1] ?? '').replace(/\n[ \t]*\*[ \t]*/g, ' '));
+  return normalizeText(
+    collapseCommentContinuations((block[1] ?? '').replace(/^[ \t]*-[ \t]+/, ''))
+  );
 }
 
 /**
@@ -244,11 +257,11 @@ export function hasAnyLicenseHeaderAnyStyle(content: string): boolean {
 /**
  * Collapses block-comment continuation lines (`\n` + ` * ` prefixes) so
  * substring markers like `Mozilla Public License` match Mozilla's wrapped
- * MPL boilerplate.
+ * MPL boilerplate. Mozilla's dashed form (`/* - This Source Code Form …`
+ * with `   - License, v. 2.0 …` continuations) collapses the same way.
  */
 function normalizeLicenseHeadForScan(head: string): string {
-  let s = head.replace(/\r\n?/g, '\n');
-  s = s.replace(/\n[ \t]*\*[ \t]*/g, ' ');
+  const s = collapseCommentContinuations(head.replace(/\r\n?/g, '\n'));
   return s.replace(/\s+/g, ' ').trim();
 }
 

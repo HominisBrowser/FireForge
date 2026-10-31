@@ -298,7 +298,8 @@ export const UNDEFINED_IDENTIFIER_CODES: ReadonlySet<number> = new Set([
 ]);
 
 /**
- * Typed Lit, opt-in through `typecheck.litTypes`. Declares the two chrome
+ * Typed Lit, opt-in through `typecheck.litTypes` for the project pass and
+ * `patchLint.litTypes` for the per-patch checkJs programs. Declares the two chrome
  * modules widgets import Lit from, so they do not fall to the
  * `chrome:*` wildcard as `any`: `LitElement` (with `ReactiveElement`'s
  * lifecycle) and `MozLitElement` carry closed member lists, so a misspelt
@@ -314,7 +315,7 @@ export const UNDEFINED_IDENTIFIER_CODES: ReadonlySet<number> = new Set([
  * file wins over an ambient module.
  */
 const LIT_TYPES_SHIM = `
-// ── FireForge typed Lit (typecheck.litTypes) ──
+// ── FireForge typed Lit (litTypes) ──
 interface LitPropertyDeclarationShim {
   type?: unknown;
   attribute?: boolean | string;
@@ -425,11 +426,11 @@ type MozLitElementWith<Extra> = Pick<
 
 /**
  * Without typed Lit, `MozLitElementWith<Extra>` is `any`, as the base it
- * casts is: the same widget source checks under per-patch checkJs and a
- * project typecheck that leaves `litTypes` off.
+ * casts is: the same widget source checks in every program that leaves
+ * `litTypes` off.
  */
 const LOOSE_LIT_SHIM = `
-// FireForge loose Lit (typecheck.litTypes off): see typecheck-shim.ts.
+// FireForge loose Lit (litTypes off): see typecheck-shim.ts.
 type MozLitElementWith<Extra> = any;
 `;
 

@@ -277,9 +277,28 @@ function describeAnchor(entry: AdjacentUnmanagedFile): string {
     : `beside engine/${entry.anchorDir}`;
 }
 
-/** Renders `<file> (beside engine/<dir>)` or `<file> (registered by engine/<carrier>)`. */
+/**
+ * Suffixes of the backups host tools leave beside an edited file: macOS
+ * `sed -i -E` takes `-E` as the backup suffix, `patch` writes `.orig` and
+ * `.rej`, editors write `~` and `.bak`.
+ */
+const BACKUP_SUFFIXES = ['-E', '.bak', '.orig', '.rej', '~'];
+
+/** Whether `file` is named like a stray backup rather than a source file. */
+function isBackupShaped(file: string): boolean {
+  return BACKUP_SUFFIXES.some((suffix) => file.endsWith(suffix));
+}
+
+/** How a notice names a backup-shaped file, in place of an adoption hint. */
+const STRAY_BACKUP = 'a stray backup, such as a `sed -i` or `patch` leftover: delete it';
+
+/**
+ * Renders `<file> (beside engine/<dir>)` or `<file> (registered by
+ * engine/<carrier>)`, naming a backup-shaped file as a stray backup.
+ */
 function describeAnchored(entry: AdjacentUnmanagedFile): string {
-  return `${entry.file} (${describeAnchor(entry)})`;
+  const backup = isBackupShaped(entry.file) ? `; ${STRAY_BACKUP}` : '';
+  return `${entry.file} (${describeAnchor(entry)}${backup})`;
 }
 
 /** The admitted-file notice lines, one per carve-out that admitted anything. */
@@ -356,10 +375,10 @@ export async function reportAdjacentUnmanagedFiles(args: {
       `or --expect-new for a file your next export adopts.`
   );
   for (const entry of unmanagedFiles) {
-    info(
-      `  ${entry.file} — ${describeAnchor(entry)} — ` +
-        `fireforge re-export ${patch.filename} --scan --scan-file ${entry.file}`
-    );
+    const remedy = isBackupShaped(entry.file)
+      ? `${STRAY_BACKUP} (rm engine/${entry.file})`
+      : `fireforge re-export ${patch.filename} --scan --scan-file ${entry.file}`;
+    info(`  ${entry.file} — ${describeAnchor(entry)} — ${remedy}`);
   }
 
   if (ctx.refuseAdjacentUnmanaged) {

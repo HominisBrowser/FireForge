@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
  * Single-patch refresh core for `fireforge re-export`, split out of
- * `re-export.ts` to stay under the per-file line budget. The orchestrator
- * loop calls {@link reExportSinglePatchWithIndexLockRetry} per selected
- * patch.
+ * `re-export.ts` to stay under the per-file line budget. A refresh is two
+ * steps: a read-only prepare through the foreign-drift judgement, then the
+ * commit. The orchestrator loop runs both per patch through
+ * {@link reExportSinglePatchWithIndexLockRetry}; under
+ * `--refuse-foreign-drift` it prepares every selected patch before
+ * committing any.
  */
 
 import { join } from 'node:path';
@@ -78,27 +81,54 @@ export interface ReExportSinglePatchArgs {
 }
 
 /**
- * Retries a single patch re-export exactly once when the failure is
+ * Runs one re-export step, retrying it exactly once when the failure is
  * transient git `index.lock` contention (an external git process holding
- * the engine repo's index). The retry re-enters `reExportSinglePatch`
- * from the top, so it re-reads clean state. A second lock failure
- * propagates to the loop's honest "N of M" accounting.
+ * the engine repo's index). The retry re-enters the step from the top, so
+ * it re-reads clean state. A second lock failure propagates to the loop's
+ * honest "N of M" accounting.
  */
-export async function reExportSinglePatchWithIndexLockRetry(
-  args: ReExportSinglePatchArgs
-): Promise<boolean> {
+async function withIndexLockRetry<T>(patchFilename: string, step: () => Promise<T>): Promise<T> {
   try {
-    return await reExportSinglePatch(args);
+    return await step();
   } catch (error: unknown) {
     if (!isGitIndexLockConflict(error)) {
       throw error;
     }
     warn(
-      `${args.patch.filename}: git index.lock contention detected — retrying once after ${GIT_INDEX_LOCK_RETRY_MS} ms...`
+      `${patchFilename}: git index.lock contention detected — retrying once after ${GIT_INDEX_LOCK_RETRY_MS} ms...`
     );
     await sleep(GIT_INDEX_LOCK_RETRY_MS);
-    return await reExportSinglePatch(args);
+    return await step();
   }
+}
+
+/** Refreshes one patch, prepare and commit, under the index-lock retry. */
+export async function reExportSinglePatchWithIndexLockRetry(
+  args: ReExportSinglePatchArgs
+): Promise<boolean> {
+  return withIndexLockRetry(args.patch.filename, async () => {
+    const prepared = await prepareSinglePatch(args);
+    return prepared !== undefined && (await commitPreparedPatch(args, prepared));
+  });
+}
+
+/**
+ * Prepares one patch under the index-lock retry: everything up to and
+ * including the foreign-drift judgement, with nothing written. Undefined
+ * means the patch is skipped or refused.
+ */
+export async function prepareSinglePatchWithIndexLockRetry(
+  args: ReExportSinglePatchArgs
+): Promise<PreparedReExport | undefined> {
+  return withIndexLockRetry(args.patch.filename, () => prepareSinglePatch(args));
+}
+
+/** Commits one prepared patch under the index-lock retry. */
+export async function commitPreparedPatchWithIndexLockRetry(
+  args: ReExportSinglePatchArgs,
+  prepared: PreparedReExport
+): Promise<boolean> {
+  return withIndexLockRetry(args.patch.filename, () => commitPreparedPatch(args, prepared));
 }
 
 /**
@@ -158,9 +188,25 @@ async function adoptScannedFiles(
   return { updated: scanResult.updated, added: scanResult.added };
 }
 
-async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boolean> {
-  const { patch, paths, manifest, options, isDryRun, config, adjacentCtx, driftCtx, lintCtx } =
-    args;
+/** A patch judged through the foreign-drift check, ready to commit. */
+export interface PreparedReExport {
+  /** The refreshed `filesAffected`. */
+  currentFilesAffected: string[];
+  /** The files of `currentFilesAffected` the refreshed body carries. */
+  existingFiles: string[];
+  /** The refreshed body. */
+  diffContent: string;
+}
+
+/**
+ * The read-only half of a refresh: scan adoption, the adjacency belt, the
+ * stale-furnace gate, the diff and the foreign-drift judgement. Nothing is
+ * written. Undefined means the patch is skipped or refused.
+ */
+async function prepareSinglePatch(
+  args: ReExportSinglePatchArgs
+): Promise<PreparedReExport | undefined> {
+  const { patch, paths, manifest, options, adjacentCtx, driftCtx } = args;
   const removed = new Set(options.expectRemoved ?? []);
   const retainedFiles = patch.filesAffected.filter((file) => !removed.has(file));
   let currentFilesAffected = retainedFiles;
@@ -171,7 +217,7 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
   // --- Scan for new/removed files ---
   if (options.scan) {
     const adopted = await adoptScannedFiles(args, currentFilesAffected);
-    if (adopted === undefined) return false;
+    if (adopted === undefined) return undefined;
     currentFilesAffected = adopted.updated;
     adoptedFiles = adopted.added;
   } else if (options.files === undefined) {
@@ -184,7 +230,7 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
     // so the operator can re-run with `--scan` or `--files` before the stale
     // filesAffected lands in patches.json.
     const args = { patch, paths, manifest, currentFilesAffected, ctx: adjacentCtx };
-    if (await reportAdjacentUnmanagedFiles(args)) return false;
+    if (await reportAdjacentUnmanagedFiles(args)) return undefined;
   }
 
   // --- Explicit file-subset path ---
@@ -227,7 +273,7 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
   if (untrackedAbsent.length === currentFilesAffected.length) {
     warn(`Skipped ${patch.filename}: all affected files missing`);
     warn(`Missing files: ${untrackedAbsent.join(', ')}`);
-    return false;
+    return undefined;
   }
 
   if (untrackedAbsent.length > 0) {
@@ -246,6 +292,7 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
     diffContent = await buildHunkSelectedDiff({
       engineDir: paths.engine,
       selection,
+      patchFilename: patch.filename,
       oldBody: await readText(join(paths.patches, patch.filename)),
       normalDiff: diffContent,
       files: existingFiles,
@@ -260,7 +307,7 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
 
   if (!diffContent.trim()) {
     warn(`Skipped ${patch.filename}: no changes (files unchanged from HEAD)`);
-    return false;
+    return undefined;
   }
 
   // Foreign-drift preview + optional hard stop: show which
@@ -281,9 +328,22 @@ async function reExportSinglePatch(args: ReExportSinglePatchArgs): Promise<boole
       adoptedFiles,
     })
   ) {
-    return false;
+    return undefined;
   }
+  return { currentFilesAffected, existingFiles, diffContent };
+}
 
+/**
+ * The writing half of a refresh: metadata, the manifest policy, the queue
+ * projection, the per-patch lint and the write (or, in a dry run, its
+ * report). Returns true once the patch is written or would be.
+ */
+async function commitPreparedPatch(
+  args: ReExportSinglePatchArgs,
+  prepared: PreparedReExport
+): Promise<boolean> {
+  const { patch, paths, manifest, options, isDryRun, config, adjacentCtx, lintCtx } = args;
+  const { currentFilesAffected, existingFiles, diffContent } = prepared;
   const { updates, ignoreChecks, effectiveTier, existingIgnoreSet, flagIgnoreSet } =
     computeReExportUpdates(patch, options, currentFilesAffected);
   const stalePlan = planStaleRegistrationDrop(

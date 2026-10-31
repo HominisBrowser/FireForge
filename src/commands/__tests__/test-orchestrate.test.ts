@@ -34,7 +34,7 @@ import type { TestOptions } from '../../types/commands/index.js';
 import { ensureDir, writeJson } from '../../utils/fs.js';
 import { info, success } from '../../utils/logger.js';
 import { runControlRestoreBuild } from '../test-control-restore.js';
-import { orchestrateTestRuns, type TestRunBody } from '../test-orchestrate.js';
+import { orchestrateTestRuns, type TestRunBody, type TestRunHooks } from '../test-orchestrate.js';
 import {
   emitFailVerdict,
   emitHarnessVerdict,
@@ -369,6 +369,25 @@ describe('--negative-control', () => {
       expect(lines('FIREFORGE-VERDICT')[0]).toContain('control-build=compiled');
       // The body recorded no control-built baseline, so nothing to rebuild.
       expect(runControlRestoreBuild).not.toHaveBeenCalled();
+    });
+
+    it("hands the first run's control-build stamp to every later run", async () => {
+      const hooksSeen: TestRunHooks[] = [];
+      const body = vi.fn<TestRunBody>(async (_paths, _options, hooks) => {
+        hooksSeen.push(hooks);
+        await hooks.beforeBuild?.();
+        await hooks.beforeDispatch?.();
+        await red();
+      });
+      await run(['a.js'], { negativeControl: 'cpp.diff', build: true, repeat: 3 }, body);
+      const [first, ...later] = hooksSeen;
+      expect(first?.controlBuild).toMatchObject({ diffFile: 'cpp.diff', targets: [CPP] });
+      expect(first?.ownControlBuild).toBeUndefined();
+      expect(later).toHaveLength(2);
+      for (const hooks of later) {
+        expect(hooks.controlBuild).toBeUndefined();
+        expect(hooks.ownControlBuild).toEqual(first?.controlBuild);
+      }
     });
 
     it('rebuilds once after the restore when its build recorded the control stamp', async () => {

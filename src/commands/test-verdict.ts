@@ -63,11 +63,27 @@ export type VerdictRunAttributeKey =
   | 'lock'
   | 'jobs'
   | 'upload-dirs'
-  | 'results';
+  | 'results'
+  | 'build-paths';
 
 /** Records an additive attribute for this run's verdict line. */
 export function setVerdictRunAttribute(key: VerdictRunAttributeKey, value: string): void {
   runAttributes.set(key, value);
+}
+
+/**
+ * A comma-separated path list for a verdict attribute that a script feeds
+ * back to FireForge (`build-paths=`). The line is tokenised on whitespace
+ * and the list split on commas, so `%`, `,` and whitespace inside a path
+ * are percent-encoded (`decodeURIComponent` restores each entry); any other
+ * path is written verbatim.
+ *
+ * @param paths - Engine-relative paths, forward slashes
+ */
+export function formatVerdictPathList(paths: readonly string[]): string {
+  return paths
+    .map((path) => path.replace(/[%,\s]/gu, (char) => encodeURIComponent(char)))
+    .join(',');
 }
 
 /**

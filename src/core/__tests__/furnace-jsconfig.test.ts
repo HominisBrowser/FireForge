@@ -7,12 +7,23 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTempProject, removeTempProject } from '../../test-utils/index.js';
-import type { FurnaceConfig } from '../../types/furnace.js';
+import { createLoggerMock } from '../../test-utils/module-mocks.js';
+import type { CustomComponentConfig, FurnaceConfig } from '../../types/furnace.js';
 import { readJson, readText } from '../../utils/fs.js';
-import { findJsconfigPathsDrift, syncFurnaceJsconfigPaths } from '../furnace-jsconfig.js';
+import { info } from '../../utils/logger.js';
+import {
+  findJsconfigPathsDrift,
+  type JsconfigSyncResult,
+  reportJsconfigPathsSync,
+  syncFurnaceJsconfigPaths,
+  typecheckJsconfigList,
+} from '../furnace-jsconfig.js';
+import { syncFurnaceTagMap } from '../furnace-tag-map.js';
+
+vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 interface JsconfigFixture {
   compilerOptions?: {
@@ -33,6 +44,17 @@ function makeConfig(custom: FurnaceConfig['custom']): FurnaceConfig {
     custom,
     typecheckJsconfig: 'tools/jsconfig.json',
   };
+}
+
+/** Syncs a config that names exactly one jsconfig and returns its result. */
+async function syncOne(
+  root: string,
+  config: FurnaceConfig,
+  options?: { dryRun?: boolean }
+): Promise<JsconfigSyncResult> {
+  const results = await syncFurnaceJsconfigPaths(root, config, options);
+  expect(results).toHaveLength(1);
+  return results[0] as JsconfigSyncResult;
 }
 
 describe('syncFurnaceJsconfigPaths', () => {
@@ -60,7 +82,7 @@ describe('syncFurnaceJsconfigPaths', () => {
     await seedComponent('moz-widget', ['moz-widget.mjs', 'widget-helper.mjs', 'moz-widget.css']);
     await writeFile(jsconfigPath, JSON.stringify({ compilerOptions: { checkJs: true } }) + '\n');
 
-    const result = await syncFurnaceJsconfigPaths(
+    const result = await syncOne(
       projectRoot,
       makeConfig({
         'moz-widget': {
@@ -113,7 +135,7 @@ describe('syncFurnaceJsconfigPaths', () => {
       }) + '\n'
     );
 
-    await syncFurnaceJsconfigPaths(
+    await syncOne(
       projectRoot,
       makeConfig({
         'moz-widget': {
@@ -156,7 +178,7 @@ describe('syncFurnaceJsconfigPaths', () => {
       }) + '\n'
     );
 
-    const result = await syncFurnaceJsconfigPaths(
+    const result = await syncOne(
       projectRoot,
       makeConfig({
         'moz-widget': {
@@ -184,7 +206,7 @@ describe('syncFurnaceJsconfigPaths', () => {
     await seedComponent('moz-quiet', ['moz-quiet.mjs']);
     await writeFile(jsconfigPath, JSON.stringify({}) + '\n');
 
-    const unregistered = await syncFurnaceJsconfigPaths(
+    const unregistered = await syncOne(
       projectRoot,
       makeConfig({
         'moz-quiet': {
@@ -203,7 +225,7 @@ describe('syncFurnaceJsconfigPaths', () => {
     await seedComponent('moz-shared', ['widget-base.mjs']);
     await writeFile(jsconfigPath, JSON.stringify({}) + '\n');
 
-    const result = await syncFurnaceJsconfigPaths(
+    const result = await syncOne(
       projectRoot,
       makeConfig({
         'moz-shared': {
@@ -243,7 +265,7 @@ describe('syncFurnaceJsconfigPaths', () => {
       }) + '\n'
     );
 
-    const result = await syncFurnaceJsconfigPaths(
+    const result = await syncOne(
       projectRoot,
       makeConfig({
         'moz-shared': {
@@ -269,8 +291,7 @@ describe('syncFurnaceJsconfigPaths', () => {
   it('is a no-op without typecheckJsconfig', async () => {
     const config = makeConfig({});
     delete config.typecheckJsconfig;
-    const disabled = await syncFurnaceJsconfigPaths(projectRoot, config);
-    expect(disabled.changed).toBe(false);
+    expect(await syncFurnaceJsconfigPaths(projectRoot, config)).toEqual([]);
   });
 
   it('is idempotent: a second run reports no changes', async () => {
@@ -293,9 +314,9 @@ describe('syncFurnaceJsconfigPaths', () => {
       },
     });
 
-    const first = await syncFurnaceJsconfigPaths(projectRoot, config);
+    const first = await syncOne(projectRoot, config);
     expect(first.changed).toBe(true);
-    const second = await syncFurnaceJsconfigPaths(projectRoot, config);
+    const second = await syncOne(projectRoot, config);
     expect(second.changed).toBe(false);
   });
 
@@ -312,7 +333,7 @@ describe('syncFurnaceJsconfigPaths', () => {
       },
     });
 
-    const drift = await findJsconfigPathsDrift(projectRoot, config);
+    const drift = await findJsconfigPathsDrift(projectRoot, config, 'tools/jsconfig.json');
     expect(drift.changed).toBe(true);
     expect(drift.added).toEqual(['chrome://global/content/elements/moz-widget.mjs']);
 
@@ -321,7 +342,7 @@ describe('syncFurnaceJsconfigPaths', () => {
   });
 
   it('errors with guidance when the configured jsconfig is missing', async () => {
-    await expect(syncFurnaceJsconfigPaths(projectRoot, makeConfig({}))).rejects.toThrow(
+    await expect(syncOne(projectRoot, makeConfig({}))).rejects.toThrow(
       /typecheckJsconfig.*does not exist/s
     );
   });
@@ -329,7 +350,7 @@ describe('syncFurnaceJsconfigPaths', () => {
   it('errors with guidance when the JSONC file cannot be parsed', async () => {
     await writeFile(jsconfigPath, '{ "compilerOptions": ');
 
-    await expect(syncFurnaceJsconfigPaths(projectRoot, makeConfig({}))).rejects.toThrow(
+    await expect(syncOne(projectRoot, makeConfig({}))).rejects.toThrow(
       /Could not parse tools\/jsconfig\.json as JSONC/
     );
   });
@@ -337,7 +358,7 @@ describe('syncFurnaceJsconfigPaths', () => {
   it('errors with guidance when the JSONC root is not an object', async () => {
     await writeFile(jsconfigPath, '[]\n');
 
-    await expect(syncFurnaceJsconfigPaths(projectRoot, makeConfig({}))).rejects.toThrow(
+    await expect(syncOne(projectRoot, makeConfig({}))).rejects.toThrow(
       /expected an object jsconfig file/
     );
   });
@@ -346,7 +367,7 @@ describe('syncFurnaceJsconfigPaths', () => {
     await seedComponent('moz-widget', ['moz-widget.mjs']);
     await writeFile(jsconfigPath, '{\n  // comment\n  "compilerOptions": {}\n}\n');
 
-    const result = await syncFurnaceJsconfigPaths(
+    const result = await syncOne(
       projectRoot,
       makeConfig({
         'moz-widget': {
@@ -379,7 +400,7 @@ describe('syncFurnaceJsconfigPaths', () => {
       }) + '\n'
     );
 
-    const result = await syncFurnaceJsconfigPaths(
+    const result = await syncOne(
       projectRoot,
       makeConfig({
         'moz-widget': {
@@ -444,7 +465,7 @@ describe('syncFurnaceJsconfigPaths — root-level jsconfig (./-relative, TS5090)
       JSON.stringify({ compilerOptions: { checkJs: true } }) + '\n'
     );
 
-    await syncFurnaceJsconfigPaths(projectRoot, rootConfig());
+    await syncOne(projectRoot, rootConfig());
 
     const written = await readJson<JsconfigFixture>(rootJsconfigPath);
     expect(written.compilerOptions?.paths).toEqual({
@@ -459,9 +480,9 @@ describe('syncFurnaceJsconfigPaths — root-level jsconfig (./-relative, TS5090)
     await writeFile(rootJsconfigPath, JSON.stringify({}) + '\n');
     const config = rootConfig();
 
-    const first = await syncFurnaceJsconfigPaths(projectRoot, config);
+    const first = await syncOne(projectRoot, config);
     expect(first.changed).toBe(true);
-    const second = await syncFurnaceJsconfigPaths(projectRoot, config);
+    const second = await syncOne(projectRoot, config);
     expect(second.changed).toBe(false);
     expect(second.updated).toEqual([]);
   });
@@ -476,7 +497,7 @@ describe('syncFurnaceJsconfigPaths — root-level jsconfig (./-relative, TS5090)
         rootJsconfigPath,
         JSON.stringify({ compilerOptions: { paths: { [key]: [handWritten] } } }) + '\n'
       );
-      const result = await syncFurnaceJsconfigPaths(projectRoot, rootConfig());
+      const result = await syncOne(projectRoot, rootConfig());
       expect(result.changed).toBe(false);
       expect(result.updated).toEqual([]);
       const written = await readJson<JsconfigFixture>(rootJsconfigPath);
@@ -487,7 +508,7 @@ describe('syncFurnaceJsconfigPaths — root-level jsconfig (./-relative, TS5090)
 
   it('the emitted paths type-check under TypeScript without baseUrl (no TS5090, no TS5101)', async () => {
     await writeFile(rootJsconfigPath, JSON.stringify({}) + '\n');
-    await syncFurnaceJsconfigPaths(projectRoot, rootConfig());
+    await syncOne(projectRoot, rootConfig());
     const written = await readJson<JsconfigFixture>(rootJsconfigPath);
 
     const ts = await import('typescript');
@@ -515,5 +536,226 @@ describe('syncFurnaceJsconfigPaths — root-level jsconfig (./-relative, TS5090)
       },
     });
     expect(bare).toContain(5090);
+  });
+});
+
+describe('syncFurnaceJsconfigPaths — a typecheckJsconfig list', () => {
+  let projectRoot: string;
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-jsconfig-list-');
+    const dir = join(projectRoot, 'components', 'custom', 'moz-widget');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'moz-widget.mjs'), '// module\n');
+    await mkdir(join(projectRoot, 'components', 'custom'), { recursive: true });
+    await mkdir(join(projectRoot, 'engine', 'browser', 'content'), { recursive: true });
+    await writeFile(join(projectRoot, 'components', 'custom', 'jsconfig.json'), '{}\n');
+    await writeFile(join(projectRoot, 'engine', 'browser', 'content', 'jsconfig.json'), '{}\n');
+  });
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  it('writes each jsconfig its own relative paths and reports per file', async () => {
+    const config: FurnaceConfig = {
+      ...makeConfig({
+        'moz-widget': {
+          description: 'Widget',
+          targetPath: 'toolkit/content/widgets/moz-widget',
+          register: true,
+          localized: false,
+        },
+      }),
+      typecheckJsconfig: [
+        'components/custom/jsconfig.json',
+        'engine/browser/content/jsconfig.json',
+      ],
+    };
+
+    const results = await syncFurnaceJsconfigPaths(projectRoot, config);
+    expect(results.map((r) => [r.jsconfig, r.changed])).toEqual([
+      ['components/custom/jsconfig.json', true],
+      ['engine/browser/content/jsconfig.json', true],
+    ]);
+    const key = 'chrome://global/content/elements/moz-widget.mjs';
+    const custom = await readJson<JsconfigFixture>(
+      join(projectRoot, 'components', 'custom', 'jsconfig.json')
+    );
+    const content = await readJson<JsconfigFixture>(
+      join(projectRoot, 'engine', 'browser', 'content', 'jsconfig.json')
+    );
+    expect(custom.compilerOptions?.paths?.[key]).toEqual(['./moz-widget/moz-widget.mjs']);
+    expect(content.compilerOptions?.paths?.[key]).toEqual([
+      '../../../components/custom/moz-widget/moz-widget.mjs',
+    ]);
+
+    // Drift is per file: one stale entry names only its own jsconfig.
+    await writeFile(join(projectRoot, 'engine', 'browser', 'content', 'jsconfig.json'), '{}\n');
+    const drift = await Promise.all(
+      typecheckJsconfigList(config).map((file) => findJsconfigPathsDrift(projectRoot, config, file))
+    );
+    expect(drift.map((d) => [d.jsconfig, d.changed])).toEqual([
+      ['components/custom/jsconfig.json', false],
+      ['engine/browser/content/jsconfig.json', true],
+    ]);
+
+    await reportJsconfigPathsSync(projectRoot, config, false);
+    expect(vi.mocked(info)).toHaveBeenCalledWith(
+      expect.stringContaining('Updated engine/browser/content/jsconfig.json chrome-module paths')
+    );
+    expect(vi.mocked(info)).not.toHaveBeenCalledWith(
+      expect.stringContaining('components/custom/jsconfig.json')
+    );
+  });
+});
+
+describe('typecheckTagMap', () => {
+  let projectRoot: string;
+
+  const component = (overrides: Partial<CustomComponentConfig> = {}): CustomComponentConfig => ({
+    description: 'c',
+    targetPath: 'toolkit/content/widgets/c',
+    register: true,
+    localized: false,
+    ...overrides,
+  });
+
+  async function seed(name: string, files: Record<string, string>): Promise<void> {
+    const dir = join(projectRoot, 'components', 'custom', name);
+    await mkdir(dir, { recursive: true });
+    for (const [file, content] of Object.entries(files)) {
+      await writeFile(join(dir, file), content);
+    }
+  }
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('ff-tag-map-');
+  });
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  it('maps exported element classes and skips libraries, unregistered and unexported ones', async () => {
+    await seed('moz-named', {
+      'moz-named.mjs':
+        'export class MozNamed extends HTMLElement {}\ncustomElements.define("moz-named", MozNamed);\n',
+    });
+    await seed('moz-default', {
+      'moz-default.mjs':
+        'export default class MozDefault extends HTMLElement {}\ncustomElements.define("moz-default", MozDefault);\n',
+    });
+    await seed('moz-aliased', {
+      'moz-aliased.mjs':
+        'class Impl extends HTMLElement {}\nwindow.customElements.define("moz-aliased", Impl);\nexport { Impl as MozAliased };\n',
+    });
+    await seed('moz-hidden', {
+      'moz-hidden.mjs':
+        'class MozHidden extends HTMLElement {}\ncustomElements.define("moz-hidden", MozHidden);\n',
+    });
+    await seed('moz-link', {
+      'moz-link.mjs':
+        'export class MozLink extends HTMLAnchorElement {}\ncustomElements.define("moz-link", MozLink, { extends: "a" });\n',
+    });
+    await seed('moz-unregistered', {
+      'moz-unregistered.mjs':
+        'export class MozUnregistered extends HTMLElement {}\ncustomElements.define("moz-unregistered", MozUnregistered);\n',
+    });
+    await seed('moz-base', {
+      'moz-base.mjs': 'export class MozBase extends HTMLElement {}\n',
+    });
+    const config: FurnaceConfig = {
+      ...makeConfig({
+        'moz-named': component(),
+        'moz-default': component(),
+        'moz-aliased': component(),
+        'moz-hidden': component(),
+        'moz-link': component(),
+        'moz-unregistered': component({ register: false }),
+        'moz-base': component({ register: false, kind: 'library' }),
+      }),
+      typecheckTagMap: 'types/tag-map.d.ts',
+    };
+
+    const result = await syncFurnaceTagMap(projectRoot, config);
+    expect(result?.changed).toBe(true);
+    const written = await readText(join(projectRoot, 'types', 'tag-map.d.ts'));
+    expect(written).toContain('interface HTMLElementTagNameMap {\n');
+    expect(written.split('\n').filter((line) => line.startsWith('  '))).toEqual([
+      '  "moz-aliased": import("chrome://global/content/elements/moz-aliased.mjs").MozAliased;',
+      '  "moz-default": import("chrome://global/content/elements/moz-default.mjs").default;',
+      '  "moz-named": import("chrome://global/content/elements/moz-named.mjs").MozNamed;',
+    ]);
+
+    // Up to date: a dry run reports no drift, and furnace validate's check agrees.
+    await expect(syncFurnaceTagMap(projectRoot, config, { dryRun: true })).resolves.toMatchObject({
+      changed: false,
+    });
+    await seed('moz-hidden', {
+      'moz-hidden.mjs':
+        'export class MozHidden extends HTMLElement {}\ncustomElements.define("moz-hidden", MozHidden);\n',
+    });
+    await expect(syncFurnaceTagMap(projectRoot, config, { dryRun: true })).resolves.toMatchObject({
+      changed: true,
+    });
+    expect(await readText(join(projectRoot, 'types', 'tag-map.d.ts'))).toBe(written);
+  });
+
+  it('is a no-op without typecheckTagMap', async () => {
+    await expect(syncFurnaceTagMap(projectRoot, makeConfig({}))).resolves.toBeUndefined();
+  });
+
+  it('types createElement through the jsconfig paths Furnace writes', async () => {
+    await seed('moz-named', {
+      'moz-named.mjs':
+        'export class MozNamed extends HTMLElement {\n  /** @type {number} */\n  count = 0;\n}\ncustomElements.define("moz-named", MozNamed);\n',
+    });
+    await mkdir(join(projectRoot, 'tools'), { recursive: true });
+    await writeFile(
+      join(projectRoot, 'tools', 'jsconfig.json'),
+      JSON.stringify({
+        compilerOptions: {
+          allowJs: true,
+          checkJs: true,
+          noEmit: true,
+          strict: true,
+          module: 'ESNext',
+          target: 'ESNext',
+          moduleResolution: 'Bundler',
+          lib: ['ESNext', 'DOM'],
+        },
+        files: ['tag-map.d.ts', 'use.js'],
+      }) + '\n'
+    );
+    await writeFile(
+      join(projectRoot, 'tools', 'use.js'),
+      [
+        'const el = document.createElement("moz-named");',
+        '/** @type {string} */',
+        'export const wrong = el.count;',
+        '',
+      ].join('\n')
+    );
+    const config: FurnaceConfig = {
+      ...makeConfig({ 'moz-named': component() }),
+      typecheckTagMap: 'tools/tag-map.d.ts',
+    };
+    await reportJsconfigPathsSync(projectRoot, config, false);
+
+    const ts = await import('typescript');
+    const configPath = join(projectRoot, 'tools', 'jsconfig.json');
+    const parsed = ts.parseJsonConfigFileContent(
+      ts.readConfigFile(configPath, (path) => ts.sys.readFile(path)).config,
+      ts.sys,
+      join(projectRoot, 'tools')
+    );
+    const program = ts.createProgram(parsed.fileNames, parsed.options);
+    const diagnostics = ts.getPreEmitDiagnostics(program).map((d) => ({
+      code: d.code,
+      message: ts.flattenDiagnosticMessageText(d.messageText, '\n'),
+    }));
+    // `el` is MozNamed, so its number-typed member does not assign to string.
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]?.code).toBe(2322);
+    expect(diagnostics[0]?.message).toContain("Type 'number' is not assignable to type 'string'");
   });
 });

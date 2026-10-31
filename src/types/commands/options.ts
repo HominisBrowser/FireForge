@@ -904,6 +904,11 @@ export interface FurnaceDeployOptions extends DryRunnable {
   /** Skip the validation step (apply only, no accessibility/compatibility checks) */
   skipValidate?: boolean;
   /**
+   * The patch being exported (`--owner`). A deployed file the deploy would
+   * overwrite that another patch owns refuses the whole deploy.
+   */
+  owner?: string;
+  /**
    * Resolved `--wait-lock` budget in seconds, or undefined for the default.
    * Threaded to the furnace lock `runFurnaceMutation` takes INSIDE the
    * engine session lock, so one flag governs both.

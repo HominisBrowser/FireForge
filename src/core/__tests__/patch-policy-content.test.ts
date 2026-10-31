@@ -229,6 +229,52 @@ describe('evaluatePatchPolicyContent', () => {
     expect(byPatch['005-ui-binary.patch']?.message).toContain('carries a binary change');
   });
 
+  it("lets an add-only file drop a line naming one of the entry's retiredPaths", async () => {
+    const { manifest, entries } = queue([
+      {
+        filename: '001-ui-retires.patch',
+        order: 1,
+        files: ['browser/base/jar.mn'],
+        diff: modifyDiff(
+          'browser/base/jar.mn',
+          ['        content/browser/fxa/fxa-logo.svg  (content/fxa/fxa-logo.svg)'],
+          []
+        ),
+      },
+      {
+        filename: '002-ui-removes-other.patch',
+        order: 2,
+        files: ['browser/base/jar.mn'],
+        diff: modifyDiff(
+          'browser/base/jar.mn',
+          [
+            '        content/browser/fxa/fxa-logo.svg  (content/fxa/fxa-logo.svg)',
+            '        content/browser/fxa/sync.svg  (content/fxa/sync.svg)',
+          ],
+          []
+        ),
+      },
+    ]);
+    const config = configWith({
+      mutationMode: 'warn',
+      upstreamAllowlist: [
+        {
+          path: '**/jar.mn',
+          addOnly: true,
+          marker: 'hominis',
+          retiredPaths: ['content/fxa/fxa-logo.svg'],
+        },
+      ],
+    });
+
+    const issues = await evaluatePatchPolicyContent(config, projectRoot, manifest, entries);
+
+    expect(issues.map((issue) => issue.filename)).toEqual(['002-ui-removes-other.patch']);
+    expect(issues[0]?.message).toContain(
+      'removes 1 line(s), first: "        content/browser/fxa/sync.svg  (content/fxa/sync.svg)"'
+    );
+  });
+
   it('scopes a patch class to its globs by filename pattern and category', async () => {
     const { manifest, entries } = queue([
       {

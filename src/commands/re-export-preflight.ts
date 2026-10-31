@@ -195,7 +195,7 @@ export async function preflightReExportArguments(
   // No manifest: the locked run reports that with its own remedy.
   if (!manifest || manifest.patches.length === 0) return;
 
-  if (options.all !== true && options.scanFilesManifest === undefined) {
+  if (options.all !== true) {
     await resolvePositionals(paths.engine, normalized.patches, manifest);
   }
   await assertFlagPathsInStatus(paths.engine, normalized.options, manifest);

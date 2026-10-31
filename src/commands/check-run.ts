@@ -4,6 +4,8 @@
  * child process in its own process group (so a timeout or a Ctrl+C takes
  * the step's whole tree), honouring each step's `after` ordering.
  */
+import { loadavg } from 'node:os';
+
 import { ExecTimeoutError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { execStream } from '../utils/process.js';
@@ -30,6 +32,29 @@ export interface CheckStepResult {
   timedOut?: true;
   /** The tail of the step's combined output, for a failed step. */
   outputTail?: string;
+  /**
+   * The host's 1-minute load average when the step started and when it
+   * ended. Absent for a skipped step and on Windows, which has no load
+   * average.
+   */
+  load1Start?: number;
+  load1End?: number;
+}
+
+/** Samples the host's 1-minute load average; undefined where there is none. */
+type LoadSampler = () => number | undefined;
+
+/** `os.loadavg()[0]`, or undefined on Windows, where Node reports zeros. */
+function sampleLoad1(): number | undefined {
+  return process.platform === 'win32' ? undefined : loadavg()[0];
+}
+
+/** Both load samples, or nothing when either is unavailable. */
+function loadFields(
+  start: number | undefined,
+  end: number | undefined
+): Pick<CheckStepResult, 'load1Start' | 'load1End'> {
+  return start === undefined || end === undefined ? {} : { load1Start: start, load1End: end };
 }
 
 /** Combined output kept per step: enough for a tail, bounded for a chatty audit. */
@@ -43,7 +68,11 @@ function tailLines(text: string): string {
 }
 
 /** Runs one planned step to completion. Never throws. */
-async function runStep(plan: CheckStepPlan, now: () => number): Promise<CheckStepResult> {
+async function runStep(
+  plan: CheckStepPlan,
+  now: () => number,
+  load: LoadSampler
+): Promise<CheckStepResult> {
   const base = { name: plan.name, kind: plan.kind, command: plan.display };
   if (plan.skipReason !== undefined) {
     return {
@@ -62,6 +91,7 @@ async function runStep(plan: CheckStepPlan, now: () => number): Promise<CheckSte
     if (combined.length > COMBINED_OUTPUT_CAP) combined = combined.slice(-COMBINED_OUTPUT_CAP);
   };
   const started = now();
+  const load1Start = load();
   try {
     const exitCode = await execStream(plan.command, plan.args, {
       cwd: plan.cwd,
@@ -80,6 +110,7 @@ async function runStep(plan: CheckStepPlan, now: () => number): Promise<CheckSte
       status,
       exitCode,
       durationMs: now() - started,
+      ...loadFields(load1Start, load()),
       detail: plan.summarize({ stdout, combined, exitCode }),
       ...(status === 'fail' ? { outputTail: tailLines(combined) } : {}),
     };
@@ -90,6 +121,7 @@ async function runStep(plan: CheckStepPlan, now: () => number): Promise<CheckSte
       status: 'fail',
       exitCode: null,
       durationMs: now() - started,
+      ...loadFields(load1Start, load()),
       detail: timedOut
         ? `timed out after ${Math.round((plan.timeoutMs ?? 0) / 1000)}s`
         : `could not start: ${toError(error).message}`,
@@ -107,11 +139,13 @@ async function runStep(plan: CheckStepPlan, now: () => number): Promise<CheckSte
  * @param plans - The plan from `buildCheckPlan`, already filtered
  * @param jobs - How many steps may run at once (at least 1)
  * @param now - Clock, injectable for tests
+ * @param load - 1-minute load average sampler, injectable for tests
  */
 export async function runCheckSteps(
   plans: readonly CheckStepPlan[],
   jobs: number,
-  now: () => number = Date.now
+  now: () => number = Date.now,
+  load: LoadSampler = sampleLoad1
 ): Promise<CheckStepResult[]> {
   const names = new Set(plans.map((plan) => plan.name));
   const results = new Map<string, CheckStepResult>();
@@ -131,7 +165,7 @@ export async function runCheckSteps(
       pending.splice(index, 1);
       running.set(
         plan.name,
-        runStep(plan, now).then((result) => {
+        runStep(plan, now, load).then((result) => {
           results.set(plan.name, result);
           running.delete(plan.name);
         })

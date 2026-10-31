@@ -14,7 +14,7 @@
 
 import { GeneralError } from '../errors/base.js';
 import { isContainedRelativePath, normalizePathSlashes } from '../utils/paths.js';
-import { type ParsedHunk, parseDiffSections } from './patch-parse.js';
+import { type ParsedHunk, parseDiffSections, withGitHeaders } from './patch-parse.js';
 
 /** One file of a control diff. */
 export interface ControlDiffFile {
@@ -26,49 +26,6 @@ export interface ControlDiffFile {
 
 function refuse(message: string): never {
   throw new GeneralError(`Negative control diff refused: ${message}`);
-}
-
-/** A `---`/`+++` file name, without a trailing timestamp or git's `a/`/`b/`. */
-function plainDiffPath(raw: string): string {
-  const name = raw.split('\t')[0]?.trim() ?? '';
-  return name.startsWith('a/') || name.startsWith('b/') ? name.slice(2) : name;
-}
-
-/**
- * Gives a plain unified diff (`diff -u`, no `diff --git` lines) the git
- * header the section parser keys on, one per `---`/`+++` pair. A diff that
- * already carries `diff --git` headers is returned unchanged.
- *
- * @param content - The diff file's text
- */
-function withGitHeaders(content: string): string {
-  const lines = content.split('\n');
-  if (lines.some((line) => line.startsWith('diff --git '))) return content;
-  const out: string[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? '';
-    const next = lines[index + 1] ?? '';
-    if (line.startsWith('--- ') && next.startsWith('+++ ')) {
-      const oldPath = plainDiffPath(line.slice(4));
-      const newPath = plainDiffPath(next.slice(4));
-      index += 1;
-      if (oldPath === '/dev/null' || newPath === '/dev/null') {
-        // Kept as a create/delete, which the parser below refuses by name.
-        const path = oldPath === '/dev/null' ? newPath : oldPath;
-        out.push(
-          `diff --git a/${path} b/${path}`,
-          oldPath === '/dev/null' ? 'new file mode 100644' : 'deleted file mode 100644',
-          oldPath === '/dev/null' ? '--- /dev/null' : `--- a/${path}`,
-          newPath === '/dev/null' ? '+++ /dev/null' : `+++ b/${path}`
-        );
-        continue;
-      }
-      out.push(`diff --git a/${oldPath} b/${newPath}`, `--- a/${oldPath}`, `+++ b/${newPath}`);
-      continue;
-    }
-    out.push(line);
-  }
-  return out.join('\n');
 }
 
 /** Options for {@link parseControlDiff}. */

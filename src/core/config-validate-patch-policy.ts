@@ -193,6 +193,22 @@ function parseUpstreamAllowEntry(
       `Config field "${label}" sets addOnly but no marker: set "${label}.marker" or "patchPolicy.addOnlyMarker"`
     );
   }
+  const retiredPaths = rec.raw('retiredPaths');
+  if (retiredPaths !== undefined) {
+    if (entry.addOnly !== true) {
+      throw new ConfigError(
+        `Config field "${label}.retiredPaths" only applies to an addOnly entry: set "${label}.addOnly" to true`
+      );
+    }
+    if (!Array.isArray(retiredPaths) || retiredPaths.length === 0) {
+      throw new ConfigError(
+        `Config field "${label}.retiredPaths" must be a non-empty array of paths`
+      );
+    }
+    entry.retiredPaths = retiredPaths.map((path, index) =>
+      parseNonEmptyString(path, `${label}.retiredPaths[${index}]`)
+    );
+  }
   return entry;
 }
 

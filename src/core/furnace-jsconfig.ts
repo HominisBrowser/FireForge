@@ -17,7 +17,8 @@
  * pruned). Everything else in the jsconfig, including hand-written `paths`
  * entries pointing elsewhere, is preserved verbatim. No `baseUrl` is
  * required or written: relative `paths` resolve against the config file's
- * directory.
+ * directory. Several jsconfigs can be configured, each with paths relative
+ * to its own directory.
  */
 
 import { readdir } from 'node:fs/promises';
@@ -32,12 +33,23 @@ import { pathExists, readText, writeTextIfChanged } from '../utils/fs.js';
 import { info } from '../utils/logger.js';
 import { isPathInsideRoot, normalizePathSlashes } from '../utils/paths.js';
 import { getFurnacePaths } from './furnace-config.js';
+import { CHROME_ELEMENTS_URL_PREFIX } from './furnace-constants.js';
+import { syncFurnaceTagMap } from './furnace-tag-map.js';
 
-/** Chrome URL prefix under which registered custom-element files deploy. */
-const CHROME_ELEMENTS_URL_PREFIX = 'chrome://global/content/elements/';
+/**
+ * The configured `typecheckJsconfig` files, as a list: none when unset,
+ * one for a string.
+ */
+export function typecheckJsconfigList(config: FurnaceConfig): string[] {
+  const value = config.typecheckJsconfig;
+  if (value === undefined) return [];
+  return typeof value === 'string' ? [value] : [...value];
+}
 
 /** Result summary of a jsconfig paths sync. */
 export interface JsconfigSyncResult {
+  /** The project-relative jsconfig this result is for. */
+  jsconfig: string;
   /** Keys newly added to compilerOptions.paths. */
   added: string[];
   /** Managed keys whose mapped path changed. */
@@ -128,32 +140,58 @@ function isManagedEntry(
 }
 
 /**
- * Reconciles the managed `compilerOptions.paths` entries of the configured
- * jsconfig against the current Furnace workspace. Idempotent, and writes
- * only when something actually changes. Dry-run returns the diff without
- * writing.
+ * Reconciles the managed `compilerOptions.paths` entries of every
+ * configured jsconfig against the current Furnace workspace, each with
+ * paths relative to its own directory. Idempotent, and writes only when
+ * something actually changes. Dry-run returns the diff without writing.
+ *
+ * @param root - Project root directory
+ * @param config - Loaded Furnace configuration
+ * @param options - `dryRun` skips the writes but still reports the diff
+ * @returns One result per configured jsconfig, in configured order
+ */
+export async function syncFurnaceJsconfigPaths(
+  root: string,
+  config: FurnaceConfig,
+  options?: { dryRun?: boolean }
+): Promise<JsconfigSyncResult[]> {
+  const results: JsconfigSyncResult[] = [];
+  for (const jsconfig of typecheckJsconfigList(config)) {
+    results.push(await syncJsconfigPaths(root, config, jsconfig, options));
+  }
+  return results;
+}
+
+/**
+ * Reconciles the managed `compilerOptions.paths` entries of one jsconfig.
  *
  * The consumer owns the jsconfig file: a missing file is an error with
  * guidance rather than a silent scaffold. JSONC comments and trailing commas
  * are preserved. Furnace edits only `compilerOptions.paths`.
  *
  * @param root - Project root directory
- * @param config - Loaded Furnace configuration (must carry `typecheckJsconfig`)
+ * @param config - Loaded Furnace configuration
+ * @param jsconfigRel - Project-relative jsconfig path
  * @param options - `dryRun` skips the write but still reports the diff
  */
-export async function syncFurnaceJsconfigPaths(
+export async function syncJsconfigPaths(
   root: string,
   config: FurnaceConfig,
+  jsconfigRel: string,
   options?: { dryRun?: boolean }
 ): Promise<JsconfigSyncResult> {
-  const result: JsconfigSyncResult = { added: [], updated: [], pruned: [], changed: false };
-  const jsconfigRel = config.typecheckJsconfig;
-  if (!jsconfigRel) return result;
+  const result: JsconfigSyncResult = {
+    jsconfig: jsconfigRel,
+    added: [],
+    updated: [],
+    pruned: [],
+    changed: false,
+  };
 
   const jsconfigAbs = resolve(root, jsconfigRel);
   if (!(await pathExists(jsconfigAbs))) {
     throw new FurnaceError(
-      `furnace.json sets "typecheckJsconfig": "${jsconfigRel}", but the file does not exist. ` +
+      `furnace.json "typecheckJsconfig" names ${jsconfigRel}, but the file does not exist. ` +
         'Create the jsconfig (it stays consumer-owned; Furnace only maintains the ' +
         `"compilerOptions.paths" entries under ${CHROME_ELEMENTS_URL_PREFIX}*), ` +
         'or remove the setting.'
@@ -240,20 +278,27 @@ export async function syncFurnaceJsconfigPaths(
 }
 
 /**
- * Computes jsconfig `paths` drift for `furnace validate`: managed entries
- * that are missing or stale relative to the current workspace. Read-only:
- * delegates to {@link syncFurnaceJsconfigPaths} in dry-run mode.
+ * Computes one jsconfig's `paths` drift for `furnace validate` and
+ * `typecheck`: managed entries that are missing or stale relative to the
+ * current workspace. Read-only: delegates to {@link syncJsconfigPaths} in
+ * dry-run mode.
+ *
+ * @param root - Project root directory
+ * @param config - Loaded Furnace configuration
+ * @param jsconfigRel - Project-relative jsconfig path
  */
 export async function findJsconfigPathsDrift(
   root: string,
-  config: FurnaceConfig
+  config: FurnaceConfig,
+  jsconfigRel: string
 ): Promise<JsconfigSyncResult> {
-  return syncFurnaceJsconfigPaths(root, config, { dryRun: true });
+  return syncJsconfigPaths(root, config, jsconfigRel, { dryRun: true });
 }
 
 /**
- * Runs the jsconfig paths sync after a successful deploy/sync and reports
- * the diff. No-op when `typecheckJsconfig` is unset. Shared by
+ * Runs the jsconfig paths sync and the tag-map write after a successful
+ * deploy/sync and reports what changed, one line per file. No-op when
+ * neither `typecheckJsconfig` nor `typecheckTagMap` is set. Shared by
  * `furnace deploy` and `furnace sync` so both report identically.
  */
 export async function reportJsconfigPathsSync(
@@ -261,11 +306,18 @@ export async function reportJsconfigPathsSync(
   config: FurnaceConfig,
   dryRun: boolean
 ): Promise<void> {
-  if (!config.typecheckJsconfig) return;
-  const sync = await syncFurnaceJsconfigPaths(root, config, { dryRun });
-  if (!sync.changed) return;
-  info(
-    `${dryRun ? '[dry-run] Would update' : 'Updated'} ${config.typecheckJsconfig} chrome-module paths: ` +
-      `+${sync.added.length} added, ~${sync.updated.length} updated, -${sync.pruned.length} pruned`
-  );
+  for (const sync of await syncFurnaceJsconfigPaths(root, config, { dryRun })) {
+    if (!sync.changed) continue;
+    info(
+      `${dryRun ? '[dry-run] Would update' : 'Updated'} ${sync.jsconfig} chrome-module paths: ` +
+        `+${sync.added.length} added, ~${sync.updated.length} updated, -${sync.pruned.length} pruned`
+    );
+  }
+  const tagMap = await syncFurnaceTagMap(root, config, { dryRun });
+  if (tagMap?.changed === true) {
+    info(
+      `${dryRun ? '[dry-run] Would write' : 'Wrote'} ${tagMap.file}: ` +
+        `${tagMap.entries.length} HTMLElementTagNameMap entr${tagMap.entries.length === 1 ? 'y' : 'ies'}`
+    );
+  }
 }

@@ -17,7 +17,7 @@ fireforge furnace chrome-doc:
 fireforge furnace chrome-doc create: --browser-window | --dry-run | --no-titlebar | --wait-lock | --with-tests
 fireforge furnace chrome-doc remove: --dry-run | --wait-lock | -y, --yes
 fireforge furnace create: --allow-prefix-mismatch | --compose | --dry-run | --localized | --no-register | --shared-ftl | --test-dir | --test-style | --wait-lock | --with-tests | --xpcshell | -d, --description
-fireforge furnace deploy: --dry-run | --force | --skip-validate | --wait-lock
+fireforge furnace deploy: --dry-run | --force | --owner | --skip-validate | --wait-lock
 fireforge furnace diff: --wait-lock
 fireforge furnace init: --force | --ftl-base-path | --wait-lock | -p, --prefix
 fireforge furnace list: --wait-lock | -v, --verbose
@@ -37,6 +37,7 @@ fireforge lint cache clear: --wait-lock
 fireforge package: --brand | --wait-lock
 fireforge park: --drop | --dry-run | --hunks | --label | --list | --restore | --wait-lock
 fireforge patch:
+fireforge patch body: --wait-lock
 fireforge patch compact: --dry-run | --force-unsafe | --wait-lock | -y, --yes
 fireforge patch delete: --delete-created | --dry-run | --force-unsafe | --wait-lock | -y, --yes
 fireforge patch lint-ignore: --add | --clear | --dry-run | --from | --max | --reason | --remove | --share | --wait-lock | -y, --yes
@@ -71,7 +72,7 @@ fireforge tree create: --force-copy | --wait-lock | --with-objdir
 fireforge tree exec: --wait-lock
 fireforge tree list: --json | --wait-lock
 fireforge tree remove: --all | --force | --wait-lock
-fireforge typecheck: --no-cache | --project | --wait-lock
+fireforge typecheck: --explain | --no-cache | --project | --wait-lock
 fireforge verify: --patches | --wait-lock
 fireforge watch: --wait-lock
 fireforge wire: --after | --destroy | --dom | --dry-run | --init | --subscript-dir | --target | --wait-lock"

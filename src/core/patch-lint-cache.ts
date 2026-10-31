@@ -11,6 +11,7 @@ import { getPackageVersion } from '../utils/package-root.js';
 import { getFurnacePaths } from './furnace-config.js';
 import { git } from './git-base.js';
 import { collectNewFileCreatorsByPath, type PatchQueueContext } from './patch-lint.js';
+import { checkJsWorldDigest, isCheckJsCacheRelevant } from './patch-lint-cache-checkjs.js';
 
 // Schema 2: entries additionally carry the lintIgnore-suppressed issues and
 // the measured non-binary line count, so a warm run can report waived size
@@ -29,7 +30,11 @@ import { collectNewFileCreatorsByPath, type PatchQueueContext } from './patch-li
 // on every future key input staying complete. Bumping the schema also
 // discards every pre-4 entry, which is itself the cure for a cache that
 // already holds a mismatched verdict.
-export const LINT_CACHE_SCHEMA_VERSION = 4;
+// Schema 5: a patch with a checkJs-relevant file additionally keys on the
+// checkJs world its programs read (see patch-lint-cache-checkjs.ts): the
+// queue order, the content of other patches' modules, test heads and
+// `paths` targets, and the TypeScript version.
+export const LINT_CACHE_SCHEMA_VERSION = 5;
 const LINT_IMPLEMENTATION_VERSION = 1;
 
 const LINT_CACHE_DIRNAME = 'lint-cache';
@@ -143,7 +148,8 @@ function buildOwnershipFingerprint(
 
 /**
  * Builds the complete per-patch lint cache key for one lintable patch.
- * The key includes source, metadata, config, engine state, and ownership inputs.
+ * The key includes source, metadata, config, engine state, and ownership
+ * inputs, plus the checkJs world when the patch has a checkJs-relevant file.
  */
 export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput): Promise<string> {
   // Hash in parallel, then insert in sorted order. The sort is load-bearing:
@@ -174,6 +180,14 @@ export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput
     shimHashOf(input.config.patchLint?.checkJsExtraShim),
     shimHashOf(input.config.patchLint?.checkJsTestShim),
   ]);
+  // Only a patch that can carry a checkJs verdict pays for (and is
+  // invalidated by) the world its programs read.
+  const patchLint = input.config.patchLint;
+  const checkJsWorld =
+    patchLint?.checkJs === true &&
+    input.existingFiles.some((file) => isCheckJsCacheRelevant(file, patchLint))
+      ? await checkJsWorldDigest(input.engineDir, patchLint, input.queueContext)
+      : null;
 
   return stableHash({
     cacheSchemaVersion: LINT_CACHE_SCHEMA_VERSION,
@@ -191,6 +205,7 @@ export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput
     checkJsTestShim: testShim,
     engineFiles,
     queueOwnership: buildOwnershipFingerprint(input.existingFiles, input.queueContext),
+    checkJsWorld,
   });
 }
 

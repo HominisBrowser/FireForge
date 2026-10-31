@@ -25,6 +25,29 @@ vi.mock('../../core/typecheck.js', () => ({
   relativeForDisplay: (_root: string, file: string) => file,
 }));
 
+vi.mock('../../core/typecheck-explain.js', () => ({
+  explainTypecheckFile: vi.fn(() =>
+    Promise.resolve({
+      file: 'engine/x.js',
+      exists: true,
+      projects: [],
+      perPatch: {
+        enabled: false,
+        creators: [],
+        modifiers: [],
+        program: 'none',
+        reason: 'patchLint.checkJs is off',
+        heads: [],
+        resolvable: [],
+        imports: [],
+        litTypes: false,
+        strict: false,
+        undefinedIdentifiers: 'warning',
+      },
+    })
+  ),
+}));
+
 vi.mock('../../core/furnace-config.js', () => ({
   // The shared rollback handler records the pending-repair marker
   // through furnace state.
@@ -36,18 +59,26 @@ vi.mock('../../core/furnace-config.js', () => ({
 
 vi.mock('../../core/furnace-jsconfig.js', () => ({
   findJsconfigPathsDrift: vi.fn(),
-  syncFurnaceJsconfigPaths: vi.fn(),
+  syncJsconfigPaths: vi.fn(),
+  typecheckJsconfigList: (config: { typecheckJsconfig?: string | string[] }) =>
+    config.typecheckJsconfig === undefined ? [] : [config.typecheckJsconfig].flat(),
+}));
+
+vi.mock('../../core/furnace-tag-map.js', () => ({
+  syncFurnaceTagMap: vi.fn(() => Promise.resolve(undefined)),
 }));
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { loadConfig } from '../../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
-import { findJsconfigPathsDrift, syncFurnaceJsconfigPaths } from '../../core/furnace-jsconfig.js';
+import { findJsconfigPathsDrift, syncJsconfigPaths } from '../../core/furnace-jsconfig.js';
+import { syncFurnaceTagMap } from '../../core/furnace-tag-map.js';
 import { runTypecheck } from '../../core/typecheck.js';
+import { explainTypecheckFile } from '../../core/typecheck-explain.js';
 import { GeneralError } from '../../errors/base.js';
 import type { TypecheckProjectResult } from '../../types/typecheck.js';
-import { warn } from '../../utils/logger.js';
+import { message, warn } from '../../utils/logger.js';
 import { reportResults, resolveTypecheckProjects, typecheckCommand } from '../typecheck.js';
 
 const mockLoadConfig = vi.mocked(loadConfig);
@@ -56,7 +87,7 @@ const mockWarn = vi.mocked(warn);
 const mockFurnaceConfigExists = vi.mocked(furnaceConfigExists);
 const mockLoadFurnaceConfig = vi.mocked(loadFurnaceConfig);
 const mockFindJsconfigPathsDrift = vi.mocked(findJsconfigPathsDrift);
-const mockSyncFurnaceJsconfigPaths = vi.mocked(syncFurnaceJsconfigPaths);
+const mockSyncJsconfigPaths = vi.mocked(syncJsconfigPaths);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -79,6 +110,27 @@ describe('resolveTypecheckProjects', () => {
         'one-off/jsconfig.json'
       )
     ).toEqual({ projects: ['one-off/jsconfig.json'], extraShim: 'extras.d.ts' });
+  });
+
+  it('keeps litTypes, undefinedIdentifiers and projectOverrides for a --project run', () => {
+    expect(
+      resolveTypecheckProjects(
+        {
+          projects: ['a/jsconfig.json', 'b/jsconfig.json'],
+          extraShim: 'extras.d.ts',
+          projectOverrides: { 'a/jsconfig.json': null },
+          litTypes: true,
+          undefinedIdentifiers: 'error',
+        },
+        './a/jsconfig.json'
+      )
+    ).toEqual({
+      projects: ['./a/jsconfig.json'],
+      extraShim: 'extras.d.ts',
+      projectOverrides: { 'a/jsconfig.json': null },
+      litTypes: true,
+      undefinedIdentifiers: 'error',
+    });
   });
 
   it('accepts --project even when no typecheck block is configured', () => {
@@ -168,6 +220,32 @@ describe('reportResults', () => {
 });
 
 describe('typecheckCommand', () => {
+  it('--explain prints the explanation and runs no check and no regeneration', async () => {
+    const config = {
+      name: 'p',
+      vendor: 'v',
+      appId: 'org.v.p',
+      binaryName: 'p',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' as const },
+      typecheck: { projects: ['a/jsconfig.json'], litTypes: true },
+    };
+    mockLoadConfig.mockResolvedValue(config);
+
+    await typecheckCommand('/project', { explain: 'engine/x.js', project: 'b/jsconfig.json' });
+
+    expect(vi.mocked(explainTypecheckFile)).toHaveBeenCalledWith(
+      expect.objectContaining({ root: '/project' }),
+      config,
+      { projects: ['b/jsconfig.json'], litTypes: true },
+      'engine/x.js'
+    );
+    expect(vi.mocked(message)).toHaveBeenCalledWith(
+      expect.stringContaining('Not checked per patch: patchLint.checkJs is off.')
+    );
+    expect(mockRunTypecheck).not.toHaveBeenCalled();
+    expect(mockFurnaceConfigExists).not.toHaveBeenCalled();
+  });
+
   it('rejects when fireforge.json has no typecheck block and no --project is given', async () => {
     mockLoadConfig.mockResolvedValue({
       name: 'p',
@@ -249,6 +327,7 @@ describe('typecheckCommand', () => {
     } as never);
     // Drift detected → the generated paths are stale.
     mockFindJsconfigPathsDrift.mockResolvedValue({
+      jsconfig: 'a/jsconfig.json',
       added: ['chrome://global/content/elements/new.mjs'],
       updated: [],
       pruned: [],
@@ -261,10 +340,12 @@ describe('typecheckCommand', () => {
     await typecheckCommand('/project', {});
 
     // The reconciler regenerated the stale jsconfig BEFORE typecheck ran.
-    expect(mockSyncFurnaceJsconfigPaths).toHaveBeenCalledWith('/project', {
-      typecheckJsconfig: 'a/jsconfig.json',
-    });
-    const syncOrder = mockSyncFurnaceJsconfigPaths.mock.invocationCallOrder[0] ?? Infinity;
+    expect(mockSyncJsconfigPaths).toHaveBeenCalledWith(
+      '/project',
+      { typecheckJsconfig: 'a/jsconfig.json' },
+      'a/jsconfig.json'
+    );
+    const syncOrder = mockSyncJsconfigPaths.mock.invocationCallOrder[0] ?? Infinity;
     const typecheckOrder = mockRunTypecheck.mock.invocationCallOrder[0] ?? -Infinity;
     expect(syncOrder).toBeLessThan(typecheckOrder);
   });
@@ -283,6 +364,7 @@ describe('typecheckCommand', () => {
       typecheckJsconfig: 'a/jsconfig.json',
     } as never);
     mockFindJsconfigPathsDrift.mockResolvedValue({
+      jsconfig: 'a/jsconfig.json',
       added: [],
       updated: [],
       pruned: [],
@@ -294,7 +376,65 @@ describe('typecheckCommand', () => {
 
     await typecheckCommand('/project', {});
 
-    expect(mockSyncFurnaceJsconfigPaths).not.toHaveBeenCalled();
+    expect(mockSyncJsconfigPaths).not.toHaveBeenCalled();
+  });
+
+  it('regenerates a stale tag map before typecheck runs', async () => {
+    mockLoadConfig.mockResolvedValue({
+      name: 'p',
+      vendor: 'v',
+      appId: 'org.v.p',
+      binaryName: 'p',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      typecheck: { projects: ['a/jsconfig.json'] },
+    });
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    const furnace = { typecheckTagMap: 'types/tags.d.ts' };
+    mockLoadFurnaceConfig.mockResolvedValue(furnace as never);
+    vi.mocked(syncFurnaceTagMap).mockResolvedValueOnce({
+      file: 'types/tags.d.ts',
+      entries: [],
+      changed: true,
+    });
+    mockRunTypecheck.mockResolvedValue([]);
+
+    await typecheckCommand('/project', {});
+
+    expect(vi.mocked(syncFurnaceTagMap).mock.calls).toEqual([
+      ['/project', furnace, { dryRun: true }],
+      ['/project', furnace],
+    ]);
+    const writeOrder = vi.mocked(syncFurnaceTagMap).mock.invocationCallOrder[1] ?? Infinity;
+    expect(writeOrder).toBeLessThan(mockRunTypecheck.mock.invocationCallOrder[0] ?? -Infinity);
+  });
+
+  it('regenerates only the stale entries of a typecheckJsconfig list', async () => {
+    mockLoadConfig.mockResolvedValue({
+      name: 'p',
+      vendor: 'v',
+      appId: 'org.v.p',
+      binaryName: 'p',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      typecheck: { projects: ['a/jsconfig.json', 'b/jsconfig.json'] },
+    });
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    const furnace = { typecheckJsconfig: ['a/jsconfig.json', 'b/jsconfig.json'] };
+    mockLoadFurnaceConfig.mockResolvedValue(furnace as never);
+    mockFindJsconfigPathsDrift.mockImplementation((_root, _config, jsconfig) =>
+      Promise.resolve({
+        jsconfig,
+        added: jsconfig === 'b/jsconfig.json' ? ['chrome://global/content/elements/x.mjs'] : [],
+        updated: [],
+        pruned: [],
+        changed: jsconfig === 'b/jsconfig.json',
+      })
+    );
+    mockRunTypecheck.mockResolvedValue([]);
+
+    await typecheckCommand('/project', {});
+
+    expect(mockFindJsconfigPathsDrift).toHaveBeenCalledTimes(2);
+    expect(mockSyncJsconfigPaths.mock.calls).toEqual([['/project', furnace, 'b/jsconfig.json']]);
   });
 
   it('honours --project for one-off runs even when config has no typecheck block', async () => {

@@ -158,6 +158,29 @@ describe('token scale extensions', () => {
     expect(lintTokenScales('browser/own.css', '.a { gap: 7px; }', [scale])).toHaveLength(1);
   });
 
+  it('accepts an allowValues declaration in every file the scale governs', () => {
+    const scale: PatchLintTokenScale = {
+      ...spacing,
+      allowValues: [
+        { property: 'margin-inline-start', value: '-3px  7px', reason: 'Docked bar offset' },
+      ],
+    };
+    const css = [
+      '.bar {',
+      '  margin-inline-start: -3px\n    7px;',
+      '  margin-inline-end: -3px 7px;',
+      '  margin-inline-start: -3px 8px;',
+      '}',
+    ].join('\n');
+    for (const file of ['browser/bar.css', 'browser/seam.css']) {
+      const issues = lintTokenScales(file, css, [scale]);
+      expect(issues.map((issue) => issue.message.split(' is off')[0])).toEqual([
+        'Line 4: margin-inline-end: -3px 7px',
+        'Line 5: margin-inline-start: -3px 8px',
+      ]);
+    }
+  });
+
   it('fails a scale whose created stylesheets fall under minFiles', () => {
     const scale: PatchLintTokenScale = { ...spacing, minFiles: 2, exclude: ['skip/**'] };
     const files: [string, string][] = [

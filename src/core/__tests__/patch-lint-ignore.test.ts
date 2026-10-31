@@ -202,7 +202,7 @@ describe('evaluateLintIgnoreCeilings', () => {
     expect(notices[0]?.message).toContain('the measurement is below its notice band');
     expect(notices[1]?.message).toContain('the measurement is at 120');
     expect(notices[1]?.message).toContain(
-      'fireforge patch lint-ignore 001-ui-x.patch --remove large-patch-lines'
+      '"fireforge patch lint-ignore 001-ui-x.patch --remove large-patch-lines --yes"'
     );
     expect(evaluateLintIgnoreCeilings(undefined, [], measurements)).toEqual([]);
   });

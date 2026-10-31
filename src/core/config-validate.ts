@@ -459,6 +459,9 @@ function parsePatchLintBlock(rec: ParsedRecord): NonNullable<FireForgeConfig['pa
     out.checkJsTestShim = parseShimPath(checkJsTestShim, 'patchLint.checkJsTestShim');
   }
 
+  const litTypes = optionalPatchLintBoolean(rec, 'litTypes');
+  if (litTypes !== undefined) out.litTypes = litTypes;
+
   const rawColorAllowlist = rec.raw('rawColorAllowlist');
   if (rawColorAllowlist !== undefined) {
     if (
@@ -514,6 +517,9 @@ function parsePatchLintBlock(rec: ParsedRecord): NonNullable<FireForgeConfig['pa
     throw new ConfigError(
       'Config field "patchLint.checkJsTestShim" requires "patchLint.checkJsTestFiles": true'
     );
+  }
+  if (out.litTypes === true && out.checkJs !== true) {
+    throw new ConfigError('Config field "patchLint.litTypes" requires "patchLint.checkJs": true');
   }
 
   return out;

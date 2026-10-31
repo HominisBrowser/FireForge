@@ -345,6 +345,45 @@ describe('reExportCommand - --scan flag', () => {
     expect(updatePatchAndMetadata).not.toHaveBeenCalled();
   });
 
+  it('says the project typecheck is still owed after writing a patch per-patch checkJs checked', async () => {
+    // Imported here: a top-level import would run the config mock's factory
+    // before test-utils, which the factory reads, is initialised.
+    const { loadConfig } = await import('../../core/config.js');
+    vi.mocked(loadConfig).mockResolvedValueOnce({
+      name: 'TestBrowser',
+      vendor: 'Test',
+      appId: 'org.test.browser',
+      binaryName: 'testbrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      license: 'MPL-2.0',
+      patchLint: { checkJs: true },
+    });
+    vi.mocked(loadPatchesManifest).mockResolvedValue(
+      makeManifest([
+        makePatch('001-ui-module.patch', ['browser/modules/A.sys.mjs']),
+        makePatch('002-ui-plain.patch', ['browser/plain.css']),
+      ])
+    );
+
+    await reExportCommand('/fake/root', ['001', '002'], {});
+
+    expect(info).toHaveBeenCalledWith(
+      'Per-patch checkJs only (001-ui-module.patch): it is not the project pass, which can ' +
+        'still report errors in these files. Run "fireforge typecheck" for the project pass ' +
+        'before committing.'
+    );
+  });
+
+  it('adds no typecheck note when checkJs is off', async () => {
+    vi.mocked(loadPatchesManifest).mockResolvedValue(
+      makeManifest([makePatch('001-ui-module.patch', ['browser/modules/A.sys.mjs'])])
+    );
+
+    await reExportCommand('/fake/root', ['001'], {});
+
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Per-patch checkJs only'));
+  });
+
   it('reports partial success when one selected patch is skipped and another is re-exported', async () => {
     const existingPatch = makePatch('001-ui-keep.patch', ['a.js']);
     const missingPatch = makePatch('002-ui-missing.patch', ['missing.js']);
@@ -993,6 +1032,60 @@ describe('reExportCommand - --scan flag', () => {
     expect(vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[0].updates.filesAffected).toEqual([
       'browser/branding/hominis/base.js',
       'browser/branding/hominis/icon.svg',
+    ]);
+    expect(vi.mocked(updatePatchAndMetadata).mock.calls[1]?.[0].updates.filesAffected).toEqual([
+      'browser/branding/hominis/app.ico',
+      'browser/branding/hominis/runtime.ico',
+    ]);
+  });
+
+  it('--scan-files manifest adds positional patches once each, in queue order', async () => {
+    const patch1 = makePatch('001-branding-browser.patch', ['browser/branding/hominis/base.js']);
+    const patch2 = makePatch('002-branding-runtime.patch', ['browser/branding/hominis/app.ico']);
+    vi.mocked(loadPatchesManifest).mockResolvedValue(makeManifest([patch1, patch2]));
+    vi.mocked(readText).mockResolvedValue(
+      JSON.stringify({
+        assignments: [{ patch: '002', files: ['browser/branding/hominis/runtime.ico'] }],
+      })
+    );
+    vi.mocked(pathExists).mockResolvedValue(true);
+    const runtimeDiff = [
+      'diff --git a/browser/branding/hominis/runtime.ico b/browser/branding/hominis/runtime.ico',
+      '--- /dev/null',
+      '+++ b/browser/branding/hominis/runtime.ico',
+      '@@ -0,0 +1 @@',
+      '+runtime',
+      '',
+    ].join('\n');
+    // 001 (positional, not in the manifest) refreshes scan-less: one diff.
+    // 002 adopts its assigned file: the adoption gate diff, then the main one.
+    vi.mocked(getDiffForFilesAgainstHead)
+      .mockResolvedValueOnce(
+        [
+          'diff --git a/browser/branding/hominis/base.js b/browser/branding/hominis/base.js',
+          '--- a/browser/branding/hominis/base.js',
+          '+++ b/browser/branding/hominis/base.js',
+          '@@ -1 +1 @@',
+          '-old',
+          '+new',
+          '',
+        ].join('\n')
+      )
+      .mockResolvedValueOnce(runtimeDiff)
+      .mockResolvedValueOnce(runtimeDiff);
+
+    await reExportCommand('/fake/root', ['002', '001'], {
+      scan: true,
+      scanFilesManifest: 'assignments.json',
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      '  001-branding-browser.patch (positional, refreshed without a scan)'
+    );
+    expect(info).toHaveBeenCalledWith('  002-branding-runtime.patch <= 1 file(s)');
+    expect(updatePatchAndMetadata).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(updatePatchAndMetadata).mock.calls[0]?.[0].updates.filesAffected).toEqual([
+      'browser/branding/hominis/base.js',
     ]);
     expect(vi.mocked(updatePatchAndMetadata).mock.calls[1]?.[0].updates.filesAffected).toEqual([
       'browser/branding/hominis/app.ico',

@@ -322,6 +322,38 @@ describe('runCheckSteps', () => {
     });
     expect(results[3]).toMatchObject({ status: 'fail', detail: 'could not start: spawn ENOENT' });
   });
+
+  it('samples the host load when each step starts and ends', async () => {
+    scriptChildren({
+      green: { stdout: 'ok\n', exitCode: 0 },
+      slow: { error: new ExecTimeoutError('/bin/sh', ['-c', 'slow'], 1000) },
+    });
+    const samples = [12.3, 18, 20.5, 31];
+    const load = vi.fn(() => samples.shift());
+    const results = await runCheckSteps(
+      [
+        step('skip', { skipReason: 'not today' }),
+        step('green'),
+        step('slow', { after: ['green'] }),
+      ],
+      1,
+      Date.now,
+      load
+    );
+    expect(results[0]).not.toHaveProperty('load1Start');
+    expect(results[1]).toMatchObject({ load1Start: 12.3, load1End: 18 });
+    // A step killed at its budget still says what the host was doing.
+    expect(results[2]).toMatchObject({ timedOut: true, load1Start: 20.5, load1End: 31 });
+    expect(load).toHaveBeenCalledTimes(4);
+  });
+
+  it('records no load where the host has no load average', async () => {
+    scriptChildren({ green: { stdout: 'ok\n', exitCode: 0 } });
+    const [result] = await runCheckSteps([step('green')], 1, Date.now, () => undefined);
+    expect(result).toMatchObject({ status: 'pass' });
+    expect(result).not.toHaveProperty('load1Start');
+    expect(result).not.toHaveProperty('load1End');
+  });
 });
 
 describe('check verdict and table', () => {
@@ -370,14 +402,16 @@ describe('check verdict and table', () => {
   it('aligns the table columns', () => {
     expect(
       formatCheckTable([
-        result({ durationMs: 1500, detail: 'ok' }),
+        result({ durationMs: 1500, detail: 'ok', load1Start: 12.34, load1End: 18 }),
+        result({ name: 'lint', durationMs: 900, detail: 'ok' }),
         result({ name: 'furnace-validate', status: 'skipped', detail: 'no furnace.json' }),
       ])
     ).toBe(
       [
-        'STEP              RESULT   TIME  DETAIL',
-        'status            PASS     1.5s  ok',
-        'furnace-validate  SKIPPED  -     no furnace.json',
+        'STEP              RESULT   TIME   LOAD       DETAIL',
+        'status            PASS     1.5s   12.3→18.0  ok',
+        'lint              PASS     900ms  -          ok',
+        'furnace-validate  SKIPPED  -      -          no furnace.json',
       ].join('\n')
     );
   });

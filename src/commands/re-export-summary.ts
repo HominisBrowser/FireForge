@@ -20,6 +20,11 @@ export interface ReExportRunTally {
   refusedAdjacent: readonly string[];
   /** Patches refused by `--refuse-foreign-drift`. */
   refusedDrift: readonly string[];
+  /**
+   * Patches prepared cleanly but not written because a
+   * `--refuse-foreign-drift` refusal elsewhere in the run wrote none.
+   */
+  heldBack?: readonly string[];
   /** Whether the run is a dry run. */
   isDryRun: boolean;
 }
@@ -35,6 +40,7 @@ export function formatReExportRunSummary(tally: ReExportRunTally): string | unde
   for (const name of tally.failed) reasons.set(name, 'failed');
   for (const name of tally.refusedAdjacent) reasons.set(name, 'refused: adjacent unmanaged');
   for (const name of tally.refusedDrift) reasons.set(name, 'refused: foreign drift');
+  for (const name of tally.heldBack ?? []) reasons.set(name, 'held back: another patch refused');
   const notWritten = tally.selected
     .filter((name) => !written.has(name))
     .map((name) => `${name} (${reasons.get(name) ?? 'skipped'})`);
@@ -48,5 +54,32 @@ export function formatReExportRunSummary(tally: ReExportRunTally): string | unde
     notWritten.length > 0
       ? `; ${tally.isDryRun ? 'would NOT write' : 'NOT written'}: ${notWritten.join(', ')}`
       : '';
-  return `Re-export summary: ${writtenPart}${notWrittenPart}.`;
+  const heldBackPart =
+    (tally.heldBack ?? []).length > 0
+      ? ` Nothing ${tally.isDryRun ? 'would be' : 'was'} written because --refuse-foreign-drift ` +
+        `refused ${tally.refusedDrift.join(', ')}.`
+      : '';
+  return `Re-export summary: ${writtenPart}${notWrittenPart}.${heldBackPart}`;
+}
+
+/**
+ * The note printed after a run that wrote a patch whose files per-patch
+ * checkJs type-checks. That pass is not the project pass: its programs see
+ * only patch-owned modules and heads, so `fireforge typecheck` can still
+ * report errors in the same files. Undefined when no such patch was
+ * written.
+ *
+ * @param checkJsWritten - Written patches with per-patch checkJs files
+ * @param isDryRun - Whether the run is a dry run
+ */
+export function formatCheckJsProjectPassNote(
+  checkJsWritten: readonly string[],
+  isDryRun: boolean
+): string | undefined {
+  if (checkJsWritten.length === 0) return undefined;
+  return (
+    `Per-patch checkJs only (${checkJsWritten.join(', ')}): it is not the project pass, which ` +
+    `can still report errors in these files. Run "fireforge typecheck" for the project pass` +
+    `${isDryRun ? ' once the patches are written' : ' before committing'}.`
+  );
 }

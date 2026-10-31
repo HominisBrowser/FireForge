@@ -921,6 +921,91 @@ describe('lintPatchedJs', () => {
     expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
   });
 
+  describe('relative-import scoped by the diff', () => {
+    const upstream =
+      'import { ViewPage } from "./viewpage.mjs";\n' +
+      'const IMAGE = "chrome://browser/content/history-empty.svg";\n' +
+      'export class History extends ViewPage {}\n';
+    const repointDiff = [
+      'diff --git a/browser/components/firefoxview/history.mjs b/browser/components/firefoxview/history.mjs',
+      '--- a/browser/components/firefoxview/history.mjs',
+      '+++ b/browser/components/firefoxview/history.mjs',
+      '@@ -1,3 +1,3 @@',
+      ' import { ViewPage } from "./viewpage.mjs";',
+      '-const IMAGE = "chrome://browser/content/old.svg";',
+      '+const IMAGE = "chrome://browser/content/history-empty.svg";',
+      ' export class History extends ViewPage {}',
+      '',
+    ].join('\n');
+    const file = 'browser/components/firefoxview/history.mjs';
+
+    it("ignores upstream's own relative import in a modified file", async () => {
+      mockPathExists.mockResolvedValue(true);
+      mockReadText.mockResolvedValue(upstream);
+
+      const issues = await lintPatchedJs('/engine', [file], new Set<string>(), mockConfig, {
+        diffContent: repointDiff,
+      });
+
+      expect(issues.some((i) => i.check === 'relative-import')).toBe(false);
+    });
+
+    it('flags a relative import the patch adds to a modified file', async () => {
+      mockPathExists.mockResolvedValue(true);
+      mockReadText.mockResolvedValue(
+        upstream.replace('export class', 'import { Card } from "../card.mjs";\nexport class')
+      );
+      const diff = [
+        `diff --git a/${file} b/${file}`,
+        `--- a/${file}`,
+        `+++ b/${file}`,
+        '@@ -1,3 +1,4 @@',
+        ' import { ViewPage } from "./viewpage.mjs";',
+        ' const IMAGE = "chrome://browser/content/history-empty.svg";',
+        '+import { Card } from "../card.mjs";',
+        ' export class History extends ViewPage {}',
+        '',
+      ].join('\n');
+
+      const issues = await lintPatchedJs('/engine', [file], new Set<string>(), mockConfig, {
+        diffContent: diff,
+      });
+
+      expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
+    });
+
+    it('judges a file the patch creates whole', async () => {
+      mockPathExists.mockResolvedValue(true);
+      mockReadText.mockResolvedValue(upstream);
+
+      const issues = await lintPatchedJs('/engine', [file], new Set([file]), mockConfig, {
+        diffContent: repointDiff,
+      });
+
+      expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
+    });
+
+    it('flags an added relative import in a script Acorn cannot parse', async () => {
+      mockPathExists.mockResolvedValue(true);
+      mockReadText.mockResolvedValue('const a = 1;\nreturn import("./legacy-script.js");\n');
+      const diff = [
+        'diff --git a/legacy.js b/legacy.js',
+        '--- a/legacy.js',
+        '+++ b/legacy.js',
+        '@@ -1,1 +1,2 @@',
+        ' const a = 1;',
+        '+return import("./legacy-script.js");',
+        '',
+      ].join('\n');
+
+      const issues = await lintPatchedJs('/engine', ['legacy.js'], new Set<string>(), mockConfig, {
+        diffContent: diff,
+      });
+
+      expect(issues.some((i) => i.check === 'relative-import')).toBe(true);
+    });
+  });
+
   // ── file-too-large boundary triads (limits are inclusive: strict >) ────
 
   const makeJsFile = (lines: number): string =>
@@ -1069,7 +1154,7 @@ describe('lintPatchedJs', () => {
       ['MyModule.sys.mjs'],
       new Set<string>(),
       mockConfig,
-      patchOwned
+      { patchOwnedFiles: patchOwned }
     );
 
     expect(issues.some((i) => i.check === 'missing-jsdoc')).toBe(true);
@@ -1179,14 +1264,9 @@ describe('lintPatchedJs', () => {
       patchLint: { chromeScriptJsDoc: 'warning' },
     };
     const file = 'browser/base/content/mybrowserDock.js';
-    const issues = await lintPatchedJs(
-      '/engine',
-      [file],
-      new Set([file]),
-      config,
-      undefined,
-      new Set([file])
-    );
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), config, {
+      patchOwnedChromeScripts: new Set([file]),
+    });
 
     const issue = issues.find((i) => i.check === 'missing-jsdoc');
     expect(issue).toBeDefined();
@@ -1208,8 +1288,7 @@ describe('lintPatchedJs', () => {
       [file],
       new Set<string>(), // not new
       config,
-      undefined,
-      new Set<string>() // explicit empty patch-owned set
+      { patchOwnedChromeScripts: new Set<string>() } // explicit empty patch-owned set
     );
 
     expect(issues.some((i) => i.check === 'missing-jsdoc')).toBe(false);
@@ -1220,14 +1299,9 @@ describe('lintPatchedJs', () => {
     mockReadText.mockResolvedValue('class MyBrowserDock {\n}\n');
 
     const file = 'browser/base/content/mybrowserDock.js';
-    const issues = await lintPatchedJs(
-      '/engine',
-      [file],
-      new Set([file]),
-      mockConfig,
-      undefined,
-      new Set([file])
-    );
+    const issues = await lintPatchedJs('/engine', [file], new Set([file]), mockConfig, {
+      patchOwnedChromeScripts: new Set([file]),
+    });
 
     expect(issues.some((i) => i.check === 'missing-jsdoc')).toBe(false);
   });
@@ -1251,8 +1325,8 @@ describe('lintPatchedJs', () => {
       [file],
       new Set([file]),
       config,
-      new Set([file]),
-      new Set<string>() // .sys.mjs is not in patchOwnedChromeScripts
+      // .sys.mjs is not in patchOwnedChromeScripts
+      { patchOwnedFiles: new Set([file]), patchOwnedChromeScripts: new Set<string>() }
     );
 
     expect(issues).toEqual([]);

@@ -527,6 +527,38 @@ describe('furnace-config helpers', () => {
     ).toThrow('must not contain ".."');
   });
 
+  it('accepts typecheckJsconfig as a path or a list, and a .d.ts typecheckTagMap', () => {
+    const base = { version: 1, componentPrefix: 'moz-', stock: [], overrides: {}, custom: {} };
+    expect(
+      validateFurnaceConfig({ ...base, typecheckJsconfig: 'a/jsconfig.json' }).typecheckJsconfig
+    ).toBe('a/jsconfig.json');
+    const listed = validateFurnaceConfig({
+      ...base,
+      typecheckJsconfig: ['a/jsconfig.json', 'b/jsconfig.json'],
+      typecheckTagMap: 'types/tags.d.ts',
+    });
+    expect(listed.typecheckJsconfig).toEqual(['a/jsconfig.json', 'b/jsconfig.json']);
+    expect(listed.typecheckTagMap).toBe('types/tags.d.ts');
+  });
+
+  it('rejects an empty, duplicated, traversing or non-string typecheckJsconfig', () => {
+    const base = { version: 1, componentPrefix: 'moz-', stock: [], overrides: {}, custom: {} };
+    for (const typecheckJsconfig of [[], ['a.json', 'a.json'], ['../a.json'], [1], 2]) {
+      expect(() => validateFurnaceConfig({ ...base, typecheckJsconfig })).toThrow(
+        '"typecheckJsconfig" must be a path or a non-empty array of distinct paths'
+      );
+    }
+  });
+
+  it('rejects a typecheckTagMap that is not a .d.ts path inside the project', () => {
+    const base = { version: 1, componentPrefix: 'moz-', stock: [], overrides: {}, custom: {} };
+    for (const typecheckTagMap of ['types/tags.ts', '../tags.d.ts', 3]) {
+      expect(() => validateFurnaceConfig({ ...base, typecheckTagMap })).toThrow(
+        '"typecheckTagMap" must be a ".d.ts" path'
+      );
+    }
+  });
+
   it('rejects config with non-string componentPrefix', () => {
     expect(() =>
       validateFurnaceConfig({

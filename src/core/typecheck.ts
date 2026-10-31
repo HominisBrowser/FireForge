@@ -142,7 +142,7 @@ export async function runTypecheck(
 
   const results: TypecheckProjectResult[] = [];
   for (const projectPath of cfg.projects) {
-    const extraShim = resolveProjectExtraShim(cfg, projectPath);
+    const extraShim = resolveProjectExtraShim(cfg, projectPath, projectRoot);
     let shimSource: string;
     try {
       shimSource = await composeForProject(extraShim);
@@ -184,14 +184,45 @@ export async function runTypecheck(
 }
 
 /**
+ * The `projectOverrides` key that names `projectPath`, matched by the path
+ * it resolves to, so `./a/jsconfig.json` or an absolute path finds the
+ * `a/jsconfig.json` entry. An exact key wins over another spelling of the
+ * same file.
+ *
+ * @param cfg - The `typecheck` block
+ * @param projectPath - A project path as configured or passed to `--project`
+ * @param projectRoot - Absolute project root both paths resolve against
+ * @returns The matching key, or undefined when no override names the project
+ */
+export function findProjectOverrideKey(
+  cfg: TypecheckConfig,
+  projectPath: string,
+  projectRoot: string
+): string | undefined {
+  const overrides = cfg.projectOverrides;
+  if (!overrides) return undefined;
+  if (Object.hasOwn(overrides, projectPath)) return projectPath;
+  const target = resolve(projectRoot, projectPath);
+  return Object.keys(overrides).find((key) => resolve(projectRoot, key) === target);
+}
+
+/**
  * Resolves the effective extra shim for a single project: a `projectOverrides`
  * entry wins (a string path overrides, `null` opts out → `undefined`), else
  * the shared top-level `extraShim` applies.
+ *
+ * @param cfg - The `typecheck` block
+ * @param projectPath - The project's jsconfig path
+ * @param projectRoot - Absolute project root, for matching override keys
  */
-function resolveProjectExtraShim(cfg: TypecheckConfig, projectPath: string): string | undefined {
-  const overrides = cfg.projectOverrides;
-  if (overrides && Object.hasOwn(overrides, projectPath)) {
-    const value = overrides[projectPath];
+export function resolveProjectExtraShim(
+  cfg: TypecheckConfig,
+  projectPath: string,
+  projectRoot: string
+): string | undefined {
+  const key = findProjectOverrideKey(cfg, projectPath, projectRoot);
+  if (key !== undefined) {
+    const value = cfg.projectOverrides?.[key];
     return value === null ? undefined : value;
   }
   return cfg.extraShim;

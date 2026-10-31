@@ -7,8 +7,9 @@
  */
 
 import { ConfigError } from '../errors/config.js';
-import type { PatchLintTokenScale } from '../types/config.js';
+import type { PatchLintTokenScale, PatchLintTokenScaleAllowValue } from '../types/config.js';
 import { parseObject } from '../utils/parse.js';
+import { matchesName } from './patch-lint-token-scale.js';
 
 const SCALE_KEYS = [
   'properties',
@@ -19,7 +20,10 @@ const SCALE_KEYS = [
   'offsetCap',
   'exclude',
   'minFiles',
+  'allowValues',
 ];
+
+const ALLOW_VALUE_KEYS = ['property', 'value', 'reason'];
 
 const PREFIX_PATTERN = /^--[\w-]+$/;
 
@@ -61,6 +65,36 @@ function parseNumber(raw: unknown, label: string, integer: boolean): number {
   return raw;
 }
 
+function parseAllowValue(
+  raw: unknown,
+  label: string,
+  properties: readonly string[]
+): PatchLintTokenScaleAllowValue {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ConfigError(`Config field "${label}" must be an object`);
+  }
+  const record = raw as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!ALLOW_VALUE_KEYS.includes(key)) {
+      throw new ConfigError(`Config field "${label}" has unknown key "${key}"`);
+    }
+  }
+  const field = (key: string): string => {
+    const value = record[key];
+    if (typeof value !== 'string' || value.trim() === '') {
+      throw new ConfigError(`Config field "${label}.${key}" must be a non-empty string`);
+    }
+    return value;
+  };
+  const entry = { property: field('property'), value: field('value'), reason: field('reason') };
+  if (!matchesName(entry.property.toLowerCase(), properties)) {
+    throw new ConfigError(
+      `Config field "${label}.property" must be a property the scale governs (got "${entry.property}")`
+    );
+  }
+  return entry;
+}
+
 function parseTokenScale(raw: unknown, label: string): PatchLintTokenScale {
   let rec;
   try {
@@ -96,6 +130,15 @@ function parseTokenScale(raw: unknown, label: string): PatchLintTokenScale {
   if (exclude !== undefined) scale.exclude = exclude;
   const minFiles = rec.raw('minFiles');
   if (minFiles !== undefined) scale.minFiles = parseNumber(minFiles, `${label}.minFiles`, true);
+  const allowValues = rec.raw('allowValues');
+  if (allowValues !== undefined) {
+    if (!Array.isArray(allowValues) || allowValues.length === 0) {
+      throw new ConfigError(`Config field "${label}.allowValues" must be a non-empty array`);
+    }
+    scale.allowValues = allowValues.map((entry, index) =>
+      parseAllowValue(entry, `${label}.allowValues[${index}]`, properties)
+    );
+  }
   return scale;
 }
 

@@ -517,7 +517,7 @@ describe('lintCommand — ad-hoc input resolution and verdict', () => {
     beforeEach(() => {
       // Literal (not the imported constant): this module is fully vi.mock'd,
       // so the real LINT_CACHE_SCHEMA_VERSION value is unavailable at runtime.
-      memoryCache = { schemaVersion: 4, entries: {} };
+      memoryCache = { schemaVersion: 5, entries: {} };
       vi.mocked(loadPerPatchLintCache).mockResolvedValue(memoryCache);
       vi.mocked(getPerPatchLintCacheHeadSha).mockResolvedValue('test-head-sha');
       vi.mocked(buildPerPatchLintCacheKey).mockImplementation((input) =>

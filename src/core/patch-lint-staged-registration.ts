@@ -8,8 +8,9 @@
  * rule that flags an undeclared registration and the rule that validates a
  * declared one disagree about the very same pair of patches.
  *
- * Exports helpers consumed by `patch-lint-cross.ts` and
- * `patch-lint-forward-registration.ts`, with no registrar or rule of its own.
+ * Exports helpers consumed by `patch-lint-cross.ts`,
+ * `patch-lint-forward-registration.ts` and `patch staged-dependency`, with
+ * no registrar or rule of its own.
  */
 import { basename } from 'node:path';
 
@@ -109,25 +110,48 @@ export function describeRegistrationFailure(failure: StagedRegistrationFailure):
 }
 
 /**
- * True when the declared registration/packaging line appears (trimmed)
- * among the lines the patch introduces in the declaring file, either as a
- * newly-created file's content or as added lines to an existing file
- * (where jar.mn / customElements.js / actor-registration edits land).
+ * Collapses whitespace runs and trims, so registration lines compare
+ * whitespace-insensitively: a jar.mn line aligned with two spaces before its
+ * `(source)` matches a declaration typed with one.
+ *
+ * @param line - Registration line as declared or as the patch adds it
  */
+export function normalizeRegistrationLine(line: string): string {
+  return line.trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * True when `line` (whitespace-insensitively, see
+ * {@link normalizeRegistrationLine}) is among the lines the patch
+ * introduces in `file`, either as a newly-created file's content or as
+ * added lines to an existing file (where jar.mn / customElements.js /
+ * actor-registration edits land).
+ *
+ * @param entry - The declaring patch's projected additions
+ * @param file - Engine-relative path of the declaring file
+ * @param line - The registration line
+ */
+export function patchAddsRegistrationLine(
+  entry: Pick<StagedRegistrationEntry, 'newFiles' | 'modifiedFileAdditions'>,
+  file: string,
+  line: string
+): boolean {
+  const declared = normalizeRegistrationLine(line);
+  if (declared.length === 0) return false;
+  const introduced = [entry.newFiles.get(file), entry.modifiedFileAdditions.get(file)];
+  return introduced.some(
+    (content) =>
+      content !== undefined &&
+      content.split('\n').some((added) => normalizeRegistrationLine(added) === declared)
+  );
+}
+
+/** True when the declared registration line is among the lines the patch adds to its file. */
 function isRegistrationLinePresent(
   entry: StagedRegistrationEntry,
   registration: PatchStagedRegistration
 ): boolean {
-  const declared = registration.line.trim();
-  if (declared.length === 0) return false;
-  const introduced = [
-    entry.newFiles.get(registration.file),
-    entry.modifiedFileAdditions.get(registration.file),
-  ];
-  return introduced.some(
-    (content) =>
-      content !== undefined && content.split('\n').some((line) => line.trim() === declared)
-  );
+  return patchAddsRegistrationLine(entry, registration.file, registration.line);
 }
 
 /**

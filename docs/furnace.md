@@ -59,6 +59,18 @@ still matches it. The apply state is shared by every session on the checkout,
 so that apply may have been another session's, such as a peer's
 `test --build`.
 
+Deploy copies a component's whole folder. When it replaces a deployed file
+whose engine bytes differ from the component source and a patch owns that
+file, it warns, naming the file and the owning patch. On a shared checkout,
+where two sessions edit different files of one folder for different patches,
+name the patch being exported with `--owner <patch>`
+(`fireforge furnace deploy moz-tiles --owner 205`). Any such file owned by a
+different patch then refuses the whole deploy before a file is written,
+across every named component, and the refusal lists each file with its
+owning patches. Park the other session's work or export that patch first. A
+file the named patch shares with another stays the named patch's to deploy,
+an unknown patch refuses, and `--dry-run` refuses the same way.
+
 ## Renaming
 
 `furnace rename <old> <new>` moves the component and rewrites its
@@ -73,13 +85,43 @@ one, so a `sharedFtl` component never gains a per-component `.ftl` line.
 ## Typed cross-module imports
 
 For multi-file components, set `furnace.json#typecheckJsconfig` to a
-consumer-owned jsconfig. `deploy` then maintains `compilerOptions.paths`
-entries that map each deployed
-`chrome://global/content/elements/<file>.mjs` URL to its workspace source.
+consumer-owned jsconfig, or to a list of them. `deploy` and `sync` then
+maintain `compilerOptions.paths` entries in each one that map each
+deployed `chrome://global/content/elements/<file>.mjs` URL to its workspace
+source, relative to that jsconfig's own directory. List every project whose
+files import widget modules, for example the components project and the
+chrome-script project that holds the tests.
 
 An entry counts as Furnace-managed if it is contained in the components
 workspace. A hand-written entry is therefore preserved, and a managed entry
 whose helper was deleted is pruned.
+
+`furnace.json#typecheckTagMap: "<path>.d.ts"` has `deploy` and `sync` also
+write a declaration file that adds each custom component's tag to
+`HTMLElementTagNameMap`:
+
+```ts
+interface HTMLElementTagNameMap {
+  'moz-dock-button': import('chrome://global/content/elements/moz-dock-button.mjs').MozDockButton;
+}
+```
+
+`document.createElement("moz-dock-button")` and `querySelector` then type as
+the component's class. A component gets an entry for each
+`customElements.define("<tag>", <Class>)` in its `.mjs` files whose class
+the module exports, by name or as `default`. A `kind: "library"` or
+`register: false` component, an unexported or inline class, and a
+customized built-in (`{ extends: … }`) get none. The types resolve through
+the managed `paths`, so include the file only in a project that is listed
+in `typecheckJsconfig`. Elsewhere the URL falls to the shim's `chrome:*`
+wildcard, which has no members. Furnace rewrites the whole file, so do not
+edit it.
+
+`furnace validate` reports a jsconfig whose managed entries are out of date
+as `jsconfig-paths-drift`, naming the file, and an out-of-date tag map as
+`tag-map-drift`. Both are warnings, and `furnace deploy` clears them.
+`fireforge typecheck` regenerates stale `paths` and a stale tag map itself
+before it runs.
 
 ## Validation as a gate
 

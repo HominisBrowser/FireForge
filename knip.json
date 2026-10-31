@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@latest/schema.json",
-  "entry": ["src/index.ts", "scripts/*.mjs", "eslint-rules/index.js"],
+  "entry": ["scripts/*.mjs", "eslint-rules/index.js"],
   "project": ["src/**/*.ts", "bin/**/*.ts", "scripts/**/*.mjs", "eslint-rules/**/*.js"],
   "ignoreBinaries": ["pgrep"],
   "ignoreDependencies": ["husky"],

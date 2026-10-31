@@ -84,6 +84,10 @@ Additive keys outside `test`:
   it to run. The verdict line adds `skipped-steps=<steps>` whenever a step
   is skipped, and `reason=skipped-steps` when `check.failOnSkipped` fails a
   run on an `unavailable` skip alone.
+- `check --json`: a step that ran carries `load1Start` and `load1End`, the
+  host's 1-minute load average when it started and when it ended, so a
+  timeout under a loaded host reads as such. Both are absent on Windows,
+  which has no load average; the table's `LOAD` column shows `-` there.
 - `furnace validate --json`: a finding about particular elements carries
   `tags` (`no-keyboard-handler` names each synthetic element with an
   `@click`). An exception that matched an error adds a
@@ -138,6 +142,15 @@ control could not be undone safely). Also `stale-compiled`
 restore build never ran or failed). An `invalid-build-baseline` refusal
 names the first failing field and its value. `note=negative-control-restore` rides a
 `reason=inconclusive` line whose control could not be restored byte-exact.
+
+A `note=coverage-replaced` line adds `build-paths=<path>,…`: every requested
+path the refusal says to rebuild, engine-relative with forward slashes and
+no trailing `/`, and not capped like the refusal text. A script retries with
+`fireforge test --build <paths>` (or `--build-only`). Within an entry, `%`,
+`,` and whitespace are percent-encoded, so splitting on `,` and applying
+`decodeURIComponent` to each entry gives the paths back; an ordinary path is
+written as is. The key is absent when the uncovered request is the whole
+suite, whose remedy is `fireforge build`.
 
 ### Multi-run invocations: `FIREFORGE-RUN:`, `runs=` and `control=`
 

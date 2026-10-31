@@ -105,6 +105,26 @@ export function parseNamedComponentMap<T>(
 }
 
 /**
+ * Validates `typecheckJsconfig`: one path, or a non-empty list of distinct
+ * paths, none with `..`. A one-entry list stays a list.
+ */
+function parseTypecheckJsconfig(raw: JsonValue): string | string[] {
+  const message =
+    'Furnace config: "typecheckJsconfig" must be a path or a non-empty array of distinct ' +
+    'paths, without ".." (path traversal)';
+  const paths = isString(raw) ? [raw] : Array.isArray(raw) ? raw : undefined;
+  if (
+    paths === undefined ||
+    paths.length === 0 ||
+    paths.some((path) => !isString(path) || path.includes('..')) ||
+    new Set(paths).size !== paths.length
+  ) {
+    throw new FurnaceError(message);
+  }
+  return isString(raw) ? raw : (paths as string[]);
+}
+
+/**
  * Copies the validated optional fields (token settings, platform
  * prefixes, ftl/jsconfig/scan paths) from the migrated raw config onto
  * the typed config, re-validating the path-shaped ones against
@@ -144,16 +164,22 @@ export function applyOptionalFurnaceFields(migrated: JsonObject, config: Furnace
     config.ftlBasePath = migrated['ftlBasePath'];
   }
 
-  // Validate optional typecheckJsconfig. This is a consumer-owned jsconfig
-  // whose chrome-elements `paths` entries Furnace maintains on deploy.
+  // Validate optional typecheckJsconfig: one or more consumer-owned
+  // jsconfigs whose chrome-elements `paths` entries Furnace maintains on
+  // deploy.
   if (migrated['typecheckJsconfig'] !== undefined) {
-    const jsconfigPath = migrated['typecheckJsconfig'];
-    if (!isString(jsconfigPath) || jsconfigPath.includes('..')) {
+    config.typecheckJsconfig = parseTypecheckJsconfig(migrated['typecheckJsconfig']);
+  }
+
+  // Validate optional typecheckTagMap, the generated tag-map declaration.
+  if (migrated['typecheckTagMap'] !== undefined) {
+    const tagMap = migrated['typecheckTagMap'];
+    if (!isString(tagMap) || tagMap.includes('..') || !tagMap.endsWith('.d.ts')) {
       throw new FurnaceError(
-        'Furnace config: "typecheckJsconfig" must be a string without ".." (path traversal)'
+        'Furnace config: "typecheckTagMap" must be a ".d.ts" path without ".." (path traversal)'
       );
     }
-    config.typecheckJsconfig = jsconfigPath;
+    config.typecheckTagMap = tagMap;
   }
 
   // Validate optional scanPaths

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createFsMock, createLoggerMock } from '../../test-utils/module-mocks.js';
-import { runCheckJs, runCheckJsGrouped } from '../patch-lint-checkjs.js';
+import { invokePatchLintCheckJs, runCheckJs, runCheckJsGrouped } from '../patch-lint-checkjs.js';
 
 vi.mock('../../utils/fs.js', () => createFsMock());
 
@@ -194,6 +194,52 @@ describe('runCheckJs', () => {
       const plain = issues.find((i) => i.file === 'Plain.sys.mjs');
       expect(plain?.message).toMatch(/implicitly has an 'any' type/);
       expect(plain?.message).not.toContain('cannot resolve');
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('types a member reference through an unresolved URL import as any instead of TS2694', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-member-'));
+    await writeFile(
+      join(tmpDir, 'UsesLaterTypes.sys.mjs'),
+      [
+        '/** @typedef {import("resource:///modules/Later.sys.mjs").LaterType} LaterType */',
+        '/** @typedef {typeof import("resource:///modules/Later.sys.mjs").later} LaterValue */',
+        '/** @typedef {import("chrome://global/content/elements/moz-x.mjs").default} MozX */',
+        '/** @type {LaterType} */',
+        'export let a;',
+        '/** @type {MozX} */',
+        'export let b;',
+        '/** @type {import("resource:///modules/Owned.sys.mjs").Missing} */',
+        'export let c;',
+        '',
+      ].join('\n')
+    );
+    await writeFile(join(tmpDir, 'Owned.sys.mjs'), 'export const present = 1;\n');
+
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(
+        tmpDir,
+        new Set(['UsesLaterTypes.sys.mjs', 'Owned.sys.mjs']),
+        undefined,
+        undefined,
+        { strict: true }
+      );
+      // The unresolved modules' members type as any, as the whole module does.
+      expect(issues.filter((i) => /"(?:resource|chrome):\*"/.test(i.message))).toEqual([]);
+      // A missing member of a module the program does resolve is still an error.
+      expect(issues).toHaveLength(1);
+      expect(issues[0]?.file).toBe('UsesLaterTypes.sys.mjs');
+      expect(issues[0]?.message).toMatch(/^Line 8: .*has no exported member 'Missing'/);
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }
@@ -1096,6 +1142,52 @@ describe('runCheckJs', () => {
       ).toBe(true);
     } finally {
       await rm(tmpProject, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('patchLint.litTypes', () => {
+  it('types Lit in the per-patch program only when set', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-lit-'));
+    await writeFile(
+      join(tmpDir, 'Widget.sys.mjs'),
+      [
+        'import { MozLitElement } from "chrome://global/content/lit-utils.mjs";',
+        'export class Widget extends MozLitElement {}',
+        'const widget = new Widget();',
+        'export const ready = widget.updateComplete;',
+        'export const typo = widget.updateCompleted;',
+        '',
+      ].join('\n')
+    );
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const loose = await invokePatchLintCheckJs(
+        tmpDir,
+        new Set(['Widget.sys.mjs']),
+        { checkJs: true },
+        tmpDir
+      );
+      expect(loose).toEqual([]);
+
+      const typed = await invokePatchLintCheckJs(
+        tmpDir,
+        new Set(['Widget.sys.mjs']),
+        { checkJs: true, litTypes: true },
+        tmpDir
+      );
+      expect(typed).toHaveLength(1);
+      expect(typed[0]?.file).toBe('Widget.sys.mjs');
+      expect(typed[0]?.message).toMatch(/^Line 5: Property 'updateCompleted' does not exist/);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
     }
   });
 });

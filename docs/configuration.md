@@ -106,6 +106,11 @@ lint instead of throwing at runtime. The same shim backs
   declarations (a real `TestUtils` interface, say) override the loose
   baseline, so calls to harness members that do not exist fail at export
   time.
+- `patchLint.litTypes: true` (default off, requires `checkJs`) types Lit in
+  the per-patch programs' shim, as `typecheck.litTypes` does for the
+  project pass (see [`typecheck`](#typecheck)). Set both to the same value,
+  so a widget class has Lit's members, such as `updateComplete`, and a
+  closed member list in both passes.
 - `patchLint.prettier` (`'off'`, `'warning'` or `'error'`, default `'off'`)
   runs the project's configured Prettier over patch-owned `.sys.mjs`
   modules. It runs from inside `engine/`, so `engine/.prettierrc*` and
@@ -278,6 +283,12 @@ lint instead of throwing at runtime. The same shim backs
     `lint --per-patch`), so a scale that matches nothing, or a scan set a
     move emptied, cannot pass by judging nothing. A `--patches` run does
     not judge the floor.
+  - `allowValues`: reviewed declarations accepted as written, as
+    `{ "property": "margin-inline-start", "value": "-3px", "reason": "…" }`.
+    A declaration whose property and value match an entry (whitespace runs
+    collapsed) passes in every file the scale governs, so a reviewed raw
+    value can move to another sheet without an `exclude` for it. The
+    property must be one the scale governs, and `reason` is required.
 
   An unknown key in a scale is refused.
 
@@ -289,6 +300,35 @@ add declarations to the Firefox-globals shim, for every project or for one.
 When `patchLint.checkJs` is on, the same command also runs the per-patch
 checkJs pass that `export` enforces, so a green `typecheck` means
 export-clean types.
+
+`--project <path>` checks one jsconfig instead of the configured list,
+with every other setting of the block: `extraShim`, `litTypes`,
+`undefinedIdentifiers`, and the `projectOverrides` entry for that project.
+A `projectOverrides` key matches the project by the file it names, so
+`./a/jsconfig.json` and an absolute path both find the `a/jsconfig.json`
+entry.
+
+The two passes see different programs. The project pass checks each
+project's files with all of the project's roots and the shim settings
+above. A per-patch program checks only a patch-created `.sys.mjs` module,
+in one program with the queue's other patch-owned modules, or a
+patch-created test script, in its own program (see below). A
+patch-modified upstream file, a widget `.mjs` and a chrome script are not
+checked per patch at all. `fireforge typecheck --explain <file>` runs no
+check and prints both views of one file:
+
+- each configured project, whether it lists the file as a root, and its
+  `litTypes`, effective extra shim (naming the `projectOverrides` entry
+  that set it) and `undefinedIdentifiers`;
+- whether a per-patch program checks it: the patches that create or modify
+  it, the program it is a root of or why it has none, and for a test its
+  heads; the shim settings; the modules its imports can resolve to; and
+  each `resource:`/`chrome:` import with what it resolves to, or `any`.
+
+The file may be given relative to the project root, relative to `engine/`,
+or as an absolute path. With `--project`, only that project is shown.
+`re-export` ends a run that wrote a patch with per-patch checkJs files with
+a line saying the project pass is still owed.
 
 Project build info is written in `.fireforge/typecheck/`, outside `engine/`,
 with a key covering the shim, TypeScript version, compiler options and
@@ -320,10 +360,10 @@ export class MozSearch extends Base {
 }
 ```
 
-Without `litTypes` (and under per-patch checkJs, which does not type Lit)
-`MozLitElementWith<Extra>` is `any`, as the base is, so the same source
-checks in both. A project shim can add members by merging
-`interface LitElementShimMembers`; a jsconfig `paths` entry that maps these
+Per-patch checkJs types Lit when `patchLint.litTypes` is set. Without
+`litTypes`, `MozLitElementWith<Extra>` is `any`, as the base is, so the
+same source checks with and without it. A project shim can add members by
+merging `interface LitElementShimMembers`; a jsconfig `paths` entry that maps these
 URLs to real sources takes precedence.
 
 Per-patch checkJs gives each test script its own program. A
@@ -332,7 +372,13 @@ test's `resource:///` and `chrome://` imports (including a
 the test's own patch, so a test of an earlier patch's module is checked
 against its real types. A module a later patch creates, an upstream module
 and a basename two patches create still type as `any`, and an implicit-any
-finding on such an import names it.
+finding on such an import names it. A type-member reference through such
+an import, `import("…").Type` or `typeof import("…").member`, types as
+`any` too, in every per-patch program. In the project pass the same
+reference is an error ("Namespace '"resource:*"' has no exported member")
+unless the project's jsconfig `paths` resolve the URL, as the entries
+Furnace maintains do for `chrome://global/content/elements/` (see
+[`furnace.md`](furnace.md#typed-cross-module-imports)).
 
 Both project and per-patch checkJs provide Gecko DOM constructor
 `isInstance(value)` predicates with instance narrowing, plus
@@ -391,6 +437,11 @@ any body exists.
   `addOnlyMarker`, matched case-insensitively), and deleting the file or
   changing it as binary is refused. When several entries match a file, any
   add-only one makes it add-only.
+- An add-only entry's `retiredPaths` lists paths whose registrations a
+  patch may remove, for a reviewed retirement. A removed line that contains
+  one of them (a plain substring, such as `fxa/fxa-logo.svg`) is not counted
+  as a removal; any other removal still fails `add-only`. `retiredPaths` on
+  an entry without `addOnly` is refused.
 - `scopeRules` limits a class of patch to the files its globs name
   (`scope`). A rule selects patches by `category`, `filenamePattern` (a
   regular expression over the patch filename), or both. The example keeps a
@@ -549,6 +600,11 @@ one that dismissed four unregistered sources.
 The verdict line names the skipped steps with an additive
 `skipped-steps=<a,b>` key beside `skipped=<n>`.
 
+The step table gives each step's time and, in its `LOAD` column, the host's
+1-minute load average when the step started and when it ended
+(`12.3→18.0`), so a step that timed out on a loaded host reads as such.
+Windows has no load average, so the column shows `-` there.
+
 ## Design tokens
 
 Tokens are managed with `fireforge token add`. `fireforge token list` and
@@ -653,7 +709,8 @@ owning process is gone.
   a `build --ui` does not change it, so without the purge a kept profile runs
   the chrome scripts an earlier build cached. `--no-purge-caches` keeps the
   cache. mach's `profile-default` has its `startupCache/` removed before
-  every run, and a temporary profile starts without one.
+  every run and after every `build --ui`, and a temporary profile starts
+  without one.
 - `--temp-profile` gives a plain `run` the same fresh, removed-afterwards
   profile.
 - Arguments after `--` go to the browser, after the profile ones. A headed
@@ -663,6 +720,15 @@ owning process is gone.
   keep 2828. The objdir app launched directly gets neither `-purgecaches`
   nor the startup-cache cleanup, so it can serve a widget script an earlier
   launch cached.
+
+After a build, mach leaves a `.purgecaches` file in the app directory
+(`dist/bin/browser`, and `Contents/Resources/browser` in the macOS bundle).
+The next launch of the objdir app purges the startup cache of whichever
+profile it starts on and deletes the file. Only that first launch purges: a
+test harness or a direct launch can consume it, and every reused profile
+started after it keeps its cache. `fireforge build --ui` says so in one
+line at the end, since a UI build keeps the build id that cache is keyed
+on. Start other reused profiles with `-purgecaches`.
 
 A smoke run whose browser exits with a clean status before the window
 elapses, without printing any console output, fails with exit 13.
@@ -708,6 +774,14 @@ run.
 session, using the same bounds as the flag. It is the fallback whenever the
 flag is absent, including for the furnace lock a build's pre-build apply and
 `doctor --repair-furnace` take. An explicit `--wait-lock` always wins.
+
+Without either, a writer such as `re-export`, `export` or a `patch` verb waits
+about one second for the engine-session lock and then exits 15 (lock timeout)
+while a peer's `build` or `test` holds it. `re-export --dry-run` takes no lock,
+so a clean preview says nothing about whether the writing run will get one. On
+an engine several sessions share, pass `--wait-lock <seconds>` to every writing
+command, or set `FIREFORGE_WAIT_LOCK` once so every command of the session
+waits its turn.
 
 Waiters are granted a lock in arrival order: the progress line's "You are
 next" or "N ahead of you" is the order the lock will actually be handed out.

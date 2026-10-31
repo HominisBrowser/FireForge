@@ -165,6 +165,22 @@ describe('hasUpstreamMplBlockHeader', () => {
     expect(hasUpstreamMplBlockHeader(directive + olderWrap + 'export {};\n')).toBe(true);
   });
 
+  it('accepts the dashed block form (leading and continuation dashes)', () => {
+    const dashed =
+      '/* - This Source Code Form is subject to the terms of the Mozilla Public\n' +
+      '   - License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+      '   - You can obtain one at http://mozilla.org/MPL/2.0/. */\n';
+    expect(hasUpstreamMplBlockHeader(dashed + '@namespace html url();\n')).toBe(true);
+  });
+
+  it('rejects the dashed block form with altered wording', () => {
+    const garbage =
+      '/* - This Source Code Form is subject to some of the terms of the Mozilla Public\n' +
+      '   - License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+      '   - You can obtain one at http://mozilla.org/MPL/2.0/. */\n';
+    expect(hasUpstreamMplBlockHeader(garbage + 'export {};\n')).toBe(false);
+  });
+
   it('rejects near-MPL garbage with altered wording', () => {
     const garbage =
       '/* This Source Code Form is subject to some of the terms of the Mozilla Public\n' +
@@ -223,6 +239,17 @@ describe('containsUpstreamLicenseText', () => {
     const head = mpl.split('\n').slice(0, 6).join('\n');
     expect(head.includes('Mozilla Public License')).toBe(false);
     expect(containsUpstreamLicenseText(mpl)).toBe(true);
+  });
+
+  it('finds Mozilla MPL in the dashed block form (Firefox preferences.css shape)', () => {
+    const mpl =
+      '/* - This Source Code Form is subject to the terms of the Mozilla Public\n' +
+      '   - License, v. 2.0. If a copy of the MPL was not distributed with this file,\n' +
+      '   - You can obtain one at http://mozilla.org/MPL/2.0/. */\n' +
+      '\n' +
+      '@namespace html "http://www.w3.org/1999/xhtml";\n';
+    expect(containsUpstreamLicenseText(mpl)).toBe(true);
+    expect(hasAnyLicenseHeader(mpl, 'css')).toBe(true);
   });
 
   it('finds Mozilla MPL after Emacs and vim editor directive blocks', () => {

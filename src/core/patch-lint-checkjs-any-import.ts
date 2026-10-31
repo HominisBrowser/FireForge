@@ -12,7 +12,9 @@
  * over its values then has implicitly-`any` parameters under
  * `checkJsStrict`, while the whole-tree `fireforge typecheck`, which sees
  * the module, is clean. Without the note the two disagree with no
- * explanation. Split out of patch-lint-checkjs.ts for the line budget.
+ * explanation. A type-member reference through such an import (TS2694 on
+ * the wildcard) is dropped instead, so it types as `any` like the whole
+ * module. Split out of patch-lint-checkjs.ts for the line budget.
  */
 
 /** Unresolved URL import specifiers, keyed by the importing file's TS path. */
@@ -22,6 +24,39 @@ export type AnyTypedImports = Map<string, Set<string>>;
 const IMPLICIT_ANY_CODES: ReadonlySet<number> = new Set([
   7005, 7006, 7008, 7010, 7011, 7019, 7031, 7034,
 ]);
+
+/** TS2694, "Namespace '…' has no exported member '…'". */
+const NO_EXPORTED_MEMBER_CODE = 2694;
+
+const NO_EXPORTED_MEMBER = /^Namespace '"([^"]*)"' has no exported member /;
+
+/**
+ * True for a type-member reference (`import("…").Type`,
+ * `typeof import("…").member`) through an import this program could not
+ * resolve. The reference lands on the shim's shorthand `resource:*` /
+ * `chrome:*` wildcard (or a consumer's shorthand module of that name),
+ * which has no members, so TypeScript reports TS2694 and types the
+ * reference as `any`. The finding is dropped: the reference types as `any`
+ * here, exactly as a whole-module `typeof import("…")` of the same module
+ * does, and the whole-tree `fireforge typecheck` checks it against the
+ * real module.
+ *
+ * @param code - Diagnostic code
+ * @param message - Flattened diagnostic message
+ * @param specifiers - The file's unresolved URL imports
+ */
+export function isAnyTypedMemberReference(
+  code: number,
+  message: string,
+  specifiers: ReadonlySet<string> | undefined
+): boolean {
+  if (code !== NO_EXPORTED_MEMBER_CODE) return false;
+  const namespace = NO_EXPORTED_MEMBER.exec(message)?.[1];
+  if (namespace === undefined) return false;
+  return (
+    namespace === 'resource:*' || namespace === 'chrome:*' || specifiers?.has(namespace) === true
+  );
+}
 
 function recordAnyTypedImport(
   into: Map<string, Set<string>>,

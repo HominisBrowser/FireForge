@@ -299,7 +299,8 @@ export function registerPatchLintIgnore(parent: Command, context: CommandContext
     )
     .option(
       '--add <check-id>',
-      'Lint check ID to add to the patch lintIgnore list (repeatable); <rule>=<max> adds a ceiling at <max>',
+      'Lint check ID to add to the patch lintIgnore list (repeatable); <rule>=<max> adds a ceiling at <max>. ' +
+        'Needs --yes when not run from a terminal',
       ...stringListOption()
     )
     .option(
@@ -329,7 +330,8 @@ export function registerPatchLintIgnore(parent: Command, context: CommandContext
       '--from <json-file>',
       'Add every entry in a JSON file under one lock hold: an array of check IDs or ' +
         '{ rule, max, reason?, share?, meta?, patch? } objects, or a "lint --per-patch --report" ' +
-        'document, whose ceilings for this patch are rebaselined to their current measurement'
+        'document, whose ceilings for this patch are rebaselined to their current measurement. ' +
+        'Needs --yes when not run from a terminal'
     )
     .option('--dry-run', 'Show what would change without writing')
     .option('-y, --yes', 'Skip confirmation prompt (required for non-TTY)');

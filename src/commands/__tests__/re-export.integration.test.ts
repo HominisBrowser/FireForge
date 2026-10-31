@@ -1676,3 +1676,126 @@ describe('reExportCommand dry-run purity', () => {
     );
   });
 });
+
+/**
+ * Under `--refuse-foreign-drift` a multi-patch run judges every patch before
+ * writing any: a drift refusal in one patch leaves the clean ones unwritten
+ * too, so the pair is never half exported.
+ */
+describe('reExportCommand --refuse-foreign-drift across several patches', () => {
+  const A = 'comp/a.js';
+  const B = 'comp/b.js';
+  const BASE = 'line1\nline2\nline3\n';
+  const PATCHED = 'line1\nline2\npatched line\nline3\n';
+  const A_EDITED = 'line1\nintended edit\nline2\npatched line\nline3\n';
+  const B_FOREIGN = 'line1\nforeign line\nline2\npatched line\nline3\n';
+
+  let projectRoot: string;
+  let restoreTTY: (() => void) | undefined;
+
+  function row(filename: string, order: number, file: string): Record<string, unknown> {
+    return {
+      filename,
+      order,
+      category: 'ui',
+      name: filename.replace(/^\d+-ui-|\.patch$/g, ''),
+      description: '',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      sourceEsrVersion: '140.9.0esr',
+      filesAffected: [file],
+    };
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    restoreTTY = setInteractiveMode(false);
+    projectRoot = await createTempProject();
+    await writeFireForgeConfig(projectRoot);
+    await initCommittedRepo(join(projectRoot, 'engine'), { [A]: BASE, [B]: BASE });
+    await writeFiles(projectRoot, {
+      'patches/patches.json': `${JSON.stringify(
+        {
+          version: 1,
+          patches: [row('001-ui-a.patch', 1, A), row('002-ui-b.patch', 2, B)],
+        },
+        null,
+        2
+      )}\n`,
+      'patches/001-ui-a.patch': `diff --git a/${A} b/${A}\n`,
+      'patches/002-ui-b.patch': `diff --git a/${B} b/${B}\n`,
+    });
+    await writeFiles(join(projectRoot, 'engine'), { [A]: PATCHED, [B]: PATCHED });
+    // Materialize the real old bodies for the guard to compare against.
+    await reExportCommand(projectRoot, ['001', '002'], {});
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    restoreTTY?.();
+    await removeTempProject(projectRoot);
+  });
+
+  it('writes neither patch when only the second has foreign drift', async () => {
+    await writeFiles(join(projectRoot, 'engine'), { [A]: A_EDITED, [B]: B_FOREIGN });
+    const beforeA = await readProjectText(projectRoot, 'patches/001-ui-a.patch');
+    const beforeB = await readProjectText(projectRoot, 'patches/002-ui-b.patch');
+    const beforeManifest = await readProjectText(projectRoot, 'patches/patches.json');
+
+    await expect(
+      reExportCommand(projectRoot, ['001', '002'], { refuseForeignDrift: true, expect: [A] })
+    ).rejects.toThrow(
+      'Nothing was written: the run judges every selected patch before writing any, so ' +
+        '001-ui-a.patch was held back as well.'
+    );
+
+    await expect(readProjectText(projectRoot, 'patches/001-ui-a.patch')).resolves.toBe(beforeA);
+    await expect(readProjectText(projectRoot, 'patches/002-ui-b.patch')).resolves.toBe(beforeB);
+    await expect(readProjectText(projectRoot, 'patches/patches.json')).resolves.toBe(
+      beforeManifest
+    );
+    expect(info).toHaveBeenCalledWith(
+      'Re-export summary: wrote 0 of 2; NOT written: 001-ui-a.patch (held back: another ' +
+        'patch refused), 002-ui-b.patch (refused: foreign drift). Nothing was written because ' +
+        '--refuse-foreign-drift refused 002-ui-b.patch.'
+    );
+  });
+
+  it('judges a later patch against the files an earlier one adopts', async () => {
+    // 001 adopts comp/new.js. 002 owns a file in the same directory, so in
+    // the per-patch loop it meets new.js as 001's file, not as an adjacent
+    // unmanaged one, and the judged-first loop must agree.
+    await writeFiles(join(projectRoot, 'engine'), { 'comp/new.js': 'new\n' });
+
+    await reExportCommand(projectRoot, ['001', '002'], {
+      scan: true,
+      scanFiles: ['001:comp/new.js'],
+      refuseAdjacentUnmanaged: true,
+      refuseForeignDrift: true,
+      skipLint: true,
+    });
+
+    const manifest = JSON.parse(await readProjectText(projectRoot, 'patches/patches.json')) as {
+      patches: { filesAffected: string[] }[];
+    };
+    expect(manifest.patches[0]?.filesAffected).toEqual([A, 'comp/new.js']);
+    expect(manifest.patches[1]?.filesAffected).toEqual([B]);
+  });
+
+  it('writes both once the drift is gone, and writes per patch without the flag', async () => {
+    await writeFiles(join(projectRoot, 'engine'), { [A]: A_EDITED });
+    await reExportCommand(projectRoot, ['001', '002'], { refuseForeignDrift: true, expect: [A] });
+    await expect(readProjectText(projectRoot, 'patches/001-ui-a.patch')).resolves.toContain(
+      '+intended edit'
+    );
+
+    // Without the flag a drifting patch does not hold the other back.
+    await writeFiles(join(projectRoot, 'engine'), { [A]: PATCHED, [B]: B_FOREIGN });
+    await reExportCommand(projectRoot, ['001', '002'], {});
+    await expect(readProjectText(projectRoot, 'patches/001-ui-a.patch')).resolves.not.toContain(
+      '+intended edit'
+    );
+    await expect(readProjectText(projectRoot, 'patches/002-ui-b.patch')).resolves.toContain(
+      '+foreign line'
+    );
+  });
+});

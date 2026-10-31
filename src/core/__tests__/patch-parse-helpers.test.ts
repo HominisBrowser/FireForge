@@ -10,6 +10,7 @@ import {
   parseDiffGitHeader,
   parseDiffSections,
   parseHunksForFile,
+  withGitHeaders,
 } from '../patch-parse.js';
 
 const MULTI_HUNK_PATCH = [
@@ -420,5 +421,43 @@ describe('parseDiffSections binary payload detection', () => {
   it('leaves hasBinaryDelta false for ordinary text sections', () => {
     const sections = parseDiffSections(MULTI_HUNK_PATCH);
     expect(sections.every((section) => !section.isBinary && !section.hasBinaryDelta)).toBe(true);
+  });
+});
+
+describe('withGitHeaders', () => {
+  it('gives each plain ---/+++ pair a git header, keeping both side names', () => {
+    const plain = [
+      '--- /dev/fd/63\t2026-10-31 12:00:00.000000000 +0100',
+      '+++ engine/browser/x.js\t2026-10-31 12:00:00.000000000 +0100',
+      '@@ -1,2 +1,2 @@',
+      ' keep',
+      '--- removed line that reads like a header',
+      '+++ added line that reads like a header',
+      '',
+    ].join('\n');
+    const sections = parseDiffSections(withGitHeaders(plain));
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.sourcePath).toBe('/dev/fd/63');
+    expect(sections[0]?.targetPath).toBe('engine/browser/x.js');
+    expect(sections[0]?.hunks[0]?.lines).toEqual([
+      ' keep',
+      '--- removed line that reads like a header',
+      '+++ added line that reads like a header',
+    ]);
+  });
+
+  it('marks a /dev/null side as a create or delete and strips a/ b/ labels', () => {
+    const created = parseDiffSections(
+      withGitHeaders(['--- /dev/null', '+++ b/new.js', '@@ -0,0 +1 @@', '+n', ''].join('\n'))
+    );
+    expect(created[0]).toMatchObject({ targetPath: 'new.js', isNewFile: true });
+    const gone = parseDiffSections(
+      withGitHeaders(['--- a/old.js', '+++ /dev/null', '@@ -1 +0,0 @@', '-o', ''].join('\n'))
+    );
+    expect(gone[0]).toMatchObject({ targetPath: 'old.js', isDeletedFile: true });
+  });
+
+  it('returns a diff that already has git headers unchanged', () => {
+    expect(withGitHeaders(MULTI_HUNK_PATCH)).toBe(MULTI_HUNK_PATCH);
   });
 });

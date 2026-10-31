@@ -8,8 +8,9 @@
  * `src/core/test-stale-check.ts`.
  */
 
-import type { BuildBaseline } from '../core/build-baseline-types.js';
+import type { BuildBaseline, ControlBuildStamp } from '../core/build-baseline-types.js';
 import { filterByCarriedFullCoverage } from '../core/coverage-dispatch.js';
+import { normalizeRequestPath } from '../core/coverage-records.js';
 import {
   checkStaleBuildForTest,
   checkStaticComponentsStale,
@@ -28,6 +29,7 @@ import type { TestOptions } from '../types/commands/index.js';
 import { isProcessAlive } from '../utils/errors.js';
 import { info, warn } from '../utils/logger.js';
 import { describePerfStaleImpact } from './test-perf-scope.js';
+import { formatVerdictPathList, setVerdictRunAttribute } from './test-verdict.js';
 
 /**
  * Stale-build preflight: when `--build` was not requested, detect packageable
@@ -58,18 +60,32 @@ export async function enforceStaleBuildGate(
    * `quiet`: refuse only, without the exemption note (the pre-lock pass).
    * `launchablePath`: the engine-relative binary the run launches, which
    * anchors the stale-compiled check (skipped without one).
+   * `ownControlBuild`: the stamp this invocation's own compiled-control
+   * build recorded, on the runs after the first (see
+   * {@link enforceControlBuiltGate}).
    */
-  gate: { quiet?: boolean; launchablePath?: string | undefined } = {}
+  gate: {
+    quiet?: boolean;
+    launchablePath?: string | undefined;
+    ownControlBuild?: ControlBuildStamp | undefined;
+  } = {}
 ): Promise<void> {
   const stale = await checkStaleBuildForTest(projectRoot, engineDir);
-  enforceControlBuiltGate(stale.baseline);
+  const ownControl = isOwnControlBuild(stale.baseline, gate.ownControlBuild);
+  if (!ownControl) enforceControlBuiltGate(stale.baseline);
   const dispatchesNoTests = options.doctor === true && normalizedPaths.length === 0;
   if (!dispatchesNoTests) {
     await enforceCoverageGate(engineDir, stale.baseline, normalizedPaths);
   }
 
   await enforceStaticComponentsGate(engineDir, stale.baseline, options);
-  await enforceStaleCompiledGate(engineDir, stale.baseline, options, gate.launchablePath);
+  await enforceStaleCompiledGate(
+    engineDir,
+    stale.baseline,
+    options,
+    gate.launchablePath,
+    new Set(ownControl ? stale.baseline?.controlBuild?.targets : [])
+  );
 
   const exempt = stale.exempt ?? [];
   if (!stale.stale && exempt.length > 0 && gate.quiet !== true) {
@@ -107,11 +123,32 @@ export async function enforceStaleBuildGate(
 }
 
 /**
+ * Whether the recorded control-built stamp is the one this invocation's own
+ * control build wrote (same diff file, same application time, as
+ * `controlBuildRecorded` compares). A `--repeat` or mixed-harness run after
+ * the first tests that binary on purpose, with the control applied again.
+ */
+function isOwnControlBuild(
+  baseline: BuildBaseline | undefined,
+  own: ControlBuildStamp | undefined
+): boolean {
+  const stamp = baseline?.controlBuild;
+  return (
+    stamp !== undefined &&
+    own !== undefined &&
+    stamp.diffFile === own.diffFile &&
+    stamp.appliedAt === own.appliedAt
+  );
+}
+
+/**
  * Control-built refusal: the recorded build compiled a negative control
  * into the binary, and no build since has recompiled the restored source
  * (the run was killed, or its restore build failed). Every test against
  * that binary tests the mutation. Not bypassable: `--allow-stale-build`
- * accepts old content, not a deliberately broken binary.
+ * accepts old content, not a deliberately broken binary. The runs after the
+ * first of the invocation that built the control skip it (see
+ * {@link isOwnControlBuild}).
  */
 function enforceControlBuiltGate(baseline: BuildBaseline | undefined): void {
   const stamp = baseline?.controlBuild;
@@ -128,16 +165,22 @@ function enforceControlBuiltGate(baseline: BuildBaseline | undefined): void {
 /**
  * Stale-compiled refusal: compiled sources modified after the binary under
  * test was linked. `--allow-stale-build` downgrades it to a warning, as it
- * does the stale-build refusal.
+ * does the stale-build refusal. `ownControlTargets` are skipped: an
+ * invocation's own compiled control restores them with a fresh mtime after
+ * each run, while the binary still carries the control the next run applies
+ * again.
  */
 async function enforceStaleCompiledGate(
   engineDir: string,
   baseline: BuildBaseline | undefined,
   options: TestOptions,
-  launchablePath: string | undefined
+  launchablePath: string | undefined,
+  ownControlTargets: ReadonlySet<string>
 ): Promise<void> {
-  const result = await findCompiledSourcesNewerThanBinary(engineDir, baseline, launchablePath);
-  if (result === undefined || result.paths.length === 0) return;
+  const found = await findCompiledSourcesNewerThanBinary(engineDir, baseline, launchablePath);
+  if (found === undefined) return;
+  const result = { ...found, paths: found.paths.filter((path) => !ownControlTargets.has(path)) };
+  if (result.paths.length === 0) return;
   const message = formatStaleCompiledRefusal(result);
   if (options.allowStaleBuild === true) {
     warn(message);
@@ -171,6 +214,7 @@ async function enforceCoverageGate(
   // The refusal is correct on its own. Naming the manifest that gained
   // an entry is the triage step it otherwise leaves to the reader.
   const changedManifests = await findChangedTestManifestsForPaths(engineDir, baseline, uncovered);
+  stampBuildPaths(uncovered);
   throw new PreflightRefusalError(
     formatTestCoverageRefusal(
       uncovered,
@@ -192,6 +236,20 @@ async function enforceCoverageGate(
     ),
     'coverage-replaced'
   );
+}
+
+/**
+ * Names the paths a `coverage-replaced` refusal tells the operator to
+ * rebuild as `build-paths=` on the verdict line, uncapped and normalized,
+ * so a script can retry with `--build <paths>` without parsing the prose.
+ * A whole-suite request has no scoped retry and stamps nothing.
+ */
+function stampBuildPaths(uncovered: readonly string[]): void {
+  const paths = uncovered
+    .filter((path) => path !== FULL_SUITE_REQUEST)
+    .map((path) => normalizeRequestPath(path));
+  if (paths.length === 0 || paths.includes('')) return;
+  setVerdictRunAttribute('build-paths', formatVerdictPathList([...new Set(paths)]));
 }
 
 /**

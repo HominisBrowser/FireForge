@@ -209,6 +209,7 @@ describe('validateConfig', () => {
           'browser/base/content/browser.js',
           { path: '**/jar.mn', addOnly: true },
           { path: '**/moz.build', addOnly: true, marker: 'HOMINIS' },
+          { path: 'browser/base/jar.mn', addOnly: true, retiredPaths: ['fxa/fxa-logo.svg'] },
         ],
         scopeRules: [{ filenamePattern: '-tests\\.patch$', files: ['**/test/**'] }],
         verifyDocumentPaths: true,
@@ -219,6 +220,7 @@ describe('validateConfig', () => {
       'browser/base/content/browser.js',
       { path: '**/jar.mn', addOnly: true },
       { path: '**/moz.build', addOnly: true, marker: 'HOMINIS' },
+      { path: 'browser/base/jar.mn', addOnly: true, retiredPaths: ['fxa/fxa-logo.svg'] },
     ]);
     expect(config.patchPolicy?.scopeRules?.[0]?.files).toEqual(['**/test/**']);
     expect(config.patchPolicy?.verifyDocumentPaths).toBe(true);
@@ -231,6 +233,18 @@ describe('validateConfig', () => {
     [{ upstreamAllowlist: [{ path: 'a', addOnly: 'yes' }] }, '.addOnly" must be a boolean'],
     [{ upstreamAllowlist: [{ path: 'a', addOnly: true }] }, 'sets addOnly but no marker'],
     [{ upstreamAllowlist: [{ path: 'a', marker: '' }] }, '.marker" must be a non-empty string'],
+    [
+      { upstreamAllowlist: [{ path: 'a', marker: 'm', retiredPaths: ['x'] }] },
+      '.retiredPaths" only applies to an addOnly entry',
+    ],
+    [
+      { upstreamAllowlist: [{ path: 'a', addOnly: true, marker: 'm', retiredPaths: [] }] },
+      '.retiredPaths" must be a non-empty array of paths',
+    ],
+    [
+      { upstreamAllowlist: [{ path: 'a', addOnly: true, marker: 'm', retiredPaths: [''] }] },
+      '.retiredPaths[0]" must be a non-empty string',
+    ],
     [{ addOnlyMarker: 3 }, 'patchPolicy.addOnlyMarker" must be a non-empty string'],
     [{ scopeRules: {} }, 'patchPolicy.scopeRules" must be an array'],
     [{ scopeRules: ['x'] }, 'patchPolicy.scopeRules[0]" must be an object'],
@@ -254,6 +268,7 @@ describe('validateConfig', () => {
       prefix: '--mybrowser-space-',
       allowLiterals: ['0', '*%'],
       allow: ['--moz-*'],
+      allowValues: [{ property: 'padding-block', value: '3px 7px', reason: 'Docked bar offset' }],
     };
     const config = validateConfig({ ...makeValidConfig(), patchLint: { tokenScales: [scale] } });
     expect(config.patchLint?.tokenScales).toEqual([scale]);
@@ -272,6 +287,34 @@ describe('validateConfig', () => {
     [[{ properties: ['gap'], prefix: 'a-' }], '.prefix" must be a custom-property prefix'],
     [[{ properties: ['gap'], prefix: '--a-', allowLiterals: [''] }], '.allowLiterals" must be an'],
     [[{ properties: ['gap'], prefix: '--a-', allow: ['moz-x'] }], 'must be custom-property names'],
+    [
+      [{ properties: ['gap'], prefix: '--a-', allowValues: [] }],
+      '.allowValues" must be a non-empty',
+    ],
+    [
+      [{ properties: ['gap'], prefix: '--a-', allowValues: [{ property: 'gap', value: '7px' }] }],
+      '.allowValues[0].reason" must be a non-empty string',
+    ],
+    [
+      [
+        {
+          properties: ['gap'],
+          prefix: '--a-',
+          allowValues: [{ property: 'margin', value: '7px', reason: 'r' }],
+        },
+      ],
+      'must be a property the scale governs (got "margin")',
+    ],
+    [
+      [
+        {
+          properties: ['gap'],
+          prefix: '--a-',
+          allowValues: [{ property: 'gap', value: '7px', reason: 'r', file: 'a.css' }],
+        },
+      ],
+      '.allowValues[0]" has unknown key "file"',
+    ],
   ])('rejects malformed patchLint.tokenScales %j', (tokenScales, message) => {
     expect(() => validateConfig({ ...makeValidConfig(), patchLint: { tokenScales } })).toThrow(
       message
@@ -571,6 +614,17 @@ describe('validateConfig', () => {
         })
       )
     ).toThrow('Config field "patchLint.checkJsTestShim" must be a project-relative path');
+
+    // patchLint.litTypes is a boolean that needs checkJs.
+    expect(
+      validateConfig(makeValidConfig({ patchLint: { checkJs: true, litTypes: true } })).patchLint
+    ).toEqual({ checkJs: true, litTypes: true });
+    expect(() => validateConfig(makeValidConfig({ patchLint: { litTypes: true } }))).toThrow(
+      'Config field "patchLint.litTypes" requires "patchLint.checkJs": true'
+    );
+    expect(() =>
+      validateConfig(makeValidConfig({ patchLint: { checkJs: true, litTypes: 'yes' as never } }))
+    ).toThrow('Config field "patchLint.litTypes" must be a boolean');
 
     expect(() =>
       validateConfig(

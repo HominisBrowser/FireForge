@@ -322,6 +322,11 @@ export async function runTestBuildPhase(
     /** Recorded on the pre-test build's baseline (a compiled negative control). */
     controlBuild?: ControlBuildStamp;
     /**
+     * The stamp this invocation's own control build recorded, which a
+     * build-less run after it accepts (see `TestRunHooks.ownControlBuild`).
+     */
+    ownControlBuild?: ControlBuildStamp;
+    /**
      * Engine-relative launchable binary: anchors the stale-compiled check,
      * which refuses a build-less run and escalates a `--build` one.
      */
@@ -396,6 +401,7 @@ export async function runTestBuildPhase(
   } else {
     await enforceStaleBuildGate(projectRoot, paths.engine, options, normalizedPaths, {
       launchablePath,
+      ownControlBuild: request.ownControlBuild,
     });
   }
   return false;

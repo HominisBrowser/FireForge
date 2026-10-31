@@ -45,7 +45,7 @@ export function registerReExport(
     )
     .option(
       '--scan-files <manifest>',
-      'With --scan, bulk-assign generated files from a JSON manifest: {"assignments":[{"patch":"002-name.patch","files":["path"]}]}. Selects patches from the manifest.'
+      'With --scan, bulk-assign generated files from a JSON manifest: {"assignments":[{"patch":"002-name.patch","files":["path"]}]}. Selects the patches the manifest names, plus any positional patches (a positional the manifest does not name refreshes scan-less).'
     )
     .option(
       '--files <paths>',
@@ -110,7 +110,7 @@ export function registerReExport(
     )
     .option(
       '--hunks-from <diff>',
-      "Export each file the diff names as the patch's current body plus only the diff's hunks, so another session's edits in the same file stay out. One explicit patch; not with --scan, --files or --all."
+      "Export each file the diff names as the patch's current body plus only the diff's hunks, so another session's edits in the same file stay out. Takes git diff or plain diff -u output; for a file the patch creates, diff against `fireforge patch body <patch> <file>`. One explicit patch; not with --scan, --files or --all."
     )
     .option(
       '--exclude-hunks <diff>',

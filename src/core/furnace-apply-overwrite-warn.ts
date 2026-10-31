@@ -157,18 +157,28 @@ export type PatchOwnedOverwriteProbe =
 /**
  * Finds deployed files this component's apply is about to overwrite whose
  * engine bytes differ from the component source and that are patch-owned.
- * Probe failures degrade to a verbose line and an empty list. The apply
- * itself must not fail because the warning probe could not run.
+ * A probe failure throws, for callers that refuse on the result.
+ */
+export async function probePatchOwnedOverwrites(
+  args: PatchOwnedOverwriteProbe
+): Promise<PatchOwnedOverwriteWarning[]> {
+  if (args.patchClaims.size === 0) return [];
+  if (args.type === 'custom') {
+    return findCustomOverwrites(args);
+  }
+  return findOverrideOverwrites(args);
+}
+
+/**
+ * {@link probePatchOwnedOverwrites} for the advisory warning: probe
+ * failures degrade to a verbose line and an empty list. The apply itself
+ * must not fail because the warning probe could not run.
  */
 export async function findPatchOwnedOverwrites(
   args: PatchOwnedOverwriteProbe
 ): Promise<PatchOwnedOverwriteWarning[]> {
-  if (args.patchClaims.size === 0) return [];
   try {
-    if (args.type === 'custom') {
-      return await findCustomOverwrites(args);
-    }
-    return await findOverrideOverwrites(args);
+    return await probePatchOwnedOverwrites(args);
   } catch (error: unknown) {
     verbose(`Skipping patch-owned overwrite probe for ${args.name}: ${toError(error).message}`);
     return [];

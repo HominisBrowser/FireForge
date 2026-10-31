@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { createWriteStream } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { cleanDevProfile } from '../core/dev-profile.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
 import { warnIfFurnaceStale } from '../core/furnace-staleness.js';
 import { hasBuildArtifacts, hasRunnableBundle, run, runMachSmoke } from '../core/mach.js';
@@ -32,7 +32,6 @@ import { SmokeRunError } from '../errors/run.js';
 import type { CommandContext } from '../types/cli.js';
 import type { RunOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, removeDir, removeFile } from '../utils/fs.js';
 import { info, intro, verbose, warn } from '../utils/logger.js';
 import { commanderArgParser, pickDefined, stringListOption } from '../utils/options.js';
 
@@ -41,46 +40,6 @@ const SMOKE_COLD_START_THRESHOLD_MS = 30_000;
 
 /** Maximum number of unallowed error lines to surface in the terminal summary. */
 const SMOKE_UNALLOWED_PREVIEW_MAX = 10;
-
-/**
- * Cleans the dev profile to prevent stale-state startup failures.
- *
- * Removes two things:
- * 1. `startupCache/`: Firefox caches compiled chrome JS bytecode here.
- *    When chrome scripts change between builds, the stale cache causes silent
- *    crashes on startup.
- * 2. `.parentlock`: a zero-byte lock file that persists if the previous
- *    session was killed (Ctrl-C, crash, `kill`). Firefox checks this on
- *    startup and silently exits if it exists, assuming another instance owns
- *    the profile.
- *
- * @param engineDir - Path to the engine directory
- */
-async function cleanDevProfile(engineDir: string): Promise<void> {
-  try {
-    const entries = await readdir(engineDir);
-    const objDirs = entries.filter((e) => e.startsWith('obj-'));
-    if (objDirs.length === 0) {
-      return;
-    }
-
-    for (const objDir of objDirs) {
-      const profileDir = join(engineDir, objDir, 'tmp', 'profile-default');
-
-      const cachePath = join(profileDir, 'startupCache');
-      if (await pathExists(cachePath)) {
-        await removeDir(cachePath);
-      }
-
-      const lockPath = join(profileDir, '.parentlock');
-      if (await pathExists(lockPath)) {
-        await removeFile(lockPath);
-      }
-    }
-  } catch (error: unknown) {
-    verbose(`Non-fatal dev profile cleanup failure: ${toError(error).message}`);
-  }
-}
 
 /**
  * Runs the run command to launch the built browser.
@@ -128,7 +87,7 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
   await warnIfFurnaceStale(projectRoot);
 
   // Clean stale profile state to prevent silent startup failures
-  await cleanDevProfile(paths.engine);
+  await cleanDevProfile(paths.engine, { removeParentLock: true });
 
   // Reclaim temporary profiles a SIGKILLed FireForge could not remove.
   const swept = await sweepAbandonedRunProfiles();

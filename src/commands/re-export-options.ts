@@ -240,9 +240,10 @@ export function validateReExportOptionCombinations(
   if (options.scanFilesManifest !== undefined) {
     if (!options.scan)
       throw new InvalidArgumentError('--scan-files requires --scan.', '--scan-files');
-    if (options.all || patches.length > 0) {
+    if (options.all) {
       throw new InvalidArgumentError(
-        '--scan-files selects patches from its manifest and cannot be combined with positional patches or --all.',
+        '--scan-files selects patches from its manifest and cannot be combined with --all. ' +
+          'Positional patches are refreshed alongside the patches the manifest names.',
         '--scan-files'
       );
     }

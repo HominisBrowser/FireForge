@@ -14,8 +14,6 @@ import {
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { PatchesManifest, PatchMetadata, ReExportOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
-import { elapsedSince } from '../utils/elapsed.js';
-import { toError } from '../utils/errors.js';
 import {
   cancel,
   info,
@@ -27,6 +25,7 @@ import {
   success,
   warn,
 } from '../utils/logger.js';
+import type { PerRunCheckJs } from './lint-per-run-checkjs.js';
 import type { AdjacentUnmanagedContext } from './re-export-adjacent.js';
 import {
   ADJACENT_MEANS,
@@ -40,6 +39,7 @@ import {
 } from './re-export-bulk-scan.js';
 import type { ForeignDriftContext } from './re-export-drift.js';
 import { warnUnseenExpectedDrift } from './re-export-drift.js';
+import { reExportEach } from './re-export-each.js';
 import { reExportFilesInPlace } from './re-export-files.js';
 import { buildReExportLintContext, finishReExportLint } from './re-export-lint.js';
 import {
@@ -49,12 +49,8 @@ import {
 import { validateExpectedRemovals } from './re-export-removed.js';
 import { dropRetiredPathDeclarations } from './re-export-retired-declarations.js';
 import { normalizeEngineRelativeInput, normalizeScanFiles } from './re-export-scan.js';
-import { assignScanFileOwners, scanOptionsForPatch } from './re-export-scan-owner.js';
-import {
-  type ReExportSinglePatchArgs,
-  reExportSinglePatchWithIndexLockRetry,
-} from './re-export-single.js';
-import { formatReExportRunSummary } from './re-export-summary.js';
+import { assignScanFileOwners } from './re-export-scan-owner.js';
+import { formatCheckJsProjectPassNote, formatReExportRunSummary } from './re-export-summary.js';
 
 async function resolveSelectedPatches(
   patches: string[],
@@ -111,36 +107,46 @@ async function resolveSelectedPatches(
   return manifest.patches.filter((p) => selectedFilenames.includes(p.filename));
 }
 
-/** Refreshes each selected patch in turn, collecting which wrote and which failed. */
-async function reExportEach(args: {
-  selectedPatches: readonly PatchMetadata[];
-  options: ReExportOptions;
-  scanAssignments: ReadonlyMap<string, string[]> | undefined;
-  progress: SpinnerHandle;
-  startedAt: number;
-  shared: Omit<ReExportSinglePatchArgs, 'patch' | 'options'>;
-}): Promise<{ written: string[]; failed: string[] }> {
-  const { selectedPatches, options, scanAssignments, progress, startedAt, shared } = args;
-  const written: string[] = [];
-  const failed: string[] = [];
-  for (const [index, patch] of selectedPatches.entries()) {
-    const patchOptions = scanOptionsForPatch(options, patch.filename, scanAssignments);
-    progress.message(
-      `Re-exporting ${index + 1}/${selectedPatches.length}: ${patch.filename} (${patch.filesAffected.length} file(s), ${elapsedSince(startedAt)} elapsed)...`
-    );
-    try {
-      if (
-        await reExportSinglePatchWithIndexLockRetry({ ...shared, patch, options: patchOptions })
-      ) {
-        written.push(patch.filename);
-      }
-    } catch (error: unknown) {
-      failed.push(patch.filename);
-      warn(`Failed to re-export ${patch.filename}`);
-      warn(toError(error).message);
+/**
+ * The patches a `--scan-files` run refreshes: those its manifest names plus
+ * the positional patches, once each, in queue order. A positional the
+ * manifest does not name has no assigned files and refreshes scan-less.
+ * @param scanFilesByPatch - The manifest's assignments, keyed by patch filename
+ * @param patches - Positional patch identifiers
+ * @param options - Re-export options
+ * @param manifest - The patch queue
+ */
+async function selectScanFilesPatches(
+  scanFilesByPatch: ReadonlyMap<string, string[]>,
+  patches: string[],
+  options: ReExportOptions,
+  manifest: PatchesManifest
+): Promise<PatchMetadata[]> {
+  const positional =
+    patches.length > 0 ? ((await resolveSelectedPatches(patches, options, manifest)) ?? []) : [];
+  const wanted = new Set([
+    ...scanFilesByPatch.keys(),
+    ...positional.map((patch) => patch.filename),
+  ]);
+  return manifest.patches.filter((patch) => wanted.has(patch.filename));
+}
+
+/** Lists what a `--scan-files` run adopts into each selected patch. */
+function reportScanFilesAssignments(
+  manifestPath: string | undefined,
+  selectedPatches: readonly PatchMetadata[],
+  scanFilesByPatch: ReadonlyMap<string, string[]>
+): void {
+  info(`Bulk scan assignments from ${manifestPath}`);
+  for (const patch of selectedPatches) {
+    const files = scanFilesByPatch.get(patch.filename);
+    if (files === undefined) {
+      info(`  ${patch.filename} (positional, refreshed without a scan)`);
+      continue;
     }
+    info(`  ${patch.filename} <= ${files.length} file(s)`);
+    for (const file of files) info(`    + ${file}`);
   }
-  return { written, failed };
 }
 
 /**
@@ -194,7 +200,7 @@ export async function reExportCommand(
   // Resolve which patches to re-export
   const selectedPatches =
     scanFilesByPatch !== undefined
-      ? manifest.patches.filter((patch) => scanFilesByPatch.has(patch.filename))
+      ? await selectScanFilesPatches(scanFilesByPatch, patches, options, manifest)
       : await resolveSelectedPatches(patches, options, manifest);
   if (!selectedPatches) return;
   const scanAssignments =
@@ -215,12 +221,7 @@ export async function reExportCommand(
   if (expectedRemovals.length > 0) options = { ...options, expectRemoved: expectedRemovals };
 
   if (scanFilesByPatch !== undefined) {
-    info(`Bulk scan assignments from ${options.scanFilesManifest}`);
-    for (const patch of selectedPatches) {
-      const files = scanFilesByPatch.get(patch.filename) ?? [];
-      info(`  ${patch.filename} <= ${files.length} file(s)`);
-      for (const file of files) info(`    + ${file}`);
-    }
+    reportScanFilesAssignments(options.scanFilesManifest, selectedPatches, scanFilesByPatch);
   }
 
   // --files path: handled end-to-end here so we can lint the *projected*
@@ -299,10 +300,16 @@ export async function reExportCommand(
     failed: failedFilenames,
     refusedAdjacent: adjacentCtx.refusals.map((r) => r.patchFilename),
     refusedDrift: driftCtx.refusals.map((r) => r.patchFilename),
+    heldBack: outcome.heldBack,
     isDryRun,
   });
   if (summary !== undefined) info(summary);
-  throwRunLevelRefusals(adjacentCtx, driftCtx, progress);
+  const checkJsNote = formatCheckJsProjectPassNote(
+    checkJsWrittenPatches(lintCtx.checkJs, selectedPatches, reExportedFilenames),
+    isDryRun
+  );
+  if (checkJsNote !== undefined) info(checkJsNote);
+  throwRunLevelRefusals(adjacentCtx, driftCtx, progress, outcome.heldBack);
 
   if (reExported === 0 && selectedPatches.length > 0) {
     progress.error('Re-export failed');
@@ -388,14 +395,37 @@ function warnUnseenApprovedUnmanaged(adjacentCtx: AdjacentUnmanagedContext): voi
 }
 
 /**
+ * The written patches whose files per-patch checkJs type-checks: a
+ * checkJs-relevant file among those the patch creates or names.
+ */
+function checkJsWrittenPatches(
+  checkJs: PerRunCheckJs | undefined,
+  selectedPatches: readonly PatchMetadata[],
+  written: readonly string[]
+): string[] {
+  if (checkJs === undefined) return [];
+  const writtenSet = new Set(written);
+  return selectedPatches
+    .filter(
+      (patch) =>
+        writtenSet.has(patch.filename) &&
+        (checkJs.ownedByPatch.has(patch.filename) ||
+          patch.filesAffected.some((file) => checkJs.isRelevant(file)))
+    )
+    .map((patch) => patch.filename);
+}
+
+/**
  * Turns the run's collected `--refuse-adjacent-unmanaged` and
  * `--refuse-foreign-drift` refusals into the non-zero exit,
- * naming every refused patch and the remedy.
+ * naming every refused patch, the patches a drift refusal held back
+ * unwritten, and the remedy.
  */
 function throwRunLevelRefusals(
   adjacentCtx: AdjacentUnmanagedContext,
   driftCtx: ForeignDriftContext,
-  progress: SpinnerHandle
+  progress: SpinnerHandle,
+  heldBack: readonly string[]
 ): void {
   if (adjacentCtx.refusals.length > 0) {
     progress.error('Re-export refused');
@@ -423,9 +453,16 @@ function throwRunLevelRefusals(
       unreadable.length > 0
         ? ` ${unreadable.length} of these refused because the old patch body was missing or unreadable, so the drift comparison could not run (fail-closed).`
         : '';
+    // Under the flag every patch is judged before any is written, so a
+    // refusal holds back the patches that were clean.
+    const heldBackPart =
+      heldBack.length > 0
+        ? ` Nothing was written: the run judges every selected patch before writing any, so ` +
+          `${heldBack.join(', ')} ${heldBack.length === 1 ? 'was' : 'were'} held back as well.`
+        : '';
     throw new GeneralError(
       `Refused ${driftCtx.refusals.length} patch(es) whose refreshed body would add or drop ` +
-        `lines relative to the old patch body (--refuse-foreign-drift): ${names}.${unreadablePart}\n\n` +
+        `lines relative to the old patch body (--refuse-foreign-drift): ${names}.${unreadablePart}${heldBackPart}\n\n` +
         'The flag cannot tell WHO wrote those lines, and the two populations have opposite ' +
         'remedies:\n' +
         '  - Lines you changed yourself since the last export (the per-file report tags these ' +

@@ -487,6 +487,7 @@ async function runTestCommandBody(
       normalizedPaths: hooks.coveragePaths ?? normalizedPaths,
       ...(hooks.fullBuildReason === undefined ? {} : { fullBuildReason: hooks.fullBuildReason }),
       ...(hooks.controlBuild === undefined ? {} : { controlBuild: hooks.controlBuild }),
+      ...(hooks.ownControlBuild === undefined ? {} : { ownControlBuild: hooks.ownControlBuild }),
       launchablePath,
     })
   ) {

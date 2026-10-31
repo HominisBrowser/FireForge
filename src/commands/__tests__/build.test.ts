@@ -69,6 +69,11 @@ vi.mock('../../core/build-baseline.js', () => ({
   writeBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
 }));
 
+// The cleanup itself is covered by src/core/__tests__/dev-profile.test.ts.
+vi.mock('../../core/dev-profile.js', () => ({
+  cleanDevProfile: vi.fn(() => Promise.resolve(0)),
+}));
+
 vi.mock('../../core/build-audit.js', () => ({
   auditBuildArtifacts: vi.fn(() =>
     Promise.resolve({ updated: 0, stale: 0, missing: 0, skipped: 0, entries: [] })
@@ -92,6 +97,7 @@ import { validateBrandOverride } from '../../core/brand-validation.js';
 import { writeBuildBaseline } from '../../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { cleanDevProfile } from '../../core/dev-profile.js';
 import {
   attemptMozinfoRewrite,
   build,
@@ -273,6 +279,39 @@ describe('buildCommand', () => {
       // carried forward, never refreshed.
       buildKind: 'faster',
     });
+  });
+
+  it('drops the dev profile startup cache after a UI build and names the -purgecaches need', async () => {
+    vi.mocked(cleanDevProfile).mockResolvedValue(1);
+
+    await expect(buildCommand('/project', { ui: true })).resolves.toBeUndefined();
+
+    // The browser may still hold its lock; only the startup cache goes.
+    expect(cleanDevProfile).toHaveBeenCalledWith(nativePath('/project/engine'), {
+      removeParentLock: false,
+    });
+    const line = vi
+      .mocked(info)
+      .mock.calls.map(([message]) => message)
+      .find((message) => message.startsWith('Startup cache:'));
+    expect(line).toContain("removed profile-default's startup cache");
+    expect(line).toContain('the next browser launch purges');
+    expect(line).toContain('-purgecaches');
+  });
+
+  it('leaves the startup cache alone after a full build, which changes the build id', async () => {
+    await expect(buildCommand('/project', {})).resolves.toBeUndefined();
+
+    expect(cleanDevProfile).not.toHaveBeenCalled();
+    expect(vi.mocked(info).mock.calls.flat().join('\n')).not.toContain('Startup cache:');
+  });
+
+  it('does not report a UI build startup cache after a failed UI build', async () => {
+    vi.mocked(buildUI).mockResolvedValue({ exitCode: 2, stdout: '', stderr: '', attempts: 1 });
+
+    await expect(buildCommand('/project', { ui: true })).rejects.toThrow();
+
+    expect(cleanDevProfile).not.toHaveBeenCalled();
   });
 
   it('refuses UI-only builds when the launchable bundle is missing', async () => {

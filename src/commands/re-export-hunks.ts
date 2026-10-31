@@ -33,6 +33,7 @@ import {
   type ParsedHunk,
   parseDiffGitHeader,
   parseDiffSections,
+  withGitHeaders,
 } from '../core/patch-parse.js';
 import { applyPatchTextToContent } from '../core/patch-transform.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
@@ -187,10 +188,49 @@ async function diffContentAgainstHead(
   }
 }
 
-/** Reads and checks the hunk diff: text sections for files the patch owns. */
+/** Engine-relative form of a diff path, or undefined when it cannot be one. */
+function asEnginePath(path: string, flag: string): string | undefined {
+  try {
+    return normalizeEngineRelativeInput(path, flag);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The owned file a section names. A section whose sides name different
+ * paths (`diff -u <(fireforge patch body …) engine/<file>`, or a
+ * `git diff --no-index` against a copy) is keyed on the side that is a file
+ * the patch owns. One whose sides both name owned files is a rename, and
+ * refused; one whose sides name none is keyed on its new side.
+ */
+function sectionFile(
+  section: DiffSection,
+  ownedSet: ReadonlySet<string>,
+  flag: HunkSelection['flag']
+): string {
+  const target = normalizeEngineRelativeInput(section.targetPath, flag);
+  if (section.sourcePath === section.targetPath) return target;
+  const owned = [target, asEnginePath(section.sourcePath, flag)].filter(
+    (path): path is string => path !== undefined && ownedSet.has(path)
+  );
+  if (owned.length > 1) {
+    throw new InvalidArgumentError(
+      `${flag}: the section ${section.sourcePath} -> ${section.targetPath} is a rename; only text hunks of one file can be selected.`,
+      flag
+    );
+  }
+  return owned[0] ?? target;
+}
+
+/**
+ * Reads and checks the hunk diff: text sections for files the patch owns.
+ * A plain unified diff (`diff -u`, no `diff --git` lines) is accepted.
+ */
 async function readSelection(
   selection: HunkSelection,
-  owned: readonly string[]
+  owned: readonly string[],
+  patch: { filename: string; created: ReadonlySet<string> }
 ): Promise<Map<string, DiffSection>> {
   if (!(await pathExists(selection.diffPath))) {
     throw new InvalidArgumentError(
@@ -198,26 +238,37 @@ async function readSelection(
       selection.flag
     );
   }
-  const sections = parseDiffSections(await readText(selection.diffPath));
+  const sections = parseDiffSections(withGitHeaders(await readText(selection.diffPath)));
   if (sections.length === 0) {
     throw new InvalidArgumentError(
-      `${selection.flag} ${selection.diffPath} holds no "diff --git" section.`,
+      `${selection.flag} ${selection.diffPath} holds no diff section (a "diff --git" header ` +
+        'or a "---"/"+++" pair).',
       selection.flag
     );
   }
   const ownedSet = new Set(owned);
   const byFile = new Map<string, DiffSection>();
   for (const section of sections) {
-    const file = normalizeEngineRelativeInput(section.targetPath, selection.flag);
-    if (section.isBinary || section.sourcePath !== section.targetPath) {
+    if (section.isBinary) {
       throw new InvalidArgumentError(
-        `${selection.flag}: the section for ${file} is binary or a rename; only text hunks can be selected.`,
+        `${selection.flag}: the section for ${section.targetPath} is binary; only text hunks can be selected.`,
         selection.flag
       );
     }
+    const file = sectionFile(section, ownedSet, selection.flag);
     if (!ownedSet.has(file)) {
       throw new InvalidArgumentError(
         `${selection.flag}: ${file} is not a file this patch owns.`,
+        selection.flag
+      );
+    }
+    if (section.isNewFile && patch.created.has(file)) {
+      throw new InvalidArgumentError(
+        `${selection.flag}: the section for ${file} creates it from /dev/null, but ` +
+          `${patch.filename} already creates ${file}, so the section's hunk is the whole file ` +
+          'rather than the lines changed since the patch body. Diff against the file as the ' +
+          'patch leaves it instead: ' +
+          `diff -u <(fireforge patch body ${patch.filename} ${file}) engine/${file}`,
         selection.flag
       );
     }
@@ -234,16 +285,26 @@ async function readSelection(
  * @param args.normalDiff - The diff a plain re-export would write
  * @param args.oldBody - The patch's current body
  * @param args.files - The files the refreshed patch owns
+ * @param args.patchFilename - The patch being refreshed
  */
 export async function buildHunkSelectedDiff(args: {
   engineDir: string;
   selection: HunkSelection;
+  patchFilename: string;
   oldBody: string;
   normalDiff: string;
   files: readonly string[];
 }): Promise<string> {
   const { engineDir, selection, oldBody, normalDiff, files } = args;
-  const named = await readSelection(selection, files);
+  const created = new Set(
+    parseDiffSections(oldBody)
+      .filter((section) => section.isNewFile)
+      .map((section) => section.targetPath)
+  );
+  const named = await readSelection(selection, files, {
+    filename: args.patchFilename,
+    created,
+  });
   const tracked = await listTrackedInHead(engineDir, [...named.keys()]);
   const fallback = splitRawSections(selection.mode === 'include' ? oldBody : normalDiff);
   const out: string[] = [];

@@ -17,6 +17,8 @@ import {
   writeFiles,
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
+import { warn } from '../../utils/logger.js';
+import { readPatchBodyFile } from '../patch/body.js';
 import { reExportCommand } from '../re-export.js';
 import { applyHunksByContext, splitRawSections } from '../re-export-hunks.js';
 
@@ -170,6 +172,12 @@ describe('re-export by hunk', () => {
     }
   );
 
+  it('patch body prints a tracked file as HEAD with the patch section applied', async () => {
+    await expect(readPatchBodyFile(projectRoot, '001', SHARED)).resolves.toBe(
+      'a\nmine-old\nb\nc\n'
+    );
+  });
+
   it('refuses a diff naming a file the patch does not own, and bad combinations', async () => {
     await writeFiles(projectRoot, { 'other.diff': MINE.replaceAll(SHARED, 'other.toml') });
     await expect(
@@ -184,5 +192,119 @@ describe('re-export by hunk', () => {
     await expect(
       reExportCommand(projectRoot, ['001'], { hunksFrom: 'a.diff', scan: true })
     ).rejects.toThrow(/exactly one patch/);
+  });
+});
+
+describe('re-export by hunk of a patch-created file', () => {
+  const CREATED = 'browser/created.js';
+  const CREATED_BODY = [
+    `diff --git a/${CREATED} b/${CREATED}`,
+    'new file mode 100644',
+    'index 0000000..1111111',
+    '--- /dev/null',
+    `+++ b/${CREATED}`,
+    '@@ -0,0 +1,3 @@',
+    '+a',
+    '+b',
+    '+c',
+    '',
+  ].join('\n');
+  let projectRoot: string;
+  let restoreTTY: (() => void) | undefined;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    restoreTTY = setInteractiveMode(false);
+    projectRoot = await createTempProject();
+    await writeFireForgeConfig(projectRoot);
+    await initCommittedRepo(join(projectRoot, 'engine'), { 'base.txt': 'base\n' });
+    await writeFiles(projectRoot, {
+      'patches/patches.json': JSON.stringify({
+        version: 1,
+        patches: [
+          {
+            filename: '001-ui-created.patch',
+            order: 1,
+            category: 'ui',
+            name: 'created',
+            description: '',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            sourceEsrVersion: '140.9.0esr',
+            filesAffected: [CREATED],
+          },
+        ],
+      }),
+      'patches/001-ui-created.patch': CREATED_BODY,
+      // Untracked in the engine: this session's line and a peer's.
+      [`engine/${CREATED}`]: 'a\nmine\nb\nc\npeer\n',
+    });
+  });
+
+  afterEach(async () => {
+    restoreTTY?.();
+    await removeTempProject(projectRoot);
+  });
+
+  it('patch body prints the file as the patch creates it', async () => {
+    await expect(readPatchBodyFile(projectRoot, '001', `engine/${CREATED}`)).resolves.toBe(
+      'a\nb\nc\n'
+    );
+    await expect(readPatchBodyFile(projectRoot, '001', 'base.txt')).rejects.toThrow(
+      '001-ui-created.patch does not touch base.txt'
+    );
+  });
+
+  it('accepts a plain diff -u against patch body, keyed on the engine side', async () => {
+    // What `diff -u <(fireforge patch body 001 <file>) engine/<file>` writes,
+    // trimmed to this session's hunk.
+    await writeFiles(projectRoot, {
+      'mine.diff': [
+        '--- /dev/fd/63\t2026-10-31 12:00:00.000000000 +0100',
+        `+++ engine/${CREATED}\t2026-10-31 12:00:00.000000000 +0100`,
+        '@@ -1,3 +1,4 @@',
+        ' a',
+        '+mine',
+        ' b',
+        ' c',
+        '',
+      ].join('\n'),
+    });
+    await reExportCommand(projectRoot, ['001'], {
+      hunksFrom: join(projectRoot, 'mine.diff'),
+      skipLint: true,
+    });
+    const body = await readProjectText(projectRoot, 'patches/001-ui-created.patch');
+    expect(body).toContain('new file mode');
+    expect(body).toContain('+a\n+mine\n+b\n+c\n');
+    expect(body).not.toContain('peer');
+  });
+
+  it('refuses a /dev/null section for a file the patch already creates', async () => {
+    await writeFiles(projectRoot, {
+      'whole.diff': [
+        '--- /dev/null',
+        `+++ engine/${CREATED}`,
+        '@@ -0,0 +1,4 @@',
+        '+a',
+        '+mine',
+        '+b',
+        '+c',
+        '',
+      ].join('\n'),
+    });
+    await expect(
+      reExportCommand(projectRoot, ['001'], {
+        hunksFrom: join(projectRoot, 'whole.diff'),
+        skipLint: true,
+      })
+    ).rejects.toThrow(/All selected patches failed/);
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `001-ui-created.patch already creates ${CREATED}, so the section's hunk is the whole file`
+      )
+    );
+    await expect(readProjectText(projectRoot, 'patches/001-ui-created.patch')).resolves.toBe(
+      CREATED_BODY
+    );
   });
 });

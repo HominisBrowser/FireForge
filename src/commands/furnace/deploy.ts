@@ -3,6 +3,7 @@ import { loadConfig } from '../../core/config.js';
 import { applyAllComponents, type ApplyAllComponentsResult } from '../../core/furnace-apply.js';
 import { formatSkipBreakdown, logApplyResult } from '../../core/furnace-apply-output.js';
 import { getFurnacePaths } from '../../core/furnace-config.js';
+import { assertDeployOverwritesOwnedBy } from '../../core/furnace-deploy-owner.js';
 import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
 import { runFurnaceMutation, waitLockMutationOptions } from '../../core/furnace-operation.js';
 import { assertFurnaceReady } from '../../core/furnace-precondition.js';
@@ -192,6 +193,16 @@ export async function furnaceDeployCommand(
     async (
       ctx
     ): Promise<NamedDeployOutcome | { kind: 'all'; result: ApplyAllComponentsResult }> => {
+      // Judged under the lock, before the first component is applied, so
+      // a refusal leaves every component of the deploy unwritten.
+      if (options.owner !== undefined) {
+        await assertDeployOverwritesOwnedBy({
+          root: projectRoot,
+          config,
+          names: requested,
+          owner: options.owner,
+        });
+      }
       if (requested.length > 0) {
         return deployNamedComponents({
           projectRoot,

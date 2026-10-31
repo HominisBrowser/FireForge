@@ -199,14 +199,21 @@ export interface FurnaceConfig {
    */
   scanPaths?: string[];
   /**
-   * Project-relative path to a consumer-owned jsconfig/tsconfig whose
-   * `compilerOptions.paths` entries for deployed component modules
-   * (`chrome://global/content/elements/<file>.mjs`) Furnace keeps in sync
-   * on deploy. Only entries under that chrome prefix that map into
-   * `components/custom/` are managed. Everything else is preserved.
-   * Unset disables jsconfig maintenance.
+   * Project-relative path (or paths) to consumer-owned jsconfig/tsconfig
+   * files whose `compilerOptions.paths` entries for deployed component
+   * modules (`chrome://global/content/elements/<file>.mjs`) Furnace keeps in
+   * sync on deploy, each relative to its own directory. Only entries under
+   * that chrome prefix that map into `components/custom/` are managed.
+   * Everything else is preserved. Unset disables jsconfig maintenance.
    */
-  typecheckJsconfig?: string;
+  typecheckJsconfig?: string | string[];
+  /**
+   * Project-relative `.d.ts` Furnace writes on deploy: an
+   * `HTMLElementTagNameMap` entry per registered custom component whose
+   * module defines an exported element class, typed through its deployed
+   * chrome URL. Unset writes nothing.
+   */
+  typecheckTagMap?: string;
   /**
    * Reviewed `furnace validate` findings. Each entry suppresses every
    * finding of `check` on `component`, and `furnace validate` reports an

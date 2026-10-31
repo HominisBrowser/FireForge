@@ -171,4 +171,31 @@ describe('--expect-unmanaged carve-out', () => {
     // The anchor is the owning directory, never the unrelated sibling.
     expect(warned).not.toContain('beside engine/browser/base/content/test/about');
   });
+
+  it.each(['-E', '.bak', '.orig', '.rej', '~'])(
+    'names a %s file as a stray backup to delete, not a file to adopt',
+    async (suffix) => {
+      const backup = `${OWNED}${suffix}`;
+      vi.mocked(getUntrackedFilesInDir).mockResolvedValue([backup, STRAY]);
+      const ctx = makeCtx([]);
+
+      const refused = await reportAdjacentUnmanagedFiles({
+        patch,
+        paths,
+        manifest,
+        currentFilesAffected: [OWNED],
+        ctx,
+      });
+
+      expect(refused).toBe(true);
+      expect(ctx.refusals[0]?.anchored).toEqual([
+        `${backup} (beside engine/${ANCHOR_DIR}; a stray backup, such as a \`sed -i\` or \`patch\` leftover: delete it)`,
+        `${STRAY} (beside engine/${ANCHOR_DIR})`,
+      ]);
+      const hints = vi.mocked(info).mock.calls.flat().join('\n');
+      expect(hints).toContain(`rm engine/${backup}`);
+      expect(hints).not.toContain(`--scan-file ${backup}`);
+      expect(hints).toContain(`--scan-file ${STRAY}`);
+    }
+  );
 });

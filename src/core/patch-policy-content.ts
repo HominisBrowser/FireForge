@@ -93,12 +93,20 @@ function collectUpstreamEdits(
 
 /**
  * Why an add-only file's edit breaks the mode, or undefined when it holds.
- * Blank lines are free in both directions: they carry no registration.
+ * Blank lines are free in both directions: they carry no registration. A
+ * removed line that names one of `retiredPaths` is free too: it drops the
+ * registration of a reviewed retirement.
  */
-function addOnlyViolation(edit: FileEdit, marker: string): string | undefined {
+function addOnlyViolation(
+  edit: FileEdit,
+  marker: string,
+  retiredPaths: readonly string[]
+): string | undefined {
   if (edit.deleted) return 'deletes the file';
   if (edit.binary) return 'carries a binary change';
-  const removed = edit.removed.filter((line) => line.trim() !== '');
+  const removed = edit.removed.filter(
+    (line) => line.trim() !== '' && !retiredPaths.some((path) => line.includes(path))
+  );
   if (removed.length > 0) {
     return `removes ${String(removed.length)} line(s), first: ${JSON.stringify(removed[0])}`;
   }
@@ -134,7 +142,8 @@ function evaluateUpstreamEdits(
     const addOnly = matches.find((entry) => entry.addOnly === true);
     if (!addOnly) continue;
     const marker = addOnly.marker ?? cfg.addOnlyMarker ?? '';
-    const violation = addOnlyViolation(edit, marker);
+    const retiredPaths = matches.flatMap((entry) => entry.retiredPaths ?? []);
+    const violation = addOnlyViolation(edit, marker, retiredPaths);
     if (violation !== undefined) {
       issues.push({
         code: 'add-only',

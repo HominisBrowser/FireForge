@@ -564,7 +564,7 @@ export function removableCeilingIssues(
         message:
           `lintIgnore ceiling for ${status.rule} (max ${String(status.max)}${share}) is no longer needed: ` +
           `the measurement is ${now}, under the rule's own warning threshold. ` +
-          `Remove it with "fireforge patch lint-ignore ${patchFilename} --remove ${status.rule}".`,
+          `Remove it with "fireforge patch lint-ignore ${patchFilename} --remove ${status.rule} --yes".`,
         severity: 'notice' as const,
       };
     });

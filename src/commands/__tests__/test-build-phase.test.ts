@@ -61,6 +61,7 @@ import { findCompiledSourcesNewerThanBinary } from '../../core/test-stale-check.
 import type { FireForgeConfig, ProjectPaths } from '../../types/config.js';
 import { notice } from '../../utils/logger.js';
 import { runTestBuildPhase } from '../test-build-phase.js';
+import { enforceStaleBuildGate } from '../test-stale-gate.js';
 
 const PATHS = { engine: '/project/engine' } as ProjectPaths;
 const CONFIG = { binaryName: 'mybrowser' } as FireForgeConfig;
@@ -161,6 +162,26 @@ describe('runTestBuildPhase', () => {
     );
     expect(writeBuildBaseline).toHaveBeenCalledWith(
       expect.objectContaining({ controlBuild: stamp, buildKind: 'full' })
+    );
+  });
+
+  it("hands a build-less later run its own control build's stamp for the gate", async () => {
+    const stamp = { diffFile: 'c.diff', targets: ['gfx/a.cpp'], appliedAt: '2026-10-22T00:00:00Z' };
+    await runTestBuildPhase(
+      '/project',
+      PATHS,
+      CONFIG,
+      0,
+      {},
+      { ...REQUEST, ownControlBuild: stamp }
+    );
+    expect(runProtectedMachBuild).not.toHaveBeenCalled();
+    expect(enforceStaleBuildGate).toHaveBeenCalledWith(
+      '/project',
+      PATHS.engine,
+      {},
+      REQUEST.normalizedPaths,
+      { launchablePath: undefined, ownControlBuild: stamp }
     );
   });
 });

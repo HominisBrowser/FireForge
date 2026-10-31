@@ -15,6 +15,7 @@
  * rather than reported as a no-op.
  */
 
+import { normalizeRegistrationLine } from '../../core/patch-lint-staged-registration.js';
 import { GeneralError, InvalidArgumentError } from '../../errors/base.js';
 import type {
   PatchStagedDependencies,
@@ -33,11 +34,6 @@ import {
 export interface KindedEntryView {
   kind: StagedDependencyKind;
   view: StagedEntryView;
-}
-
-/** Collapses whitespace runs and trims, for registration-line comparison. */
-function normalizeRegistrationLine(line: string): string {
-  return line.trim().replace(/\s+/g, ' ');
 }
 
 function stagedViews(

@@ -9,6 +9,7 @@ import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js
 import type { BuildBaseline } from '../core/build-baseline-types.js';
 import { describeSignalShapedExit, prepareBuildEnvironment } from '../core/build-prepare.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { cleanDevProfile } from '../core/dev-profile.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
 import type { MachCommandResult, ProtectedMachBuildResult } from '../core/mach.js';
@@ -485,7 +486,27 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
     previousBaseline
   );
 
+  if (options.ui) await reportUiBuildStartupCache(paths.engine);
+
   outro(`Build completed in ${timeStr}!`);
+}
+
+/**
+ * A UI build keeps the build id that a profile's startup cache is keyed on,
+ * so a reused profile would keep running the chrome scripts an earlier build
+ * cached. mach's post-build step leaves a `.purgecaches` sentinel in the app
+ * directory, which the next launch of any profile honours and deletes. The
+ * objdir dev profile loses its startup cache here, and the operator learns
+ * which launches still need `-purgecaches`.
+ */
+async function reportUiBuildStartupCache(engineDir: string): Promise<void> {
+  const removed = await cleanDevProfile(engineDir, { removeParentLock: false });
+  const devProfile = removed > 0 ? "removed profile-default's startup cache; " : '';
+  info(
+    `Startup cache: ${devProfile}the next browser launch purges its profile's cache once; ` +
+      'a reused profile started after that needs -purgecaches ' +
+      '(fireforge run --profile passes it).'
+  );
 }
 
 /**

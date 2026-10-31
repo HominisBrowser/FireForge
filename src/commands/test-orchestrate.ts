@@ -84,6 +84,13 @@ export interface TestRunHooks {
    * negative control in (see `BuildBaseline.controlBuild`).
    */
   controlBuild?: ControlBuildStamp;
+  /**
+   * The stamp the first run's control build recorded, on every run after
+   * it: those runs test the binary that carries the control, with the
+   * control applied again, so the build-less gates accept that stamp and
+   * the fresh mtimes its restore left on the control's own targets.
+   */
+  ownControlBuild?: ControlBuildStamp;
   /** `--repeat` run this sub-run is (1-based), for `--results`. */
   repetition?: number;
   /** Where dispatches write their mozlog raw logs (`--results`, `--shard-size`). */
@@ -354,7 +361,10 @@ export async function orchestrateTestRuns(
                 fullBuildReason: formatCompiledControlBuildNotice(compiled),
                 ...(controlStamp === undefined ? {} : { controlBuild: controlStamp }),
               }
-            : { beforeDispatch: controlHook(controlPaths, plan, slot) }),
+            : {
+                beforeDispatch: controlHook(controlPaths, plan, slot),
+                ...(controlStamp === undefined ? {} : { ownControlBuild: controlStamp }),
+              }),
       });
     } catch (caught: unknown) {
       error = caught;

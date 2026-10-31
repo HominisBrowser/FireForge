@@ -113,6 +113,21 @@ describe('preflightReExportArguments', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('resolves positionals beside --scan-files and refuses an unknown one', async () => {
+    await expect(
+      preflightReExportArguments(projectRoot, ['shel'], {
+        scan: true,
+        scanFilesManifest: 'assignments.json',
+      })
+    ).rejects.toThrow(/shel/);
+    await expect(
+      preflightReExportArguments(projectRoot, ['001'], {
+        scan: true,
+        scanFilesManifest: 'assignments.json',
+      })
+    ).resolves.toBeUndefined();
+  });
+
   it('runs the option-combination checks before the lock', async () => {
     await expect(
       preflightReExportArguments(projectRoot, ['001'], { expect: ['--dry-run'] })

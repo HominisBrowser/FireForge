@@ -163,6 +163,12 @@ export interface PatchPolicyUpstreamAllowEntry {
   addOnly?: boolean;
   /** Marker an added line must contain. Overrides `patchPolicy.addOnlyMarker`. */
   marker?: string;
+  /**
+   * With `addOnly`: paths whose registrations a patch may remove. A removed
+   * line that contains one of them (as a plain substring) does not count as
+   * a removal, so a reviewed retirement can drop its registration line.
+   */
+  retiredPaths?: string[];
 }
 
 /**
@@ -634,6 +640,13 @@ export interface PatchLintConfig {
    */
   undefinedIdentifiers?: PatchLintSeverityGate;
   /**
+   * Types Lit in the shim of the checkJs programs, as
+   * `typecheck.litTypes` does for the project pass, so a widget class
+   * carries Lit's members (`updateComplete`, …) and a closed member list in
+   * both. Default off. Requires `checkJs: true`.
+   */
+  litTypes?: boolean;
+  /**
    * Token scales enforced over CSS files a patch creates (`token-scale`).
    * Each scale names properties whose values must resolve to its tokens.
    * Default unset: no scale is enforced.
@@ -690,6 +703,23 @@ export interface PatchLintTokenScale {
    * a move emptied, cannot pass by judging nothing.
    */
   minFiles?: number;
+  /**
+   * Reviewed declarations accepted as written in every file this scale
+   * governs: a declaration whose property and value (whitespace-normalized)
+   * match an entry passes, so a reviewed raw value can move between files
+   * without an `exclude` for each.
+   */
+  allowValues?: PatchLintTokenScaleAllowValue[];
+}
+
+/** One `patchLint.tokenScales[].allowValues` entry. */
+export interface PatchLintTokenScaleAllowValue {
+  /** CSS property, one the scale governs. */
+  property: string;
+  /** The declared value, compared with whitespace runs collapsed. */
+  value: string;
+  /** Why the raw value is reviewed. */
+  reason: string;
 }
 
 /**

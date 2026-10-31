@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * `fireforge patch <verb>` parent command. Groups single-patch mutations and
- * planners (`compact`, `delete`, `lint-ignore`, `move-files`, `rename`,
+ * `fireforge patch <verb>` parent command. Groups single-patch mutations,
+ * planners and readers (`body`, `compact`, `delete`, `lint-ignore`, `move-files`, `rename`,
  * `reorder`, `reserve`, `retire`, `split`, `stage`, `staged-dependency`,
  * `tier`) so they do not clutter the top-level command list. Queue-level
  * verbs like `lint`, `export`, `verify`, and `status` stay flat.
@@ -10,6 +10,7 @@
 import { Command } from 'commander';
 
 import type { CommandContext } from '../../types/cli.js';
+import { registerPatchBody } from './body.js';
 import { registerPatchCompact } from './compact.js';
 import { registerPatchDelete } from './delete.js';
 import { registerPatchLintIgnore } from './lint-ignore.js';
@@ -33,7 +34,7 @@ export function registerPatch(program: Command, context: CommandContext): void {
   const patch = program
     .command('patch')
     .description(
-      'Manage individual patches in the queue (compact, delete, lint-ignore, move-files, rename, reorder, reserve, retire, split, stage, staged-dependency, tier)'
+      'Manage individual patches in the queue (body, compact, delete, lint-ignore, move-files, rename, reorder, reserve, retire, split, stage, staged-dependency, tier)'
     )
     // Match `fireforge furnace`'s no-args contract: print the group's help
     // and exit 0. Without this default action, commander routes
@@ -44,6 +45,7 @@ export function registerPatch(program: Command, context: CommandContext): void {
       patch.outputHelp();
     });
 
+  registerPatchBody(patch, context);
   registerPatchCompact(patch, context);
   registerPatchDelete(patch, context);
   registerPatchLintIgnore(patch, context);

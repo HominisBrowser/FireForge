@@ -26,7 +26,7 @@
  * while reporting only the patch under export.
  */
 
-import { basename, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
 import type {
@@ -43,9 +43,11 @@ import {
   anyTypedImportHint,
   type AnyTypedImports,
   createModuleLiteralResolver,
+  isAnyTypedMemberReference,
 } from './patch-lint-checkjs-any-import.js';
 import { type CheckJsSourceFileCache, withSharedSourceFiles } from './patch-lint-checkjs-cache.js';
 import { collectCheckJsDiagnostics } from './patch-lint-checkjs-diagnostics.js';
+import { createOwnedPathMatcher, pathsTargetCandidates } from './patch-lint-checkjs-resolve.js';
 import {
   collectUnmanagedCompanions,
   retargetUnmanagedCompanionHints,
@@ -81,41 +83,17 @@ function toTsPath(path: string): string {
 
 /**
  * Builds the host-side module resolver for the checkJs pass: maps an import
- * specifier to a patch-owned absolute path when the specifier's final
- * segment uniquely matches an owned file. URL specifiers
- * (chrome://browser/content/Foo.sys.mjs, resource:///modules/Foo.sys.mjs)
- * are matched by basename, with a `.mjs` → `.sys.mjs` fallback for deployed
- * widget URLs. Ambiguous or unknown basenames stay unresolved (loose
- * wildcard typing beats guessing the wrong module), and relative specifiers
- * are left to fail resolution (the relative-import lint rule bans them).
+ * specifier to a patch-owned absolute path (see `createOwnedPathMatcher`).
  */
 function createOwnedSpecifierResolver(
   ts: typeof import('typescript'),
   ownedAbsolute: ReadonlySet<string>
 ): (specifier: string) => import('typescript').ResolvedModuleFull | undefined {
-  const ownedByBasename = new Map<string, string[]>();
-  for (const abs of ownedAbsolute) {
-    const base = basename(abs);
-    const list = ownedByBasename.get(base) ?? [];
-    list.push(abs);
-    ownedByBasename.set(base, list);
-  }
-
+  const match = createOwnedPathMatcher(ownedAbsolute);
   return (specifier) => {
-    if (specifier.startsWith('.')) return undefined;
-    const cleaned = specifier.split(/[?#]/)[0] ?? specifier;
-    const segment = cleaned.slice(cleaned.lastIndexOf('/') + 1);
-    if (!segment) return undefined;
-    const candidates = [...(ownedByBasename.get(segment) ?? [])];
-    if (segment.endsWith('.mjs') && !segment.endsWith('.sys.mjs')) {
-      candidates.push(...(ownedByBasename.get(segment.replace(/\.mjs$/, '.sys.mjs')) ?? []));
-    }
-    if (candidates.length !== 1) return undefined;
-    return {
-      resolvedFileName: candidates[0] as string,
-      extension: ts.Extension.Mjs,
-      isExternalLibraryImport: false,
-    };
+    const resolvedFileName = match(specifier);
+    if (resolvedFileName === undefined) return undefined;
+    return { resolvedFileName, extension: ts.Extension.Mjs, isExternalLibraryImport: false };
   };
 }
 
@@ -149,39 +127,16 @@ function createPathsResolver(
   fileExists: (file: string) => boolean,
   onResolved: (absolute: string) => void
 ): (specifier: string) => import('typescript').ResolvedModuleFull | undefined {
-  const entries = Object.entries(paths);
   return (specifier) => {
-    for (const [pattern, targets] of entries) {
-      const star = pattern.indexOf('*');
-      let captured: string;
-      if (star === -1) {
-        if (specifier !== pattern) continue;
-        captured = '';
-      } else {
-        const prefix = pattern.slice(0, star);
-        const suffix = pattern.slice(star + 1);
-        if (specifier.length < prefix.length + suffix.length) continue;
-        if (!specifier.startsWith(prefix) || !specifier.endsWith(suffix)) continue;
-        captured = specifier.slice(prefix.length, specifier.length - suffix.length);
-      }
-      for (const target of targets) {
-        // A `paths` target carries at most one `*`, and TypeScript substitutes
-        // that one wildcard. It is spelled as index arithmetic (mirroring the
-        // prefix/suffix split on the pattern side above) rather than
-        // `replace('*', …)`, whose first-occurrence-only behaviour reads as an
-        // incomplete rewrite (CodeQL `js/incomplete-sanitization`).
-        const star = target.indexOf('*');
-        const rel =
-          star === -1 ? target : target.slice(0, star) + captured + target.slice(star + 1);
-        const abs = toTsPath(resolve(baseDir, rel));
-        if (!fileExists(abs)) continue;
-        onResolved(abs);
-        return {
-          resolvedFileName: abs,
-          extension: extensionForFile(ts, abs),
-          isExternalLibraryImport: false,
-        };
-      }
+    for (const rel of pathsTargetCandidates(paths, specifier)) {
+      const abs = toTsPath(resolve(baseDir, rel));
+      if (!fileExists(abs)) continue;
+      onResolved(abs);
+      return {
+        resolvedFileName: abs,
+        extension: extensionForFile(ts, abs),
+        isExternalLibraryImport: false,
+      };
     }
     return undefined;
   };
@@ -196,6 +151,8 @@ export interface CheckJsMode {
    * 'warning'. See `patchLint.undefinedIdentifiers`.
    */
   undefinedIdentifiers?: PatchLintSeverityGate;
+  /** Types Lit in the shim. See `patchLint.litTypes`. */
+  litTypes?: boolean;
 }
 
 /**
@@ -311,7 +268,9 @@ export async function runCheckJsGrouped(
   // also undefined, so the resolution target is irrelevant.
   let shimSource: string;
   try {
-    const composed = await composeShimSource(input.projectRoot ?? repoDir, extraShimPath);
+    const composed = await composeShimSource(input.projectRoot ?? repoDir, extraShimPath, {
+      litTypes: input.mode?.litTypes,
+    });
     // The suffix (e.g. the loose test-harness baseline) goes
     // after the consumer's extra shim: TypeScript resolves conflicting
     // `declare var` redeclarations to the first declaration, so a typed
@@ -339,14 +298,9 @@ export async function runCheckJsGrouped(
   const shimPath = toTsPath(resolve(repoDir, SHIM_FILENAME));
   rootFiles.push(shimPath);
 
+  // Loose default: implicit `any` is allowed unless `patchLint.checkJsStrict`.
   const strict = input.mode?.strict === true;
-  const strictness: import('typescript').CompilerOptions = strict
-    ? { strict: true, noImplicitAny: true }
-    : {
-        // Loose default: implicit `any` is allowed unless `patchLint.checkJsStrict`.
-        strict: false,
-        noImplicitAny: false,
-      };
+  const strictness: import('typescript').CompilerOptions = { strict, noImplicitAny: strict };
 
   // Allowlisted overrides. Booleans merge directly. A reviewed `paths`
   // mapping is applied to the compiler options and wired into the host
@@ -463,7 +417,9 @@ export async function runCheckJsGrouped(
 /**
  * Groups TS diagnostics by the patch-owned file they originate in,
  * suppressing module-resolution / unknown-name noise inherent to checking
- * Firefox JS outside Mozilla's build system. Diagnostics from `paths`-resolved
+ * Firefox JS outside Mozilla's build system, and a type-member reference
+ * through an unresolved URL import (see `isAnyTypedMemberReference`).
+ * Diagnostics from `paths`-resolved
  * or shim files are dropped. Only owned files (in `relByAbsolute`) carry
  * findings.
  */
@@ -484,12 +440,13 @@ function groupOwnedDiagnostics(
     const relPath = relByAbsolute.get(sourceFile.fileName);
     if (relPath === undefined) continue;
 
-    const lineInfo = sourceFile.getLineAndCharacterOfPosition(diag.start ?? 0);
-    const line = lineInfo.line + 1;
     const messageText =
       typeof diag.messageText === 'string'
         ? diag.messageText
         : ts.flattenDiagnosticMessageText(diag.messageText, '\n');
+    const anyTyped = anyTypedImports.get(sourceFile.fileName);
+    if (isAnyTypedMemberReference(diag.code, messageText, anyTyped)) continue;
+    const line = sourceFile.getLineAndCharacterOfPosition(diag.start ?? 0).line + 1;
     const severity = isUndefinedIdentifier
       ? undefinedIdentifiers === 'error'
         ? ('error' as const)
@@ -504,7 +461,7 @@ function groupOwnedDiagnostics(
       check: 'checkjs-type-error',
       message: isUndefinedIdentifier
         ? `Line ${line}: ${messageText} ${UNDEFINED_IDENTIFIER_HINT}`
-        : `Line ${line}: ${messageText}${anyTypedImportHint(diag.code, anyTypedImports.get(sourceFile.fileName))}`,
+        : `Line ${line}: ${messageText}${anyTypedImportHint(diag.code, anyTyped)}`,
       severity,
     });
     byFile.set(relPath, bucket);
@@ -677,6 +634,7 @@ function modeFromPatchLintConfig(patchLint: PatchLintConfig): CheckJsMode {
     ...(patchLint.undefinedIdentifiers !== undefined
       ? { undefinedIdentifiers: patchLint.undefinedIdentifiers }
       : {}),
+    ...(patchLint.litTypes === true ? { litTypes: true } : {}),
   };
 }
 

@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.55.0
+
+### Test harness
+
+- A compiled negative control with `--repeat`, or a mixed-harness request, no longer refuses its own later runs with `note=control-built` or `note=stale-compiled`. Runs after the first accept the `controlBuild` stamp their own invocation's control build wrote and ignore the fresh mtimes the restore leaves on the control's files. A stamp from any other build still refuses.
+- A `note=coverage-replaced` verdict carries `build-paths=<path>,…`: every path the refusal says to rebuild, uncapped, with forward slashes, and `%`, `,` and whitespace inside a path percent-encoded. A script can retry with `fireforge test --build <paths>` without parsing the refusal text. The key is absent when the whole suite is uncovered.
+
+### Patch queue
+
+- Under `--refuse-foreign-drift`, a multi-patch `re-export` judges every selected patch before writing any. A drift refusal in one patch leaves the clean ones unwritten too, and the summary names them as held back. Without the flag each patch is still written or refused on its own.
+- `re-export --hunks-from` and `--exclude-hunks` accept a plain unified diff (`diff -u`, no `diff --git` lines). A section whose two sides name different paths is keyed on the side that is a file the patch owns. A `/dev/null` section for a file the patch already creates is refused.
+- New `fireforge patch body <patch> <file>` prints a file as the patch leaves it: engine HEAD, or nothing for a file HEAD lacks, with the patch's section applied. For a patch-created file, `diff -u <(fireforge patch body <patch> <file>) engine/<file>` gives `--hunks-from` the hunks changed since the last export.
+- `re-export --scan --scan-files <manifest>` takes positional patches. The run refreshes the manifest's patches plus the positionals, once each in queue order; a positional the manifest does not name refreshes without a scan. Only `--all` is still refused.
+- `--refuse-adjacent-unmanaged` names a backup-shaped file (`*-E`, `*.bak`, `*.orig`, `*.rej`, `*~`) as a stray backup to delete, such as the copy macOS `sed -i -E` leaves, instead of suggesting `--scan-file`.
+- A staged registration's line matches regardless of inner spacing, as its help says, so a `--line` typed with one space before `(` discharges a `jar.mn` line aligned with two. `patch staged-dependency --add --kind registration` warns when `--line` matches no line the patch adds to `--file`.
+- `re-export` ends a run that wrote a patch with per-patch checkJs files with a line saying the project pass of `fireforge typecheck` is still owed.
+- `patch lint-ignore --add` and `--from` say in their help that a run outside a terminal needs `--yes`, and the `lint-ignore-removable` remedy includes it.
+
+### Lint and tokens
+
+- The per-patch lint cache key covers everything a patch's checkJs programs read: the queue order, the content of other patches' modules, test heads, unmanaged companions, `checkJsCompilerOptions.paths` targets and the TypeScript version. Restoring a file another patch's program reads restores the cached verdict; editing it or reordering the queue misses. The cache schema is 5, so older entries are discarded.
+- A type-member reference through a URL import that a per-patch program cannot resolve (`import("…").Type`, `typeof import("…").member`) types as `any` there, like the whole-module import, instead of failing with TS2694. The project pass still reports it unless the jsconfig `paths` resolve the URL.
+- New `patchLint.litTypes` types Lit in the per-patch checkJs programs, as `typecheck.litTypes` does for the project pass.
+- The license-header rules accept Mozilla's dashed MPL block (`/* - This Source Code Form …` with `   - License, v. 2.0 …` continuations), so an edit to an upstream stylesheet such as `preferences.css` no longer draws `modified-file-missing-header`.
+- `relative-import` judges a modified upstream file on the lines the patch adds, so a patch can carry an upstream module whose own imports are relative. A file the patch creates is still judged whole.
+- `patchLint.tokenScales[].allowValues` (`{ property, value, reason }`) accepts a reviewed declaration in every file the scale governs, so a reviewed raw value can move to a seam sheet without a per-file `exclude`.
+
+### Gates and policy
+
+- An `addOnly` entry of `patchPolicy.upstreamAllowlist` takes `retiredPaths`: a removed line that names one of them does not fail `add-only`, so a reviewed retirement can drop its `jar.mn` registration.
+- `fireforge check` records the host's 1-minute load average at the start and end of each step: `load1Start` and `load1End` in `--json`, and a `LOAD` column (`12.3→18.0`) in the table, so a step that timed out under host load reads as such. Windows shows `-` and omits the fields.
+
+### Typecheck
+
+- `typecheck --explain <file>` prints, without checking, which configured projects list the file and with which shim settings, and whether a per-patch checkJs program checks it: owning patch, root kind, heads, resolvable modules and the imports typed `any`.
+- `typecheck --project` keeps `litTypes`, `undefinedIdentifiers`, `extraShim` and the project's `projectOverrides` entry, and a `projectOverrides` key matches by the file it names, so `./a/jsconfig.json` and absolute paths find `a/jsconfig.json`.
+
+### Furnace
+
+- `furnace deploy --owner <patch>` names the patch being exported. A deployed file the deploy would overwrite that a different patch owns refuses the whole deploy before any file is written, naming each file and its owners. Without `--owner` such overwrites stay warnings.
+- `furnace.json#typecheckJsconfig` accepts a list. Each jsconfig gets its own `paths`, relative to its own directory, and drift is reported per file.
+- New `furnace.json#typecheckTagMap`: `deploy` and `sync` write a declaration file with an `HTMLElementTagNameMap` entry for each registered component that defines an exported element class. `furnace validate` reports `tag-map-drift`, and `typecheck` regenerates a stale one before it runs.
+
+### Build
+
+- `fireforge build --ui` removes the objdir dev profile's startup cache and says how the rest stay stale: a UI build keeps the build id the startup cache is keyed on, and mach's `.purgecaches` purges only the first launch after a build, so a reused profile started later needs `-purgecaches` (which `fireforge run --profile` passes).
+
+### Other
+
+- Docs: lock waits. A writer without a budget waits about one second before exiting 15, `re-export --dry-run` takes no lock, and `FIREFORGE_WAIT_LOCK` sets the budget for a whole session; the shared-engine `re-export` examples show `--wait-lock`. `docs/patch-workflow.md` lists the accepted license-header shapes.
+- Dev tooling: `eslint` 10.13.0, `eslint-plugin-jsdoc` 65.4.1, `knip` 6.42.1, `typescript-eslint` 8.72.0 and `vite` 8.3.5. CI: `github/codeql-action` 4.39.1.
+
 ## 0.54.0
 
 ### Test harness
@@ -20,6 +72,8 @@
 ### Other
 
 - Tests: the `git diff --no-index` negative-control test no longer fails when the temp root's random suffix ends in `b`, which its fixture rewrite matched inside the old side's absolute path. The `application.ini` path test compares native paths on Windows.
+
+## 0.53.0
 
 ### Test harness
 

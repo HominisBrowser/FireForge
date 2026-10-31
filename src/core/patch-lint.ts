@@ -17,10 +17,14 @@ import { invokePatchLintCheckJs, runCheckJsTestFilesGrouped } from './patch-lint
 import { lintChromeScriptJsDocForFile } from './patch-lint-chrome-jsdoc.js';
 import { countCodeLines, countRawLines } from './patch-lint-code-lines.js';
 import { lintPatchedCss } from './patch-lint-css.js';
-import { detectNewFilesInDiff, extractAddedLinesPerFile } from './patch-lint-diff.js';
+import {
+  detectNewFilesInDiff,
+  extractAddedLineNumbersPerFile,
+  extractAddedLinesPerFile,
+} from './patch-lint-diff.js';
 import { formatFileTooLargeMessage, resolveFileSizeThresholds } from './patch-lint-file-size.js';
 import { type LintIgnoreChecks, partitionLintIgnoredIssues } from './patch-lint-ignore.js';
-import { hasRelativeImport } from './patch-lint-imports.js';
+import { relativeImportLines } from './patch-lint-imports.js';
 import { validateExportJsDoc } from './patch-lint-jsdoc.js';
 import { lintMozBuildSortedLists } from './patch-lint-mozbuild.js';
 import { lintObserverTopics } from './patch-lint-observer.js';
@@ -345,6 +349,27 @@ export async function lintNewFileHeaders(
 // JS lint
 // ---------------------------------------------------------------------------
 
+/** Optional ownership and diff context for {@link lintPatchedJs}. */
+export interface LintPatchedJsScope {
+  /** Patch-owned `.sys.mjs` paths for scoped JSDoc enforcement. */
+  patchOwnedFiles?: Set<string>;
+  /**
+   * Patch-owned chrome subscripts (`.js` non-`.sys.mjs`) for scoped
+   * chrome-script JSDoc enforcement. Built by
+   * {@link resolvePatchOwnedChromeScripts}. Kept apart from
+   * `patchOwnedFiles` so the `runCheckJs` consumer (which only accepts
+   * `.sys.mjs`) is not silently broadened.
+   */
+  patchOwnedChromeScripts?: Set<string>;
+  /**
+   * Unified diff of the patch. When given, `relative-import` judges a
+   * modified upstream file on the lines the patch adds only, so upstream's
+   * own relative imports do not count against it. A file the patch creates
+   * is judged whole either way.
+   */
+  diffContent?: string;
+}
+
 /**
  * Lints patched JS/MJS files for import conventions, file size, JSDoc, and
  * observer topic naming.
@@ -353,12 +378,7 @@ export async function lintNewFileHeaders(
  * @param affectedFiles - File paths (relative to repoDir)
  * @param newFiles - Set of files that are newly created in this patch
  * @param config - Project configuration
- * @param patchOwnedFiles - Optional set of patch-owned `.sys.mjs` paths for scoped JSDoc enforcement
- * @param patchOwnedChromeScripts - Optional set of patch-owned chrome
- *   subscripts (`.js` non-`.sys.mjs`) for scoped chrome-script JSDoc
- *   enforcement. Built by {@link resolvePatchOwnedChromeScripts}. Passed
- *   separately from `patchOwnedFiles` so the `runCheckJs` consumer (which
- *   only accepts `.sys.mjs`) is not silently broadened.
+ * @param scope - Optional ownership sets and patch diff; see {@link LintPatchedJsScope}
  * @returns Array of lint issues
  */
 export async function lintPatchedJs(
@@ -366,11 +386,13 @@ export async function lintPatchedJs(
   affectedFiles: string[],
   newFiles: Set<string>,
   config: FireForgeConfig,
-  patchOwnedFiles?: Set<string>,
-  patchOwnedChromeScripts?: Set<string>
+  scope: LintPatchedJsScope = {}
 ): Promise<PatchLintIssue[]> {
+  const { patchOwnedFiles, patchOwnedChromeScripts, diffContent } = scope;
   const jsFiles = affectedFiles.filter(isJsFile);
   if (jsFiles.length === 0) return [];
+  const addedLineNumbersByFile =
+    diffContent !== undefined ? extractAddedLineNumbersPerFile(diffContent) : undefined;
 
   const issues: PatchLintIssue[] = [];
   const binaryName = config.binaryName.toLowerCase();
@@ -384,10 +406,17 @@ export async function lintPatchedJs(
     const isNew = newFiles.has(file);
     const isSysMjs = file.endsWith('.sys.mjs');
 
-    // 1. Relative import check
+    // 1. Relative import check: a file the patch creates is judged whole, a
+    // modified upstream file on the lines the patch adds when the diff is known.
     const strippedContent = stripJsComments(content);
 
-    if (hasRelativeImport(content)) {
+    const importLines = relativeImportLines(content);
+    const addedLines = isNew ? undefined : addedLineNumbersByFile?.get(file);
+    const offendingImportLines =
+      isNew || addedLineNumbersByFile === undefined
+        ? importLines
+        : importLines.filter((line) => addedLines?.includes(line) === true);
+    if (offendingImportLines.length > 0) {
       issues.push({
         file,
         check: 'relative-import',
@@ -641,14 +670,11 @@ export async function lintExportedPatch(
     await Promise.all([
       lintPatchedCss(repoDir, affectedFiles, diffContent, config),
       lintNewFileHeaders(repoDir, [...newFiles], config),
-      lintPatchedJs(
-        repoDir,
-        affectedFiles,
-        newFiles,
-        config,
+      lintPatchedJs(repoDir, affectedFiles, newFiles, config, {
         patchOwnedFiles,
-        patchOwnedChromeScripts
-      ),
+        patchOwnedChromeScripts,
+        diffContent,
+      }),
       lintModifiedFileHeaders(repoDir, affectedFiles, newFiles),
       lintMozBuildSortedLists(repoDir, affectedFiles),
     ]);

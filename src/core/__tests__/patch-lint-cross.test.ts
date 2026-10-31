@@ -20,6 +20,7 @@ import {
   type PatchQueueEntry,
 } from '../patch-lint.js';
 import { detectNewFilesInDiff } from '../patch-lint-diff.js';
+import { lintPatchQueueForwardRegistrations } from '../patch-lint-forward-registration.js';
 import { lintPatchQueueModuleRegistrations } from '../patch-lint-module-registration.js';
 
 function makeEntry(
@@ -621,6 +622,52 @@ describe('lintPatchQueueForwardImports', () => {
       ],
     };
     expect(lintPatchQueueForwardImports(ctx)).toHaveLength(0);
+  });
+
+  describe('a registration line whose inner spacing differs from the declaration', () => {
+    // The jar.mn line aligns its source column with two spaces; the
+    // declaration was typed with one.
+    const jarLine =
+      '  content/global/elements/moz-hominis-synthesis-view.mjs  (widgets/moz-hominis-synthesis-view.mjs)';
+    const created = 'toolkit/content/widgets/moz-hominis-synthesis-view.mjs';
+    const ctx = (): PatchQueueContext => ({
+      entries: [
+        makeEntry(
+          '202-ui-tile-widgets.patch',
+          202,
+          CREATE_A_DIFF,
+          {},
+          { 'toolkit/content/jar.mn': `${jarLine}\n` },
+          {
+            stagedDependencies: {
+              registrations: [
+                {
+                  file: 'toolkit/content/jar.mn',
+                  line: 'content/global/elements/moz-hominis-synthesis-view.mjs (widgets/moz-hominis-synthesis-view.mjs)',
+                  creates: created,
+                },
+              ],
+            },
+          }
+        ),
+        makeEntry('245-ui-synthesis.patch', 245, CREATE_A_DIFF, { [created]: 'export {};\n' }),
+      ],
+      forwardRegistration: 'extended',
+    });
+
+    it('matches it whitespace-insensitively (no staged-dependency-unused)', () => {
+      expect(lintPatchQueueForwardImports(ctx())).toEqual([]);
+    });
+
+    it('leaves no forward-registration error, which keys on --file and --creates only', () => {
+      const undeclared = ctx();
+      const declaring = undeclared.entries[0];
+      if (declaring?.metadata) delete declaring.metadata.stagedDependencies;
+      expect(lintPatchQueueForwardRegistrations(undeclared).map((issue) => issue.check)).toEqual([
+        'forward-registration',
+      ]);
+      expect(lintPatchQueueForwardRegistrations(ctx())).toEqual([]);
+    });
   });
 
   it('warns when a registration declares a creates no later-ordered patch creates', () => {

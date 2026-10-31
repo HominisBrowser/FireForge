@@ -27,7 +27,8 @@
  * Runs over CSS files the patch creates, not files it modifies: an upstream
  * stylesheet is not the fork's to put on a scale. A file a scale `exclude`s
  * is not judged against that scale. A line carrying
- * `fireforge-ignore: token-scale` is skipped. A scale with `minFiles` also
+ * `fireforge-ignore: token-scale` is skipped, and so is a declaration the
+ * scale's `allowValues` lists, in any file the scale governs. A scale with `minFiles` also
  * fails the queue (`token-scale-vacuous`) when fewer created files carry
  * its properties, so an emptied scan set cannot pass by judging nothing.
  */
@@ -56,8 +57,13 @@ const OPERATORS = new Set(['+', '-', '*', '/']);
 const DESCRIPTOR_AT_RULE =
   /^@(?:font-face|counter-style|property|font-feature-values|font-palette-values|page|view-transition)\b/i;
 
-/** Exact name, or a `*`-suffixed prefix. */
-function matchesName(name: string, patterns: readonly string[]): boolean {
+/**
+ * Exact name, or a `*`-suffixed prefix.
+ *
+ * @param name - Property or custom-property name
+ * @param patterns - Names, or `*`-suffixed prefixes
+ */
+export function matchesName(name: string, patterns: readonly string[]): boolean {
   return patterns.some((pattern) =>
     pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : name === pattern
   );
@@ -226,6 +232,21 @@ function scanDeclarations(css: string): Declaration[] {
   return declarations;
 }
 
+/** Collapses whitespace runs, so an allowed value matches however it is wrapped. */
+function normalizeDeclarationValue(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/** Whether the scale's `allowValues` lists this declaration. */
+function isAllowedValue(property: string, value: string, scale: PatchLintTokenScale): boolean {
+  const normalized = normalizeDeclarationValue(value);
+  return (scale.allowValues ?? []).some(
+    (entry) =>
+      entry.property.toLowerCase() === property &&
+      normalizeDeclarationValue(entry.value) === normalized
+  );
+}
+
 /** The scales that govern `file`: those that do not `exclude` it. */
 function scalesFor(
   file: string,
@@ -255,6 +276,7 @@ export function lintTokenScales(
     const scale = governing.find((candidate) => matchesName(property, candidate.properties));
     if (scale === undefined || value === '') continue;
     if ((rawLines[line - 1] ?? '').includes(IGNORE_MARKER)) continue;
+    if (isAllowedValue(property, value, scale)) continue;
     const atom = findOffScaleAtom(value, scale);
     if (atom === undefined) continue;
     const label = scaleLabel(scale);
@@ -265,7 +287,7 @@ export function lintTokenScales(
       message:
         `Line ${String(line)}: ${property}: ${value} is off the ${label} scale ` +
         `("${atom}"). Use a ${label} token, or list a reviewed exception in ` +
-        `patchLint.tokenScales (allowLiterals / allowInCalc / allow) or mark the line "${IGNORE_MARKER}".`,
+        `patchLint.tokenScales (allowLiterals / allowInCalc / allow / allowValues) or mark the line "${IGNORE_MARKER}".`,
       severity: 'error',
     });
   }

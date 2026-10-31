@@ -20,7 +20,7 @@ import {
   savePerPatchLintCache,
   setCachedPerPatchLintIssues,
 } from '../patch-lint-cache.js';
-import type { PatchQueueContext } from '../patch-lint-cross.js';
+import { invalidateNewFileCreatorsCache, type PatchQueueContext } from '../patch-lint-cross.js';
 
 describe('per-patch lint cache', () => {
   let projectRoot: string;
@@ -376,5 +376,178 @@ describe('per-patch lint cache', () => {
     });
     const loaded = await loadPerPatchLintCache(projectRoot);
     expect(loaded.entries[patch.filename]).toBeUndefined();
+  });
+});
+
+describe('per-patch lint cache: the checkJs world', () => {
+  let projectRoot: string;
+  let engineDir: string;
+  let patchesDir: string;
+
+  const checkJsConfig: FireForgeConfig = {
+    ...DEFAULT_CONFIG,
+    patchLint: { checkJs: true, checkJsTestFiles: true },
+  };
+
+  function creating(
+    filename: string,
+    order: number,
+    files: string[]
+  ): PatchQueueContext['entries'][number] {
+    const diff = files
+      .map((file) =>
+        [
+          `diff --git a/${file} b/${file}`,
+          'new file mode 100644',
+          '--- /dev/null',
+          `+++ b/${file}`,
+          '@@ -0,0 +1 @@',
+          '+export {};',
+          '',
+        ].join('\n')
+      )
+      .join('');
+    return {
+      filename,
+      order,
+      metadata: null,
+      diff,
+      newFiles: new Map(files.map((file) => [file, 'export {};\n'])),
+      createdFiles: new Set(files),
+      modifiedFileAdditions: new Map(),
+    };
+  }
+
+  /** A fresh context per call: one context is one run's snapshot. */
+  function queue(order: 'forward' | 'reversed' = 'forward'): PatchQueueContext {
+    const entries = [
+      creating('001-ui-a.patch', 1, ['browser/modules/A.sys.mjs', 'browser/test/head.js']),
+      creating('002-ui-b.patch', 2, ['browser/modules/B.sys.mjs', 'browser/test/browser_b.js']),
+      creating('003-ui-plain.patch', 3, ['browser/plain.css']),
+    ];
+    return { entries: order === 'forward' ? entries : [...entries].reverse() };
+  }
+
+  function patchB(): PatchMetadata {
+    return {
+      filename: '002-ui-b.patch',
+      order: 2,
+      category: 'ui',
+      name: 'b',
+      description: 'b',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      sourceEsrVersion: '140.9.0esr',
+      filesAffected: ['browser/modules/B.sys.mjs', 'browser/test/browser_b.js'],
+    };
+  }
+
+  async function keyFor(
+    options: {
+      ctx?: PatchQueueContext;
+      config?: FireForgeConfig;
+      patch?: PatchMetadata;
+    } = {}
+  ): Promise<string> {
+    const patch = options.patch ?? patchB();
+    return buildPerPatchLintCacheKey({
+      projectRoot,
+      engineDir,
+      patchesDir,
+      patch,
+      existingFiles: patch.filesAffected,
+      config: options.config ?? checkJsConfig,
+      queueContext: options.ctx ?? queue(),
+      engineHeadSha: 'test-head-sha',
+      packageVersion: 'test-version',
+    });
+  }
+
+  beforeEach(async () => {
+    projectRoot = await createTempProject('fireforge-lint-cache-checkjs-');
+    engineDir = join(projectRoot, 'engine');
+    patchesDir = join(projectRoot, 'patches');
+    await writeFiles(projectRoot, {
+      'engine/browser/modules/A.sys.mjs': 'export const a = 1;\n',
+      'engine/browser/modules/B.sys.mjs': 'export const b = 2;\n',
+      'engine/browser/test/head.js': 'function helper() {}\n',
+      'engine/browser/test/browser_b.js': 'add_task(async () => helper());\n',
+      'engine/browser/plain.css': ':root {}\n',
+      'engine/toolkit/content/widgets/moz-x/moz-x.mjs': 'export default class {}\n',
+      'patches/002-ui-b.patch': queue().entries[1]?.diff ?? '',
+      'patches/003-ui-plain.patch': queue().entries[2]?.diff ?? '',
+    });
+  });
+
+  afterEach(async () => {
+    await removeTempProject(projectRoot);
+  });
+
+  it("misses when another patch's module changes, and hits again once it is restored", async () => {
+    const before = await keyFor();
+    await writeFiles(engineDir, { 'browser/modules/A.sys.mjs': 'export const a = "x";\n' });
+    const edited = await keyFor();
+    expect(edited).not.toBe(before);
+
+    await writeFiles(engineDir, { 'browser/modules/A.sys.mjs': 'export const a = 1;\n' });
+    await expect(keyFor()).resolves.toBe(before);
+  });
+
+  it("misses when another patch's test head changes", async () => {
+    const before = await keyFor();
+    await writeFiles(engineDir, { 'browser/test/head.js': 'function helper2() {}\n' });
+    await expect(keyFor()).resolves.not.toBe(before);
+  });
+
+  it('misses when the queue is reordered', async () => {
+    const before = await keyFor();
+    await expect(keyFor({ ctx: queue('reversed') })).resolves.not.toBe(before);
+  });
+
+  it('misses when a `paths` target changes', async () => {
+    const config: FireForgeConfig = {
+      ...DEFAULT_CONFIG,
+      patchLint: {
+        checkJs: true,
+        checkJsStrict: true,
+        checkJsCompilerOptions: {
+          paths: { 'chrome://global/content/elements/*': ['toolkit/content/widgets/*'] },
+        },
+      },
+    };
+    const before = await keyFor({ config });
+    await writeFiles(engineDir, {
+      'toolkit/content/widgets/moz-x/moz-x.mjs': 'export default class X {}\n',
+    });
+    await expect(keyFor({ config })).resolves.not.toBe(before);
+  });
+
+  it('leaves a patch with no checkJs-relevant file out of the checkJs world', async () => {
+    const plain: PatchMetadata = {
+      ...patchB(),
+      filename: '003-ui-plain.patch',
+      order: 3,
+      filesAffected: ['browser/plain.css'],
+    };
+    const before = await keyFor({ patch: plain });
+    await writeFiles(engineDir, { 'browser/modules/A.sys.mjs': 'export const a = "x";\n' });
+    await expect(keyFor({ patch: plain })).resolves.toBe(before);
+    await expect(keyFor({ patch: plain, ctx: queue('reversed') })).resolves.toBe(before);
+  });
+
+  it('keeps the checkJs world out of the key when checkJs is off', async () => {
+    const config: FireForgeConfig = { ...DEFAULT_CONFIG, patchLint: {} };
+    const before = await keyFor({ config });
+    await writeFiles(engineDir, { 'browser/modules/A.sys.mjs': 'export const a = "x";\n' });
+    await expect(keyFor({ config })).resolves.toBe(before);
+  });
+
+  it("recomputes the queue part after an in-place entry update, reusing the run's hashes", async () => {
+    const ctx = queue();
+    const before = await keyFor({ ctx });
+    const entry = ctx.entries[0];
+    if (!entry) throw new Error('fixture');
+    Object.assign(entry, creating('001-ui-a.patch', 1, ['browser/modules/A.sys.mjs']));
+    invalidateNewFileCreatorsCache(ctx);
+    await expect(keyFor({ ctx })).resolves.not.toBe(before);
   });
 });

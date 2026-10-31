@@ -262,6 +262,39 @@ describe('preflight refusals reach the captured stream and the run log', () => {
     expect(await readRunLog()).toContain('Preflight refused:');
   });
 
+  it('names the paths to rebuild as build-paths= on the coverage-replaced verdict', async () => {
+    const coverage = {
+      stale: false,
+      changedPaths: [],
+      truncated: 0,
+      baseline: {
+        engineHeadSha: 'abc123',
+        builtAt: new Date().toISOString(),
+        binaryName: 'mybrowser',
+        testPackagingCoverage: ['browser/base/content/test/other'],
+      },
+    };
+    const requested = [
+      'browser/base/content/test/browser_a.js',
+      'engine/browser/base/content/test/other/browser_covered.js',
+      'browser/components/tests/',
+    ];
+    // Both the pre-lock pass and a --negative-control's rewrap of it keep the key.
+    for (const options of [{}, { negativeControl: 'controls/missing.diff' }]) {
+      stdout = '';
+      vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(coverage);
+      await expect(testCommand(projectRoot, requested, options)).rejects.toThrow(
+        PreflightRefusalError
+      );
+      const verdict = stdout.trimEnd().split('\n').at(-1) ?? '';
+      expect(verdict).toMatch(/^FIREFORGE-VERDICT: FAIL reason=preflight note=coverage-replaced /);
+      expect(verdict).toContain(
+        ' build-paths=browser/base/content/test/browser_a.js,browser/components/tests '
+      );
+      if ('negativeControl' in options) expect(stdout).toContain('Add --build');
+    }
+  });
+
   it('still emits a bare reason=preflight for a gate that names no refusal class', async () => {
     // `note=` is additive: a thrower that does not classify itself must not
     // change the line's existing shape.

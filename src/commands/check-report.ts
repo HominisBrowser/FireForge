@@ -83,15 +83,22 @@ function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
+/** The step's 1-minute load average at start and end (`12.3→18.0`), or `-`. */
+function formatLoad(result: CheckStepResult): string {
+  if (result.load1Start === undefined || result.load1End === undefined) return '-';
+  return `${result.load1Start.toFixed(1)}→${result.load1End.toFixed(1)}`;
+}
+
 /** The per-step table: one aligned row per step, with its detail. */
 export function formatCheckTable(results: readonly CheckStepResult[]): string {
   const rows = results.map((result) => [
     result.name,
     result.status.toUpperCase(),
     result.status === 'skipped' ? '-' : formatDuration(result.durationMs),
+    formatLoad(result),
     result.detail,
   ]);
-  const header = ['STEP', 'RESULT', 'TIME', 'DETAIL'];
+  const header = ['STEP', 'RESULT', 'TIME', 'LOAD', 'DETAIL'];
   const widths = header.map((title, column) =>
     Math.max(title.length, ...rows.map((row) => row[column]?.length ?? 0))
   );

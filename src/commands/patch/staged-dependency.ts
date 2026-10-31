@@ -38,7 +38,10 @@ import {
   type KindedEntryView,
   selectRemovalEntries,
 } from './staged-dependency-remove.js';
-import { validateStagedDependencyAdd } from './staged-dependency-validate.js';
+import {
+  validateStagedDependencyAdd,
+  warnRegistrationLineNotAdded,
+} from './staged-dependency-validate.js';
 
 /** Joins the names of the missing flags for error attribution. */
 function missingFlagList(pairs: readonly (readonly [string, unknown])[]): string {
@@ -213,6 +216,9 @@ export async function patchStagedDependencyCommand(
   const added = importDependency ?? registrationDependency;
   if (added !== undefined) {
     validateStagedDependencyAdd(added, manifest.patches);
+  }
+  if (registrationDependency !== undefined) {
+    await warnRegistrationLineNotAdded(registrationDependency, paths.patches, targetPatch.filename);
   }
   const targets: KindedEntryView[] =
     mode === 'remove'

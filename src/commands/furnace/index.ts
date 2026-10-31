@@ -108,6 +108,10 @@ function registerFurnaceDeployCommand(furnace: Command, context: CommandContext)
     )
     .option('--force', 'Proceed despite baseVersion drift (stale overrides)')
     .option('--skip-validate', 'Skip the validation step (apply only)')
+    .option(
+      '--owner <patch>',
+      'The patch being exported: refuse the whole deploy, before any write, when it would overwrite a deployed file another patch owns'
+    )
     .addHelpText(
       'after',
       [
@@ -127,6 +131,7 @@ function registerFurnaceDeployCommand(furnace: Command, context: CommandContext)
           dryRun?: boolean;
           force?: boolean;
           skipValidate?: boolean;
+          owner?: string;
           waitLock?: number | boolean;
         }
       ) => {

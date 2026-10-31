@@ -86,6 +86,17 @@ describe('CLI help output', () => {
     ]);
   });
 
+  it('documents patch body as the --hunks-from base', () => {
+    const program = createProgram();
+    const body = program.commands
+      .find((command) => command.name() === 'patch')
+      ?.commands.find((command) => command.name() === 'body');
+    // Collapsed, since the description wraps at the help width.
+    const help = body?.helpInformation().replace(/\s+/g, ' ');
+    expect(help).toContain('body [options] <patch> <file>');
+    expect(help).toContain('diff -u <(fireforge patch body <patch> <file>) engine/<file>');
+  });
+
   it('pins the CLI option inventory for every command', () => {
     // A full-text help snapshot re-breaks on every wording tweak and on the
     // terminal-width heuristics in `buildGroupedHelpFormatter`. The consumer

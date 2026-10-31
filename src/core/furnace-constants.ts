@@ -15,6 +15,9 @@ export const JAR_MN = 'toolkit/content/jar.mn';
  */
 export const WIDGETS_DIR = 'toolkit/content/widgets';
 
+/** Chrome URL prefix under which a component's `.mjs` files deploy. */
+export const CHROME_ELEMENTS_URL_PREFIX = 'chrome://global/content/elements/';
+
 /** Default Fluent localization directory for toolkit global components, relative to engine root */
 export const FTL_DIR = 'toolkit/locales/en-US/toolkit/global';
 

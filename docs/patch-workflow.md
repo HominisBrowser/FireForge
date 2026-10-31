@@ -16,6 +16,13 @@ npx fireforge lint --per-patch
 npx fireforge verify
 ```
 
+On an engine several sessions share, a writing command meets a peer's build
+or test on the engine lock, and without a budget it gives up after about a
+second. Pass `--wait-lock <seconds>` to each writing `export` and `re-export`
+(`npx fireforge re-export custom-toolbar --wait-lock 600`), or set
+`FIREFORGE_WAIT_LOCK` for the session. See
+[Lock waits](configuration.md#lock-waits).
+
 ## Exporting
 
 Patch names are normalized on export and rename, so `window-chrome-tests`,
@@ -37,6 +44,11 @@ directories. The manifest is JSON:
 The command can be dry-run, refuses ambiguous ownership, and reports each
 file-to-patch assignment before refreshing the patch.
 
+Positional patches can be passed beside the manifest; only `--all` is
+refused. The run refreshes the patches the manifest names plus the
+positionals, once each and in queue order. A positional the manifest does
+not name has no files to adopt and refreshes without a scan.
+
 `re-export --dry-run` takes no engine-session lock: it writes nothing, so it
 does not queue behind a peer's build or test run, and its git plumbing runs on
 a private index. Its purity guard covers what the dry run could touch (the
@@ -51,7 +63,7 @@ requires the prefix on every `--scan-file`. Selected patches that get no
 file refresh scan-less, without a broad directory scan:
 
 ```sh
-fireforge re-export 201 200 --scan --scan-file 201:browser/components/hominis/tiles/scroll.mjs --refuse-foreign-drift --expect browser/base/content/hominis.js --expect browser/base/jar.mn
+fireforge re-export 201 200 --scan --scan-file 201:browser/components/hominis/tiles/scroll.mjs --refuse-foreign-drift --expect browser/base/content/hominis.js --expect browser/base/jar.mn --wait-lock 600
 ```
 
 ### Foreign drift
@@ -63,6 +75,13 @@ directions count, so an edit that only deletes lines is drift too.
 `--refuse-foreign-drift` turns the preview into a refusal. `--expect <path>`
 admits drift in the files you meant to change. Drift in any other owned
 file, added or removed, still refuses.
+
+Under `--refuse-foreign-drift` a run judges every selected patch (scan,
+diff and drift check, nothing written) before it writes any. When one patch
+is refused for drift, none is written: `re-export 518 626 --refuse-foreign-drift` with
+drift only in 626 leaves 518 unwritten too, and the closing summary names
+518 as held back by 626's refusal. Without the flag each patch is written
+or refused on its own.
 
 The belt works beside `--scan`, `--scan-file` and `--scan-files`. It guards
 each patch's existing files, and the files a scan adopts count as expected,
@@ -96,8 +115,29 @@ is not touched. A spine patch can then export one change's lines at a time:
 
 ```sh
 git -C engine diff -- browser/base/content/hominis.js > my-change.diff   # trim to your hunks
-fireforge re-export 200 --hunks-from my-change.diff
+fireforge re-export 200 --hunks-from my-change.diff --wait-lock 600
 ```
+
+The diff can be `git diff` output or a plain unified diff (`diff -u`, no
+`diff --git` lines). When a section's two sides name different paths, the
+side that is a file the patch owns names the file, with an `engine/` prefix
+accepted.
+
+A file the patch creates is untracked in the engine, so `git diff` prints
+nothing for it. `fireforge patch body <patch> <file>` prints the file as the
+patch leaves it (engine HEAD, or nothing for a file HEAD lacks, with the
+patch's section applied), which is the base `--hunks-from` places hunks
+against. Diff the working file against it:
+
+```sh
+diff -u <(fireforge patch body 200 browser/components/hominis/tiles.mjs) \
+  engine/browser/components/hominis/tiles.mjs > my-change.diff   # trim to your hunks
+fireforge re-export 200 --hunks-from my-change.diff --wait-lock 600
+```
+
+A section from `/dev/null` (`diff -u /dev/null engine/<file>`) for a file the
+patch already creates is refused: its one hunk is the whole file, not the
+lines changed since the patch body.
 
 ### Re-export belts and arguments
 
@@ -112,6 +152,9 @@ A file in a sibling or nested directory is not adjacent, so a peer
 session's unexported test in `test/hominis-tiles/` does not refuse a
 patch that owns `test/hominis/browser.toml`. The refusal names every file
 with its anchor (`beside engine/<dir>` or `registered by engine/<carrier>`).
+A backup-shaped file (`*-E`, `*.bak`, `*.orig`, `*.rej`, `*~`) is named as
+a stray backup to delete, such as the `-E` copy macOS `sed -i -E` leaves,
+instead of a file to adopt with `--scan-file`.
 
 Beside `--scan` and `--scan-file` the belt judges the adjacent files the
 scan did not adopt, so one call can adopt a new widget and its test and
@@ -134,7 +177,8 @@ listed:
 
 ```sh
 fireforge re-export 102 200 --refuse-adjacent-unmanaged --refuse-foreign-drift \
-  --expect browser/modules/hominis/moz.build --expect-new browser/modules/hominis/HominisBangs.sys.mjs
+  --expect browser/modules/hominis/moz.build --expect-new browser/modules/hominis/HominisBangs.sys.mjs \
+  --wait-lock 600
 ```
 
 `--expect-from <file>` reads `--expect` paths from a file, one per line,
@@ -397,6 +441,12 @@ hash-object` and `git update-index`. A collision (two rows at one order) or
   whitespace-insensitively, as the lint does. A selection that matches
   nothing is refused with exit 8, on a dry run too, and the refusal lists
   the patch's declarations of every kind it searched.
+- `patch staged-dependency <name> --add --kind registration` warns when
+  `--line` matches no line the patch body adds to `--file`. Lines compare
+  with whitespace runs collapsed, inner spacing included, so a jar.mn line
+  aligned with two spaces matches a `--line` typed with one. The declaration
+  is still written, and the lint reports it as `staged-dependency-unused`
+  until the patch adds that line.
 - `patch staged-dependency <name> --add --from <json-file>` adds many
   declarations in one call under one lock hold. The file is a `lint
 --per-patch --report` document (its findings' `stagedDeclarations` for
@@ -495,15 +545,36 @@ Firefox-globals shim that tracks upstream WebIDL additions per release. A
 creates under that name; a test script's own program sees the modules
 created up to the test's patch. An import the program cannot resolve (a
 module a later patch creates, an upstream module, or a basename two
-patches create) is typed `any`; an implicit-`any` finding in a file with
-such an import names it, since the whole-tree `fireforge typecheck` sees
-the real type. See
+patches create) is typed `any`, and so is a type-member reference through
+it (`import("…").Type`); an implicit-`any` finding in a file with such an
+import names it, since the whole-tree `fireforge typecheck` sees the real
+type. `fireforge typecheck --explain <file>` prints which program checks a
+file and how its imports resolve there. See
 [`configuration.md`](configuration.md#patchlint) for the project hooks
 (`checkJsExtraShim`, `checkJsTestFiles`, `checkJsTestShim`).
 
 For release whitespace checks, use `npm run whitespace:check`. It checks
 source diffs while excluding the diff syntax of generated
 `patches/*.patch` files.
+
+### License headers
+
+A file a patch creates must open with the project's license header
+(`missing-license-header`, an error). A JS or CSS file may keep upstream
+Mozilla's MPL-2.0 block header instead, whatever the project license. A file
+a patch modifies must still carry a recognized header in its first ten lines
+(`modified-file-missing-header`, a warning): any known license header, an
+SPDX tag, a common license name, or the CC0 dedication on Mozilla's tests.
+The MPL header is matched whatever its wrap: `//` lines, or a `/* … */` block
+with `*` or `-` continuation lines (Mozilla's dashed form,
+`/* - This Source Code Form …`), behind any editor-directive comments.
+
+Some upstream files carry no header at all. A patch that modifies one takes
+a reviewed `lintIgnore` entry instead of a license the file never had:
+
+```sh
+fireforge patch lint-ignore 310-ui-sidebar --add modified-file-missing-header --yes
+```
 
 ### Linting single files
 
@@ -540,8 +611,11 @@ instead carry a ceiling:
 ```
 
 ```sh
-fireforge patch lint-ignore 310-ui-sidebar --add file-too-large --max 1200 --reason "Controller split tracked in #412"
+fireforge patch lint-ignore 310-ui-sidebar --add file-too-large --max 1200 --reason "Controller split tracked in #412" --yes
 ```
+
+`patch lint-ignore` asks for confirmation, so a run outside a terminal (an
+agent or a script) needs `--yes`.
 
 The finding stays suppressed while its measurement (lines for the line
 rules, files for `large-patch-files`) is at or below `max`, and fires at its
@@ -590,8 +664,8 @@ skipped, and `--reason` fills objects without one). Given a `lint --per-patch
 ceilings to its current `measurement`.
 
 ```sh
-fireforge patch lint-ignore 310-ui-sidebar --add file-too-large=1200 --add large-patch-files=40 --reason "Rebaseline 2026-10"
-fireforge patch lint-ignore 310-ui-sidebar --from lint-report.json
+fireforge patch lint-ignore 310-ui-sidebar --add file-too-large=1200 --add large-patch-files=40 --reason "Rebaseline 2026-10" --yes
+fireforge patch lint-ignore 310-ui-sidebar --from lint-report.json --yes
 ```
 
 ## CI enforcement

@@ -937,6 +937,48 @@ describe('patch staged-dependency', () => {
     expect(manifest.patches[0]).not.toHaveProperty('stagedDependencies');
   });
 
+  it('--add --kind registration warns when the patch adds no such line, inner spacing aside', async () => {
+    const jarLine =
+      '  content/global/elements/moz-hominis-synthesis-view.mjs  (widgets/moz-hominis-synthesis-view.mjs)';
+    const body = [
+      'diff --git a/toolkit/content/jar.mn b/toolkit/content/jar.mn',
+      '--- a/toolkit/content/jar.mn',
+      '+++ b/toolkit/content/jar.mn',
+      '@@ -1,1 +1,2 @@',
+      ' toolkit.jar:',
+      `+${jarLine}`,
+      '',
+    ].join('\n');
+    await seed(
+      patchesDir,
+      [makeMetadata('202-ui-tile-widgets.patch', 202, ['toolkit/content/jar.mn'])],
+      {
+        '202-ui-tile-widgets.patch': body,
+      }
+    );
+    const add = (line: string): Promise<void> =>
+      patchStagedDependencyCommand(projectRoot, '202-ui-tile-widgets.patch', {
+        add: true,
+        kind: 'registration',
+        file: 'toolkit/content/jar.mn',
+        line,
+        creates: 'toolkit/content/widgets/moz-hominis-synthesis-view.mjs',
+        dryRun: true,
+      });
+    const lineWarnings = (): number =>
+      vi.mocked(warn).mock.calls.filter((call) => call[0].includes('--line matches no line'))
+        .length;
+
+    vi.mocked(warn).mockClear();
+    await add(
+      'content/global/elements/moz-hominis-synthesis-view.mjs (widgets/moz-hominis-synthesis-view.mjs)'
+    );
+    expect(lineWarnings()).toBe(0);
+
+    await add('content/global/elements/moz-hominis-other.mjs (widgets/moz-hominis-other.mjs)');
+    expect(lineWarnings()).toBe(1);
+  });
+
   it('--remove --kind registration matches a line whatever its padding', async () => {
     await seed(patchesDir, [
       makeMetadata('200-ui-jar.patch', 200, ['toolkit/content/jar.mn'], {

@@ -114,9 +114,13 @@ header (`.h`, `.hh`, `.hpp`, `.ipdlh`) counts as compiled even when an
 `EXPORTS` install manifest copies it into `dist/include`: that copy only feeds
 other compiles. Without
 `--build` it is refused before the lock. With `--build` it is applied before
-the pre-test build, so the binary under test carries it, stays applied for
-every `--repeat` run, and is restored with a fresh mtime so the next build
-recompiles the original. That pre-test build is a full
+the pre-test build, so the binary under test carries it, and is restored
+with a fresh mtime so the next build recompiles the original. Every
+`--repeat` run (and a mixed request's second half) tests that same binary,
+with the source applied again before its dispatch and restored after it:
+those runs accept their own invocation's `controlBuild` stamp and the
+control files' fresh mtimes instead of refusing with `note=control-built`
+or `note=stale-compiled`. That pre-test build is a full
 `mach build`, with a notice naming the control's files: the default
 `mach build faster` compiles nothing, so the control would still test
 the previous binary and report `missed`. The verdict adds
@@ -267,7 +271,10 @@ invocation, when, and the writing process's pid (marked `still running`
 while it is), `FIREFORGE_SESSION_ID` and invocation id, the id its history
 records carry. `status --test-coverage` shows the pid and session too. A
 peer whose run a scoped build or a test-file edit refused can tell whose
-build to wait for.
+build to wait for. The verdict line names the paths the refusal tells you
+to rebuild as `build-paths=<path>,…`, so a script can retry with
+`--build <paths>` without parsing the refusal text (see
+[`machine-output.md`](machine-output.md#the-additive-note-key)).
 
 Retention is the default, so `--extend-coverage` only turns a drop into a
 refusal before the build. A baseline without complete staging-input

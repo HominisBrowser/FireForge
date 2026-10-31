@@ -11,8 +11,13 @@
  * engine paths always contain a `/`, so deep paths can never
  * false-positive.
  */
+import { join } from 'node:path';
+
+import { extractAddedLinesPerFile } from '../../core/patch-lint-diff.js';
+import { patchAddsRegistrationLine } from '../../core/patch-lint-staged-registration.js';
 import { InvalidArgumentError } from '../../errors/base.js';
-import type { PatchMetadata } from '../../types/commands/index.js';
+import type { PatchMetadata, PatchStagedRegistration } from '../../types/commands/index.js';
+import { pathExists, readText } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
 
 /** The declaration fields common to both staged-dependency kinds. */
@@ -87,4 +92,41 @@ export function validateStagedDependencyAdd(
         'discharges once a patch with exactly this filename creates the --creates path.'
     );
   }
+}
+
+/**
+ * Warns when a registration's `--line` matches no line the patch body adds
+ * to `--file`, compared whitespace-insensitively as the lint compares it.
+ * Advisory only: the patch may be re-exported with the line moments later,
+ * but until then the lint reports the declaration as
+ * `staged-dependency-unused`.
+ *
+ * @param registration - The declaration being added
+ * @param patchesDir - Patches directory holding the target patch body
+ * @param patchFilename - The declaring patch
+ */
+export async function warnRegistrationLineNotAdded(
+  registration: PatchStagedRegistration,
+  patchesDir: string,
+  patchFilename: string
+): Promise<void> {
+  const patchPath = join(patchesDir, patchFilename);
+  if (!(await pathExists(patchPath))) return;
+  const added = extractAddedLinesPerFile(await readText(patchPath)).get(registration.file) ?? [];
+  const additions = new Map([[registration.file, added.join('\n')]]);
+  if (
+    patchAddsRegistrationLine(
+      { newFiles: new Map(), modifiedFileAdditions: additions },
+      registration.file,
+      registration.line
+    )
+  ) {
+    return;
+  }
+  warn(
+    `--line matches no line ${patchFilename} adds to ${registration.file} ` +
+      '(compared whitespace-insensitively). The declaration is written, but lint reports it as ' +
+      'staged-dependency-unused until the patch adds that line: copy the line from the patch ' +
+      'hunk, or re-export the patch first.'
+  );
 }

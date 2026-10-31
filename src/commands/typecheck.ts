@@ -18,18 +18,25 @@ import { Command } from 'commander';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.js';
-import { findJsconfigPathsDrift, syncFurnaceJsconfigPaths } from '../core/furnace-jsconfig.js';
+import {
+  findJsconfigPathsDrift,
+  syncJsconfigPaths,
+  typecheckJsconfigList,
+} from '../core/furnace-jsconfig.js';
+import { syncFurnaceTagMap } from '../core/furnace-tag-map.js';
 import { withPrivateGitIndex } from '../core/git-readonly-index.js';
 import { buildPatchQueueContext } from '../core/patch-lint.js';
 import { relativeForDisplay, runTypecheck } from '../core/typecheck.js';
+import { explainTypecheckFile } from '../core/typecheck-explain.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PatchLintIssue } from '../types/commands/index.js';
-import type { TypecheckConfig } from '../types/config.js';
+import type { FireForgeConfig, ProjectPaths, TypecheckConfig } from '../types/config.js';
 import type { TypecheckIssue, TypecheckProjectResult } from '../types/typecheck.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, outro, success, warn } from '../utils/logger.js';
+import { info, intro, message, outro, success, warn } from '../utils/logger.js';
 import { buildPerRunCheckJs } from './lint-per-run-checkjs.js';
+import { formatTypecheckExplanation } from './typecheck-explain.js';
 
 /** Command-line options Commander forwards from `fireforge typecheck`. */
 export interface TypecheckCommandOptions {
@@ -45,6 +52,11 @@ export interface TypecheckCommandOptions {
    * (`--no-cache`).
    */
   noCache?: boolean;
+  /**
+   * Explain how both passes see this file instead of running a check
+   * (`--explain <file>`).
+   */
+  explain?: string;
 }
 
 /**
@@ -60,15 +72,10 @@ export function resolveTypecheckProjects(
     if (override.trim() === '') {
       throw new InvalidArgumentError('--project requires a non-empty path', '--project');
     }
-    return {
-      projects: [override],
-      ...(configTypecheck?.extraShim !== undefined ? { extraShim: configTypecheck.extraShim } : {}),
-      // Preserve any per-project override for the targeted path so a one-off
-      // `--project` run honours its opt-out / shim override just like a full run.
-      ...(configTypecheck?.projectOverrides !== undefined
-        ? { projectOverrides: configTypecheck.projectOverrides }
-        : {}),
-    };
+    // Every other setting carries over (`extraShim`, the matching
+    // `projectOverrides` entry, `litTypes`, `undefinedIdentifiers`), so a
+    // one-off run checks the project exactly as the configured run does.
+    return { ...configTypecheck, projects: [override] };
   }
   if (!configTypecheck) {
     throw new GeneralError(
@@ -118,8 +125,13 @@ async function runTypecheckCommandBody(
   // fireforge.json, and withErrorHandling at the CLI layer renders the
   // resulting `ConfigNotFoundError` cleanly, so we don't need to
   // re-wrap.
-  getProjectPaths(projectRoot);
+  const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
+
+  if (options.explain !== undefined) {
+    await explainFile(paths, config, options);
+    return;
+  }
 
   const cfg = resolveTypecheckProjects(config.typecheck, options.project);
 
@@ -148,6 +160,31 @@ async function runTypecheckCommandBody(
 }
 
 /**
+ * `--explain <file>`: prints which programs see the file and how, then
+ * stops. Read-only: no check runs and the Furnace jsconfigs are not
+ * regenerated.
+ */
+async function explainFile(
+  paths: ProjectPaths,
+  config: FireForgeConfig,
+  options: TypecheckCommandOptions
+): Promise<void> {
+  const file = options.explain ?? '';
+  if (file.trim() === '') {
+    throw new InvalidArgumentError('--explain requires a file path', '--explain');
+  }
+  const typecheck =
+    options.project !== undefined || config.typecheck !== undefined
+      ? resolveTypecheckProjects(config.typecheck, options.project)
+      : undefined;
+  const explanation = await explainTypecheckFile(paths, config, typecheck, file);
+  for (const [title, lines] of formatTypecheckExplanation(explanation)) {
+    message(lines.length > 0 ? `${title}\n${lines.join('\n')}` : title);
+  }
+  outro('Explained; no check ran');
+}
+
+/**
  * Runs the per-patch-lint checkJs pass (the same program `export` and
  * `lint --per-patch` use) and returns its findings.
  *
@@ -170,26 +207,32 @@ async function collectPatchLintCheckJsIssues(projectRoot: string): Promise<Patch
 }
 
 /**
- * Staleness-checks and regenerates the Furnace-managed jsconfig
- * (`furnace.json` → `typecheckJsconfig`) before typecheck runs. No-op when
- * the project has no furnace.json or no `typecheckJsconfig` is configured.
+ * Staleness-checks and regenerates each Furnace-managed jsconfig
+ * (`furnace.json` → `typecheckJsconfig`) and the tag map
+ * (`typecheckTagMap`) before typecheck runs. No-op when the project has no
+ * furnace.json or configures neither.
  * A missing `typecheckJsconfig` file surfaces the reconciler's own clear
  * error rather than producing phantom type diagnostics.
  */
 async function regenerateStaleGeneratedJsconfig(projectRoot: string): Promise<void> {
   if (!(await furnaceConfigExists(projectRoot))) return;
   const furnaceConfig = await loadFurnaceConfig(projectRoot);
-  if (!furnaceConfig.typecheckJsconfig) return;
+  for (const jsconfig of typecheckJsconfigList(furnaceConfig)) {
+    const drift = await findJsconfigPathsDrift(projectRoot, furnaceConfig, jsconfig);
+    if (!drift.changed) continue;
 
-  const drift = await findJsconfigPathsDrift(projectRoot, furnaceConfig);
-  if (!drift.changed) return;
-
-  info(
-    `Regenerating stale generated jsconfig ${furnaceConfig.typecheckJsconfig} before typecheck ` +
-      `(+${drift.added.length} added, ~${drift.updated.length} updated, ` +
-      `-${drift.pruned.length} pruned).`
-  );
-  await syncFurnaceJsconfigPaths(projectRoot, furnaceConfig);
+    info(
+      `Regenerating stale generated jsconfig ${jsconfig} before typecheck ` +
+        `(+${drift.added.length} added, ~${drift.updated.length} updated, ` +
+        `-${drift.pruned.length} pruned).`
+    );
+    await syncJsconfigPaths(projectRoot, furnaceConfig, jsconfig);
+  }
+  const tagMap = await syncFurnaceTagMap(projectRoot, furnaceConfig, { dryRun: true });
+  if (tagMap?.changed === true) {
+    info(`Regenerating stale generated tag map ${tagMap.file} before typecheck.`);
+    await syncFurnaceTagMap(projectRoot, furnaceConfig);
+  }
 }
 
 /**
@@ -261,16 +304,27 @@ export function registerTypecheck(
       '--no-cache',
       'Check every project from scratch; neither read nor write the incremental build info in .fireforge/typecheck/'
     )
+    .option(
+      '--explain <file>',
+      'Run no check; print which typecheck projects include <file> and with which shim settings, ' +
+        'and whether a per-patch checkJs program checks it (owning patch, heads, resolvable ' +
+        'modules, imports typed any)'
+    )
     .action(
-      withErrorHandling(async (options: { project?: string; cache?: boolean }) => {
-        const opts: TypecheckCommandOptions = {};
-        if (options.project !== undefined) {
-          opts.project = options.project;
+      withErrorHandling(
+        async (options: { project?: string; cache?: boolean; explain?: string }) => {
+          const opts: TypecheckCommandOptions = {};
+          if (options.project !== undefined) {
+            opts.project = options.project;
+          }
+          if (options.cache === false) {
+            opts.noCache = true;
+          }
+          if (options.explain !== undefined) {
+            opts.explain = options.explain;
+          }
+          await typecheckCommand(getProjectRoot(), opts);
         }
-        if (options.cache === false) {
-          opts.noCache = true;
-        }
-        await typecheckCommand(getProjectRoot(), opts);
-      })
+      )
     );
 }

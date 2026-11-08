@@ -14,12 +14,15 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { pathExists } from '../../core/authored/fs.js';
+import { loadConfig } from '../../core/config.js';
 import { removeCustomFtlJarMnEntry } from '../../core/furnace-apply-ftl.js';
 import {
   getOverrideEngineTargetPath,
   isOverrideCopyCandidate,
   restoreOverrideFileToBaseline,
 } from '../../core/furnace-apply-helpers.js';
+import { removeAuthoringDir, removeAuthoringFile } from '../../core/furnace-authored-lifecycle.js';
 import { extractComponentChecksums } from '../../core/furnace-checksum-utils.js';
 import type { FurnacePaths } from '../../core/furnace-config.js';
 import {
@@ -31,7 +34,6 @@ import { snapshotDir, snapshotFile } from '../../core/furnace-rollback.js';
 import { isGitRepository } from '../../core/git.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceConfig, FurnaceState, OverrideComponentConfig } from '../../types/furnace.js';
-import { pathExists, removeDir, removeFile } from '../../utils/fs.js';
 import { info } from '../../utils/logger.js';
 import { normalizePathSlashes } from '../../utils/paths.js';
 import { removeDeployedCustomFiles } from './remove-state.js';
@@ -108,6 +110,7 @@ async function restoreOverrideEngineFiles(
  * single unit.
  */
 export async function performOverrideRemovalMutations(args: {
+  projectRoot?: string;
   name: string;
   paths: { engine: string };
   furnacePaths: FurnacePaths;
@@ -125,7 +128,10 @@ export async function performOverrideRemovalMutations(args: {
   // the workspace and (b) files state.json says we deployed last time.
   // Without (b), source-side deletions would orphan engine copies
   // that this command can never see again.
-  if (overrideConfig?.basePath) {
+  if (
+    overrideConfig?.basePath &&
+    !(args.projectRoot && (await loadConfig(args.projectRoot)).sources)
+  ) {
     const previousKeys = Object.keys(
       extractComponentChecksums(freshState.appliedChecksums, 'override', name)
     );
@@ -151,7 +157,7 @@ export async function performOverrideRemovalMutations(args: {
 
   if (await pathExists(dir)) {
     await snapshotDir(journal, dir);
-    await removeDir(dir);
+    await removeAuthoringDir(dir, journal);
     info(`Deleted components/overrides/${name}/`);
   }
 }
@@ -193,11 +199,11 @@ export async function performCustomRemovalMutations(args: {
   const dir = join(furnacePaths.customDir, name);
   if (await pathExists(dir)) {
     await snapshotDir(journal, dir);
-    await removeDir(dir);
+    await removeAuthoringDir(dir, journal);
     info(`Deleted components/custom/${name}/`);
   }
   // Clean up deployed files in engine (per-file, see helper doc).
-  if (customConfig?.targetPath) {
+  if (customConfig?.targetPath && !(await loadConfig(projectRoot)).sources) {
     await removeDeployedCustomFiles(
       projectRoot,
       paths.engine,
@@ -213,9 +219,9 @@ export async function performCustomRemovalMutations(args: {
   if (customConfig?.localized) {
     const ftlRel = join(ftlDir, `${name}.ftl`);
     const ftlPath = join(paths.engine, ftlRel);
-    if (await pathExists(ftlPath)) {
+    if (!(await loadConfig(projectRoot)).sources && (await pathExists(ftlPath))) {
       await snapshotFile(journal, ftlPath);
-      await removeFile(ftlPath);
+      await removeAuthoringFile(ftlPath, journal);
       // `ftlRel` is a native join, so on Windows an interpolated
       // `engine/${ftlRel}` renders as `engine/toolkit\locales\...`, one
       // message with both separators. Print the engine-relative form.

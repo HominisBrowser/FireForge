@@ -438,7 +438,7 @@ async function findFilesEditedSinceLastExport(
  * patch body means the drift comparison cannot run, so under
  * `--refuse-foreign-drift` the patch is refused rather than written on the
  * strength of a check that never happened. Without the flag this stays the
- * historical advisory skip (the preview is best-effort there).
+ * advisory skip (the preview is best-effort there).
  */
 function refuseUnreadableBaseline(
   ctx: ForeignDriftContext,

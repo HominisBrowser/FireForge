@@ -696,7 +696,7 @@ describe('furnaceOverrideCommand', () => {
           overrides: {},
           custom: {},
         })
-        .mockResolvedValueOnce({
+        .mockResolvedValue({
           version: 1,
           componentPrefix: 'moz-',
           stock: [],

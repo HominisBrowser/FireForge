@@ -54,7 +54,7 @@ describe('registerBrowserContent', () => {
   });
 
   it('is idempotent — skips if already registered', async () => {
-    mockReadText.mockResolvedValue(MOCK_JAR_MN.replace('places.js', 'customPanel.js'));
+    mockReadText.mockResolvedValue(MOCK_JAR_MN.replaceAll('places.js', 'customPanel.js'));
 
     const result = await registerBrowserContent('/engine', 'customPanel.js');
     expect(result.skipped).toBe(true);

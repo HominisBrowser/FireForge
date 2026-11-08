@@ -9,7 +9,7 @@ vi.mock('../logger.js', () => ({
 }));
 
 import { ExecTimeoutError } from '../../errors/base.js';
-import { verbose, warn } from '../logger.js';
+import { warn } from '../logger.js';
 import {
   exec,
   execInherit,
@@ -19,11 +19,23 @@ import {
   findExecutable,
   waitForActiveChildShutdown,
 } from '../process.js';
-import { sweepProcessGroup } from '../process-group.js';
+import type { ProcessOwnership } from '../process-group.js';
 
-class MockStream extends EventEmitter {}
+// Fixture pids are made up, so ownership must never read the real process table.
+vi.mock('../process-birth.js', () => ({
+  groupMembers: vi.fn(() => []),
+  isAliveIn: vi.fn(() => false),
+  readProcessCommands: vi.fn(() => Promise.resolve(new Map())),
+  signalIfAlive: vi.fn(() => false),
+  snapshotProcesses: vi.fn(() => Promise.resolve(new Map())),
+}));
+
+class MockStream extends EventEmitter {
+  destroy = vi.fn();
+}
 
 interface MockChildProcess extends EventEmitter {
+  pid: number | undefined;
   stdout: MockStream;
   stderr: MockStream;
   kill: (signal?: NodeJS.Signals) => boolean;
@@ -39,13 +51,15 @@ vi.mock('node:child_process', () => ({
   spawn: mockSpawn,
 }));
 
-function makeChild(): MockChildProcess {
+function makeChild(pid?: number): MockChildProcess {
   const child = Object.assign(new EventEmitter(), {
+    pid,
     stdout: new MockStream(),
     stderr: new MockStream(),
     exitCode: null as number | null,
     signalCode: null as NodeJS.Signals | null,
     kill: vi.fn(),
+    unref: vi.fn(),
   });
   return child;
 }
@@ -187,6 +201,7 @@ describe('exec', () => {
     const abortError = new Error('The operation was aborted');
     abortError.name = 'AbortError';
     child.emit('error', abortError);
+    child.emit('close', null, 'SIGKILL');
 
     await expect(promise).rejects.toMatchObject({
       name: 'ExecTimeoutError',
@@ -208,6 +223,7 @@ describe('exec', () => {
     const abortError = new Error('The operation was aborted');
     abortError.name = 'AbortError';
     child.emit('error', abortError);
+    child.emit('close', null, 'SIGKILL');
 
     const error = await promise.then(
       () => undefined,
@@ -256,7 +272,7 @@ describe('execInherit', () => {
   });
 
   it('forwards SIGINT to the child as SIGTERM and resolves once the child closes', async () => {
-    const child = makeChild();
+    const child = makeChild(12345);
     mockSpawn.mockReturnValue(child);
 
     const promise = execInherit('long-running', [], { shutdownGraceMs: 50 });
@@ -273,7 +289,7 @@ describe('execInherit', () => {
   it('escalates to SIGKILL after the grace window if the child does not exit', async () => {
     vi.useFakeTimers();
     try {
-      const child = makeChild();
+      const child = makeChild(12345);
       mockSpawn.mockReturnValue(child);
       const promise = execInherit('stubborn', [], { shutdownGraceMs: 50 });
 
@@ -288,6 +304,17 @@ describe('execInherit', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('does not signal an unidentified failed spawn when the parent receives a signal', async () => {
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+    const promise = execInherit('missing-executable', []);
+    process.emit('SIGINT');
+    expect(child.kill).not.toHaveBeenCalled();
+    child.emit('error', new Error('spawn missing-executable ENOENT'));
+    child.emit('close', -2, null);
+    await expect(promise).rejects.toThrow('ENOENT');
   });
 
   it('removes its signal listeners on close so repeated calls do not leak handlers', async () => {
@@ -447,11 +474,11 @@ describe('execSmokeRun', () => {
     expect(stdoutLines).toEqual(['split line', 'next']);
   });
 
-  it('sends SIGTERM to the process group when the deadline fires and reports timedOut=true', async () => {
+  it('signals the group at the smoke deadline and escalates only after the grace', async () => {
     vi.useFakeTimers();
     // execSmokeRun picks its kill strategy from process.platform, so pin the
     // POSIX branch so this test exercises the process-group kill even when
-    // the suite runs on Windows (the taskkill test below owns that branch).
+    // the suite runs on Windows.
     const originalPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     try {
@@ -464,14 +491,16 @@ describe('execSmokeRun', () => {
         killGraceMs: 50,
       });
 
-      vi.advanceTimersByTime(250);
-      // Negative PID targets the whole process group. That is the invariant
-      // here: a bare child.kill would leave forked content processes alive.
+      // A Node handle that has not seen the exit proves the group is this one:
+      // an unreaped leader keeps its PID.
+      vi.advanceTimersByTime(220);
       expect(killSpy).toHaveBeenCalledWith(-98765, 'SIGTERM');
+      expect(killSpy).not.toHaveBeenCalledWith(-98765, 'SIGKILL');
 
-      vi.advanceTimersByTime(100);
+      vi.advanceTimersByTime(40);
       expect(killSpy).toHaveBeenCalledWith(-98765, 'SIGKILL');
 
+      Object.defineProperty(child, 'signalCode', { value: 'SIGTERM', configurable: true });
       child.emit('close', null, 'SIGTERM');
       const result = await promise;
       expect(result.timedOut).toBe(true);
@@ -484,7 +513,7 @@ describe('execSmokeRun', () => {
     }
   });
 
-  it('kills the descendant tree via taskkill /T /F on Windows when the deadline fires', async () => {
+  it('signals the live direct Windows child without inventing post-exit group authority', async () => {
     vi.useFakeTimers();
     const originalPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
@@ -504,9 +533,7 @@ describe('execSmokeRun', () => {
       vi.advanceTimersByTime(250);
       // No process group on Windows, so the tree kill must go through
       // taskkill, otherwise firefox descendants of the python wrapper survive.
-      expect(mockSpawn).toHaveBeenCalledWith('taskkill', ['/pid', '4242', '/T', '/F'], {
-        stdio: 'ignore',
-      });
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
       expect(killSpy).not.toHaveBeenCalled();
       // Direct-child kill still fires as the taskkill-unavailable fallback.
       expect(child.kill).toHaveBeenCalledWith('SIGTERM');
@@ -553,363 +580,106 @@ describe('findExecutable', () => {
   });
 });
 
-describe('process-group reaping', () => {
-  const ORPHAN_LINE =
-    '4243 /usr/bin/python3 -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=12)';
-
-  let originalPlatform: string;
-
+describe('tracked process ownership integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSpawn.mockReset();
-    originalPlatform = process.platform;
-    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
   });
-
   afterEach(() => {
-    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
     vi.useRealTimers();
   });
 
-  function makeGroupChild(pid = 4242): MockChildProcess & { pid: number } {
-    return Object.assign(makeChild(), { pid });
-  }
-
-  /**
-   * A lazy fake pgrep child: the close emission is scheduled when spawn()
-   * actually runs (mockImplementationOnce), not when the test builds the
-   * queue. Otherwise the event fires before exec attaches listeners.
-   */
-  function pgrepChild(lines: string | undefined): () => MockChildProcess {
-    return () => {
-      const child = makeChild();
-      queueMicrotask(() => {
-        if (lines !== undefined) child.stdout.emit('data', Buffer.from(lines));
-        child.emit('close', lines !== undefined ? 0 : 1, null);
-      });
-      return child;
-    };
-  }
-
-  describe('sweepProcessGroup', () => {
-    it('reaps a stranded multiprocessing worker with a group SIGTERM (simulated startup death)', async () => {
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
-      // First pgrep: the stranded spawn worker survives. After the group
-      // SIGTERM + grace, the re-list comes back empty.
-      mockSpawn
-        .mockImplementationOnce(pgrepChild(`${ORPHAN_LINE}\n`))
-        .mockImplementationOnce(pgrepChild(undefined));
-
-      const { survivors } = await sweepProcessGroup(4242, 10);
-
-      expect(survivors).toHaveLength(1);
-      expect(survivors[0]?.pid).toBe(4243);
-      expect(survivors[0]?.command).toContain('multiprocessing.spawn');
-      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
-      expect(killSpy).not.toHaveBeenCalledWith(-4242, 'SIGKILL');
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('multiprocessing worker — the known busy-spin orphan shape')
-      );
-      expect(verbose).toHaveBeenCalledWith(expect.stringContaining('reaped cleanly with SIGTERM'));
-      killSpy.mockRestore();
+  it('announces a token alongside the diagnostic group number and waits for caller teardown', async () => {
+    const child = makeChild(777);
+    mockSpawn.mockReturnValue(child);
+    const onProcessGroup = vi.fn();
+    let release: () => void = () => undefined;
+    const postCloseSweep = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        })
+    );
+    let resolved = false;
+    const promise = execStream('fixture', [], {
+      processGroup: true,
+      onProcessGroup,
+      postCloseSweep,
+    }).then((code) => {
+      resolved = true;
+      return code;
     });
-
-    it('escalates to a group SIGKILL when survivors outlive the grace window', async () => {
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
-      mockSpawn
-        .mockImplementationOnce(pgrepChild(`${ORPHAN_LINE}\n`))
-        .mockImplementationOnce(pgrepChild(`${ORPHAN_LINE}\n`))
-        .mockImplementationOnce(pgrepChild(`${ORPHAN_LINE}\n`));
-
-      await sweepProcessGroup(4242, 10);
-
-      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
-      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL');
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('still has survivors after SIGKILL')
-      );
-      killSpy.mockRestore();
-    });
-
-    it("keeps the grace timer ref'd so the parent cannot exit mid-sweep", async () => {
-      // The sweep runs from a child 'close' handler after the signal
-      // forwarder is disposed. An unref'd grace timer let Node exit
-      // during the grace window and skip the SIGKILL escalation. Pin
-      // that the awaited delay holds a ref on the event loop.
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
-      const captured: NodeJS.Timeout[] = [];
-      const realSetTimeout = globalThis.setTimeout;
-      const timeoutSpy = vi
-        .spyOn(globalThis, 'setTimeout')
-        .mockImplementation((fn: () => void, ms?: number) => {
-          const timer = realSetTimeout(fn, ms);
-          captured.push(timer);
-          return timer;
-        });
-      mockSpawn
-        .mockImplementationOnce(pgrepChild(`${ORPHAN_LINE}\n`))
-        .mockImplementationOnce(pgrepChild(undefined));
-
-      const sweep = sweepProcessGroup(4242, 25);
-      await vi.waitFor(() => {
-        expect(captured.length).toBeGreaterThan(0);
-      });
-      expect(captured[0]?.hasRef()).toBe(true);
-
-      await sweep;
-      timeoutSpy.mockRestore();
-      killSpy.mockRestore();
-    });
-
-    it('costs a single pgrep and sends no signals on a healthy run', async () => {
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
-      mockSpawn.mockImplementationOnce(pgrepChild(undefined));
-
-      const { survivors } = await sweepProcessGroup(4242);
-
-      expect(survivors).toEqual([]);
-      expect(mockSpawn).toHaveBeenCalledTimes(1);
-      expect(killSpy).not.toHaveBeenCalled();
-      expect(warn).not.toHaveBeenCalled();
-      killSpy.mockRestore();
-    });
-
-    it('is a no-op on win32', async () => {
-      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-      const { survivors } = await sweepProcessGroup(4242);
-      expect(survivors).toEqual([]);
-      expect(mockSpawn).not.toHaveBeenCalled();
-    });
-
-    /** A fake pgrep child that fails to spawn, forcing the kill(0) fallback. */
-    function brokenPgrepChild(): () => MockChildProcess {
-      return () => {
-        const child = makeChild();
-        queueMicrotask(() => {
-          child.emit('error', new Error('spawn pgrep ENOENT'));
-        });
-        return child;
-      };
-    }
-
-    it('treats EPERM from the fallback group probe as live members, not an empty group', async () => {
-      // A root-owned group (sudo build, container uid mismatch) makes
-      // kill(-pgid, 0) throw EPERM. That is proof the group exists. Reading
-      // it as "gone" is the same misclassification isProcessAlive fixes.
-      const eperm = Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
-        if (signal === 0) throw eperm;
-        return true;
-      });
-      mockSpawn
-        .mockImplementationOnce(brokenPgrepChild())
-        .mockImplementationOnce(brokenPgrepChild())
-        .mockImplementationOnce(brokenPgrepChild());
-
-      const { survivors } = await sweepProcessGroup(4242, 10);
-
-      expect(survivors).toHaveLength(1);
-      expect(survivors[0]?.command).toContain('liveness probe denied');
-      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
-      killSpy.mockRestore();
-    });
-
-    it('treats ESRCH from the fallback group probe as no survivors', async () => {
-      const esrch = Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
-        if (signal === 0) throw esrch;
-        return true;
-      });
-      mockSpawn.mockImplementationOnce(brokenPgrepChild());
-
-      const { survivors } = await sweepProcessGroup(4242, 10);
-
-      expect(survivors).toEqual([]);
-      expect(killSpy).not.toHaveBeenCalledWith(-4242, 'SIGTERM');
-      killSpy.mockRestore();
-    });
-  });
-
-  describe('execStream with processGroup', () => {
-    it('spawns detached on POSIX and sweeps the group after close', async () => {
-      const child = makeGroupChild();
-      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
-
-      const promise = execStream('fake-mach', ['test'], { processGroup: true });
-      child.emit('close', 0, null);
-
-      await expect(promise).resolves.toBe(0);
-      expect(mockSpawn).toHaveBeenNthCalledWith(
-        1,
-        'fake-mach',
-        ['test'],
-        expect.objectContaining({ detached: true })
-      );
-      // The post-run sweep ran (the pgrep spawn).
-      expect(mockSpawn).toHaveBeenCalledTimes(2);
-      expect(mockSpawn).toHaveBeenNthCalledWith(
-        2,
-        'pgrep',
-        ['-g', '4242', '-lf'],
-        expect.anything()
-      );
-    });
-
-    it('stays non-detached and never sweeps without the option (default unchanged)', async () => {
-      const child = makeGroupChild();
-      mockSpawn.mockReturnValueOnce(child);
-
-      const promise = execStream('fake-mach', ['test']);
-      child.emit('close', 0, null);
-
-      await expect(promise).resolves.toBe(0);
-      expect(mockSpawn).toHaveBeenCalledTimes(1);
-      expect(mockSpawn).toHaveBeenCalledWith(
-        'fake-mach',
-        ['test'],
-        expect.objectContaining({ detached: false })
-      );
-    });
-
-    it('forwards parent signals to the whole group, not just the direct child', async () => {
-      const child = makeGroupChild();
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
-      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
-
-      const promise = execStream('fake-mach', ['test'], { processGroup: true });
-      process.emit('SIGTERM');
-      // Group-targeted kill: negative PID, and not the bare child.kill path.
-      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
-      expect(child.kill).not.toHaveBeenCalled();
-
-      child.emit('close', null, 'SIGTERM');
-      await promise;
-      killSpy.mockRestore();
-    });
-
-    it('announces the group id right after the spawn', async () => {
-      const child = makeGroupChild(777);
-      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
-      const onProcessGroup = vi.fn();
-
-      const promise = execStream('fake-mach', ['test'], { processGroup: true, onProcessGroup });
-      expect(onProcessGroup).toHaveBeenCalledWith(777);
-      child.emit('close', 0, null);
-      await promise;
-    });
-
-    it('does not announce a group when none was created', async () => {
-      const child = makeGroupChild();
-      mockSpawn.mockReturnValueOnce(child);
-      const onProcessGroup = vi.fn();
-
-      const promise = execStream('fake-mach', ['test'], { onProcessGroup });
-      child.emit('close', 0, null);
-      await promise;
-      expect(onProcessGroup).not.toHaveBeenCalled();
-    });
-
-    // The caller's sweep sits between the group sweep and the wrapper's
-    // resolution so the bin signal handler's child-shutdown wait covers it.
-    // Resolving first would let `process.exit` race the reap on SIGTERM.
-    it('awaits the caller sweep after the group sweep and before resolving', async () => {
-      const child = makeGroupChild();
-      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
-      const order: string[] = [];
-      let release: () => void = () => undefined;
-      const postCloseSweep = vi.fn(
-        () =>
-          new Promise<void>((resolve) => {
-            order.push('caller-sweep-start');
-            release = () => {
-              order.push('caller-sweep-end');
-              resolve();
-            };
-          })
-      );
-
-      const promise = execStream('fake-mach', ['test'], {
-        processGroup: true,
-        postCloseSweep,
-      }).then((code) => {
-        order.push('resolved');
-        return code;
-      });
-      child.emit('close', 0, null);
-      await vi.waitFor(() => {
-        expect(postCloseSweep).toHaveBeenCalled();
-      });
-      // pgrep (the group sweep) ran before the caller sweep started.
-      expect(mockSpawn).toHaveBeenCalledTimes(2);
-      expect(order).toEqual(['caller-sweep-start']);
-      release();
-      await expect(promise).resolves.toBe(0);
-      expect(order).toEqual(['caller-sweep-start', 'caller-sweep-end', 'resolved']);
-    });
-
-    it('still resolves when the caller sweep rejects', async () => {
-      const child = makeGroupChild();
-      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
-
-      const promise = execStream('fake-mach', ['test'], {
-        processGroup: true,
-        postCloseSweep: () => Promise.reject(new Error('ps exploded')),
-      });
-      child.emit('close', 3, null);
-      await expect(promise).resolves.toBe(3);
-    });
-
-    it('keeps an aborted dispatch tracked through close and caller teardown', async () => {
-      const child = makeGroupChild();
-      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
-      mockSpawn.mockReturnValueOnce(child).mockImplementationOnce(pgrepChild(undefined));
-      let release: () => void = () => undefined;
-      const cleanup = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const postCloseSweep = vi.fn(() => cleanup);
-      let rejected = false;
-      const outcome = execStream('fake-mach', ['test'], {
-        timeout: 20,
-        processGroup: true,
-        postCloseSweep,
-      }).catch((error: unknown) => {
-        rejected = true;
-        return error;
-      });
-      child.emit('error', Object.assign(new Error('aborted'), { name: 'AbortError' }));
-      await Promise.resolve();
-      expect(rejected).toBe(false);
-      child.emit('close', null, 'SIGKILL');
-      await vi.waitFor(() => {
-        expect(postCloseSweep).toHaveBeenCalledOnce();
-      });
-      let shutdownComplete = false;
-      const shutdown = waitForActiveChildShutdown(5000).then(() => {
-        shutdownComplete = true;
-      });
-      await Promise.resolve();
-      expect(shutdownComplete).toBe(false);
-      expect(rejected).toBe(false);
-      release();
-      expect(await outcome).toBeInstanceOf(ExecTimeoutError);
-      await shutdown;
-      expect(shutdownComplete).toBe(true);
-      killSpy.mockRestore();
-    });
-
-    it('runs caller cleanup after a failed spawn closes before rejecting', async () => {
-      const child = makeChild();
-      mockSpawn.mockReturnValueOnce(child);
-      const failure = new Error('spawn ENOENT');
-      const postCloseSweep = vi.fn(() => Promise.resolve());
-      const outcome = execStream('missing-command', [], { postCloseSweep }).catch(
-        (error: unknown) => error
-      );
-      child.emit('error', failure);
-      child.emit('close', -2, null);
-      expect(await outcome).toBe(failure);
+    const [announced, ownership] = onProcessGroup.mock.calls[0] as [number, ProcessOwnership];
+    expect(announced).toBe(777);
+    expect(ownership.pid).toBe(777);
+    child.emit('close', 0, null);
+    await vi.waitFor(() => {
       expect(postCloseSweep).toHaveBeenCalledOnce();
     });
+    expect(resolved).toBe(false);
+    release();
+    await expect(promise).resolves.toBe(0);
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the exit code and warns when caller-owned cleanup fails', async () => {
+    const child = makeChild(777);
+    mockSpawn.mockReturnValue(child);
+    const promise = execStream('fixture', [], {
+      processGroup: true,
+      postCloseSweep: () => Promise.reject(new Error('census unavailable')),
+    });
+    child.emit('close', 0, null);
+    await expect(promise).resolves.toBe(0);
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(expect.stringContaining('census unavailable'));
+  });
+
+  it('keeps abort and shutdown tracking live until the caller cleanup completes', async () => {
+    const child = makeChild(777);
+    mockSpawn.mockReturnValue(child);
+    let release: () => void = () => undefined;
+    const cleanup = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const postCloseSweep = vi.fn(() => cleanup);
+    let rejected = false;
+    const outcome = execStream('fixture', [], {
+      timeout: 20,
+      processGroup: true,
+      postCloseSweep,
+    }).catch((error: unknown) => {
+      rejected = true;
+      return error;
+    });
+    child.emit('error', Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    child.emit('close', null, 'SIGKILL');
+    await vi.waitFor(() => {
+      expect(postCloseSweep).toHaveBeenCalledOnce();
+    });
+    let shutdownComplete = false;
+    const shutdown = waitForActiveChildShutdown(5000).then(() => {
+      shutdownComplete = true;
+    });
+    await Promise.resolve();
+    expect(shutdownComplete).toBe(false);
+    expect(rejected).toBe(false);
+    release();
+    expect(await outcome).toBeInstanceOf(ExecTimeoutError);
+    await shutdown;
+    expect(shutdownComplete).toBe(true);
+  });
+
+  it('runs caller cleanup after failed spawn closure and retains the actual startup error', async () => {
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child);
+    const failure = new Error('spawn ENOENT');
+    const postCloseSweep = vi.fn(() => Promise.resolve());
+    const outcome = execStream('missing-command', [], { postCloseSweep }).catch(
+      (error: unknown) => error
+    );
+    child.emit('error', failure);
+    child.emit('close', -2, null);
+    expect(await outcome).toBe(failure);
+    expect(postCloseSweep).toHaveBeenCalledOnce();
   });
 });

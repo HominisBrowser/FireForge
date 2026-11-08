@@ -12,8 +12,10 @@
  * The remediation wording lives here once so the callers cannot drift apart.
  */
 
+import { dirname, join } from 'node:path';
+
 import { GeneralError } from '../errors/base.js';
-import { pathExists } from '../utils/fs.js';
+import { pathExists, readText } from '../utils/fs.js';
 import { getHead, isGitRepository, isMissingHeadError } from './git.js';
 
 /** Remediation for an engine whose baseline commit was never created. */
@@ -23,6 +25,27 @@ const UNBORN_HEAD_REMEDIATION =
   // No terminating period: the suffix below supplies its own punctuation, and
   // hardcoding one here rendered as "…cleanly., then retry the rebase."
   'Re-run "fireforge download --force" to recreate the baseline repository cleanly';
+
+/**
+ * What to do about a missing `engine/`. A source-mode checkout keeps none on
+ * purpose, and `download` is refused there: what reads one runs in a job.
+ *
+ * @param engineDir - Absolute path to the engine checkout
+ */
+export async function missingEngineMessage(engineDir: string): Promise<string> {
+  let sourceMode = false;
+  try {
+    const config = JSON.parse(await readText(join(dirname(engineDir), 'fireforge.json'))) as {
+      sources?: unknown;
+    };
+    sourceMode = config.sources !== undefined;
+  } catch {
+    // No readable config: the ordinary first-run remedy applies.
+  }
+  return sourceMode
+    ? 'This source-mode checkout has no engine/. Run this inside a job, for example "fireforge job run --check", which gives it a slot.'
+    : 'Firefox source not found. Run "fireforge download" first.';
+}
 
 /** Options for {@link assertEngineGitReady}. */
 export interface EngineGitReadyOptions {
@@ -47,7 +70,7 @@ export interface EngineGitReadyOptions {
  */
 export async function assertEngineExists(engineDir: string): Promise<void> {
   if (!(await pathExists(engineDir))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
+    throw new GeneralError(await missingEngineMessage(engineDir));
   }
 }
 

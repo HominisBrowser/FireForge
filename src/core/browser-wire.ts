@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join, relative } from 'node:path';
 
-import { GeneralError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { toRootRelativePath } from '../utils/paths.js';
 import { normalizePathSlashes } from '../utils/paths.js';
-import { getProjectPaths, loadConfig } from './config.js';
+import { authoredImage, authoredTargetForFile } from './authored/write-lock.js';
+import { authoringProjectPaths } from './authored/writer.js';
+import { loadConfig } from './config.js';
 import {
-  assertSnapshotted,
-  createRollbackJournal,
-  restoreRollbackJournal,
-  snapshotFile,
-} from './furnace-rollback.js';
+  completeJournalRollback,
+  type FurnaceOperationContext,
+  runFurnaceMutation,
+} from './furnace-operation.js';
+import { assertSnapshotted, createRollbackJournal, snapshotFile } from './furnace-rollback.js';
 import type { RegisterResult } from './moz-manifest-register.js';
 import { registerBrowserContent } from './moz-manifest-register.js';
 import { addDestroyToBrowserInit } from './wire-destroy.js';
@@ -70,12 +71,13 @@ export interface WireOptions {
  * @param options - Wire options
  * @returns Wire result
  */
-export async function wireSubscript(
+async function wireSubscriptWithin(
   root: string,
   name: string,
-  options: WireOptions = {}
+  options: WireOptions,
+  ctx: FurnaceOperationContext
 ): Promise<WireResult> {
-  const { engine: engineDir } = getProjectPaths(root);
+  const { engine: engineDir } = await authoringProjectPaths(root);
   const subscriptDir = toRootRelativePath(
     engineDir,
     options.subscriptDir ?? DEFAULT_BROWSER_SUBSCRIPT_DIR
@@ -113,6 +115,15 @@ export async function wireSubscript(
   // conditional, so those targets are snapshotted only when the
   // corresponding option would fire a write.
   const journal = createRollbackJournal();
+  journal.conditionalLegacy = true;
+  ctx.registerJournal(journal);
+  const completedWrite = async (path: string): Promise<void> => {
+    // Authored publications are attributed atomically by the source writer. The
+    // shared Furnace lock serializes these legacy adapter steps instead.
+    if (await authoredTargetForFile(path)) return;
+    const snapshot = journal.files.get(path);
+    if (snapshot) snapshot.postimage = await authoredImage(path);
+  };
   const effectiveDomTargetPath = options.domFilePath
     ? toRootRelativePath(engineDir, options.domTargetPath ?? DEFAULT_DOM_TARGET)
     : undefined;
@@ -150,6 +161,8 @@ export async function wireSubscript(
       'browser wire'
     );
     const subscriptAdded = await addSubscriptToBrowserMain(engineDir, name, marker);
+    if (subscriptAdded)
+      await completedWrite(join(engineDir, 'browser/base/content/browser-main.js'));
 
     // 2. Add init expression to browser-init.js (if provided)
     let initAdded = false;
@@ -164,6 +177,7 @@ export async function wireSubscript(
         'browser wire init'
       );
       initAdded = await addInitToBrowserInit(engineDir, options.init, options.after, marker);
+      if (initAdded) await completedWrite(join(engineDir, 'browser/base/content/browser-init.js'));
     }
 
     // 3. Add destroy expression to browser-init.js onUnload() (if provided)
@@ -175,6 +189,8 @@ export async function wireSubscript(
         'browser wire destroy'
       );
       destroyAdded = await addDestroyToBrowserInit(engineDir, options.destroy, marker);
+      if (destroyAdded)
+        await completedWrite(join(engineDir, 'browser/base/content/browser-init.js'));
     }
 
     // 4. Add #include directive to the top-level chrome document (if provided)
@@ -185,6 +201,8 @@ export async function wireSubscript(
         toRootRelativePath(engineDir, options.domFilePath),
         options.domTargetPath
       );
+      if (domInserted && effectiveDomTargetPath)
+        await completedWrite(join(engineDir, effectiveDomTargetPath));
     }
 
     // 5. Register in jar.mn
@@ -195,6 +213,7 @@ export async function wireSubscript(
       undefined,
       jarMnSourcePath
     );
+    if (!jarMnResult.skipped) await completedWrite(join(engineDir, 'browser/base/jar.mn'));
 
     return {
       subscriptAdded,
@@ -204,20 +223,25 @@ export async function wireSubscript(
       jarMnResult,
     };
   } catch (error: unknown) {
-    // Best-effort rollback: if the restore itself fails, surface both the
-    // original wire failure and the rollback failure so the operator knows
-    // the engine may be in a partially-wired state that needs manual
-    // attention. The original error's message is preserved so the user sees
-    // why the wire failed (e.g. "Could not find insertion point in chrome
-    // document") alongside any rollback diagnosis.
-    const originalMessage = toError(error).message;
-    try {
-      await restoreRollbackJournal(journal);
-    } catch (rollbackError: unknown) {
-      throw new GeneralError(
-        `Wire failed: ${originalMessage}. Automatic rollback also failed: ${toError(rollbackError).message}. The engine may contain partially-applied wire mutations; review "git status" under engine/ and revert manually.`
-      );
-    }
-    throw error;
+    return completeJournalRollback(ctx, journal, error, {
+      projectRoot: root,
+      operation: 'create-rollback',
+      failureMessage: `Wire failed: ${toError(error).message}`,
+      subject: `browser wire ${name}`,
+    });
   }
+}
+
+/** Wire standalone authoring through the same attributed, serialized mutation lifecycle. */
+export async function wireSubscript(
+  root: string,
+  name: string,
+  options: WireOptions = {}
+): Promise<WireResult> {
+  return runFurnaceMutation(
+    root,
+    'create-rollback',
+    (ctx) => wireSubscriptWithin(root, name, options, ctx),
+    { dryRun: options.dryRun === true }
+  );
 }

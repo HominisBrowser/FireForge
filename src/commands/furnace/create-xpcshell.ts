@@ -7,6 +7,7 @@
 
 import { join } from 'node:path';
 
+import { ensureDir, pathExists, readText, writeText } from '../../core/authored/fs.js';
 import { resolveXpcshellTestDir, xpcshellTestParentDir } from '../../core/furnace-constants.js';
 import {
   recordCreatedDir,
@@ -15,7 +16,6 @@ import {
 } from '../../core/furnace-rollback.js';
 import { getLicenseHeader } from '../../core/license-headers.js';
 import type { ProjectLicense } from '../../types/config.js';
-import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { warn } from '../../utils/logger.js';
 import {
   generateXpcshellManifestContent,

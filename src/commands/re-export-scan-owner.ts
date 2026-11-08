@@ -72,7 +72,7 @@ export function validateScanFileOwners(
 /**
  * Resolves each `--scan-file` value to its owning selected patch. Returns
  * `undefined` when no `--scan-file` was given. An unprefixed path belongs
- * to the single selected patch (the historical form).
+ * to the single selected patch.
  */
 export function assignScanFileOwners(
   scanFiles: readonly string[] | undefined,

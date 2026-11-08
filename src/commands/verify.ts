@@ -19,6 +19,7 @@ import { join } from 'node:path';
 
 import { Command } from 'commander';
 
+import { verifyAuthoredSource } from '../core/authored-gates.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { isGitRepository } from '../core/git.js';
@@ -44,6 +45,7 @@ import { GeneralError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
+import { registrationSupplies } from './verify-registration-supply.js';
 import {
   anyPatchInScope,
   isFilenameInScope,
@@ -91,23 +93,25 @@ export interface PatchQueueHealth {
  * install time.
  */
 async function detectDanglingRegistrations(
+  projectRoot: string,
   patchesDir: string,
   engineDir: string,
-  patches: ReadonlyArray<{ filename: string; filesAffected: string[] }>,
+  patches: ReadonlyArray<{ filename: string; filesAffected: string[]; order?: number }>,
   scope: VerifyScope | undefined
 ): Promise<DanglingRegistrationIssue[]> {
-  // Aggregate the set of all paths any patch in the queue is responsible for
-  // (per `filesAffected`). Individual patch bodies are deliberately not
-  // parsed for new-file creations here: `filesAffected` is already the
-  // contract manifest callers rely on, and
-  // `validatePatchesManifestConsistency` has already ensured the two are in
-  // sync. Using that list keeps this validator fast.
-  const coveredByPatches = new Set<string>();
-  for (const patch of patches) {
-    for (const file of patch.filesAffected) {
-      coveredByPatches.add(file);
-    }
+  const bodies = new Map<string, string>();
+  for (const patch of [...patches].sort((left, right) => (left.order ?? 0) - (right.order ?? 0))) {
+    const path = join(patchesDir, patch.filename);
+    if (await pathExists(path)) bodies.set(patch.filename, await readText(path));
   }
+  const references = [...bodies.values()].flatMap(collectPatchRegistrationReferences);
+  if (references.length === 0) return [];
+  const supplied = await registrationSupplies(
+    projectRoot,
+    engineDir,
+    [...bodies.values()],
+    references.map((ref) => ref.targetPath)
+  );
 
   // Every patch supplies targets; only the scoped ones are judged.
   const issues: DanglingRegistrationIssue[] = [];
@@ -128,13 +132,7 @@ async function detectDanglingRegistrations(
     if (refs.length === 0) continue;
 
     for (const ref of refs) {
-      if (coveredByPatches.has(ref.targetPath)) continue;
-      // Engine existence check: if the target file is already present in
-      // engine/ (upstream Firefox ships it, or a separate baseline branch
-      // has it), the registration is not dangling. "Is this tracked by git"
-      // cannot be probed without a git round-trip. Existence on disk is a
-      // close-enough proxy for verify's read-only context.
-      if (await pathExists(join(engineDir, ref.targetPath))) continue;
+      if (supplied.has(ref.targetPath)) continue;
       issues.push({
         patchFilename: patch.filename,
         targetPath: ref.targetPath,
@@ -172,7 +170,8 @@ async function detectWorktreeOwnershipDrift(
 
   const entries = await expandUntrackedDirectoryEntries(
     engineDir,
-    await getWorkingTreeStatus(engineDir)
+    await getWorkingTreeStatus(engineDir),
+    { complete: true }
   );
   const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
   const classified = await classifyFiles(
@@ -377,6 +376,7 @@ export async function collectPatchQueueHealth(
     warningCount += driftGroups.reduce((sum, group) => sum + group.warningCount, 0);
 
     const registrationIssues = await detectDanglingRegistrations(
+      projectRoot,
       paths.patches,
       paths.engine,
       manifest.patches,
@@ -387,7 +387,7 @@ export async function collectPatchQueueHealth(
         title: `Dangling registration references (${registrationIssues.length})`,
         issues: registrationIssues.map(
           (issue) =>
-            `${issue.patchFilename}: registers ${issue.targetPath} via ${issue.source}, but no patch body or engine file supplies it`
+            `${issue.patchFilename}: registers ${issue.targetPath} via ${issue.source}, but no surviving queue postimage, committed baseline, or declared Furnace source supplies it`
         ),
         errorCount: registrationIssues.length,
         warningCount: 0,
@@ -416,6 +416,17 @@ export async function verifyCommand(
   options: { patches?: string[] } = {}
 ): Promise<void> {
   intro('FireForge Verify');
+  const config = await loadConfig(projectRoot);
+  if (config.sources) {
+    if (options.patches?.length)
+      throw new GeneralError('Authored verification uses captured source, not patch aliases.');
+    const issues = await verifyAuthoredSource(projectRoot);
+    for (const issue of issues) warn(`${issue.file}: ${issue.message}`);
+    if (issues.some((issue) => issue.severity === 'error'))
+      throw new GeneralError('Authored source policy or registration verification failed.');
+    outro('Authored source verified; runtime proof remains tied to its sealed slot receipt.');
+    return;
+  }
   const scope = await resolveVerifyScope(getProjectPaths(projectRoot).patches, options.patches);
   if (scope !== undefined) {
     info(`Judging only: ${[...scope.patches].join(', ')}`);

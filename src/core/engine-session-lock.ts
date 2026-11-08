@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { join } from 'node:path';
 
-import { InconclusiveVerdictError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
-import { info, warn } from '../utils/logger.js';
+import { info } from '../utils/logger.js';
 import { MAX_WAIT_LOCK_SECONDS } from '../utils/options.js';
-import { sleep } from '../utils/sleep.js';
 import type { LockHolder, LockMode, LockQueueState } from './file-lock.js';
 import {
   formatLockQueuePosition,
@@ -13,7 +11,6 @@ import {
   readLockStatus,
   withFileLock,
 } from './file-lock.js';
-import { git } from './git-base.js';
 
 const ENGINE_SESSION_LOCK_PATH = join('.fireforge', 'engine-session.lock');
 
@@ -98,15 +95,16 @@ export async function withEngineSessionLock<T>(
   operation: () => Promise<T>,
   options: EngineSessionLockOptions = {}
 ): Promise<T> {
-  // The lock is bypassed under test by default, on purpose: the
-  // suite runs many engine-mutating commands in-process, which would either
-  // serialise on this lock or deadlock outright.
-  // `FIREFORGE_ENABLE_ENGINE_SESSION_LOCK_IN_TEST=1` lets the lock's own
-  // tests opt back in. Do not delete this branch. It is the reason the
-  // suite completes.
+  // Bypassed inside a vitest worker, on purpose: the suite runs many
+  // engine-mutating commands in-process, which would either serialise on this
+  // lock or deadlock outright. Keyed on the worker's own global rather than an
+  // environment variable: `NODE_ENV=test` or `VITEST` in a shell, a CI job or a
+  // consumer's test suite reaches a real CLI and must not switch off mutual
+  // exclusion. `FIREFORGE_ENABLE_ENGINE_SESSION_LOCK_IN_TEST=1` lets the lock's
+  // own tests opt back in.
   if (
-    process.env['FIREFORGE_ENABLE_ENGINE_SESSION_LOCK_IN_TEST'] !== '1' &&
-    (process.env['NODE_ENV'] === 'test' || process.env['VITEST'] !== undefined)
+    '__vitest_worker__' in globalThis &&
+    process.env['FIREFORGE_ENABLE_ENGINE_SESSION_LOCK_IN_TEST'] !== '1'
   ) {
     return operation();
   }
@@ -125,8 +123,7 @@ export async function withEngineSessionLock<T>(
           // Announce it. An extension is the moment the budget the
           // operator asked for stops being the budget in force, and a wait
           // that silently outlives its own stated timeout is
-          // indistinguishable from a broken one, which is how a downstream
-          // fork read it.
+          // indistinguishable from a broken one.
           onWaitExtended: ({ ahead, budgetMs }): void => {
             info(formatWaitExtendedLine(ahead, budgetMs, waitLockSeconds * 1000));
           },
@@ -220,43 +217,10 @@ export function formatEngineSessionLockStatus(
 }
 
 /** Prefix marking a generation token whose probe failed. */
-const UNAVAILABLE_PREFIX = 'unavailable:';
+export const UNAVAILABLE_PREFIX = 'unavailable:';
 
-/**
- * Captures an opaque token describing the engine's current commit and working
- * tree, for comparison by {@link assertEngineGenerationUnchanged}.
- *
- * A failed probe yields a failure token. Callers must branch on
- * {@link isUnavailableGenerationToken} rather than comparing the token,
- * because a probe failure means "nothing was measured", not "nothing changed".
- */
-export async function snapshotEngineGeneration(engineDir: string): Promise<string> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < GENERATION_PROBE_ATTEMPTS; attempt += 1) {
-    try {
-      const head = (await git(['rev-parse', 'HEAD'], engineDir)).trim();
-      const status = await git(['status', '--porcelain=v1', '-z'], engineDir);
-      return `${head}\0${status}`;
-    } catch (error: unknown) {
-      lastError = error;
-      // A contended `.git/index.lock` is transient, not a state: some other
-      // writer held the index for the instant we looked. Treating it as
-      // "unmeasurable" turns a perfectly good suite into
-      // `FAIL reason=inconclusive` on a one-sided probe failure. Anything
-      // else (an unreadable `.git`, a non-git `engine/`) is a real state
-      // and is reported immediately.
-      if (!isIndexLockError(error) || attempt === GENERATION_PROBE_ATTEMPTS - 1) break;
-      await sleep(GENERATION_PROBE_RETRY_MS);
-    }
-  }
-  return `${UNAVAILABLE_PREFIX}${toError(lastError).message}`;
-}
-
-/** Probe attempts before an engine generation is declared unmeasurable. */
-const GENERATION_PROBE_ATTEMPTS = 3;
-
-/** Pause between generation-probe attempts. */
-const GENERATION_PROBE_RETRY_MS = 250;
+/** Separates a generation token's porcelain half from its per-file content identities. */
+export const CONTENT_SEPARATOR = '\0\0fireforge-content\0';
 
 /**
  * True when a git failure is the transient index-lock contention shape
@@ -289,10 +253,34 @@ const DELTA_ENTRY_LIMIT = 5;
  * Splits a generation token into its HEAD and porcelain halves. The porcelain
  * body is `-z` output, so it is NUL-separated and never quoted.
  */
-function splitGenerationToken(token: string): { head: string; body: string } {
+function splitGenerationToken(token: string): {
+  head: string;
+  body: string;
+  contents: Record<string, string>;
+} {
   const separator = token.indexOf('\0');
-  if (separator < 0) return { head: token, body: '' };
-  return { head: token.slice(0, separator), body: token.slice(separator + 1) };
+  if (separator < 0) return { head: token, body: '', contents: {} };
+  const contentAt = token.indexOf(CONTENT_SEPARATOR, separator);
+  let contents: Record<string, string> = {};
+  if (contentAt >= 0) {
+    try {
+      const parsed: unknown = JSON.parse(token.slice(contentAt + CONTENT_SEPARATOR.length));
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        contents = Object.fromEntries(
+          Object.entries(parsed).filter(
+            (entry): entry is [string, string] => typeof entry[1] === 'string'
+          )
+        );
+      }
+    } catch {
+      // Diagnostic parsing cannot turn a refused generation into a command failure.
+    }
+  }
+  return {
+    head: token.slice(0, separator),
+    body: token.slice(separator + 1, contentAt < 0 ? undefined : contentAt),
+    contents,
+  };
 }
 
 /**
@@ -338,6 +326,9 @@ export function generationDeltaPaths(
   const beforeRecords = new Set(parsePorcelainRecords(from.body));
   const afterRecords = new Set(parsePorcelainRecords(to.body));
   const paths = new Set<string>();
+  for (const path of new Set([...Object.keys(from.contents), ...Object.keys(to.contents)])) {
+    if (from.contents[path] !== to.contents[path]) paths.add(path);
+  }
   for (const record of [...afterRecords, ...beforeRecords]) {
     if (beforeRecords.has(record) && afterRecords.has(record)) continue;
     for (const path of record.slice(3).split(' -> ')) paths.add(path);
@@ -380,74 +371,11 @@ export function describeEngineGenerationDelta(before: string, after: string): st
   };
   render('Working-tree entries that appeared', appeared);
   render('Working-tree entries that went away', disappeared);
-  return lines;
-}
-
-/**
- * Throws when the engine's generation token differs from `before`, i.e. the
- * engine was mutated by another writer while a test run was in flight.
- *
- * An unmeasurable engine warns rather than throws. `engine/` is not
- * always a git checkout (`fireforge download` extracts a source tarball),
- * so a failed probe is a legitimate state and must not fail the run.
- *
- * It must also not pass silently. A failure token compared for
- * equality like any other would let a git failure that reproduces across
- * both probes (unreadable `.git`, a permissions problem, a corrupt index)
- * take the `after === before` early return and bless a verdict the guard
- * never verified. Two differing failure messages are worse still: they
- * fall through to the mutation branch and report a spurious
- * "engine/ changed". Hence the prefix comparison rather than a token
- * comparison: the token embeds the error message, and two genuine failures
- * rarely phrase it identically.
- *
- * The tolerance is limited to a probe that failed both times:
- * that is the steady state of a non-git `engine/`, and it warns. A one-sided
- * transition is not that state. An `engine/` that was measurable and then
- * was not means the second probe measured nothing about a checkout that
- * demonstrably had something to measure. The reverse means there was never a
- * baseline to compare against. Neither verdict can be trusted, so both throw.
- */
-export async function assertEngineGenerationUnchanged(
-  engineDir: string,
-  before: string,
-  tolerateDelta?: (before: string, after: string) => Promise<boolean>
-): Promise<void> {
-  const after = await snapshotEngineGeneration(engineDir);
-  const beforeUnavailable = isUnavailableGenerationToken(before);
-  const afterUnavailable = isUnavailableGenerationToken(after);
-
-  if (beforeUnavailable && afterUnavailable) {
-    warn(
-      'Could not verify that engine/ stayed unchanged while the tests ran ' +
-        `(${unavailableGenerationReason(after)}). If another writer touched engine/ during the run, ` +
-        'this verdict is stale.'
-    );
-    return;
-  }
-
-  if (beforeUnavailable || afterUnavailable) {
-    const detail = beforeUnavailable
-      ? `engine/ could not be probed before the run (${unavailableGenerationReason(before)}) but could be ` +
-        'probed afterwards, so there is no baseline to compare against.'
-      : `engine/ was probed before the run but could not be probed afterwards ` +
-        `(${unavailableGenerationReason(after)}), so nothing was measured to compare against.`;
-    throw new InconclusiveVerdictError(
-      `${detail}\n\n` +
-        'This test verdict is inconclusive. Restore engine/ to a readable state, then rebuild ' +
-        'and rerun the affected tests.'
-    );
-  }
-
-  if (after === before) return;
-  // A caller that can prove the delta never reached the runtime under test
-  // (a perf sample, see `test-perf-scope.ts`) keeps its verdict.
-  if (tolerateDelta !== undefined && (await tolerateDelta(before, after))) return;
-
-  const delta = describeEngineGenerationDelta(before, after);
-  throw new InconclusiveVerdictError(
-    'engine/ changed while `fireforge test` was running, so this test verdict is invalid/inconclusive.\n\n' +
-      (delta.length > 0 ? `What moved:\n${delta.map((line) => `  ${line}`).join('\n')}\n\n` : '') +
-      'Use one writer per engine checkout, then rebuild and rerun the affected tests.'
+  render(
+    'Content or mode changed',
+    [...new Set([...Object.keys(from.contents), ...Object.keys(to.contents)])]
+      .filter((path) => from.contents[path] !== to.contents[path])
+      .sort()
   );
+  return lines;
 }

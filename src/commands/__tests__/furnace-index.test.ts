@@ -73,6 +73,9 @@ vi.mock('../furnace/sync.js', () => ({
   furnaceSyncCommand: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock('../furnace/types.js', () => ({
+  furnaceTypesCommand: vi.fn(),
+}));
 vi.mock('../furnace/validate.js', () => ({
   furnaceValidateCommand: vi.fn(() => Promise.resolve()),
 }));
@@ -95,6 +98,7 @@ import { furnaceRenameCommand } from '../furnace/rename.js';
 import { furnaceScanCommand } from '../furnace/scan.js';
 import { furnaceStatusCommand } from '../furnace/status.js';
 import { furnaceSyncCommand } from '../furnace/sync.js';
+import { furnaceTypesCommand } from '../furnace/types.js';
 import { furnaceValidateCommand } from '../furnace/validate.js';
 
 function createProgram(): Command {
@@ -118,6 +122,21 @@ describe('registerFurnace', () => {
     vi.clearAllMocks();
   });
 
+  it('preserves every explicitly named owner when deploying under one engine lock', async () => {
+    await runFurnaceCommand(
+      'deploy',
+      'moz-button',
+      '--owner',
+      '001-controls',
+      '--owner',
+      '002-tests'
+    );
+    expect(furnaceDeployCommand).toHaveBeenCalledWith('/project', ['moz-button'], {
+      owner: ['001-controls', '002-tests'],
+    });
+    expect(withEngineSessionLock).toHaveBeenCalledOnce();
+  });
+
   it('registers the expected Furnace subcommands', () => {
     const program = createProgram();
     const furnace = program.commands.find((command) => command.name() === 'furnace');
@@ -138,6 +157,7 @@ describe('registerFurnace', () => {
       'diff',
       'refresh',
       'rename',
+      'types',
       'sync',
     ]);
   });
@@ -319,6 +339,18 @@ describe('registerFurnace', () => {
       expect.any(Function),
       {}
     );
+  });
+
+  it('runs furnace types with --check and the resolved wait budget, without the engine lock', async () => {
+    await runFurnaceCommand('types', '--check', '--wait-lock', '12');
+    expect(furnaceTypesCommand).toHaveBeenCalledWith('/project', {
+      check: true,
+      waitLockSeconds: 12,
+    });
+    expect(withEngineSessionLock).not.toHaveBeenCalled();
+
+    await runFurnaceCommand('types');
+    expect(furnaceTypesCommand).toHaveBeenLastCalledWith('/project', {});
   });
 
   it('runs a --dry-run deploy or sync WITHOUT taking the engine session lock', async () => {

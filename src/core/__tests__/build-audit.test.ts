@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
+import { fakeEngineGit } from './engine-git-fixture.js';
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
@@ -19,9 +20,7 @@ import { ensureDir, writeText } from '../../utils/fs.js';
 import { info, verbose, warn } from '../../utils/logger.js';
 import { auditBuildArtifacts, isPackageablePath } from '../build-audit.js';
 import type { BuildBaseline } from '../build-baseline-types.js';
-import * as git from '../git.js';
 import * as gitBase from '../git-base.js';
-import * as gitStatus from '../git-status.js';
 import { loadPatchesManifest } from '../patch-manifest-io.js';
 
 describe('isPackageablePath', () => {
@@ -89,9 +88,7 @@ describe('auditBuildArtifacts', () => {
     const source = 'browser/app/profile/unpackaged.js';
     await writeText(join(engineDir, source), 'const y = 2;');
     await ensureDir(join(engineDir, 'obj-debug', 'dist'));
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
     return source;
   }
 
@@ -161,9 +158,9 @@ describe('auditBuildArtifacts', () => {
     await utimes(join(dist, 'already-packaged.js'), now, now);
 
     // Stub out git so the file list is deterministic.
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([unpackaged, packaged]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(
+      fakeEngineGit({ untracked: [unpackaged, packaged] })
+    );
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.missing).toBe(1);
@@ -192,9 +189,7 @@ describe('auditBuildArtifacts', () => {
     await utimes(join(dist, 'profile/p.js'), past, past);
     await utimes(join(engineDir, source), future, future);
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.stale).toBe(1);
@@ -210,9 +205,7 @@ describe('auditBuildArtifacts', () => {
     await ensureDir(dist);
 
     const nonPackageable = 'tools/ci.py';
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([nonPackageable]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [nonPackageable] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.skipped).toBe(1);
@@ -225,9 +218,7 @@ describe('auditBuildArtifacts', () => {
 
     const ghost = 'browser/app/profile/deleted.js';
     // Do not create the file on disk.
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([ghost]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [ghost] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.skipped).toBe(1);
@@ -235,42 +226,29 @@ describe('auditBuildArtifacts', () => {
     expect(summary.stale).toBe(0);
   });
 
-  it('falls back to workdir-only diff when git sub-calls throw', async () => {
+  it('rejects when git cannot say what changed, so a failed probe is never a clean audit', async () => {
     const dist = join(engineDir, 'obj-debug', 'dist');
     await ensureDir(dist);
 
-    vi.spyOn(git, 'hasChanges').mockRejectedValue(new Error('git unavailable'));
     vi.spyOn(gitBase, 'git').mockRejectedValue(new Error('git unavailable'));
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockRejectedValue(new Error('git unavailable'));
 
     const baseline: BuildBaseline = {
       engineHeadSha: 'abc',
       builtAt: new Date().toISOString(),
       binaryName: 'mybrowser',
     };
-    const summary = await auditBuildArtifacts('/project', engineDir, baseline);
-    expect(summary).toMatchObject({
-      updated: 0,
-      stale: 0,
-      missing: 0,
-      skipped: 0,
-      entries: [],
-    });
-    expect(verboseMock).toHaveBeenCalled();
+    await expect(auditBuildArtifacts('/project', engineDir, baseline)).rejects.toThrow(
+      /Audit: .*git unavailable/
+    );
   });
 
   it('uses the baseline SHA to diff when provided', async () => {
     const dist = join(engineDir, 'obj-debug', 'dist');
     await ensureDir(dist);
 
-    const gitMock = vi.spyOn(gitBase, 'git').mockImplementation((args: string[]) => {
-      if (args.includes('abc..HEAD')) {
-        return Promise.resolve('browser/app/profile/committed.js\n');
-      }
-      return Promise.resolve('');
-    });
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(false);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
+    const gitMock = vi
+      .spyOn(gitBase, 'git')
+      .mockImplementation(fakeEngineGit({ committed: ['browser/app/profile/committed.js'] }));
 
     await ensureDir(join(engineDir, 'browser/app/profile'));
     await writeText(join(engineDir, 'browser/app/profile/committed.js'), 'x');
@@ -303,9 +281,7 @@ describe('auditBuildArtifacts', () => {
     // the branding moz.build above.
     await writeText(join(dist, 'moz.build'), '');
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([jarMn, mozBuild]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [jarMn, mozBuild] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.skipped).toBe(2);
@@ -348,9 +324,7 @@ describe('auditBuildArtifacts', () => {
     await utimes(correctArtifact, now, now);
     await utimes(wrongArtifact, now, now);
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.updated).toBe(1);
@@ -384,9 +358,7 @@ describe('auditBuildArtifacts', () => {
     await utimes(join(engineDir, source), past, past);
     await utimes(artifact, now, now);
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.updated).toBe(1);
@@ -418,9 +390,7 @@ describe('auditBuildArtifacts', () => {
     const platformModule = await import('../../utils/platform.js');
     vi.spyOn(platformModule, 'getPlatform').mockReturnValue('darwin');
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.skipped).toBe(1);
@@ -444,9 +414,7 @@ describe('auditBuildArtifacts', () => {
     const source = 'browser/components/tests/unit/test_mybrowser_unregistered.js';
     await writeText(join(engineDir, source), 'test');
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.missing).toBe(1);
@@ -470,9 +438,7 @@ describe('auditBuildArtifacts', () => {
     const source = 'browser/components/tests/unit/test_mybrowser_registered.js';
     await writeText(join(engineDir, source), 'test');
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.skipped).toBe(1);
@@ -507,9 +473,7 @@ describe('auditBuildArtifacts', () => {
     await utimes(unrelated, past, past);
     await utimes(join(engineDir, source), now, now);
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.missing).toBe(1);
@@ -545,9 +509,7 @@ describe('auditBuildArtifacts', () => {
     await utimes(related, past, past);
     await utimes(join(engineDir, source), now, now);
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.stale).toBe(1);
@@ -576,9 +538,7 @@ describe('auditBuildArtifacts', () => {
     await utimes(artifact, past, past);
     await utimes(join(engineDir, source), now, now);
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.stale).toBe(1);
@@ -612,9 +572,7 @@ describe('auditBuildArtifacts', () => {
     const platformModule = await import('../../utils/platform.js');
     vi.spyOn(platformModule, 'getPlatform').mockReturnValue('darwin');
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.skipped).toBe(1);
@@ -657,9 +615,7 @@ describe('auditBuildArtifacts', () => {
     await utimes(correct, now, now);
     await utimes(unrelated, now, now);
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.updated).toBe(1);
@@ -689,9 +645,7 @@ describe('auditBuildArtifacts', () => {
     await ensureDir(join(distRoot, 'bin/browser/defaults/preferences'));
     await writeText(join(distRoot, 'bin/browser/defaults/preferences/mybrowser.js'), 'pref');
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.missing).toBe(1);
@@ -731,9 +685,7 @@ describe('auditBuildArtifacts', () => {
     await utimes(c3, past, past);
     await utimes(join(engineDir, source), now, now);
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.missing).toBe(1);
@@ -780,9 +732,7 @@ describe('auditBuildArtifacts', () => {
     await utimes(correct, now, now);
     await utimes(unrelated, now, now);
 
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([source]);
-    vi.spyOn(gitBase, 'git').mockResolvedValue('');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [source] }));
 
     const summary = await auditBuildArtifacts('/project', engineDir, undefined);
     expect(summary.updated).toBe(1);

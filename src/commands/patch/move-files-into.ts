@@ -64,7 +64,15 @@ import { assertAdoptedStillUnowned } from './move-files-adopt.js';
 import { foldSourceRows, retiredSlotForFold } from './move-files-retire.js';
 import { runMoveSideLint } from './move-size-tier.js';
 import { buildSplitDiff, mergeStagedForwardImports, moveDeclarationReason } from './split-plan.js';
-import { findOwnerRewriteHolders, rewriteSplitOwners } from './split-staged.js';
+import {
+  describeStagedMaintenance,
+  type DroppedStagedDeclaration,
+  emptyStagedMaintenance,
+  findDeclarationsMadeUnused,
+  findOwnerRewriteHolders,
+  rewriteSplitOwners,
+  withoutDroppedDeclarations,
+} from './split-staged.js';
 
 /** Everything the commit step needs, computed and confirmed up front. */
 export interface MoveIntoPlan {
@@ -79,6 +87,11 @@ export interface MoveIntoPlan {
   ownerRewrites: string[];
   /** Forward-import declarations the move introduces, keyed by importing patch. */
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
+  /**
+   * Declarations the move leaves unused (a moved file's creator now precedes
+   * its importer), removed from their holders in the same commit.
+   */
+  droppedDeclarations: DroppedStagedDeclaration[];
   /** New engine files no patch owned that the target adopts (`--scan-file`). */
   adoptedFiles: string[];
   /**
@@ -106,6 +119,7 @@ function applyMoveToRows(rows: readonly PatchMetadata[], plan: MoveIntoPlan): Pa
     let updated = row;
     const decls = plan.stagedDependencyAdditions.get(updated.filename);
     if (decls?.length) updated = mergeStagedForwardImports(updated, decls);
+    updated = withoutDroppedDeclarations(updated, plan.droppedDeclarations);
     if (updated.filename === plan.source.filename && !plan.retireSource) {
       return { ...updated, filesAffected: plan.sourceAfter };
     }
@@ -129,6 +143,7 @@ function runProjectedMoveLint(
   conflicts: ConflictReport | null;
   regressions: PatchLintIssue[];
   stagedDependencyAdditions: Map<string, PatchStagedForwardImport[]>;
+  droppedDeclarations: DroppedStagedDeclaration[];
 } {
   const movedSet = new Set([...plan.movedFiles, ...plan.adoptedFiles]);
   const reason = moveDeclarationReason(
@@ -141,9 +156,11 @@ function runProjectedMoveLint(
   // the projection and the written manifest cannot disagree.
   const rows = baseCtx.entries.flatMap((entry) => (entry.metadata ? [entry.metadata] : []));
   const projectedRows = new Map(
-    applyMoveToRows(rows, { ...plan, stagedDependencyAdditions: new Map() }).map(
-      (row) => [row.filename, row] as const
-    )
+    applyMoveToRows(rows, {
+      ...plan,
+      stagedDependencyAdditions: new Map(),
+      droppedDeclarations: [],
+    }).map((row) => [row.filename, row] as const)
   );
   const entries: PatchQueueEntry[] = baseCtx.entries
     .filter((entry) => !(plan.retireSource && entry.filename === plan.source.filename))
@@ -185,13 +202,26 @@ function runProjectedMoveLint(
     }
   }
 
-  const baselineIssues = lintPatchQueue(baseCtx).filter((i) => i.severity === 'error');
+  const baselineAll = lintPatchQueue(baseCtx);
   // Keep every queue-wide lint setting (patch policy, forward-registration
   // scope, token scales) so the projection checks what the committed gate
   // checks, test-manifest suite entries included.
-  const projectedIssues = lintPatchQueue({ ...baseCtx, entries }).filter(
-    (i) => i.severity === 'error'
-  );
+  const projectedAll = lintPatchQueue({ ...baseCtx, entries });
+  const baselineIssues = baselineAll.filter((i) => i.severity === 'error');
+  const projectedIssues = projectedAll.filter((i) => i.severity === 'error');
+  // A moved file whose creator now precedes its importer leaves the
+  // importer's forward-import declaration unused. The empty `newFilename`
+  // matches no entry: every candidate here is a declaration on a moved path.
+  const droppedDeclarations = findDeclarationsMadeUnused({
+    baselineEntries: baseCtx.entries,
+    projectedEntries: entries,
+    baselineIssues: baselineAll,
+    projectedIssues: projectedAll,
+    sourceFilename: plan.source.filename,
+    newFilename: '',
+    mapBack: (name) => name,
+    movedSet,
+  });
   const regressions = computeProjectedLintRegressions(baselineIssues, projectedIssues);
   if (baselineIssues.length > 0 && regressions.length === 0) {
     warn(
@@ -206,7 +236,7 @@ function runProjectedMoveLint(
           reason: `move would introduce ${regressions.length} cross-patch lint error(s)`,
           details: regressions.map(formatPatchLintIssue),
         };
-  return { conflicts, regressions, stagedDependencyAdditions };
+  return { conflicts, regressions, stagedDependencyAdditions, droppedDeclarations };
 }
 
 /** Restores one body during rollback, warning instead of throwing. */
@@ -287,6 +317,9 @@ async function commitMoveInto(
               target: plan.target.filename,
               files: plan.movedFiles,
               ownerRewrites: plan.ownerRewrites,
+              ...(plan.droppedDeclarations.length > 0
+                ? { droppedDeclarations: plan.droppedDeclarations }
+                : {}),
               ...(plan.adoptedFiles.length > 0 ? { adoptedFiles: plan.adoptedFiles } : {}),
               ...(plan.retireSource
                 ? { retiredSource: { filename: plan.source.filename, order: plan.source.order } }
@@ -397,12 +430,19 @@ export async function runMoveFilesInto(args: {
           new Set([...files, ...adoptedFiles])
         ),
     stagedDependencyAdditions: new Map(),
+    droppedDeclarations: [],
     adoptedFiles,
     retireSource,
   };
 
   const projected = runProjectedMoveLint(plan, patchQueueCtx);
   plan.stagedDependencyAdditions = projected.stagedDependencyAdditions;
+  plan.droppedDeclarations = projected.droppedDeclarations;
+  const droppedLines = describeStagedMaintenance(
+    { ...emptyStagedMaintenance(), dropped: plan.droppedDeclarations },
+    source.filename,
+    target.filename
+  );
   const conflicts = await withDeclarationsReport(projected.conflicts, {
     projectRoot: dirname(resolve(patchesDir)),
     regressions: projected.regressions,
@@ -427,6 +467,7 @@ export async function runMoveFilesInto(args: {
       ...(plan.ownerRewrites.length > 0
         ? [`staged-dependency owners re-pointed in: ${plan.ownerRewrites.join(', ')}`]
         : []),
+      ...droppedLines,
     ],
     yes: options.yes === true,
     dryRun: options.dryRun === true,
@@ -444,6 +485,7 @@ export async function runMoveFilesInto(args: {
   if (plan.ownerRewrites.length > 0) {
     info(`Re-pointed staged-dependency owners in: ${plan.ownerRewrites.join(', ')}`);
   }
+  for (const line of droppedLines) info(line);
   if (retireSource) {
     info(`Retired ${source.filename}; order ${source.order} is kept as a retired slot.`);
   }

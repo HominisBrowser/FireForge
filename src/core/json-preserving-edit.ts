@@ -31,13 +31,6 @@ interface DocumentStyle {
   indentUnit: string;
 }
 
-/** The same reviver `readJson` uses, so both sides of the diff agree. */
-function parseJsonDocument(text: string): unknown {
-  return JSON.parse(text, (key, value: unknown) =>
-    key === '__proto__' || key === 'constructor' || key === 'prototype' ? undefined : value
-  );
-}
-
 function jsonEqual(a: JsonValue | undefined, b: JsonValue | undefined): boolean {
   if (a === b) return true;
   if (Array.isArray(a) || Array.isArray(b)) {
@@ -239,7 +232,7 @@ function applyChange(text: string, change: DocumentChange, style: DocumentStyle)
 export function rewriteJsonPreservingFormat(text: string, next: JsonObject): string | undefined {
   let current: unknown;
   try {
-    current = parseJsonDocument(text);
+    current = JSON.parse(text);
   } catch {
     return undefined;
   }
@@ -253,7 +246,7 @@ export function rewriteJsonPreservingFormat(text: string, next: JsonObject): str
     let edited = text;
     for (const change of changes) edited = applyChange(edited, change, style);
     // The edits are structural; prove the result before trusting it.
-    return jsonEqual(parseJsonDocument(edited) as JsonValue, next) ? edited : undefined;
+    return jsonEqual(JSON.parse(edited) as JsonValue, next) ? edited : undefined;
   } catch {
     return undefined;
   }

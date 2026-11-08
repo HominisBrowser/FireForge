@@ -599,6 +599,7 @@ describe('syncFurnaceJsconfigPaths — a typecheckJsconfig list', () => {
       ['engine/browser/content/jsconfig.json', true],
     ]);
 
+    await writeFile(join(projectRoot, 'furnace.json'), JSON.stringify(config));
     await reportJsconfigPathsSync(projectRoot, config, false);
     expect(vi.mocked(info)).toHaveBeenCalledWith(
       expect.stringContaining('Updated engine/browser/content/jsconfig.json chrome-module paths')
@@ -681,9 +682,9 @@ describe('typecheckTagMap', () => {
     const written = await readText(join(projectRoot, 'types', 'tag-map.d.ts'));
     expect(written).toContain('interface HTMLElementTagNameMap {\n');
     expect(written.split('\n').filter((line) => line.startsWith('  '))).toEqual([
-      '  "moz-aliased": import("chrome://global/content/elements/moz-aliased.mjs").MozAliased;',
-      '  "moz-default": import("chrome://global/content/elements/moz-default.mjs").default;',
-      '  "moz-named": import("chrome://global/content/elements/moz-named.mjs").MozNamed;',
+      '  "moz-aliased": HTMLElement & import("chrome://global/content/elements/moz-aliased.mjs").MozAliased;',
+      '  "moz-default": HTMLElement & import("chrome://global/content/elements/moz-default.mjs").default;',
+      '  "moz-named": HTMLElement & import("chrome://global/content/elements/moz-named.mjs").MozNamed;',
     ]);
 
     // Up to date: a dry run reports no drift, and furnace validate's check agrees.
@@ -739,6 +740,7 @@ describe('typecheckTagMap', () => {
       ...makeConfig({ 'moz-named': component() }),
       typecheckTagMap: 'tools/tag-map.d.ts',
     };
+    await writeFile(join(projectRoot, 'furnace.json'), JSON.stringify(config));
     await reportJsconfigPathsSync(projectRoot, config, false);
 
     const ts = await import('typescript');

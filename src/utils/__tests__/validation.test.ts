@@ -295,3 +295,25 @@ describe('compareFirefoxVersions', () => {
     expect(sorted(['zzz', '153.0', 'aaa'])).toEqual(['153.0', 'aaa', 'zzz']);
   });
 });
+
+describe('literal custom property identifier grammar', () => {
+  it.each([
+    '--theme:accent',
+    '--theme.accent',
+    '--theme,accent',
+    '--theme\\accent',
+    '--theme[accent]',
+    '--theme/accent',
+    '--theme=accent',
+    '--theme@accent',
+  ])('refuses unsupported punctuation in %s', (name) => {
+    expect(describeTokenNameProblem(name)).toContain('CSS identifier');
+    expect(() => normalizeTokenName(name)).toThrow();
+  });
+  it.each(['--café', '--色', '--123', '---accent', '--color_primary'])(
+    'preserves literal CSS identifiers: %s',
+    (name) => {
+      expect(normalizeTokenName(name)).toBe(name);
+    }
+  );
+});

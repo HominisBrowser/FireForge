@@ -26,8 +26,8 @@ import { join } from 'node:path';
 import type { TestOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { notice } from '../utils/logger.js';
-import { isExplicitAbsolutePath, isPathInsideRoot } from '../utils/paths.js';
 import { type MarionettePortHolder, probeMarionettePort } from './marionette-port.js';
+import { commandIsInCheckout } from './process-owner.js';
 
 /** Which busy-port fallbacks the engine's mochitest harness carries. */
 export interface HarnessPortFallback {
@@ -64,13 +64,14 @@ export function autoPortsRequested(options: TestOptions, config: FireForgeConfig
 
 /**
  * True when the holder's command line points into THIS checkout's engine
- * directory: our own leftover, which auto mode never steps aside for.
+ * directory or objdir: our own leftover, which auto mode never steps aside for.
  */
-export function isThisCheckoutsHolder(holder: MarionettePortHolder, engineDir: string): boolean {
-  return holder.commandLine
-    .split(/\s+/)
-    .filter(isExplicitAbsolutePath)
-    .some((token) => isPathInsideRoot(engineDir, token));
+export function isThisCheckoutsHolder(
+  holder: MarionettePortHolder,
+  engineDir: string,
+  objDir?: string
+): boolean {
+  return commandIsInCheckout(holder.commandLine, [engineDir, objDir]);
 }
 
 /**
@@ -97,23 +98,26 @@ export async function resolveAutoPorts(
 }
 
 /**
- * Steps aside for a busy port the harness will fall back from. Returns true
- * (after a notice naming the holder) when the port is held by anything that
- * is not this checkout's own process, false when the port is free or the
- * holder is ours, so the caller's normal preflight runs.
+ * Steps aside for a port the harness will fall back from. Returns true when the
+ * port is free, or held by anything that is not this checkout's own process
+ * (after a notice naming the holder). Returns false when the holder is ours or
+ * cannot be named, so the caller's normal preflight runs.
  *
  * @param port - The default port the harness would use
  * @param label - Human name of the port for the notice
  * @param engineDir - This checkout's engine directory
+ * @param objDir - This checkout's absolute objdir
  */
 export async function deferBusyPortToHarness(
   port: number,
   label: string,
-  engineDir: string
+  engineDir: string,
+  objDir?: string
 ): Promise<boolean> {
   const probe = await probeMarionettePort(port);
-  if (!probe.inUse || !probe.holder) return false;
-  if (isThisCheckoutsHolder(probe.holder, engineDir)) return false;
+  // Free now, and the harness probes again itself: a peer taking it in between is the case it handles.
+  if (!probe.inUse) return true;
+  if (!probe.holder || isThisCheckoutsHolder(probe.holder, engineDir, objDir)) return false;
   notice(
     `${label} port ${port} is held by ${probe.holder.command} (PID ${probe.holder.pid}), which is ` +
       "not this checkout's. Auto ports: the harness moves this run to a free port instead."

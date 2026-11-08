@@ -108,8 +108,14 @@ describe('deferBusyPortToHarness', () => {
     holder: { pid: 42, command: 'xpcshell', commandLine },
   });
 
-  it('does not step aside for a free port', async () => {
+  it('leaves a free port to the harness, so a peer taking it next cannot read as a refusal', async () => {
     vi.mocked(probeMarionettePort).mockResolvedValue({ inUse: false });
+    expect(await deferBusyPortToHarness(8888, 'Mochitest server', engineDir)).toBe(true);
+    expect(notice).not.toHaveBeenCalled();
+  });
+
+  it('keeps the normal preflight for a holder it cannot name', async () => {
+    vi.mocked(probeMarionettePort).mockResolvedValue({ inUse: true });
     expect(await deferBusyPortToHarness(8888, 'Mochitest server', engineDir)).toBe(false);
   });
 

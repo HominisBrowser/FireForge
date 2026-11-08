@@ -2,6 +2,7 @@
 import type * as estree from 'estree';
 
 import { GeneralError, ParserFallbackError } from '../errors/base.js';
+import { escapeRegex } from '../utils/regex.js';
 import { type AcornESTreeNode, asEstree, walkAST } from './ast-utils.js';
 
 /**
@@ -24,6 +25,22 @@ export function validateWireName(value: string, label: string): void {
       );
     }
   }
+}
+
+/**
+ * Validates an init/destroy expression for interpolation into generated
+ * JavaScript as code: a dotted chain of identifiers with an optional `()`
+ * suffix, free of the dangerous property segments {@link validateWireName}
+ * rejects. A hyphen, a leading digit or an empty segment compiles to a
+ * different expression than the one the operator named.
+ */
+export function validateWireExpression(value: string, label: string): void {
+  if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\(\))?$/.test(value)) {
+    throw new GeneralError(
+      `Invalid ${label} "${value}": must contain only letters, digits, underscores and $ signs in dotted identifier segments, optionally ending in ()`
+    );
+  }
+  validateWireName(value, label);
 }
 
 /**
@@ -154,7 +171,7 @@ function scanToRegexLiteralEnd(line: string, start: number): number {
  * Extracts the class/object name from an expression like "MyComponent.init()".
  */
 export function extractNameFromExpression(expression: string): string {
-  const match = /^(\w+)/.exec(expression);
+  const match = /^([\w$]+)/.exec(expression);
   return match?.[1] ?? expression;
 }
 
@@ -395,4 +412,16 @@ export function findMethodBody(
   });
 
   return found;
+}
+
+/**
+ * Whether `text` is the init block `--after <name>` names: it guards on
+ * `typeof <name>` or calls `<name>.init(`, with `<name>` as a whole
+ * identifier, so `Foo` does not select the block of `FooBar` or `Other.Foo`.
+ */
+export function mentionsInitTarget(text: string, name: string): boolean {
+  const target = escapeRegex(name);
+  return new RegExp(
+    `(?<![\\w$.])typeof\\s+${target}(?![\\w$])|(?<![\\w$.])${target}\\.init\\(`
+  ).test(text);
 }

@@ -14,7 +14,10 @@
  */
 import { join } from 'node:path';
 
-import { getProjectPaths, loadConfig } from '../core/config.js';
+import { pathExists, readText } from '../core/authored/fs.js';
+import { authoringProjectPaths } from '../core/authored/writer.js';
+import { loadConfig } from '../core/config.js';
+import { missingEngineMessage } from '../core/engine-precondition.js';
 import {
   collectTokenBlockValues,
   collectTokenInventory,
@@ -24,7 +27,6 @@ import {
 import { getTokensCssPath } from '../core/token-manager.js';
 import { GeneralError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readText } from '../utils/fs.js';
 import { info, intro, outro, setMachineOutputMode, setStdoutSealed } from '../utils/logger.js';
 import { emitMachineError, MACHINE_OUTPUT_SCHEMA_VERSION } from '../utils/machine-output.js';
 
@@ -32,13 +34,15 @@ import { emitMachineError, MACHINE_OUTPUT_SCHEMA_VERSION } from '../utils/machin
 async function readTokensCssLines(
   projectRoot: string
 ): Promise<{ lines: string[]; tokensCssPath: string }> {
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
   const tokensCssPath = getTokensCssPath(config.binaryName);
   const filePath = join(paths.engine, tokensCssPath);
   if (!(await pathExists(filePath))) {
     throw new GeneralError(
-      `Token CSS file not found: ${tokensCssPath}. Run "fireforge furnace init" to seed it.`
+      (await pathExists(paths.engine))
+        ? `Token CSS file not found: ${tokensCssPath}. Run "fireforge furnace init" to seed it.`
+        : await missingEngineMessage(paths.engine)
     );
   }
   return { lines: (await readText(filePath)).split('\n'), tokensCssPath };

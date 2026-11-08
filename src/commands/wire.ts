@@ -3,19 +3,20 @@ import { join, relative } from 'node:path';
 
 import { Command } from 'commander';
 
+import { authoringProjectPaths } from '../core/authored/writer.js';
 import {
   DEFAULT_BROWSER_SUBSCRIPT_DIR,
   type WireResult,
   wireSubscript,
 } from '../core/browser-wire.js';
-import { getProjectPaths, loadConfig } from '../core/config.js';
+import { loadConfig } from '../core/config.js';
 import {
   furnaceConfigExists as checkFurnaceConfigExists,
   loadFurnaceConfig,
 } from '../core/furnace-config.js';
 import { consumeParserFallbackEvents } from '../core/parser-fallback.js';
 import { DEFAULT_DOM_TARGET, probeDomFragmentInsertionPoint } from '../core/wire-dom-fragment.js';
-import { coerceToCall, validateWireName as validateWireExpression } from '../core/wire-utils.js';
+import { coerceToCall, validateWireExpression } from '../core/wire-utils.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { WireOptions } from '../types/commands/index.js';
@@ -136,7 +137,7 @@ async function assertDomTargetIsWireable(
   domFilePath: string,
   domTargetPath: string
 ): Promise<void> {
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
   if (!(await pathExists(join(paths.engine, domTargetPath)))) {
     throw new InvalidArgumentError(
       `Chrome document not found in engine: ${domTargetPath}\n` +
@@ -189,7 +190,7 @@ async function ensureSubscriptSourceExists(
   name: string,
   dryRun: boolean
 ): Promise<void> {
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
   const subscriptPath = join(paths.engine, subscriptDir, `${name}.js`);
   if (!(await pathExists(subscriptPath))) {
     if (dryRun) {
@@ -232,7 +233,7 @@ async function resolveDomFragmentPath(
   // stripped when the input is relative.
   if (!dom) return undefined;
   {
-    const paths = getProjectPaths(projectRoot);
+    const paths = await authoringProjectPaths(projectRoot);
     const domCandidate = isExplicitAbsolutePath(dom) ? dom : stripEnginePrefix(dom);
     // `pathExists` resolves relative paths against CWD, so an
     // engine-relative `domCandidate` (e.g.
@@ -420,7 +421,7 @@ export async function wireCommand(
 
   if (options.dryRun) {
     printWireDryRun(
-      getProjectPaths(projectRoot).engine,
+      (await authoringProjectPaths(projectRoot)).engine,
       name,
       subscriptDir,
       domFilePath,

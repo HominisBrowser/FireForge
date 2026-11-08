@@ -82,6 +82,7 @@ describe('CLI help output', () => {
       'scan',
       'status',
       'sync',
+      'types',
       'validate',
     ]);
   });

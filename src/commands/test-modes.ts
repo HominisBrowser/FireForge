@@ -97,7 +97,7 @@ export function reportCanaryOutcome(outcome: TestRunOutcome): void {
 
 function buildPathlessTestMessage(): string {
   return (
-    '`fireforge test` now requires an explicit test path unless you choose a pathless mode.\n\n' +
+    '`fireforge test` requires an explicit test path unless you choose a pathless mode.\n\n' +
     'Use one of:\n' +
     '  - `fireforge test <engine-relative test path>` for focused runs\n' +
     "  - `fireforge test --auto` to forward mach's own auto-selection mode\n" +

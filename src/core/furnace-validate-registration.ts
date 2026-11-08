@@ -19,7 +19,7 @@ import { normalizeForChecksum } from './furnace-checksum-utils.js';
 import { getFurnacePaths } from './furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, FTL_DIR, JAR_MN } from './furnace-constants.js';
 import { expandCssFragments, listFragmentIncludes } from './furnace-css-fragments.js';
-import { findStaleJarMnEntries } from './furnace-registration.js';
+import { findStaleJarMnEntries, isJarMnFileRegistered } from './furnace-registration.js';
 import { isTagAlreadyRegistered } from './furnace-registration-ast.js';
 import { isTagInCorrectCustomElementsPlacement } from './furnace-registration-validate.js';
 import { getTokensCssPath } from './token-manager.js';
@@ -41,11 +41,7 @@ export async function validateRegistrationPatterns(
   const { engine: engineDir } = getProjectPaths(root);
   const filePath = join(engineDir, CUSTOM_ELEMENTS_JS);
 
-  if (!(await pathExists(filePath))) {
-    return issues;
-  }
-
-  const content = await readText(filePath);
+  const content = (await pathExists(filePath)) ? await readText(filePath) : '';
 
   // Get all custom component tag names that use .mjs (all custom components do)
   for (const [name, customConfig] of Object.entries(config.custom)) {
@@ -195,8 +191,8 @@ export async function checkRegistrationConsistency(
   const jarMnPath = join(engineDir, JAR_MN);
   if (await pathExists(jarMnPath)) {
     const jarContent = await readText(jarMnPath);
-    status.jarMnCss = jarContent.includes(`content/global/elements/${name}.css`);
-    status.jarMnMjs = jarContent.includes(`content/global/elements/${name}.mjs`);
+    status.jarMnCss = isJarMnFileRegistered(jarContent, name, `${name}.css`, true);
+    status.jarMnMjs = isJarMnFileRegistered(jarContent, name, `${name}.mjs`, true);
   }
 
   // Check customElements.js registration
@@ -237,17 +233,11 @@ export async function validateJarMnEntries(
   const { engine: engineDir } = getProjectPaths(root);
   const jarMnPath = join(engineDir, JAR_MN);
 
-  if (!(await pathExists(jarMnPath))) {
-    return issues;
-  }
-
-  const jarContent = await readText(jarMnPath);
+  const jarContent = (await pathExists(jarMnPath)) ? await readText(jarMnPath) : '';
   const furnacePaths = getFurnacePaths(root);
 
-  for (const [name, customConfig] of Object.entries(config.custom)) {
-    if (!customConfig.register) continue;
-
-    if (!jarContent.includes(`content/global/elements/${name}.mjs`)) {
+  for (const name of Object.keys(config.custom)) {
+    if (!isJarMnFileRegistered(jarContent, name, `${name}.mjs`, true)) {
       issues.push({
         component: name,
         severity: 'error',
@@ -263,7 +253,7 @@ export async function validateJarMnEntries(
     const cssSourcePath = join(furnacePaths.customDir, name, `${name}.css`);
     if (
       (await pathExists(cssSourcePath)) &&
-      !jarContent.includes(`content/global/elements/${name}.css`)
+      !isJarMnFileRegistered(jarContent, name, `${name}.css`, true)
     ) {
       issues.push({
         component: name,
@@ -527,12 +517,11 @@ export async function runPostApplyConsistencyChecks(
   ftlDir: string
 ): Promise<void> {
   for (const [name, customConfig] of Object.entries(config.custom)) {
-    if (!customConfig.register) continue;
     if (!result.applied.some((a) => a.name === name)) continue;
     try {
       const status = await checkRegistrationConsistency(root, name, customConfig, ftlDir);
       const issues: string[] = [];
-      if (!status.customElementsPresent) {
+      if (customConfig.register && !status.customElementsPresent) {
         issues.push('missing customElements.js registration');
       }
       if (!status.jarMnMjs && status.sourceExists) {

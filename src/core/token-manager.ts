@@ -4,10 +4,11 @@ import { join } from 'node:path';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { FurnaceError } from '../errors/furnace.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
 import { describeTokenNameProblem, makeEnumGuard } from '../utils/validation.js';
-import { getProjectPaths, loadConfig } from './config.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
+import { authoringProjectPaths } from './authored/writer.js';
+import { loadConfig } from './config.js';
 import { loadFurnaceConfig } from './furnace-config.js';
 import {
   assertTokenCategoryExists,
@@ -17,7 +18,11 @@ import {
   findTokenDeclarationInRoot,
   type TokenDeclarationLocation,
 } from './token-category.js';
-import { findDarkMediaCloseIndex, findDarkRootInsertionIndex } from './token-dark-mode.js';
+import {
+  findDarkMediaCloseIndex,
+  findDarkRootInsertionIndex,
+  isolateBlockClose,
+} from './token-dark-mode.js';
 import { addTokenToDocs } from './token-docs.js';
 import {
   findVariantBlockDeclaration,
@@ -27,6 +32,7 @@ import {
   variantBlockHasToken,
   variantBlockQualifier,
 } from './token-variant.js';
+import { variantCascadeWarnings } from './token-variant-cascade.js';
 
 /**
  * Dark mode behaviour for a token.
@@ -127,7 +133,7 @@ function getModeAnnotation(mode: TokenMode, value: string): string {
 }
 
 async function resolveTokenAddContext(root: string): Promise<TokenAddContext> {
-  const { engine: engineDir } = getProjectPaths(root);
+  const { engine: engineDir } = await authoringProjectPaths(root);
   const forgeConfig = await loadConfig(root);
 
   return {
@@ -168,6 +174,56 @@ function validateDarkValue(options: AddTokenOptions): void {
     throw new InvalidArgumentError(
       'Override mode requires --dark-value to be specified.',
       'darkValue'
+    );
+  }
+}
+
+/**
+ * Describes why `text` cannot be written as a single CSS declaration value,
+ * or `undefined` when it can. A value that ends the declaration (`;`), closes
+ * the block (`}`), opens a rule (`{`) or spans lines would write CSS the
+ * tokens file does not intend, so it is refused rather than escaped.
+ */
+function describeDeclarationValueProblem(text: string): string | undefined {
+  if (/[\r\n]/.test(text)) return 'must be a single line';
+  let quote: string | undefined;
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i] as string;
+    if (quote !== undefined) {
+      if (char === '\\') i++;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'") quote = char;
+    else if (char === '(') depth++;
+    else if (char === ')') depth--;
+    else if (char === '{' || char === '}') return `must not contain "${char}" outside a string`;
+    else if (char === ';' && depth <= 0) return 'must not contain ";" outside a string or ()';
+    else if (char === '/' && text[i + 1] === '*') return 'must not contain a comment';
+    if (depth < 0) return 'has an unbalanced ")"';
+  }
+  if (quote !== undefined) return 'has an unterminated string';
+  if (depth !== 0) return 'has an unbalanced "("';
+  return undefined;
+}
+
+/** Refuses a value, dark value or description that would write structurally different CSS. */
+function validateTokenText(options: AddTokenOptions): void {
+  const fields: Array<[string, string | undefined, string]> = [
+    ['value', options.value, 'value'],
+    ['dark value', options.darkValue, 'darkValue'],
+  ];
+  for (const [label, text, option] of fields) {
+    const problem = text === undefined ? undefined : describeDeclarationValueProblem(text);
+    if (problem) {
+      throw new InvalidArgumentError(`Token ${label} "${text ?? ''}" ${problem}.`, option);
+    }
+  }
+  if (options.description !== undefined && /[\r\n]|\*\//.test(options.description)) {
+    throw new InvalidArgumentError(
+      'Token description must be a single line without "*/" (it is written inside a CSS comment).',
+      'description'
     );
   }
 }
@@ -243,11 +299,8 @@ async function assertTokensCssExists(engineDir: string, tokensCssPath: string): 
  * present. Idempotent within the block.
  *
  * A skip carries the location of the existing declaration, mirroring
- * {@link evaluateBaseTokenIdempotency}. The bare `{ added: false }` it used
- * to return told the caller nothing, so a re-run intending to change a
- * value exited 0 having changed nothing and said only "already exists",
- * while the base path had reported the category and line for the same
- * situation all along.
+ * {@link evaluateBaseTokenIdempotency}, so a re-run that changes nothing says where
+ * the existing declaration sits.
  */
 async function addVariantTokenToCSS(
   engineDir: string,
@@ -260,6 +313,9 @@ async function addVariantTokenToCSS(
   const lines = (await readText(filePath)).split('\n');
   const declared = findVariantBlockDeclaration(lines, variant, options.tokenName);
   if (declared !== undefined) return { added: false, existing: declared };
+
+  for (const warning of variantCascadeWarnings(lines, variant, options.tokenName, tokensCssPath))
+    warn(warning);
 
   const annotation = getModeAnnotation(options.mode, options.value);
   insertVariantDeclaration(
@@ -310,14 +366,20 @@ export async function validateTokenAdd(root: string, options: AddTokenOptions): 
   validateTokenNameSyntax(options.tokenName);
   await validateTokenPrefix(root, options);
   validateDarkValue(options);
+  validateTokenText(options);
   // Variant mode targets a `:root<attr>` block, not a category section, so
   // no category is consulted, and none is required. When one is passed it
   // is still checked, so a typo'd category is not silently accepted just
   // because the flag happens to be inert here.
-  if (normalizeVariantOption(options) !== undefined) {
+  const variant = normalizeVariantOption(options);
+  if (variant !== undefined) {
     if (options.category !== undefined && options.category.trim() !== '') {
       await assertTokenCategoryExists(engineDir, tokensCssPath, options.category, false);
     }
+    await assertTokensCssExists(engineDir, tokensCssPath);
+    const lines = (await readText(join(engineDir, tokensCssPath))).split('\n');
+    for (const warning of variantCascadeWarnings(lines, variant, options.tokenName, tokensCssPath))
+      warn(warning);
     return;
   }
   await assertTokenCategoryExists(
@@ -340,6 +402,7 @@ export async function addToken(root: string, options: AddTokenOptions): Promise<
   validateTokenNameSyntax(options.tokenName);
   await validateTokenPrefix(root, options);
   validateDarkValue(options);
+  validateTokenText(options);
   const normalizedVariant = normalizeVariantOption(options);
 
   if (options.dryRun) {
@@ -466,18 +529,20 @@ function insertThemeAttributeOverrides(lines: string[], options: AddTokenOptions
 
   const written: string[] = [];
   for (const { variant, pick } of THEME_ATTRIBUTE_VARIANTS) {
-    if (!variantBlockExists(lines, variant)) continue;
-    if (variantBlockHasToken(lines, variant, options.tokenName)) continue;
+    const qualifier = variantBlockQualifier(lines, variant);
+    if (qualifier === undefined) continue;
+    const target = `${variant}${qualifier}`;
+    if (!variantBlockExists(lines, target)) continue;
+    if (variantBlockHasToken(lines, target, options.tokenName)) continue;
     const value = pick === 'dark' ? options.darkValue : options.value;
-    insertVariantDeclaration(lines, variant, `  ${options.tokenName}: ${value};`);
+    insertVariantDeclaration(lines, target, `  ${options.tokenName}: ${value};`);
     written.push(`:root${variant}`);
 
-    // A qualified block is matched. Skipping it is the worse failure, and
-    // the one that shipped, but the qualifier narrows where the token
-    // applies, so say which selector was written through rather than
-    // letting the operator meet the narrowing as a theme bug later.
-    const qualifier = variantBlockQualifier(lines, variant);
-    if (qualifier !== undefined && qualifier.length > 0) {
+    // A qualified block is matched rather than skipped, but the qualifier
+    // narrows where the token applies, so say which selector was written
+    // through instead of letting the operator meet the narrowing as a theme
+    // bug later.
+    if (qualifier.length > 0) {
       warn(
         `Wrote ${options.tokenName} into the qualified block ":root${variant}${qualifier}". ` +
           `The "${qualifier}" qualifier narrows where this override applies; ` +
@@ -507,11 +572,11 @@ function insertDarkModeOverride(lines: string[], options: AddTokenOptions): void
     );
     const outerCloseIndex = findDarkMediaCloseIndex(lines);
     if (outerCloseIndex === -1) return;
-    lines.splice(outerCloseIndex, 0, '  :root {', darkEntry, '  }');
+    lines.splice(isolateBlockClose(lines, outerCloseIndex), 0, '  :root {', darkEntry, '  }');
     return;
   }
 
-  lines.splice(insertionIndex, 0, darkEntry);
+  lines.splice(isolateBlockClose(lines, insertionIndex), 0, darkEntry);
 }
 
 /**

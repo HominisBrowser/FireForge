@@ -28,6 +28,7 @@ import type {
 } from '../types/config.js';
 import { pathExists } from '../utils/fs.js';
 import { matchesAnyGlob } from '../utils/path-glob.js';
+import type { UpstreamDelta } from './authored/types.js';
 import { buildPatchQueueContext, type PatchQueueEntry } from './patch-lint-cross.js';
 import { parseDiffSections } from './patch-parse.js';
 import type { PatchPolicyIssue } from './patch-policy.js';
@@ -277,4 +278,95 @@ export async function evaluatePatchPolicyContentForQueue(
   if (!hasPatchPolicyContentRules(config)) return [];
   const { entries } = await buildPatchQueueContext(patchesDir);
   return evaluatePatchPolicyContent(config, projectRoot, manifest, entries);
+}
+
+function authoredRegistrationBoundaries(deltas: readonly UpstreamDelta[]): PatchPolicyIssue[] {
+  return deltas.flatMap((delta) => {
+    if (delta.declaration.classification !== 'registration') return [];
+    const changesMode = parseDiffSections(delta.diff).some(
+      (section) =>
+        section.oldMode !== undefined &&
+        section.newMode !== undefined &&
+        section.oldMode !== section.newMode
+    );
+    if (!changesMode && delta.declaration.kind !== 'delete') return [];
+    return [
+      {
+        code: 'upstream-allowlist' as const,
+        filename: delta.declaration.component,
+        severity: 'error' as const,
+        message: `Upstream mode changes and whole-file deletions require an approved exception ADR: ${delta.path}`,
+      },
+    ];
+  });
+}
+
+/**
+ * Whether an ADR's file list still describes a component. Every upstream path the
+ * component changes must be listed. A listed path it does not change must be a file
+ * the project created: a legacy patch's list named both, and only the upstream half
+ * is a delta here. Anything else on the list is an exception that no longer exists.
+ */
+function adrFileSetHolds(
+  listed: readonly string[],
+  changed: readonly string[],
+  created: ReadonlySet<string>
+): boolean {
+  const list = new Set(listed);
+  const actual = new Set(changed);
+  return (
+    changed.every((path) => list.has(path)) &&
+    listed.every((path) => actual.has(path) || created.has(path))
+  );
+}
+
+/**
+ * Reuse upstream content rules on authenticated deltas, independent of queue order.
+ *
+ * @param config - The captured configuration
+ * @param projectRoot - Root the policy documents are read from
+ * @param deltas - The snapshot's upstream deltas
+ * @param created - Paths the snapshot holds as project-created files
+ */
+export async function evaluateAuthoredUpstreamPolicy(
+  config: FireForgeConfig,
+  projectRoot: string,
+  deltas: readonly UpstreamDelta[],
+  created: ReadonlySet<string> = new Set()
+): Promise<PatchPolicyIssue[]> {
+  const cfg = config.patchPolicy;
+  const issues = authoredRegistrationBoundaries(deltas);
+  if (!cfg) return issues;
+  const severity = cfg.mutationMode === 'warn' ? 'warning' : 'error';
+  const exceptions = (cfg.reservedRanges ?? []).flatMap((range) => range.allowed);
+  for (const delta of deltas) {
+    const declaration = delta.declaration;
+    if (declaration.classification === 'exception') {
+      const allowed = exceptions.find(
+        (entry) => entry.filename === declaration.component && entry.adr === declaration.adr
+      );
+      const actual = deltas
+        .filter((entry) => entry.declaration.component === declaration.component)
+        .map((entry) => entry.path);
+      if (!allowed || (allowed.files && !adrFileSetHolds(allowed.files, actual, created))) {
+        issues.push({
+          code: 'upstream-allowlist',
+          filename: declaration.component,
+          severity: 'error',
+          message: `Unapproved upstream exception or changed ADR file set: ${delta.path}`,
+        });
+      }
+    } else if (cfg.upstreamAllowlist !== undefined) {
+      issues.push(
+        ...evaluateUpstreamEdits(
+          cfg,
+          declaration.component,
+          collectUpstreamEdits(delta.diff, new Set()),
+          severity
+        )
+      );
+    }
+  }
+  issues.push(...(await evaluateDocumentPaths(cfg, projectRoot, severity)));
+  return issues;
 }

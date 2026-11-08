@@ -38,7 +38,7 @@ import {
   STAGED_DEPENDENCY_REASON_PLACEHOLDER,
   stagedDependencyUnusedFingerprint,
 } from './patch-lint-staged-registration.js';
-import { lintTokenScaleFloors } from './patch-lint-token-scale.js';
+import { lintStaleTokenScaleExcludes, lintTokenScaleFloors } from './patch-lint-token-scale.js';
 import { loadPatchesManifest } from './patch-manifest-io.js';
 import { categoryRangeForOrder, categoryRangeLabel } from './patch-policy.js';
 import { extractNewFileContentsFromDiff } from './patch-transform.js';
@@ -812,6 +812,16 @@ export function lintPatchQueue(ctx: PatchQueueContext): PatchLintIssue[] {
     ...lintPatchQueueBinaryBodies(ctx),
     ...lintTokenScaleFloors(
       ctx.entries.flatMap((entry) => [...entry.newFiles]),
+      ctx.tokenScales ?? []
+    ),
+    ...lintStaleTokenScaleExcludes(
+      ctx.entries.flatMap(
+        (entry) =>
+          entry.metadata?.filesAffected ?? [
+            ...entry.createdFiles,
+            ...entry.modifiedFileAdditions.keys(),
+          ]
+      ),
       ctx.tokenScales ?? []
     ),
   ];

@@ -3,13 +3,10 @@
  * Cross-patch lint rule: a test manifest that registers a file a
  * later-ordered patch creates, without declaring the staged dependency.
  *
- * The import kind has had this arm since forward-import shipped. The
- * registration kind never did. `--kind registration` metadata was only ever
- * checked for staleness once declared, so a patch whose `xpcshell.toml`
- * carried `support-files = ["fixtures/*.sqlite"]` for a fixture the next
- * patch creates passed lint in both arms. Declaring the dependency and
- * removing the declaration produced identical silence, so the gap was
- * invisible rather than merely absent.
+ * Covers `--kind registration` metadata: a patch whose `xpcshell.toml`
+ * carries `support-files = ["fixtures/*.sqlite"]` for a fixture the next
+ * patch creates must declare the staged dependency, and the declaration is
+ * also checked for staleness.
  *
  * Scope is narrow by default: test-manifest `support-files` only. The
  * carriers whose target resolves without the build system (jar.mn pair

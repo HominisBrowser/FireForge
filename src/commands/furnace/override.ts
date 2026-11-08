@@ -231,9 +231,15 @@ async function performOverrideMutations(args: {
     async (ctx): Promise<string[]> => {
       const journal = createRollbackJournal();
       ctx.registerJournal(journal);
-      recordCreatedDir(journal, args.destDir);
-
       try {
+        const currentConfig = await loadAuthoringFurnaceConfig(args.projectRoot);
+        assertNoComponentCollision(currentConfig, args.componentName);
+        if (await pathExists(args.destDir))
+          throw new FurnaceError(
+            `Override destination already exists: ${args.destDir}`,
+            args.componentName
+          );
+        recordCreatedDir(journal, args.destDir);
         const filesCopied = await copyOverrideFiles({
           engineDir: args.engineDir,
           srcDir: args.srcDir,
@@ -322,6 +328,10 @@ export async function furnaceOverrideCommand(
   name?: string,
   options: FurnaceOverrideOptions = {}
 ): Promise<void> {
+  if ((await loadConfig(projectRoot)).sources)
+    throw new FurnaceError(
+      'In authored source mode, use "fireforge authored override <upstream-path> --component <stable-id> --classification registration|exception [--adr <approved-adr>]" for each intended upstream file. Legacy Furnace forks read engine HEAD and cannot supply the required explicit source policy identity. Edit the declared src postimages with ordinary Git.'
+    );
   const isInteractive = stdioIsInteractive();
 
   intro('Furnace Override');
@@ -516,6 +526,10 @@ export async function furnaceBatchOverrideCommand(
   names: string[],
   options: FurnaceOverrideOptions = {}
 ): Promise<void> {
+  if ((await loadConfig(projectRoot)).sources)
+    throw new FurnaceError(
+      'Authored upstream forks use explicit "fireforge authored override <upstream-path>" declarations with component/classification/ADR identity, followed by ordinary Git edits to src. A name-only batch cannot authorize upstream changes.'
+    );
   intro(`Furnace Override (batch: ${names.length} components)`);
 
   const isInteractive = stdioIsInteractive();

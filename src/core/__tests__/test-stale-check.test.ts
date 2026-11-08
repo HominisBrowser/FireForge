@@ -11,17 +11,9 @@ vi.mock('../build-baseline.js', () => ({
   readBuildBaseline: vi.fn(),
 }));
 
-vi.mock('../git.js', () => ({
-  hasChanges: vi.fn(),
-  isMissingHeadError: vi.fn(() => false),
-}));
-
-vi.mock('../git-base.js', () => ({
+vi.mock('../git-base.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../git-base.js')>()),
   git: vi.fn(),
-}));
-
-vi.mock('../git-status.js', () => ({
-  getUntrackedFiles: vi.fn(),
 }));
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
@@ -30,9 +22,7 @@ import { warn } from '../../utils/logger.js';
 import { isXpcomManifestPath } from '../build-audit.js';
 import { readBuildBaseline } from '../build-baseline.js';
 import { type BuildBaseline, DELETED_FILE_FINGERPRINT } from '../build-baseline-types.js';
-import { hasChanges } from '../git.js';
 import { git } from '../git-base.js';
-import { getUntrackedFiles } from '../git-status.js';
 import {
   checkStaleBuildForTest,
   checkStaticComponentsStale,
@@ -47,18 +37,18 @@ import {
   FULL_SUITE_REQUEST,
   warnIfStaticComponentsStale,
 } from '../test-stale-check.js';
+import { type FakeEngineChanges, fakeEngineGit } from './engine-git-fixture.js';
 
 const mockReadBaseline = vi.mocked(readBuildBaseline);
 const mockGit = vi.mocked(git);
-const mockHasChanges = vi.mocked(hasChanges);
-const mockGetUntracked = vi.mocked(getUntrackedFiles);
+const engineChanges = (changes: FakeEngineChanges): void => {
+  mockGit.mockImplementation(fakeEngineGit(changes));
+};
 
 describe('checkStaleBuildForTest', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGit.mockResolvedValue('');
-    mockHasChanges.mockResolvedValue(false);
-    mockGetUntracked.mockResolvedValue([]);
+    engineChanges({});
   });
 
   it('returns not-stale when no baseline marker exists', async () => {
@@ -83,7 +73,7 @@ describe('checkStaleBuildForTest', () => {
       binaryName: 'mybrowser',
     });
     // Only a non-packaged path changed (tools/, .py), not a bundle concern.
-    mockGit.mockResolvedValueOnce('tools/ci.py\n');
+    engineChanges({ committed: ['tools/ci.py'] });
 
     const result = await checkStaleBuildForTest('/project', '/project/engine');
     expect(result.stale).toBe(false);
@@ -96,11 +86,13 @@ describe('checkStaleBuildForTest', () => {
       builtAt: new Date().toISOString(),
       binaryName: 'mybrowser',
     });
-    mockGit.mockResolvedValueOnce(
-      'browser/base/content/mybrowser.xhtml\n' +
-        'browser/base/content/mybrowser.js\n' +
-        'tools/ci.py\n'
-    );
+    engineChanges({
+      committed: [
+        'browser/base/content/mybrowser.xhtml',
+        'browser/base/content/mybrowser.js',
+        'tools/ci.py',
+      ],
+    });
 
     const result = await checkStaleBuildForTest('/project', '/project/engine');
     expect(result.stale).toBe(true);
@@ -117,11 +109,10 @@ describe('checkStaleBuildForTest', () => {
       builtAt: new Date().toISOString(),
       binaryName: 'mybrowser',
     });
-    mockGit
-      .mockResolvedValueOnce('') // baseline..HEAD diff is empty
-      .mockResolvedValueOnce('browser/base/content/workdir-edit.js\n'); // HEAD diff (workdir)
-    mockHasChanges.mockResolvedValue(true);
-    mockGetUntracked.mockResolvedValue(['browser/base/content/new-untracked.mjs']);
+    engineChanges({
+      modified: ['browser/base/content/workdir-edit.js'],
+      untracked: ['browser/base/content/new-untracked.mjs'],
+    });
 
     const result = await checkStaleBuildForTest('/project', '/project/engine');
     expect(result.stale).toBe(true);
@@ -144,7 +135,7 @@ describe('checkStaleBuildForTest', () => {
       { length: 12 },
       (_, i) => `browser/base/content/file${String(i).padStart(2, '0')}.js`
     );
-    mockGit.mockResolvedValueOnce(paths.join('\n') + '\n');
+    engineChanges({ committed: paths });
 
     const result = await checkStaleBuildForTest('/project', '/project/engine');
     expect(result.stale).toBe(true);
@@ -152,17 +143,17 @@ describe('checkStaleBuildForTest', () => {
     expect(result.truncated).toBe(2);
   });
 
-  it('degrades to not-stale when git diff throws (broken probe must not block tests)', async () => {
+  it('refuses when git cannot say what changed: a failed probe never reads as clean', async () => {
     mockReadBaseline.mockResolvedValue({
       engineHeadSha: 'abc',
       builtAt: new Date().toISOString(),
       binaryName: 'mybrowser',
     });
-    mockGit.mockRejectedValueOnce(new Error('git unavailable'));
-    mockHasChanges.mockRejectedValue(new Error('git unavailable'));
+    mockGit.mockRejectedValue(new Error('git unavailable'));
 
-    const result = await checkStaleBuildForTest('/project', '/project/engine');
-    expect(result.stale).toBe(false);
+    await expect(checkStaleBuildForTest('/project', '/project/engine')).rejects.toThrow(
+      /Stale-build preflight: .*git unavailable/
+    );
   });
 
   it('skips fingerprint-matching files when the baseline carries packageableFingerprints', async () => {
@@ -194,7 +185,7 @@ describe('checkStaleBuildForTest', () => {
         binaryName: 'mybrowser',
         packageableFingerprints: { [relPath]: stableHash },
       });
-      mockGit.mockResolvedValueOnce(`${relPath}\n`);
+      engineChanges({ committed: [relPath] });
 
       const result = await checkStaleBuildForTest('/project', engineDir);
       expect(result.stale).toBe(false);
@@ -226,7 +217,7 @@ describe('checkStaleBuildForTest', () => {
         binaryName: 'mybrowser',
         packageableFingerprints: { [relPath]: oldHash },
       });
-      mockGit.mockResolvedValueOnce(`${relPath}\n`);
+      engineChanges({ committed: [relPath] });
 
       const result = await checkStaleBuildForTest('/project', engineDir);
       expect(result.stale).toBe(true);
@@ -244,7 +235,7 @@ describe('checkStaleBuildForTest', () => {
       binaryName: 'mybrowser',
       packageableFingerprints: { [relPath]: DELETED_FILE_FINGERPRINT },
     });
-    mockGit.mockResolvedValueOnce(`${relPath}\n`);
+    engineChanges({ committed: [relPath] });
 
     const result = await checkStaleBuildForTest('/project', '/project/engine');
     expect(result.stale).toBe(false);
@@ -499,9 +490,7 @@ describe('checkStaticComponentsStale', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGit.mockResolvedValue('');
-    mockHasChanges.mockResolvedValue(false);
-    mockGetUntracked.mockResolvedValue([]);
+    engineChanges({});
   });
 
   it('returns fresh when there is no baseline at all', async () => {
@@ -519,9 +508,12 @@ describe('checkStaticComponentsStale', () => {
   });
 
   it('flags a components.conf changed since the last full build, ignoring other paths', async () => {
-    mockGit.mockResolvedValueOnce(
-      'browser/components/mybrowser/components.conf\nbrowser/base/content/mybrowser.js\n'
-    );
+    engineChanges({
+      committed: [
+        'browser/components/mybrowser/components.conf',
+        'browser/base/content/mybrowser.js',
+      ],
+    });
 
     const result = await checkStaticComponentsStale('/project/engine', anchoredBaseline());
     expect(result.stale).toBe(true);
@@ -531,7 +523,7 @@ describe('checkStaticComponentsStale', () => {
   it('anchors the diff to the full-build SHA, not the scoped baseline SHA', async () => {
     await checkStaticComponentsStale('/project/engine', anchoredBaseline());
     expect(mockGit).toHaveBeenCalledWith(
-      ['diff', '--name-only', 'full-sha..HEAD'],
+      ['diff', '--name-only', '--no-renames', '-z', 'full-sha..HEAD'],
       '/project/engine'
     );
   });
@@ -552,7 +544,7 @@ describe('checkStaticComponentsStale', () => {
       await fsWriteFile(joinPath(engineDir, relPath), content);
       const hash = createHash('sha256').update(content).digest('hex');
 
-      mockGit.mockResolvedValueOnce(`${relPath}\n`);
+      engineChanges({ committed: [relPath] });
 
       const result = await checkStaticComponentsStale(
         engineDir,
@@ -579,7 +571,7 @@ describe('checkStaticComponentsStale', () => {
       await fsWriteFile(joinPath(engineDir, relPath), 'edited registration\n');
       const oldHash = createHash('sha256').update('old registration\n').digest('hex');
 
-      mockGit.mockResolvedValueOnce(`${relPath}\n`);
+      engineChanges({ committed: [relPath] });
 
       const result = await checkStaticComponentsStale(
         engineDir,
@@ -594,7 +586,7 @@ describe('checkStaticComponentsStale', () => {
 
   it('treats a components.conf deletion recorded by the full build as fresh', async () => {
     const relPath = 'browser/components/mybrowser/components.conf';
-    mockGit.mockResolvedValueOnce(`${relPath}\n`);
+    engineChanges({ committed: [relPath] });
 
     const result = await checkStaticComponentsStale(
       '/project/engine',
@@ -603,12 +595,12 @@ describe('checkStaticComponentsStale', () => {
     expect(result).toEqual({ stale: false, changedManifests: [] });
   });
 
-  it('degrades to fresh when the git probes fail (broken probe must not block tests)', async () => {
+  it('refuses when the git probes fail: a failed probe never reads as fresh', async () => {
     mockGit.mockRejectedValue(new Error('git unavailable'));
-    mockHasChanges.mockRejectedValue(new Error('git unavailable'));
 
-    const result = await checkStaticComponentsStale('/project/engine', anchoredBaseline());
-    expect(result).toEqual({ stale: false, changedManifests: [] });
+    await expect(checkStaticComponentsStale('/project/engine', anchoredBaseline())).rejects.toThrow(
+      /Static-components preflight: .*git unavailable/
+    );
   });
 });
 
@@ -622,14 +614,12 @@ describe('warnIfStaticComponentsStale', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGit.mockResolvedValue('');
-    mockHasChanges.mockResolvedValue(false);
-    mockGetUntracked.mockResolvedValue([]);
+    engineChanges({});
   });
 
   it('warns with the post-mutation copy when components.conf diverged', async () => {
     mockReadBaseline.mockResolvedValue(staleBaseline());
-    mockGit.mockResolvedValueOnce('browser/components/mybrowser/components.conf\n');
+    engineChanges({ committed: ['browser/components/mybrowser/components.conf'] });
 
     await warnIfStaticComponentsStale('/project', '/project/engine');
 
@@ -651,7 +641,7 @@ describe('warnIfStaticComponentsStale', () => {
 
   it('stays silent when the manifests still match the anchor', async () => {
     mockReadBaseline.mockResolvedValue(staleBaseline());
-    mockGit.mockResolvedValueOnce('browser/base/content/mybrowser.js\n');
+    engineChanges({ committed: ['browser/base/content/mybrowser.js'] });
 
     await warnIfStaticComponentsStale('/project', '/project/engine');
 
@@ -710,8 +700,7 @@ describe('formatStaticComponentsRefusal', () => {
 describe('findChangedTestManifestsForPaths', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(hasChanges).mockResolvedValue(true);
-    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+    engineChanges({});
   });
 
   const baseline: BuildBaseline = {
@@ -721,9 +710,9 @@ describe('findChangedTestManifestsForPaths', () => {
   };
 
   it('names a changed manifest sitting above an uncovered request path', async () => {
-    vi.mocked(git).mockResolvedValue(
-      'browser/modules/hominis/test/unit/xpcshell.toml\nbrowser/base/content/foo.js\n'
-    );
+    engineChanges({
+      committed: ['browser/modules/hominis/test/unit/xpcshell.toml', 'browser/base/content/foo.js'],
+    });
     const found = await findChangedTestManifestsForPaths('/engine', baseline, [
       'browser/modules/hominis/test/unit/test_Protection.js',
     ]);
@@ -731,14 +720,14 @@ describe('findChangedTestManifestsForPaths', () => {
   });
 
   it('ignores a manifest in an unrelated directory', async () => {
-    vi.mocked(git).mockResolvedValue('browser/elsewhere/xpcshell.toml\n');
+    engineChanges({ committed: ['browser/elsewhere/xpcshell.toml'] });
     expect(
       await findChangedTestManifestsForPaths('/engine', baseline, ['browser/modules/x/test_a.js'])
     ).toEqual([]);
   });
 
   it('ignores a full-suite request, which no manifest explains', async () => {
-    vi.mocked(git).mockResolvedValue('browser/modules/x/xpcshell.toml\n');
+    engineChanges({ committed: ['browser/modules/x/xpcshell.toml'] });
     expect(
       await findChangedTestManifestsForPaths('/engine', baseline, [FULL_SUITE_REQUEST])
     ).toEqual([]);
@@ -747,7 +736,6 @@ describe('findChangedTestManifestsForPaths', () => {
   // Best-effort: a broken probe must degrade the refusal to its previous
   // text, never fail the run differently.
   it('returns nothing when the probe throws', async () => {
-    vi.mocked(hasChanges).mockRejectedValue(new Error('no git'));
     vi.mocked(git).mockRejectedValue(new Error('no git'));
     expect(
       await findChangedTestManifestsForPaths('/engine', baseline, ['browser/x/test_a.js'])
@@ -768,14 +756,12 @@ describe('findCompiledSourcesNewerThanBinary', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     engineDir = await mkdtemp(join(tmpdir(), 'ff-stale-compiled-'));
-    mockHasChanges.mockResolvedValue(true);
-    mockGetUntracked.mockResolvedValue([]);
     return async () => {
       await rm(engineDir, { recursive: true, force: true });
     };
   });
 
-  it('keeps compiled sources edited after the last link, against the newest of binary and libxul', async () => {
+  it('keeps compiled sources edited after the last link, against libxul', async () => {
     await touch(BINARY, 1_000);
     await touch('obj-x/dist/bin/libxul.so', 2_000);
     await touch('gfx/old.cpp', 1_500);
@@ -783,21 +769,51 @@ describe('findCompiledSourcesNewerThanBinary', () => {
     await touch('modules/libpref/init/StaticPrefList.yaml', 3_000);
     await touch('browser/base/content/new.js', 3_000);
     await touch('gfx/tests/gtest/TestNew.cpp', 3_000);
-    mockGit.mockResolvedValue(
-      [
+    engineChanges({
+      modified: [
         'gfx/old.cpp',
         'gfx/new.cpp',
         'modules/libpref/init/StaticPrefList.yaml',
         'browser/base/content/new.js',
         'gfx/tests/gtest/TestNew.cpp',
         'gfx/deleted.cpp',
-      ].join('\n')
-    );
+      ],
+    });
     const result = await findCompiledSourcesNewerThanBinary(engineDir, undefined, BINARY);
     expect(result?.paths).toEqual(['gfx/new.cpp', 'modules/libpref/init/StaticPrefList.yaml']);
     expect(result?.linkedPath).toBe('obj-x/dist/bin/libxul.so');
     expect(result?.linkedAt.getTime()).toBe(2_000_000);
   });
+
+  it('is not fooled by a launcher touched after the last link', async () => {
+    await touch('obj-x/dist/bin/libxul.so', 1_000);
+    await touch(BINARY, 3_000);
+    await touch('gfx/between.cpp', 2_000);
+    engineChanges({ modified: ['gfx/between.cpp'] });
+    const result = await findCompiledSourcesNewerThanBinary(engineDir, undefined, BINARY);
+    expect(result?.paths).toEqual(['gfx/between.cpp']);
+    expect(result?.linkedPath).toBe('obj-x/dist/bin/libxul.so');
+  });
+
+  it('falls back to the launcher on a build with no libxul beside it', async () => {
+    await touch(BINARY, 1_000);
+    await touch('gfx/new.cpp', 2_000);
+    engineChanges({ modified: ['gfx/new.cpp'] });
+    const result = await findCompiledSourcesNewerThanBinary(engineDir, undefined, BINARY);
+    expect(result?.paths).toEqual(['gfx/new.cpp']);
+    expect(result?.linkedPath).toBe(BINARY);
+  });
+
+  it.each(['media/x.S', 'js/src/opcodes.tbl', 'dom/bindings/Bindings.conf', 'gfx/wr/Cargo.toml'])(
+    'counts %s as compiled',
+    async (path) => {
+      await touch(BINARY, 1_000);
+      await touch(path, 2_000);
+      engineChanges({ modified: [path] });
+      const result = await findCompiledSourcesNewerThanBinary(engineDir, undefined, BINARY);
+      expect(result?.paths).toEqual([path]);
+    }
+  );
 
   it('returns undefined without a launchable binary to compare against', async () => {
     await expect(

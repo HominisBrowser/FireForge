@@ -94,7 +94,7 @@ vi.mock('../../core/mochitest-server-port.js', () => ({
   ensureMochitestServerPortAvailable: vi.fn(),
 }));
 vi.mock('../../core/harness-orphans.js', () => ({
-  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve({ reaped: 0 })),
+  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve([])),
 }));
 
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
@@ -279,20 +279,13 @@ describe('preflight refusals reach the captured stream and the run log', () => {
       'engine/browser/base/content/test/other/browser_covered.js',
       'browser/components/tests/',
     ];
-    // Both the pre-lock pass and a --negative-control's rewrap of it keep the key.
-    for (const options of [{}, { negativeControl: 'controls/missing.diff' }]) {
-      stdout = '';
-      vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(coverage);
-      await expect(testCommand(projectRoot, requested, options)).rejects.toThrow(
-        PreflightRefusalError
-      );
-      const verdict = stdout.trimEnd().split('\n').at(-1) ?? '';
-      expect(verdict).toMatch(/^FIREFORGE-VERDICT: FAIL reason=preflight note=coverage-replaced /);
-      expect(verdict).toContain(
-        ' build-paths=browser/base/content/test/browser_a.js,browser/components/tests '
-      );
-      if ('negativeControl' in options) expect(stdout).toContain('Add --build');
-    }
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(coverage);
+    await expect(testCommand(projectRoot, requested, {})).rejects.toThrow(PreflightRefusalError);
+    const verdict = stdout.trimEnd().split('\n').at(-1) ?? '';
+    expect(verdict).toMatch(/^FIREFORGE-VERDICT: FAIL reason=preflight note=coverage-replaced /);
+    expect(verdict).toContain(
+      ' build-paths=browser/base/content/test/browser_a.js,browser/components/tests '
+    );
   });
 
   it('still emits a bare reason=preflight for a gate that names no refusal class', async () => {

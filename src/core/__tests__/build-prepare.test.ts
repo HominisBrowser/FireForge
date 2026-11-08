@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createFsMock } from '../../test-utils/module-mocks.js';
+import { fakeEngineGit } from './engine-git-fixture.js';
 
 vi.mock('../branding.js', () => ({
   setupBranding: vi.fn(),
@@ -21,13 +22,11 @@ vi.mock('../git-base.js', () => ({
   git: vi.fn(),
 }));
 
-vi.mock('../git.js', () => ({
-  hasChanges: vi.fn(),
-  isMissingHeadError: vi.fn(() => false),
-}));
-
-vi.mock('../git-status.js', () => ({
-  getUntrackedFiles: vi.fn(() => Promise.resolve([] as string[])),
+vi.mock('../git-status.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../git-status.js')>()),
+  expandUntrackedDirectoryEntries: vi.fn((_dir: string, entries: unknown[]) =>
+    Promise.resolve(entries)
+  ),
   // The jar-escalation narrowing asks whether a changed jar.mn is new.
   // Default: tracked (pre-existing), so only tests that opt in escalate.
   getUntrackedFilesInDir: vi.fn(() => Promise.resolve([] as string[])),
@@ -36,7 +35,8 @@ vi.mock('../git-status.js', () => ({
 // The fingerprint comparison reads engine files through hashEngineFile.
 // Stub it so a "dirty but byte-identical" build input can be simulated
 // without a real engine tree.
-vi.mock('../coverage-extend.js', () => ({
+vi.mock('../coverage-records.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coverage-records.js')>()),
   hashEngineFile: vi.fn(() => Promise.resolve(undefined)),
 }));
 
@@ -80,6 +80,13 @@ vi.mock('../build-overwrite-guard.js', async (importOriginal) => ({
   assessUnexportedDrift: vi.fn(() => Promise.resolve({ atRisk: [], deployedUnexported: [] })),
 }));
 
+// The staleness oracle has its own suites; here only the dispatch notice built
+// from its answer is under test.
+vi.mock('../furnace-staleness.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../furnace-staleness.js')>()),
+  describeStaleFurnaceComponents: vi.fn(() => Promise.resolve([])),
+}));
+
 vi.mock('../furnace-operation.js', () => ({
   runFurnaceMutation: vi.fn(
     async (_root: string, _kind: string, body: (ctx: unknown) => Promise<unknown>) =>
@@ -97,10 +104,11 @@ import { info, notice, spinner, warn } from '../../utils/logger.js';
 import { isBrandingSetup, setupBranding } from '../branding.js';
 import { assessUnexportedDrift } from '../build-overwrite-guard.js';
 import { prepareBuildEnvironment } from '../build-prepare.js';
-import { hashEngineFile } from '../coverage-extend.js';
+import { hashEngineFile } from '../coverage-records.js';
 import { applyAllComponents } from '../furnace-apply.js';
 import { furnaceConfigExists, loadFurnaceConfig, loadFurnaceState } from '../furnace-config.js';
 import { runFurnaceMutation } from '../furnace-operation.js';
+import { describeStaleFurnaceComponents } from '../furnace-staleness.js';
 import { cleanStories } from '../furnace-stories.js';
 import { generateMozconfig } from '../mach.js';
 
@@ -236,6 +244,35 @@ describe('prepareBuildEnvironment', () => {
     ).operationContext;
     expect(typeof operationContext.registerJournal).toBe('function');
     expect(typeof operationContext.registerCleanup).toBe('function');
+  });
+
+  it('names why each deployed component was behind, so a peer edit in the build is visible', async () => {
+    mockFurnaceConfigExists.mockResolvedValue(true);
+    mockLoadFurnaceConfig.mockResolvedValue({
+      overrides: {},
+      custom: { 'moz-mine': {}, 'moz-peer': {}, 'moz-current': {} },
+      stock: [],
+    } as never);
+    vi.mocked(describeStaleFurnaceComponents).mockResolvedValueOnce([
+      { name: 'moz-mine', reason: 'source-edited' },
+      { name: 'moz-peer', reason: 'engine-differs' },
+    ]);
+    mockApplyAllComponents.mockResolvedValue({
+      applied: [{ name: 'moz-mine' }, { name: 'moz-peer' }, { name: 'moz-current' }],
+      errors: [],
+      skipped: [],
+    } as never);
+
+    await prepareBuildEnvironment('/project', paths, config);
+
+    const dispatch = mockNotice.mock.calls
+      .map(([message]) => message)
+      .find((message) => message.startsWith('Furnace dispatch state'));
+    expect(dispatch).toContain(
+      'moz-mine: components/ source changed since its last recorded deploy'
+    );
+    expect(dispatch).toContain('moz-peer: engine copy is missing or differs from the source');
+    expect(dispatch).not.toContain('moz-current');
   });
 
   it('reports the applied component names, and skips the apply on request', async () => {
@@ -511,6 +548,21 @@ describe('prepareBuildEnvironment', () => {
 });
 
 describe('prepareBuildEnvironment unexported-drift belt', () => {
+  it('refuses an unknown strict assessment before any preparation writer', async () => {
+    vi.mocked(assessUnexportedDrift).mockResolvedValueOnce({
+      atRisk: [],
+      deployedUnexported: [],
+      probeError: 'status denied',
+    });
+    await expect(
+      prepareBuildEnvironment('/project', paths, config, { refuseUnexportedDrift: true })
+    ).rejects.toThrow('safety could not be established: status denied');
+    expect(mockCleanStories).not.toHaveBeenCalled();
+    expect(mockSetupBranding).not.toHaveBeenCalled();
+    expect(mockApplyAllComponents).not.toHaveBeenCalled();
+    expect(mockGenerateMozconfig).not.toHaveBeenCalled();
+  });
+
   const deployed = {
     file: 'toolkit/content/widgets/moz-x/moz-x.css',
     classification: 'deployed-unexported' as const,
@@ -555,10 +607,8 @@ describe('prepareBuildEnvironment auto-configure', () => {
   // manifest, so only a new jar.mn escalates.
   it('escalates for a NEW jar.mn', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { getUntrackedFilesInDir } = await import('../git-status.js');
-    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
-    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['toolkit/content/jar.mn'] }));
     vi.mocked(getUntrackedFilesInDir).mockResolvedValueOnce(['toolkit/content/jar.mn']);
 
     const result = await prepareBuildEnvironment('/project', paths, config, {
@@ -575,9 +625,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
 
   it('does not escalate for an entry added to an existing dist/bin jar.mn', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
-    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
-    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['toolkit/content/jar.mn'] }));
     vi.mocked(readText).mockResolvedValueOnce(
       'browser.jar:\n% content browser %content/browser/\n  content/browser/probe.txt (content/probe.txt)\n'
     );
@@ -597,9 +645,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
   // away from the default chrome root, the half the experiment never ran.
   it('still escalates for a jar.mn that redirects its install base directory', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
-    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
-    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['toolkit/content/jar.mn'] }));
     vi.mocked(readText).mockResolvedValueOnce(
       '[localization] toolkit.jar:\n  en-US/foo.ftl (foo.ftl)\n'
     );
@@ -623,9 +669,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
     // every `test --build` after a full build paid a second full build
     // for a manifest the first one had already installed.
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
-    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
-    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['toolkit/content/jar.mn'] }));
     vi.mocked(hashEngineFile).mockResolvedValue('ab'.repeat(32));
 
     const result = await prepareBuildEnvironment('/project', paths, config, {
@@ -643,9 +687,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
 
   it('still escalates when the dirty jar.mn no longer matches its recorded fingerprint', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
-    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
-    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['toolkit/content/jar.mn'] }));
     // The fingerprint gate is what this test is about. Mark the manifest
     // new so the jar rule (new manifests only) also escalates and the
     // fingerprint assertion below stays the assertion under test.
@@ -667,9 +709,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
 
   it('treats an unhashable jar.mn as changed rather than proven unchanged', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
-    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
-    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['toolkit/content/jar.mn'] }));
     // The fingerprint gate is what this test is about. Mark the manifest
     // new so the jar rule (new manifests only) also escalates and the
     // fingerprint assertion below stays the assertion under test.
@@ -694,9 +734,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
     // it was clean at build time and is dirty now, so nothing can prove
     // it unchanged, and no hash is even attempted.
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
-    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
-    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['toolkit/content/jar.mn'] }));
     // The fingerprint gate is what this test is about. Mark the manifest
     // new so the jar rule (new manifests only) also escalates and the
     // fingerprint assertion below stays the assertion under test.
@@ -720,9 +758,7 @@ describe('prepareBuildEnvironment auto-configure', () => {
     // A marker written before the field existed cannot prove anything
     // about the manifest, so the path-only rule applies unchanged.
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
-    vi.mocked(git).mockResolvedValue('toolkit/content/jar.mn\n');
-    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['toolkit/content/jar.mn'] }));
     // The fingerprint gate is what this test is about. Mark the manifest
     // new so the jar rule (new manifests only) also escalates and the
     // fingerprint assertion below stays the assertion under test.
@@ -744,13 +780,10 @@ describe('prepareBuildEnvironment auto-configure', () => {
 
   it('skips mach configure for a dirty moz.build byte-identical to the last successful build', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
-    vi.mocked(git).mockImplementation((args: string[]) => {
-      if (args.includes('abc..HEAD')) return Promise.resolve('');
-      return Promise.resolve('browser/moz.build\nbrowser/base/browser.js\n');
-    });
-    vi.mocked(hasChanges).mockResolvedValue(true);
+    vi.mocked(git).mockImplementation(
+      fakeEngineGit({ modified: ['browser/moz.build', 'browser/base/browser.js'] })
+    );
     vi.mocked(hashEngineFile).mockResolvedValue('ab'.repeat(32));
 
     const result = await prepareBuildEnvironment('/project', paths, config, {
@@ -771,16 +804,11 @@ describe('prepareBuildEnvironment auto-configure', () => {
 
   it('runs mach configure when moz.build changed since the baseline', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
 
-    vi.mocked(git).mockImplementation((args: string[]) => {
-      if (args.includes('abc..HEAD')) {
-        return Promise.resolve('browser/moz.build\nbrowser/base/browser.js\n');
-      }
-      return Promise.resolve('');
-    });
-    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(git).mockImplementation(
+      fakeEngineGit({ committed: ['browser/moz.build', 'browser/base/browser.js'] })
+    );
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
 
     const result = await prepareBuildEnvironment('/project', paths, config, {
@@ -807,11 +835,9 @@ describe('prepareBuildEnvironment auto-configure', () => {
 
   it('skips mach configure when no backend-invalidating files changed', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
 
-    vi.mocked(git).mockResolvedValue('browser/base/browser.js\n'); // .js is not backend-invalidating
-    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['browser/base/browser.js'] })); // .js is not backend-invalidating
 
     const result = await prepareBuildEnvironment('/project', paths, config, {
       previousBaseline: {
@@ -827,15 +853,13 @@ describe('prepareBuildEnvironment auto-configure', () => {
 
   it('stops the build and surfaces the mozbuild UnsortedError text on non-zero configure', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
 
     const unsorted =
       'mozbuild.util.UnsortedError: An attempt was made to add an unsorted sequence to a list. ' +
       "The incoming list is: ['HominisAppMenuIntegration.sys.mjs', 'HominisAppearanceController.sys.mjs']";
 
-    vi.mocked(git).mockResolvedValue('browser/moz.build\n');
-    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['browser/moz.build'] }));
     vi.mocked(runMachCapture).mockResolvedValue({
       stdout: '',
       stderr: `Traceback (most recent call last):\n${unsorted}\n`,
@@ -862,11 +886,9 @@ describe('prepareBuildEnvironment auto-configure', () => {
     // names `fireforge bootstrap` here too (mach's own remediation text
     // suggests "./mach bootstrap", the wrong tool for a managed repo).
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
 
-    vi.mocked(git).mockResolvedValue('browser/moz.build\n');
-    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['browser/moz.build'] }));
     vi.mocked(runMachCapture).mockResolvedValue({
       stdout: '',
       stderr:
@@ -889,11 +911,9 @@ describe('prepareBuildEnvironment auto-configure', () => {
 
   it('surfaces mach configure exceptions and stops building', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
 
-    vi.mocked(git).mockResolvedValue('browser/moz.configure\n');
-    vi.mocked(hasChanges).mockResolvedValue(false);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ committed: ['browser/moz.configure'] }));
     vi.mocked(runMachCapture).mockRejectedValue(new Error('python missing'));
 
     await expect(
@@ -909,21 +929,9 @@ describe('prepareBuildEnvironment auto-configure', () => {
 
   it('picks up workdir-modified moz.build when the baseline diff is empty', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
-    const { getUntrackedFiles } = await import('../git-status.js');
 
-    vi.mocked(git).mockImplementation((args: string[]) => {
-      if (args.includes('abc..HEAD')) {
-        return Promise.resolve('');
-      }
-      if (args[0] === 'diff' && args[1] === '--name-only' && args[2] === 'HEAD') {
-        return Promise.resolve('toolkit/Makefile.in\n');
-      }
-      return Promise.resolve('');
-    });
-    vi.mocked(hasChanges).mockResolvedValue(true);
-    vi.mocked(getUntrackedFiles).mockResolvedValue([]);
+    vi.mocked(git).mockImplementation(fakeEngineGit({ modified: ['toolkit/Makefile.in'] }));
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
 
     const result = await prepareBuildEnvironment('/project', paths, config, {
@@ -1005,12 +1013,10 @@ describe('prepareBuildEnvironment mozconfig before configure', () => {
     // Configure must run against the regenerated engine/mozconfig, or a
     // configs/ fix for a failing configure never reaches it.
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
     vi.mocked(git).mockImplementation((args: string[]) =>
-      Promise.resolve(args.includes('abc..HEAD') ? 'browser/moz.build\n' : '')
+      Promise.resolve(args.includes('abc..HEAD') ? 'browser/moz.build\0' : '')
     );
-    vi.mocked(hasChanges).mockResolvedValue(false);
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
 
     await prepareBuildEnvironment('/project', paths, config, { previousBaseline: baseline });
@@ -1022,12 +1028,10 @@ describe('prepareBuildEnvironment mozconfig before configure', () => {
 
   it('keeps the regenerated mozconfig when configure fails', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
     vi.mocked(git).mockImplementation((args: string[]) =>
-      Promise.resolve(args.includes('abc..HEAD') ? 'browser/moz.build\n' : '')
+      Promise.resolve(args.includes('abc..HEAD') ? 'browser/moz.build\0' : '')
     );
-    vi.mocked(hasChanges).mockResolvedValue(false);
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: 'boom', exitCode: 5 });
 
     await expect(
@@ -1038,10 +1042,8 @@ describe('prepareBuildEnvironment mozconfig before configure', () => {
 
   it('runs configure when only the mozconfig changed since the last build', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
     vi.mocked(git).mockResolvedValue('');
-    vi.mocked(hasChanges).mockResolvedValue(false);
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
     vi.mocked(hashEngineFile).mockImplementation((_engine, rel) =>
       Promise.resolve(rel === 'mozconfig' ? 'new'.padEnd(64, '0') : undefined)
@@ -1060,10 +1062,8 @@ describe('prepareBuildEnvironment mozconfig before configure', () => {
 
   it('does not configure for an unchanged mozconfig', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
     vi.mocked(git).mockResolvedValue('');
-    vi.mocked(hasChanges).mockResolvedValue(false);
     vi.mocked(hashEngineFile).mockResolvedValue('same'.padEnd(64, '0'));
 
     const result = await prepareBuildEnvironment('/project', paths, config, {
@@ -1076,10 +1076,8 @@ describe('prepareBuildEnvironment mozconfig before configure', () => {
 
   it('falls back to "this run rewrote it" on a baseline without mozconfigHash', async () => {
     const { git } = await import('../git-base.js');
-    const { hasChanges } = await import('../git.js');
     const { runMachCapture } = await import('../mach.js');
     vi.mocked(git).mockResolvedValue('');
-    vi.mocked(hasChanges).mockResolvedValue(false);
     vi.mocked(runMachCapture).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
     mockGenerateMozconfig.mockResolvedValueOnce(true);
 

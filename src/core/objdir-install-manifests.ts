@@ -21,7 +21,7 @@
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-import { toError } from '../utils/errors.js';
+import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import { escapeRegex } from '../utils/regex.js';
@@ -168,13 +168,15 @@ async function readManifests(
   let names: string[];
   try {
     names = await readdir(dir);
-  } catch {
-    return false;
+  } catch (error: unknown) {
+    if (getNodeErrorCode(error) === 'ENOENT') return false;
+    throw error;
   }
   for (const name of names) {
     if (name.startsWith('.') || name.endsWith('.track') || name === 'Makefile') continue;
-    const content = await readFile(join(dir, name), 'utf8').catch(() => undefined);
-    if (content === undefined) continue;
+    // A missing/unreadable member makes the entire index incomplete. It may
+    // hide a packaged copy beside a readable symlink destination.
+    const content = await readFile(join(dir, name), 'utf8');
     const base = baseFor(name);
     parseManifest(
       index,

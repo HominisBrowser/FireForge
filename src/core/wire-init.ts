@@ -10,7 +10,6 @@ import MagicString from 'magic-string';
 
 import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { escapeRegex } from '../utils/regex.js';
 import {
   type AcornESTreeNode,
@@ -19,6 +18,7 @@ import {
   getNodeSource,
   parseScript,
 } from './ast-utils.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
 import { isInternalInvariantFailure, withParserFallback } from './parser-fallback.js';
 import {
   assertBraceBalancePreserved,
@@ -27,7 +27,8 @@ import {
   findInsertionAfterFireforgeBlocks,
   findMethodBody,
   findMethodBraceIndex,
-  validateWireName,
+  mentionsInitTarget,
+  validateWireExpression,
   walkToTryBlockEnd,
 } from './wire-utils.js';
 
@@ -117,7 +118,7 @@ export function addInitAST(
     // Find the specific fireforge block containing the --after target
     const targetBlock = fireforgeBlocks.find((block) => {
       const src = getNodeSource(content, block);
-      return src.includes(`typeof ${after}`) || src.includes(`${after}.init(`);
+      return mentionsInitTarget(src, after);
     });
 
     if (targetBlock) {
@@ -183,7 +184,7 @@ export function legacyAddInit(
     let located = false;
     for (let i = braceIndex + 1; i < lines.length; i++) {
       const line = lines[i] ?? '';
-      if (line.includes(`typeof ${after}`) || line.includes(`${after}.init(`)) {
+      if (mentionsInitTarget(line, after)) {
         // Walk backward to find the enclosing try, including a preceding comment
         let tryStart = i;
         for (let k = i - 1; k > braceIndex; k--) {
@@ -252,7 +253,7 @@ export async function addInitToBrowserInit(
   after?: string,
   marker: string = DEFAULT_MARKER
 ): Promise<boolean> {
-  validateWireName(expression, 'init expression');
+  validateWireExpression(expression, 'init expression');
   const filePath = join(engineDir, BROWSER_INIT_JS);
 
   if (!(await pathExists(filePath))) {

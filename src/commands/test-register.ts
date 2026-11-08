@@ -220,7 +220,14 @@ type TestActionOptions = Pick<TestOptions, 'keepLog' | 'restartBetweenTests'> & 
   profileFile?: string[];
 } & Pick<
     TestOptions,
-    'repeat' | 'negativeControl' | 'autoPorts' | 'jobs' | 'shardSize' | 'results' | 'sharedLock'
+    | 'repeat'
+    | 'negativeControl'
+    | 'autoPorts'
+    | 'jobs'
+    | 'shardSize'
+    | 'results'
+    | 'sharedLock'
+    | 'coverage'
   >;
 
 /** Registers the test command on the CLI program. */
@@ -232,6 +239,10 @@ export function registerTest(
     .command('test [paths...]')
     .description('Run tests via mach test')
     .option('--headless', 'Run tests in headless mode')
+    .option(
+      '--coverage <dir>',
+      'Collect JavaScript LCOV per process, acknowledge shutdown flushes, and fail incomplete collection; use explicit xpcshell/mochitest paths'
+    )
     .option(
       '--full-output',
       "Pass mozbuild's full verbosity through for the TEST phase. mozbuild quiets terminal output to warnings and errors when it detects a coding agent, which removes TEST_START and console INFO — the lines a hang or stall diagnosis needs. This unsets that detection for test dispatches only; the build phase stays quiet."
@@ -260,11 +271,11 @@ export function registerTest(
     )
     .option(
       '--reap-orphans',
-      'Terminate harness helper processes (httpd, pywebsocket, ssltunnel, moz-http2) from this objdir that survived an earlier run. The census itself runs on every test dispatch and is report-only; this flag (or test.reapOrphans: "reap" in fireforge.json) opts into the kill. Reaps are stamped on the verdict line as orphans-reaped=<n>.'
+      'Terminate helpers a FireForge run on this objdir recorded before it died. Anything else is reported and left alone'
     )
     .option(
       '--pgid-file <path>',
-      'Write the harness process-group id (mach is the group leader) to this file on every spawn, so a supervisor that had to SIGKILL fireforge can still take the whole harness tree with "kill -- -$(cat <path>)". Removed when the run ends normally.'
+      'Write the harness process-group id (mach is the group leader) to this file on every spawn, as a locator for a supervisor that had to SIGKILL fireforge. The id alone is not ownership: confirm a member of that group is still a harness process before signalling it, because the number may since belong to something else. Removed when the run ends normally.'
     )
     .option(
       '--canary [path]',

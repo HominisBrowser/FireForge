@@ -221,6 +221,23 @@ describe('share-scoped ceilings, meta and notices', () => {
     severity: PatchLintIssue['severity'] = 'warning'
   ): PatchLintIssue => ({ ...issue('large-patch-lines', measurement, severity), share });
 
+  it('names what counts toward a share when its ceiling is exceeded', () => {
+    const checks = buildLintIgnoreChecks([shared('product', 900)]);
+    const { kept } = partitionLintIgnoredIssues([sized(901, 'product')], checks);
+    expect(kept[0]?.message).toContain('(product share) (max 900: reviewed).');
+    expect(kept[0]?.message).toContain(
+      'The product share counts added code lines in non-test files; comment-only and blank lines, ' +
+        'lines inside expanded CSS fragments, registration files and binary files are not counted.'
+    );
+    const test = partitionLintIgnoredIssues(
+      [sized(4001, 'test')],
+      buildLintIgnoreChecks([shared('test', 4000)])
+    );
+    expect(test.kept[0]?.message).toContain(
+      'The test share counts added code lines in test files;'
+    );
+  });
+
   it('accepts one ceiling per share and preserves meta verbatim', () => {
     const meta = { kind: 'structural', owner: 'tiles', exit: { when: 'split' } };
     const entries = parseLintIgnoreEntries(

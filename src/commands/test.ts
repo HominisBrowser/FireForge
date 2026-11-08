@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
+import { withEngineStateHold } from '../core/engine-state.js';
 import { readBuildId } from '../core/launchable-build.js';
 import { hasBuildArtifacts } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
@@ -45,7 +46,7 @@ import {
   ensureTestBrowserEnvironment,
   runDoctorPreflight,
 } from './test-browser-preflight.js';
-import { runTestBuildPhase } from './test-build-phase.js';
+import { assertBuildFlagUsage, runTestBuildPhase } from './test-build-phase.js';
 import { assertParallelTestUsage, dispatchTests } from './test-dispatch.js';
 import { buildPerfSampleEnv, mergeHarnessEnv, resolveShuffleSeed } from './test-harness-env.js';
 import { removePgidFile, setActivePgidFile } from './test-harness-teardown.js';
@@ -188,11 +189,24 @@ export async function testCommand(
   setActivePgidFile(options.pgidFile);
   let staged: StagedProfileFiles | undefined;
   try {
+    if (
+      options.coverage !== undefined &&
+      (options.buildOnly === true ||
+        options.canary !== undefined ||
+        options.auto === true ||
+        testPaths.length === 0)
+    ) {
+      throw new PreflightRefusalError(
+        '--coverage needs explicit dispatched test paths and cannot be combined with --build-only, --canary or --auto.',
+        'coverage-suite'
+      );
+    }
     if (options.profileFile?.length) {
       staged = await stageProfileFiles(projectRoot, options.profileFile);
       options = { ...options, machArg: [...(options.machArg ?? []), ...staged.args] };
     }
     assertParallelTestUsage(testPaths, options);
+    assertBuildFlagUsage(testPaths, options);
     const lockedOptions = await runTestPreLockPreflight(projectRoot, testPaths, options);
     const profileEnv = staged?.env;
     // The pre-lock pass resolved `sharedLock` against config and the run's shape.
@@ -223,7 +237,10 @@ export async function testCommand(
       options.results !== undefined || options.shardSize !== undefined || (options.jobs ?? 1) > 1;
     try {
       await underLock(
-        () => (collectsResults ? withRawLogDir((dir) => orchestrate(dir)) : orchestrate()),
+        () =>
+          withEngineStateHold(() =>
+            collectsResults ? withRawLogDir((dir) => orchestrate(dir)) : orchestrate()
+          ),
         lockMode
       );
     } finally {
@@ -358,6 +375,11 @@ function prepareDispatchArguments(
   projectConfig: FireForgeConfig
 ): { suite: TestSuite; shuffleSeed: number | undefined; extraArgs: string[] } {
   const suite = resolveTestSuite(classification, options.genericMachTest === true);
+  if (options.coverage !== undefined && suite === 'generic')
+    throw new PreflightRefusalError(
+      '--coverage needs suite-specific xpcshell/mochitest dispatch; remove --generic-mach-test.',
+      'coverage-suite'
+    );
   const shuffleSeed = resolveShuffleSeed(options.shuffle, suite);
   const forwardedMachArgs =
     options.machArg && options.machArg.length > 0
@@ -448,7 +470,8 @@ async function runTestCommandBody(
     projectRoot,
     paths.engine,
     projectConfig.binaryName,
-    buildCheck.objDir
+    buildCheck.objDir,
+    options.build === true || options.buildOnly === true
   );
 
   const harnessRetries = options.harnessRetries ?? DEFAULT_HARNESS_RETRIES;
@@ -488,6 +511,7 @@ async function runTestCommandBody(
       ...(hooks.fullBuildReason === undefined ? {} : { fullBuildReason: hooks.fullBuildReason }),
       ...(hooks.controlBuild === undefined ? {} : { controlBuild: hooks.controlBuild }),
       ...(hooks.ownControlBuild === undefined ? {} : { ownControlBuild: hooks.ownControlBuild }),
+      ...(hooks.controlWithoutBuild === true ? { controlWithoutBuild: true } : {}),
       launchablePath,
     })
   ) {
@@ -544,6 +568,9 @@ async function runTestCommandBody(
 
   const runCtx: TestRunContext = {
     engineDir: paths.engine,
+    ...(options.coverage === undefined
+      ? {}
+      : { coverageDir: resolve(projectRoot, options.coverage) }),
     objDir: buildCheck.objDir,
     classification,
     suite,

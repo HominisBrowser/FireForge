@@ -106,6 +106,11 @@ export function isTestScriptFile(file: string): boolean {
   return /^(?:browser_|test_|xpcshell_).*\.js$/.test(basename);
 }
 
+/** True for a test directory's `head.js` / `head_*.js` support script. */
+export function isHeadScript(file: string): boolean {
+  return /^head(?:_.*)?\.js$/.test(file.slice(file.lastIndexOf('/') + 1));
+}
+
 /**
  * For each test script, the ES modules (`.mjs`, `.sys.mjs`) the queue
  * creates up to and including the test's own patch: what its imports can

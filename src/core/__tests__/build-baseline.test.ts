@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,7 @@ import { getBuildBaselinePath, readBuildBaseline, writeBuildBaseline } from '../
 import { DELETED_FILE_FINGERPRINT } from '../build-baseline-types.js';
 import { FIREFORGE_DIR } from '../config-paths.js';
 import * as git from '../git.js';
+import { fakeEngineGit } from './engine-git-fixture.js';
 
 describe('build-baseline', () => {
   let projectRoot: string;
@@ -42,7 +44,19 @@ describe('build-baseline', () => {
     expect(stored).toBeDefined();
     expect(stored?.engineHeadSha).toBe('deadbeef1234');
     expect(stored?.binaryName).toBe('mybrowser');
+    expect(stored?.buildKind).toBe('full');
     expect(() => new Date(stored?.builtAt ?? '').toISOString()).not.toThrow();
+  });
+
+  it('persists faster rather than inferring a full build from a successful exit', async () => {
+    vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef1234');
+    await writeBuildBaseline({
+      projectRoot,
+      engineDir: '/engine',
+      binaryName: 'mybrowser',
+      buildKind: 'faster',
+    });
+    expect((await readBuildBaseline(projectRoot))?.buildKind).toBe('faster');
   });
 
   it('writes an empty SHA when the engine has no HEAD yet', async () => {
@@ -128,13 +142,11 @@ describe('build-baseline', () => {
   });
 
   it('omits packageableFingerprints when the outer git probe fails', async () => {
-    // Defensive case: a broken `hasChanges` / `git diff` probe must not
+    // Defensive case: a broken `git status` probe must not
     // corrupt the on-disk baseline with `{}`. The fingerprint field is
     // left undefined so the stale-check falls back to the path-only
     // comparison on the next test run.
     vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
-    const gitModule = await import('../git.js');
-    vi.spyOn(gitModule, 'hasChanges').mockRejectedValue(new Error('git unavailable'));
 
     await writeBuildBaseline({
       projectRoot,
@@ -149,14 +161,12 @@ describe('build-baseline', () => {
     const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
     try {
       vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
-      const gitModule = await import('../git.js');
       const gitBase = await import('../git-base.js');
-      const gitStatus = await import('../git-status.js');
-      vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(true);
-      vi.spyOn(gitBase, 'git').mockResolvedValue(
-        'browser/base/content/vanishing.js\0browser/base/content/present.js\0'
+      vi.spyOn(gitBase, 'git').mockImplementation(
+        fakeEngineGit({
+          modified: ['browser/base/content/vanishing.js', 'browser/base/content/present.js'],
+        })
       );
-      vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
 
       // `present.js` exists, `vanishing.js` doesn't. The missing path is a
       // tracked deletion from the baseline's point of view and must remain
@@ -182,14 +192,15 @@ describe('build-baseline', () => {
     const engineDir = await mkdtemp(join(tmpdir(), 'ff-build-baseline-engine-'));
     try {
       vi.spyOn(git, 'getHead').mockResolvedValue('full-sha');
-      const gitModule = await import('../git.js');
       const gitBase = await import('../git-base.js');
-      const gitStatus = await import('../git-status.js');
-      vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(true);
-      vi.spyOn(gitBase, 'git').mockResolvedValue(
-        'browser/components/mybrowser/components.conf\0browser/base/content/browser-main.js\0'
+      vi.spyOn(gitBase, 'git').mockImplementation(
+        fakeEngineGit({
+          modified: [
+            'browser/components/mybrowser/components.conf',
+            'browser/base/content/browser-main.js',
+          ],
+        })
       );
-      vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
 
       const { writeText, ensureDir: ensureDirLocal } = await import('../../utils/fs.js');
       await ensureDirLocal(join(engineDir, 'browser/components/mybrowser'));
@@ -226,8 +237,8 @@ describe('build-baseline', () => {
     // A scoped `test --build` runs `mach build faster`, which does not
     // rebake components.conf, so the last full build stays the honest anchor.
     vi.spyOn(git, 'getHead').mockResolvedValue('scoped-sha');
-    const gitModule = await import('../git.js');
-    vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(false);
+    const gitBase = await import('../git-base.js');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit());
 
     const anchor = {
       engineHeadSha: 'full-sha',
@@ -254,8 +265,8 @@ describe('build-baseline', () => {
 
   it('omits the staticComponentsBaseline on a scoped write with no previous baseline', async () => {
     vi.spyOn(git, 'getHead').mockResolvedValue('scoped-sha');
-    const gitModule = await import('../git.js');
-    vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(false);
+    const gitBase = await import('../git-base.js');
+    vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit());
 
     await writeBuildBaseline({
       projectRoot,
@@ -272,8 +283,6 @@ describe('build-baseline', () => {
     // omits the field so the static-components check degrades to fresh
     // instead of anchoring to a garbage record.
     vi.spyOn(git, 'getHead').mockResolvedValue('full-sha');
-    const gitModule = await import('../git.js');
-    vi.spyOn(gitModule, 'hasChanges').mockRejectedValue(new Error('git unavailable'));
 
     await writeBuildBaseline({
       projectRoot,
@@ -292,14 +301,10 @@ describe('build-baseline', () => {
 
     async function stubDirtyBuildInputs(engineDir: string): Promise<void> {
       vi.spyOn(git, 'getHead').mockResolvedValue('sha');
-      const gitModule = await import('../git.js');
       const gitBase = await import('../git-base.js');
-      const gitStatus = await import('../git-status.js');
-      vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(true);
-      vi.spyOn(gitBase, 'git').mockResolvedValue(
-        `${JAR}\0${MOZBUILD}\0browser/base/content/x.js\0`
+      vi.spyOn(gitBase, 'git').mockImplementation(
+        fakeEngineGit({ modified: [JAR, MOZBUILD, 'browser/base/content/x.js'] })
       );
-      vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
       const { writeText, ensureDir: ensureDirLocal } = await import('../../utils/fs.js');
       await ensureDirLocal(join(engineDir, 'toolkit/content'));
       await ensureDirLocal(join(engineDir, 'browser/base/content'));
@@ -394,8 +399,6 @@ describe('build-baseline', () => {
       // field off rather than writing `{}`, and build-prepare then falls
       // back to the path-only comparison.
       vi.spyOn(git, 'getHead').mockResolvedValue('sha');
-      const gitModule = await import('../git.js');
-      vi.spyOn(gitModule, 'hasChanges').mockRejectedValue(new Error('git unavailable'));
       await writeBuildBaseline({
         projectRoot,
         engineDir: '/engine-does-not-exist',
@@ -419,12 +422,10 @@ describe('build-baseline', () => {
       // Emulate a dirty-but-committed-against-HEAD packageable file by
       // stubbing the git helpers the baseline writer consults.
       vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
-      const gitModule = await import('../git.js');
       const gitBase = await import('../git-base.js');
-      const gitStatus = await import('../git-status.js');
-      vi.spyOn(gitModule, 'hasChanges').mockResolvedValue(true);
-      vi.spyOn(gitBase, 'git').mockResolvedValue('browser/base/content/browser-main.js\0');
-      vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
+      vi.spyOn(gitBase, 'git').mockImplementation(
+        fakeEngineGit({ modified: ['browser/base/content/browser-main.js'] })
+      );
 
       // Create the packageable file so the fingerprint hash has content
       // to read.
@@ -452,11 +453,10 @@ describe('build-baseline', () => {
     const engineDir = join(projectRoot, 'engine');
     await ensureDir(join(engineDir, 'browser/tests/broken.js'));
     vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
     const gitBase = await import('../git-base.js');
-    const gitStatus = await import('../git-status.js');
-    vi.spyOn(gitBase, 'git').mockResolvedValue('browser/tests/broken.js\0');
-    vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([]);
+    vi.spyOn(gitBase, 'git').mockImplementation(
+      fakeEngineGit({ modified: ['browser/tests/broken.js'] })
+    );
     await writeBuildBaseline({ projectRoot, engineDir, binaryName: 'mybrowser' });
     const stored = await readBuildBaseline(projectRoot, 'refuse');
     expect(stored?.testInputFingerprints).toBeUndefined();
@@ -495,21 +495,45 @@ describe('build-baseline', () => {
     const engineDir = join(projectRoot, 'engine');
     const path = 'browser/base/content/caf\u00e9.js';
     await ensureDir(join(engineDir, 'browser/base/content'));
+    execFileSync('git', ['init', '-q'], { cwd: engineDir });
     const { writeText } = await import('../../utils/fs.js');
     await writeText(join(engineDir, path), '// cafe\n');
     vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
-    vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-    const gitBase = await import('../git-base.js');
-    const gitSpy = vi
-      .spyOn(gitBase, 'git')
-      .mockImplementation((args) => Promise.resolve(args.includes('diff') ? `${path}\0` : ''));
     await writeBuildBaseline({ projectRoot, engineDir, binaryName: 'mybrowser' });
-    expect(gitSpy).toHaveBeenCalledWith(
-      expect.arrayContaining(['-c', 'core.quotePath=false', '-z']),
-      engineDir
-    );
     const stored = await readBuildBaseline(projectRoot, 'refuse');
     expect(Object.keys(stored?.packageableFingerprints ?? {})).toEqual([path]);
+  });
+
+  it('enumerates and hashes the dirty tree once per write, for every record kind', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    const paths = [
+      'browser/base/content/a.js',
+      'browser/base/moz.build',
+      'browser/components/x/components.conf',
+    ];
+    const { writeText } = await import('../../utils/fs.js');
+    for (const path of paths) {
+      await ensureDir(join(engineDir, path, '..'));
+      await writeText(join(engineDir, path), `// ${path}\n`);
+    }
+    vi.spyOn(git, 'getHead').mockResolvedValue('deadbeef');
+    const gitBase = await import('../git-base.js');
+    const gitSpy = vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ modified: paths }));
+    await writeBuildBaseline({
+      projectRoot,
+      engineDir,
+      binaryName: 'mybrowser',
+      testPackagingCoverage: 'full',
+    });
+    const enumerations = gitSpy.mock.calls.filter(([args]) =>
+      ['status', 'diff', 'ls-files'].some((verb) => args.includes(verb))
+    );
+    expect(enumerations).toHaveLength(1);
+    const stored = await readBuildBaseline(projectRoot, 'refuse');
+    expect(Object.keys(stored?.testInputFingerprints ?? {}).sort()).toEqual(paths);
+    expect(Object.keys(stored?.packageableFingerprints ?? {})).toEqual([paths[0]]);
+    expect(Object.keys(stored?.buildInputFingerprints ?? {})).toEqual([paths[1]]);
+    expect(Object.keys(stored?.staticComponentsBaseline?.fingerprints ?? {})).toEqual([paths[2]]);
   });
 
   it('records a controlBuild stamp only when given one', async () => {

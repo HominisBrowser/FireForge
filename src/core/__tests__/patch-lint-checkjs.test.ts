@@ -25,10 +25,21 @@ describe('runCheckJs', () => {
     expect(issues).toHaveLength(0);
   });
 
-  it('returns empty when owned files do not exist on disk', async () => {
+  it('fails instead of passing when none of the owned files exist on disk', async () => {
     mockPathExists.mockResolvedValue(false);
     const issues = await runCheckJs('/engine', new Set(['missing/Module.sys.mjs']));
-    expect(issues).toHaveLength(0);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ check: 'checkjs-type-error', severity: 'error' });
+    expect(issues[0]?.message).toContain('nothing was type-checked');
+  });
+
+  it('is not an error for a scope that selects no owned file', async () => {
+    const result = await runCheckJsGrouped({
+      repoDir: '/engine',
+      resolutionOwned: new Set(['missing/Module.sys.mjs']),
+      rootScope: new Set(['docs/readme.css']),
+    });
+    expect(result.global).toHaveLength(0);
   });
 
   it('detects type errors in patch-owned files', async () => {
@@ -409,6 +420,37 @@ describe('runCheckJs', () => {
       const errors = issues.filter((i) => i.check === 'checkjs-type-error');
       expect(errors.length).toBeGreaterThanOrEqual(1);
       expect(errors.some((i) => i.file === 'consumer.sys.mjs')).toBe(true);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a missing export imported from a resolved owned module, but not from an unresolved one', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+
+    const tmpDir = await mkdtemp(join(tmpdir(), 'ff-checkjs-missing-export-'));
+    await writeFile(join(tmpDir, 'A.sys.mjs'), 'export const present = 1;\n');
+    await writeFile(
+      join(tmpDir, 'B.sys.mjs'),
+      [
+        'import { missing, present } from "resource:///modules/hominis/A.sys.mjs";',
+        'import { upstream } from "resource://gre/modules/Upstream.sys.mjs";',
+        'export const value = [missing, present, upstream];',
+        '',
+      ].join('\n')
+    );
+    mockPathExists.mockImplementation(async (p) => {
+      const { existsSync } = await import('node:fs');
+      return existsSync(p);
+    });
+
+    try {
+      const issues = await runCheckJs(tmpDir, new Set(['A.sys.mjs', 'B.sys.mjs']));
+      const messages = issues.map((i) => i.message);
+      expect(messages.some((m) => m.includes("no exported member 'missing'"))).toBe(true);
+      expect(messages.some((m) => m.includes('present'))).toBe(false);
+      expect(messages.some((m) => m.includes('upstream'))).toBe(false);
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }

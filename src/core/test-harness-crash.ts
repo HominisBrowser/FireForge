@@ -26,6 +26,20 @@
 import { hasKnownTeardownNoise } from './mach-known-noise-filter.js';
 import { detectServerStartupFailure } from './test-harness-infra.js';
 import {
+  analyzeTestCompleteness,
+  EXECUTION_START_PATTERN,
+  extractSummaryCounts,
+  GREEN_UNEXPECTED_SUMMARY_PATTERN,
+  type HarnessSummaryCounts,
+  lastSuiteEndOffset,
+  NONZERO_FAILED_SUMMARY_PATTERN,
+  NONZERO_UNEXPECTED_SUMMARY_PATTERN,
+  POSITIVE_PASSED_SUMMARY_PATTERN,
+  SUITE_END_PATTERN,
+  XPCSHELL_RESULT_SUMMARY_PATTERN,
+  ZERO_PASSED_SUMMARY_PATTERN,
+} from './test-harness-markers.js';
+import {
   type GreenTeardownOverride,
   truncateEvidence,
   unmarkedFailureEvidenceNote,
@@ -34,17 +48,26 @@ import { classifyProfileArgumentFailure } from './test-profile-files.js';
 // Defined in a leaf module so this file and `test-stall-triage.ts` can both
 // name it without forming an import cycle. Re-exported here because the
 // command layer imports its harness diagnostics from this module.
-export type { HarnessCrashSignature } from './test-harness-signature.js';
+export type { GreenSummaryRejection, HarnessCrashSignature } from './test-harness-signature.js';
 import {
   formatIncompleteSuffix,
   formatShardsSuffix,
+  type GreenSummaryRejection,
   type HarnessCrashSignature,
   type IncompleteRunEvidence,
+  type RawRunSummary,
 } from './test-harness-signature.js';
 
-// The operator message after exhausted retries lives beside the
-// server-startup shape in `test-harness-infra.ts`.
-export { buildHarnessCrashMessage } from './test-harness-infra.js';
+export type { HarnessSummaryCounts } from './test-harness-markers.js';
+
+// The operator messages live beside the server-startup shape in
+// `test-harness-infra.ts`.
+export {
+  buildGreenSummaryRejectedMessage,
+  buildHarnessCrashMessage,
+  buildNoTestsRanMessage,
+  buildSilentSegfaultMessage,
+} from './test-harness-infra.js';
 
 // The no-output-stall triage text lives in `test-stall-triage.ts` (it is
 // operator advice, not classification) and is re-exported here so the
@@ -54,14 +77,6 @@ export { headedDisplayAsleepVerdictNote, headedNoOutputTimeoutHint } from './tes
 /** How a completed harness run should be interpreted. */
 export type HarnessRunClassification =
   'tests-ran-ok' | 'test-failures' | 'harness-crash' | 'harness-arguments' | 'no-tests';
-
-/** Numeric counts parsed from the harness's embedded result summary. */
-export interface HarnessSummaryCounts {
-  /** Total checks the suite ran (`Ran N checks`), when the summary prints one. */
-  checks?: number;
-  /** Unexpected-result count (`Unexpected results: N`), when the summary prints one. */
-  unexpected?: number;
-}
 
 /** Result of {@link classifyHarnessRun}. */
 export interface HarnessRunVerdict extends HarnessSummaryCounts {
@@ -109,40 +124,6 @@ export interface HarnessRunVerdict extends HarnessSummaryCounts {
   incomplete?: IncompleteRunEvidence;
 }
 
-/** Why a green-looking embedded summary was not trusted. */
-export interface GreenSummaryRejection {
-  /** Crash-marker evidence line (mozcrash / signal kill), if any. */
-  crashLine?: string;
-  /** Requested test files with no `TEST_START`/`TEST-START` line at all. */
-  neverStarted: string[];
-  /** Files whose `TEST_START` has no matching end marker. */
-  neverEnded: string[];
-}
-
-const TEST_START_PATTERN = /\bTEST-START\b/;
-/**
- * Structured-log execution marker (`mach xpcshell-test` mozlog output uses
- * `TEST_START`/`SUITE_END` with underscores, not the hyphenated
- * `TEST-START` the browser-chrome dispatch prints).
- */
-const STRUCTURED_TEST_START_PATTERN = /\bTEST_START\b/;
-const SUITE_END_PATTERN = /\bSUITE_END\b/;
-const GREEN_UNEXPECTED_SUMMARY_PATTERN = /\bUnexpected results:\s*0\b/;
-const NONZERO_UNEXPECTED_SUMMARY_PATTERN = /\bUnexpected results:\s*[1-9]/;
-/**
- * Execution signals emitted by the suite-specific xpcshell dispatch
- * (`mach xpcshell-test`), which does not print `TEST-START` lines the way
- * the generic `mach test` / browser-chrome dispatch does. A passing
- * single-file xpcshell run prints a result-summary block instead
- * (`TEST_END: Test PASS`, `Ran 16 checks`, `Unexpected results: 0`), so
- * keying execution purely on `TEST-START` mis-reads a green xpcshell run as
- * "no tests started".
- *
- * These markers are xpcshell-specific on purpose: the bare `Passed: 0` /
- * `Failed: 0` summary that the no-output hang shape prints is deliberately
- * not matched here, because that case must still read as `no-tests`.
- */
-const XPCSHELL_RESULT_SUMMARY_PATTERN = /\bTEST_END\b|\bRan \d+ checks?\b|\bResult summary:/i;
 const UNEXPECTED_LINE_PATTERN = /^.*\bTEST-UNEXPECTED-[A-Z-]+\b.*$/gm;
 /**
  * A `FAIL` token that is harness-shaped. Not a bare `\bFAIL\b`
@@ -171,6 +152,20 @@ export const SHUTDOWN_REENTRY_PATTERN =
 const FOCUS_STALL_PATTERN = /must wait for focus/i;
 const TRACEBACK_PATTERN = /Traceback \(most recent call last\)/;
 const NO_OUTPUT_TIMEOUT_PATTERN = /timed out after \d+ seconds with no output/i;
+
+/** Harness lines that say what a run was waiting on or which ports it held. */
+const STARTUP_CONTEXT_PATTERN = /\bport \d{2,5}\b|Waiting for browser|Marionette/i;
+
+/** Most harness lines carried into a startup-timeout message. */
+const STARTUP_CONTEXT_LIMIT = 5;
+
+function startupContextLines(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .filter((line) => STARTUP_CONTEXT_PATTERN.test(line))
+    .slice(0, STARTUP_CONTEXT_LIMIT)
+    .map((line) => line.trim());
+}
 
 /**
  * Crash-marker lines mozcrash / the mochitest harness print when the browser
@@ -256,6 +251,15 @@ const NOISE_LINE_PATTERNS: readonly RegExp[] = [
   /failed to read the received data/i,
 ];
 
+/**
+ * Output that can own a non-zero exit on a suite that finished green: the
+ * resource-monitor failure family and its degradation chatter.
+ */
+const RECOGNIZED_EXIT_NOISE: readonly RegExp[] = [
+  ...STARTUP_TRACEBACK_SIGNALS,
+  ...NOISE_LINE_PATTERNS,
+];
+
 /** Matches the caught/telemetry context that marks a traceback as benign. */
 const BENIGN_TRACEBACK_CONTEXT = /telemetry|glean/i;
 
@@ -267,8 +271,13 @@ const BENIGN_TRACEBACK_CONTEXT = /telemetry|glean/i;
  * Classification of test results still reads the full output.
  */
 export function stripNonSignalNoise(output: string): string {
+  return scanNonSignalNoise(output).kept.join('\n');
+}
+
+function scanNonSignalNoise(output: string): { kept: string[]; benignTracebacks: number } {
   const lines = output.split(/\r?\n/);
   const kept: string[] = [];
+  let benignTracebacks = 0;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] ?? '';
     if (NOISE_LINE_PATTERNS.some((p) => p.test(line))) continue;
@@ -284,6 +293,7 @@ export function stripNonSignalNoise(output: string): string {
         if (!isIndented) break; // unindented exception line terminates the block
       }
       if (BENIGN_TRACEBACK_CONTEXT.test(block.join('\n'))) {
+        benignTracebacks += 1;
         i = j; // drop the whole caught-telemetry traceback block
         continue;
       }
@@ -292,7 +302,15 @@ export function stripNonSignalNoise(output: string): string {
     }
     kept.push(line);
   }
-  return kept.join('\n');
+  return { kept, benignTracebacks };
+}
+
+/** Output that can own a non-zero exit, including a traceback mach caught itself. */
+function hasRecognizedExitNoise(output: string): boolean {
+  return (
+    findLine(output, RECOGNIZED_EXIT_NOISE) !== undefined ||
+    scanNonSignalNoise(output).benignTracebacks > 0
+  );
 }
 
 /**
@@ -301,11 +319,7 @@ export function stripNonSignalNoise(output: string): string {
  * suite-specific xpcshell result-summary block.
  */
 function hasExecutionSignal(output: string): boolean {
-  return (
-    TEST_START_PATTERN.test(output) ||
-    STRUCTURED_TEST_START_PATTERN.test(output) ||
-    hasXpcshellResultSummary(output)
-  );
+  return EXECUTION_START_PATTERN.test(output) || hasXpcshellResultSummary(output);
 }
 
 /**
@@ -331,6 +345,7 @@ function hasGreenShapedSummary(output: string): boolean {
     SUITE_END_PATTERN.test(output) &&
     GREEN_UNEXPECTED_SUMMARY_PATTERN.test(output) &&
     !NONZERO_UNEXPECTED_SUMMARY_PATTERN.test(output) &&
+    !NONZERO_FAILED_SUMMARY_PATTERN.test(output) &&
     realUnexpectedFailureLines(output).length === 0
   );
 }
@@ -349,59 +364,6 @@ function hasGreenShapedSummary(output: string): boolean {
  */
 export function hasCompletedGreenSummary(output: string): boolean {
   return hasGreenShapedSummary(output) && findCrashMarkerLine(output) === undefined;
-}
-
-/** Basename shape of a mozbuild-manifest test implementation file. */
-export const TEST_FILE_BASENAME_PATTERN = /^(?:browser|test)_.*\.m?js$/;
-
-/**
- * Start/end execution markers, both log dialects: the structured mozlog
- * `TEST_START`/`TEST_END` pair and the human browser-chrome
- * `TEST-START`/`TEST-OK` pair. `TEST-UNEXPECTED-*` end shapes are
- * irrelevant here, since any such line already fails the green-summary check
- * before completeness is consulted.
- */
-export const START_MARKER_PATTERN = /\bTEST[-_]START\b[:| ]*\s*(\S+)?/;
-const END_MARKER_PATTERN = /\bTEST[-_]END\b|\bTEST-OK\b/;
-
-/**
- * Cross-checks run completeness against the requested test files: every
- * requested file must produce a start marker, and every started test must
- * produce an end marker (the harness emits both even for failing files).
- *
- * Ends are paired with starts positionally (last open start is closed by
- * the next end), not by filename: the xpcshell dialect's `TEST_END: Test
- * PASS` lines do not name the file. Requested paths that are not
- * test-file-shaped (directories, manifests) are skipped for the
- * never-started check. The start/end pairing scan covers them regardless.
- * Exported for direct unit testing.
- */
-export function analyzeTestCompleteness(
-  output: string,
-  requestedPaths: readonly string[]
-): { neverStarted: string[]; neverEnded: string[] } {
-  const startedNames: string[] = [];
-  const openTests: string[] = [];
-  for (const line of output.split(/\r?\n/)) {
-    const startMatch = START_MARKER_PATTERN.exec(line);
-    if (startMatch) {
-      const name = startMatch[1] ?? '(unnamed test)';
-      startedNames.push(name);
-      openTests.push(name);
-      continue;
-    }
-    if (END_MARKER_PATTERN.test(line)) {
-      openTests.pop();
-    }
-  }
-
-  const neverStarted = requestedPaths.filter((path) => {
-    const base = path.slice(path.lastIndexOf('/') + 1);
-    if (!TEST_FILE_BASENAME_PATTERN.test(base)) return false;
-    return !startedNames.some((name) => name.includes(base));
-  });
-
-  return { neverStarted, neverEnded: openTests };
 }
 
 /**
@@ -561,7 +523,12 @@ export function detectHarnessCrashSignature(output: string): HarnessCrashSignatu
     }
     const timeoutLine = findLine(evidence, [NO_OUTPUT_TIMEOUT_PATTERN]);
     if (timeoutLine) {
-      return { reason: 'no-output timeout before any test started', line: timeoutLine };
+      const harnessLines = startupContextLines(evidence);
+      return {
+        reason: 'no-output timeout before any test started',
+        line: timeoutLine,
+        ...(harnessLines.length > 0 ? { harnessLines } : {}),
+      };
     }
     return undefined;
   }
@@ -592,27 +559,53 @@ export function detectHarnessCrashSignature(output: string): HarnessCrashSignatu
  *    or the suite-specific xpcshell result-summary block (the xpcshell
  *    dispatch prints no `TEST-START`). Bare `Passed:`/`Failed:` summary
  *    lines are still not trusted as evidence of execution.
- * 3. Exit code zero with tests started is a pass. Anything else is a
+ * 3. Exit code zero with tests started passes only without hard failure,
+ *    crash, or nonzero failure-summary evidence. Anything else is a
  *    test failure for the regular diagnosis chain, except a non-zero
  *    exit whose embedded summary completed green and shows no crash
  *    marker and no truncated/never-started requested file, which is a
- *    pass with a `greenSummaryOverride` note (harness noise owns the
- *    exit code). A green-shaped summary with such evidence is rejected
- *    (`greenSummaryRejected`) and fails.
+ *    pass with a `greenSummaryOverride` note (recognized noise owns the
+ *    exit code). A green-shaped summary with such evidence, a signal-shaped
+ *    exit, a later unexplained traceback, or an exit no recognized noise
+ *    accounts for is rejected (`greenSummaryRejected`) and fails.
+ *    A summary that counted zero checks is `no-tests`.
+ *
+ * An exit-0 pass needs its own proof that the suite completed. With a raw log
+ * that is the log's `suite_end`, and `vetoIncompletePass` accounts for the
+ * files. Without one the text must carry a positive count and a completed
+ * suite, and every started test must have ended.
+ *
+ * @param exitCode - The harness process exit code
+ * @param output - Combined stdout/stderr from the run
+ * @param requestedPaths - Dispatched paths
+ * @param evidence - What the dispatch's raw log says, when it wrote one, and the
+ *   start names of the complete stream, which the capped output may have lost
  */
 export function classifyHarnessRun(
   exitCode: number,
   output: string,
-  requestedPaths: readonly string[]
+  requestedPaths: readonly string[],
+  evidence: { raw?: RawRunSummary | undefined; started?: readonly string[] } = {}
 ): HarnessRunVerdict {
+  const { raw, started } = evidence;
   const counts = extractSummaryCounts(output);
   const profileFailure = classifyProfileArgumentFailure(output);
   if (profileFailure) return { ...profileFailure, ...counts };
   const realFailures = realUnexpectedFailureLines(output);
-  const firstRealFailure = realFailures[0];
-  const failureBlocks = collectUnexpectedFailureBlocks(output);
-  const secondaryHarnessSignature =
-    firstRealFailure !== undefined ? detectSecondaryHarnessNoise(output) : undefined;
+  const firstRealFailure =
+    realFailures[0] ??
+    findCrashMarkerLine(output) ??
+    findLine(output, [NONZERO_UNEXPECTED_SUMMARY_PATTERN, NONZERO_FAILED_SUMMARY_PATTERN]);
+  const failureKeys = (): Partial<HarnessRunVerdict> => {
+    const blocks = collectUnexpectedFailureBlocks(output);
+    const secondary =
+      firstRealFailure !== undefined ? detectSecondaryHarnessNoise(output) : undefined;
+    return {
+      ...(firstRealFailure !== undefined ? { realFailureLine: firstRealFailure } : {}),
+      ...(blocks.length > 0 ? { realFailureBlocks: blocks } : {}),
+      ...(secondary !== undefined ? { secondaryHarnessSignature: secondary } : {}),
+    };
+  };
   // Checked before signature detection: a suite that ran clean and then died
   // in known upstream teardown noise is a pass, not a crash. The teardown
   // traceback matches the startup-traceback cluster, and the green-summary
@@ -625,12 +618,9 @@ export function classifyHarnessRun(
   // shutdown-re-entry shape, or a requested file that never started keeps
   // the run failing. Only the missing shutdown marker is forgiven, and only
   // when the recognized teardown traceback explains it.
-  const teardownOverride = evaluateGreenTeardownOverride(
-    output,
-    counts,
-    realFailures,
-    requestedPaths
-  );
+  const teardownOverride = isSignalExit(exitCode)
+    ? { accepted: false as const }
+    : evaluateGreenTeardownOverride(output, counts, realFailures, requestedPaths, started);
   if (teardownOverride.accepted) {
     return { kind: 'tests-ran-ok', note: 'harness teardown noise ignored', ...counts };
   }
@@ -650,16 +640,28 @@ export function classifyHarnessRun(
     return withNotes({ kind: 'harness-crash', signature, ...counts });
   }
 
-  const ranTests = hasExecutionSignal(output);
+  const ranTests = hasExecutionSignal(output) || (raw?.testsEnded ?? 0) > 0;
   if (!ranTests && requestedPaths.length > 0) {
     const serverStartup = detectServerStartupFailure(output);
     return serverStartup === undefined
       ? { kind: 'no-tests', ...counts }
       : { kind: 'harness-crash', signature: serverStartup, ...counts };
   }
+  // A summary that counted nothing never proves a run, whatever else the log
+  // printed and whatever the exit code says. Real failure lines keep their own
+  // diagnosis below.
+  if (counts.checks === 0 && firstRealFailure === undefined) {
+    return withNotes({ kind: 'no-tests', ...counts });
+  }
 
-  if (exitCode === 0) {
-    return { kind: 'tests-ran-ok', ...counts };
+  if (
+    exitCode === 0 &&
+    firstRealFailure === undefined &&
+    !NONZERO_UNEXPECTED_SUMMARY_PATTERN.test(output) &&
+    !NONZERO_FAILED_SUMMARY_PATTERN.test(output)
+  ) {
+    const judged = judgeExitZeroRun(output, counts, requestedPaths, raw);
+    return judged.kind === 'tests-ran-ok' ? judged : withNotes(judged);
   }
   // Exit codes follow the corrected verdict: a run whose embedded summary
   // completed green is a pass even when the wrapper exit code went non-zero
@@ -674,20 +676,21 @@ export function classifyHarnessRun(
   // evidence attached, so the caller can say why.
   if (hasGreenShapedSummary(output)) {
     const crashLine = findCrashMarkerLine(output);
-    const completeness = analyzeTestCompleteness(output, requestedPaths);
+    const completeness = analyzeTestCompleteness(output, requestedPaths, started);
+    const exitEvidence = unexplainedExitEvidence(exitCode, output);
     if (
       crashLine !== undefined ||
       completeness.neverStarted.length > 0 ||
-      completeness.neverEnded.length > 0
+      completeness.neverEnded.length > 0 ||
+      exitEvidence !== undefined
     ) {
       return withNotes({
         kind: 'test-failures',
         ...counts,
-        ...(firstRealFailure !== undefined ? { realFailureLine: firstRealFailure } : {}),
-        ...(failureBlocks.length > 0 ? { realFailureBlocks: failureBlocks } : {}),
-        ...(secondaryHarnessSignature !== undefined ? { secondaryHarnessSignature } : {}),
+        ...failureKeys(),
         greenSummaryRejected: {
           ...(crashLine !== undefined ? { crashLine } : {}),
+          ...(exitEvidence !== undefined ? { exitEvidence } : {}),
           neverStarted: completeness.neverStarted,
           neverEnded: completeness.neverEnded,
         },
@@ -700,12 +703,96 @@ export function classifyHarnessRun(
     {
       kind: 'test-failures',
       ...counts,
-      ...(firstRealFailure !== undefined ? { realFailureLine: firstRealFailure } : {}),
-      ...(failureBlocks.length > 0 ? { realFailureBlocks: failureBlocks } : {}),
-      ...(secondaryHarnessSignature !== undefined ? { secondaryHarnessSignature } : {}),
+      ...failureKeys(),
     },
     wordMatchNote
   );
+}
+
+/**
+ * The verdict for an exit-0 run with no failure evidence: a pass only when the
+ * run shows it completed. `Ran N checks` is what the summary prints at the end
+ * of a suite, and every browser run closes with `SUITE_END`.
+ */
+function judgeExitZeroRun(
+  output: string,
+  counts: HarnessSummaryCounts,
+  requestedPaths: readonly string[],
+  raw: RawRunSummary | undefined
+): HarnessRunVerdict {
+  if (raw !== undefined) {
+    if (raw.suiteCompleted) return { kind: 'tests-ran-ok', ...counts };
+    return {
+      kind: 'harness-crash',
+      signature: {
+        reason: 'the raw log has no completed suite',
+        line: 'exit 0, with no suite_end for the last suite_start',
+      },
+      ...counts,
+    };
+  }
+  const passed = POSITIVE_PASSED_SUMMARY_PATTERN.test(output);
+  const positive = (counts.checks ?? 0) > 0 || passed;
+  if (!positive && ZERO_PASSED_SUMMARY_PATTERN.test(output)) {
+    return { kind: 'no-tests', ...counts };
+  }
+  const completed = SUITE_END_PATTERN.test(output) || counts.unexpected !== undefined;
+  if (!positive || !completed) {
+    return {
+      kind: 'harness-crash',
+      signature: {
+        reason: 'the harness exited 0 without a completed suite summary',
+        line: positive ? 'no SUITE_END or results summary' : 'no positive check count',
+      },
+      ...counts,
+    };
+  }
+  const { neverEnded } = analyzeTestCompleteness(output, requestedPaths);
+  if (neverEnded.length > 0) {
+    return {
+      kind: 'test-failures',
+      ...counts,
+      greenSummaryRejected: { neverStarted: [], neverEnded },
+    };
+  }
+  return { kind: 'tests-ran-ok', ...counts };
+}
+
+/**
+ * Exit values that mean the harness was killed: `128 + n`, Node's negated
+ * signal number, and SIGKILL or SIGTERM relayed as a plain code.
+ */
+function isSignalExit(exitCode: number): boolean {
+  return exitCode < 0 || exitCode > 128 || exitCode === 9 || exitCode === 15;
+}
+
+/**
+ * Why a non-zero exit cannot be blamed on harness noise, or undefined when it
+ * can. A green summary only speaks for the suite it closes, so the exit stays
+ * unexplained, and the rest of the run unaccounted for, when:
+ *
+ *  - the process died on a signal;
+ *  - a traceback after the last `SUITE_END` is not one the recognized
+ *    resource-monitor signatures explain;
+ *  - the output holds no recognized noise that could own the exit code, however
+ *    many requested files finished.
+ */
+function unexplainedExitEvidence(exitCode: number, output: string): string | undefined {
+  if (exitCode === 0) return undefined;
+  if (isSignalExit(exitCode)) return `the harness died on a signal (exit ${exitCode})`;
+  const lastSuiteEnd = lastSuiteEndOffset(output);
+  const afterSuite = stripNonSignalNoise(lastSuiteEnd < 0 ? '' : output.slice(lastSuiteEnd));
+  const traceback = /Traceback \(most recent call last\)[\s\S]*/.exec(afterSuite)?.[0];
+  if (traceback !== undefined && findLine(traceback, RECOGNIZED_EXIT_NOISE) === undefined) {
+    const exception = traceback
+      .split(/\r?\n/)
+      .find((line, index) => index > 0 && line.length > 0 && !/^\s/.test(line));
+    return `a traceback followed the last suite summary: ${truncateEvidence(exception ?? traceback)}`;
+  }
+  if (!hasRecognizedExitNoise(output)) {
+    return `exit ${exitCode} has no recognized noise signature to account for it`;
+  }
+  return undefined;
 }
 
 /**
@@ -730,13 +817,15 @@ function evaluateGreenTeardownOverride(
   output: string,
   counts: HarnessSummaryCounts,
   realFailures: readonly string[],
-  requestedPaths: readonly string[]
+  requestedPaths: readonly string[],
+  started: readonly string[] | undefined
 ): GreenTeardownOverride {
   if (!hasKnownTeardownNoise(output)) return { accepted: false };
   const reject = (rejectedBy: string): GreenTeardownOverride => ({ accepted: false, rejectedBy });
 
   if (!hasExecutionSignal(output)) return reject('no execution signal (no TEST-START/TEST_START)');
   if (counts.checks === undefined) return reject('summary printed no "Ran N checks" line');
+  if (counts.checks === 0) return reject('summary reported zero checks');
   // `counts.unexpected === 0` IS the explicit-`Unexpected results: 0` test
   // the previous revision spelled a second time with
   // GREEN_UNEXPECTED_SUMMARY_PATTERN: the count is parsed from the same
@@ -752,6 +841,8 @@ function evaluateGreenTeardownOverride(
   if (NONZERO_UNEXPECTED_SUMMARY_PATTERN.test(output)) {
     return reject('a non-zero "Unexpected results:" line is present somewhere in the output');
   }
+  if (NONZERO_FAILED_SUMMARY_PATTERN.test(output))
+    return reject('a non-zero "Failed:" line is present somewhere in the output');
   if (realFailures.length > 0) {
     return reject(
       `${realFailures.length} matched failure line(s), first: ${truncateEvidence(realFailures[0] ?? '')}`
@@ -765,7 +856,7 @@ function evaluateGreenTeardownOverride(
   if (SHUTDOWN_REENTRY_PATTERN.test(output)) {
     return reject('post-green shutdown re-entry shape present');
   }
-  const completeness = analyzeTestCompleteness(output, requestedPaths);
+  const completeness = analyzeTestCompleteness(output, requestedPaths, started);
   if (completeness.neverStarted.length > 0) {
     return reject(`requested file(s) never started: ${completeness.neverStarted.join(', ')}`);
   }
@@ -773,35 +864,6 @@ function evaluateGreenTeardownOverride(
     return reject(`requested file(s) never ended: ${completeness.neverEnded.join(', ')}`);
   }
   return { accepted: true };
-}
-
-/**
- * Parses the numeric counts from the harness's embedded result summary
- * (`Ran N checks` / `Unexpected results: N`). The last occurrence of each
- * wins: a multi-suite run prints one summary per suite and the final one
- * covers the aggregate the operator sees. Absent counts are omitted (the
- * `FIREFORGE-VERDICT:` contract: an absent key means "summary did not
- * print it", never zero).
- */
-export function extractSummaryCounts(output: string): HarnessSummaryCounts {
-  const checks = lastCapturedCount(output, /\bRan (\d+) checks?\b/g);
-  const unexpected = lastCapturedCount(output, /\bUnexpected results:\s*(\d+)\b/g);
-  return {
-    ...(checks !== undefined ? { checks } : {}),
-    ...(unexpected !== undefined ? { unexpected } : {}),
-  };
-}
-
-/** Last captured integer for `pattern` in `output`, if any occurrence matches. */
-function lastCapturedCount(output: string, pattern: RegExp): number | undefined {
-  let last: number | undefined;
-  for (const match of output.matchAll(pattern)) {
-    const captured = match[1];
-    if (captured !== undefined) {
-      last = Number.parseInt(captured, 10);
-    }
-  }
-  return last;
 }
 
 /**
@@ -827,40 +889,6 @@ export function formatFireforgeVerdictLine(
   const reason =
     verdict.kind === 'harness-crash' ? (verdict.signature?.verdictReason ?? 'crash') : verdict.kind;
   return `FIREFORGE-VERDICT: FAIL reason=${reason}${counts}${formatIncompleteSuffix(verdict.incomplete)}${tail}`;
-}
-
-/**
- * Builds the operator-facing failure message for a green-looking summary
- * that was rejected on crash or truncation evidence (never trusted as a
- * pass, regardless of how green the embedded counts look).
- */
-export function buildGreenSummaryRejectedMessage(
-  rejection: GreenSummaryRejection,
-  exitCode: number
-): string {
-  const evidence: string[] = [];
-  if (rejection.crashLine !== undefined) {
-    evidence.push(`  - crash evidence: ${rejection.crashLine}`);
-  }
-  if (rejection.neverStarted.length > 0) {
-    evidence.push(
-      `  - requested test file(s) that never started: ${rejection.neverStarted.join(', ')}`
-    );
-  }
-  if (rejection.neverEnded.length > 0) {
-    evidence.push(
-      `  - test file(s) that started but never finished: ${rejection.neverEnded.join(', ')}`
-    );
-  }
-  return (
-    `mach exited ${exitCode} and the embedded suite summary looks green, but FireForge did NOT ` +
-    'treat the run as passed:\n\n' +
-    `${evidence.join('\n')}\n\n` +
-    'A crash- or truncation-shortened run under-reports: the "green" counts only cover the ' +
-    'files that ran before the run died, so the summary is not a suite result. Treat this as a ' +
-    'FAILED run — check the crash/truncation point in the output above, then re-run the ' +
-    'remaining files.'
-  );
 }
 
 /**
@@ -899,56 +927,4 @@ export function isSilentSegfault(exitCode: number, output: string): boolean {
   if (hasExecutionSignal(output)) return false;
   if (realUnexpectedFailureLines(output).length > 0) return false;
   return findCrashMarkerLine(output) === undefined;
-}
-
-/**
- * Names the known cause of a silent SIGSEGV so the operator checks
- * moz.build registration FIRST instead of paying a full rebuild cycle to
- * rediscover it.
- *
- * @param exitCode - The harness process exit code
- * @param requestedPaths - Test paths the run requested
- */
-export function buildSilentSegfaultMessage(
-  exitCode: number,
-  requestedPaths: readonly string[]
-): string {
-  return (
-    `The test harness died on SIGSEGV (exit ${exitCode}) having printed NO output at all.\n\n` +
-    'Known cause, check this FIRST: a `.sys.mjs` imported from a packaged module whose ' +
-    '`EXTRA_JS_MODULES` (or namespaced module list) registration is missing from moz.build. ' +
-    'The module loader faults before any logging exists, so an unregistered module produces ' +
-    'exactly this shape — a dead process with no import error and no stack.\n\n' +
-    'What to do, in order:\n' +
-    '  1. Run `fireforge lint --per-patch`: the unregistered-system-module check names a new ' +
-    'module imported as a resource URL with no moz.build line.\n' +
-    '  2. Run `fireforge verify`: its module-resolution preflight resolves every ' +
-    '`resource:///modules/…` specifier the queue-owned modules import, including imports ' +
-    'added to an EXISTING module — the shape the new-file lint cannot see, and the one that ' +
-    'recurs.\n' +
-    '  3. Only then look for a product crash: a real one prints a crash dump or a stack.\n\n' +
-    `Requested paths: ${requestedPaths.join(', ')}`
-  );
-}
-
-/**
- * Builds the message for a run that produced no `TEST-START` despite
- * requesting paths, including exit-code-zero runs whose `Passed: 0`
- * summary would otherwise read as a silent false green.
- */
-export function buildNoTestsRanMessage(
-  exitCode: number,
-  requestedPaths: readonly string[]
-): string {
-  const exitNote =
-    exitCode === 0
-      ? 'The harness exited 0 and may have printed a summary line, but a summary without a single TEST-START is not a test result.'
-      : `The harness exited ${exitCode} before any TEST-START line.`;
-  return (
-    'mach test finished without starting any of the requested tests.\n\n' +
-    `${exitNote}\n\n` +
-    `Requested paths: ${requestedPaths.join(', ')}\n\n` +
-    'Check that the paths are registered in their test manifest (browser.toml / xpcshell.toml) ' +
-    'and that the manifest is reachable from moz.build, then retry.'
-  );
 }

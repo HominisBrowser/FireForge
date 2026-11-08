@@ -67,6 +67,8 @@ vi.mock('../../core/furnace-config.js', () => ({
   getFurnacePaths: vi.fn(),
 }));
 
+vi.mock('../../core/build-provenance.js', () => ({ assessBuildProvenance: vi.fn() }));
+
 vi.mock('../../core/furnace-apply-helpers.js', () => ({
   extractComponentChecksums: vi.fn(),
   hasComponentChanged: vi.fn(),
@@ -77,6 +79,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 
 import { Command } from 'commander';
 
+import { assessBuildProvenance } from '../../core/build-provenance.js';
 import {
   extractComponentChecksums,
   hasComponentChanged,
@@ -131,6 +134,31 @@ describe('runCommand', () => {
     });
     // Default: no furnace config so warnIfFurnaceStale returns early
     vi.mocked(furnaceConfigExists).mockResolvedValue(false);
+    vi.mocked(assessBuildProvenance).mockResolvedValue({});
+  });
+
+  it('warns, and still launches, when the browser is not the tree', async () => {
+    vi.mocked(run).mockResolvedValue(0);
+    vi.mocked(assessBuildProvenance).mockResolvedValue({
+      controlBuilt: 'carries c.diff',
+      stale: ['gfx/a.cpp is newer'],
+    });
+    await expect(runCommand('/project')).resolves.toBeUndefined();
+    expect(assessBuildProvenance).toHaveBeenCalledWith(
+      '/project',
+      expect.any(String),
+      'obj-debug/dist/bin/mybrowser'
+    );
+    expect(warn).toHaveBeenCalledWith('carries c.diff');
+    expect(warn).toHaveBeenCalledWith('gfx/a.cpp is newer');
+    expect(run).toHaveBeenCalled();
+  });
+
+  it('keeps a failed provenance probe out of the way', async () => {
+    vi.mocked(run).mockResolvedValue(0);
+    vi.mocked(assessBuildProvenance).mockRejectedValue(new Error('no git'));
+    await expect(runCommand('/project')).resolves.toBeUndefined();
+    expect(run).toHaveBeenCalled();
   });
 
   it('does not treat Ctrl+C as a build failure', async () => {
@@ -178,28 +206,29 @@ describe('runCommand', () => {
     await expect(runCommand('/project')).rejects.toThrow(/Browser exited with code 1/);
   });
 
-  it('cleans startupCache and parentlock when obj dirs exist', async () => {
+  it('leaves existing default profile files and locks untouched before launch', async () => {
     vi.mocked(readdir).mockResolvedValue(['obj-debug'] as unknown as Awaited<
       ReturnType<typeof readdir>
     >);
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(run).mockResolvedValue(0);
-
     await expect(runCommand('/project')).resolves.toBeUndefined();
-
-    expect(removeDir).toHaveBeenCalledWith(expect.stringContaining('startupCache'));
-    expect(removeFile).toHaveBeenCalledWith(expect.stringContaining('.parentlock'));
+    expect(removeDir).not.toHaveBeenCalled();
+    expect(removeFile).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledWith('/project/engine', ['-purgecaches']);
   });
 
-  it('handles cleanDevProfile errors non-fatally', async () => {
+  it('does not clean unselected default profiles when launching an explicit profile', async () => {
     vi.mocked(readdir).mockRejectedValue(new Error('EACCES'));
     vi.mocked(run).mockResolvedValue(0);
-
-    await expect(runCommand('/project')).resolves.toBeUndefined();
-
-    expect(verbose).toHaveBeenCalledWith(
-      expect.stringContaining('Non-fatal dev profile cleanup failure')
-    );
+    await expect(runCommand('/project', { profile: '/profiles/named' })).resolves.toBeUndefined();
+    expect(removeDir).not.toHaveBeenCalled();
+    expect(removeFile).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledWith('/project/engine', [
+      '-profile',
+      '/profiles/named',
+      '-purgecaches',
+    ]);
   });
 
   it('throws when engine directory is missing', async () => {
@@ -329,7 +358,9 @@ describe('runCommand', () => {
 
     await runCommand('/project');
 
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Furnace component modified/));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/Furnace component not up to date in engine\//)
+    );
   });
 
   it('skips components whose directory does not exist', async () => {
@@ -895,7 +926,7 @@ describe('runCommand', () => {
 
       await runCommand('/project');
 
-      expect(run).toHaveBeenCalledWith('/project/engine', []);
+      expect(run).toHaveBeenCalledWith('/project/engine', ['-purgecaches']);
     });
 
     it('launches a plain run on a temporary profile with --temp-profile and removes it', async () => {
@@ -1043,7 +1074,7 @@ describe('runCommand', () => {
       });
 
       await program.parseAsync(['node', 'fireforge', 'run', '--headless']);
-      expect(run).toHaveBeenCalledWith('/project/engine', ['--headless']);
+      expect(run).toHaveBeenCalledWith('/project/engine', ['--headless', '-purgecaches']);
 
       await program.parseAsync(['node', 'fireforge', 'run', '--smoke-exit', '30', '--headless']);
       expect(runMachSmoke).toHaveBeenCalledWith(

@@ -131,7 +131,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
     );
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -162,7 +163,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
     );
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -193,7 +195,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
     );
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     vi.mocked(probeMarionettePort).mockResolvedValue({ inUse: false });
@@ -215,7 +218,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
     );
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -231,7 +235,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
   it('ignores an empty --mach-arg array without appending anything', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -257,7 +262,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
     // the harness uses the right root rather than falling back to xrePath.
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     vi.mocked(resolveXpcshellAppdirArg).mockResolvedValueOnce({
@@ -293,7 +299,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
     // skip path runs before resolution.
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     vi.mocked(operatorAlreadySetAppPath).mockReturnValueOnce(true);
@@ -316,7 +323,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
   it('warns and skips injection when the resolver reports a mismatch across paths', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     vi.mocked(resolveXpcshellAppdirArg).mockResolvedValueOnce({
@@ -349,7 +357,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
   it('warns and skips injection when the resolver cannot find the appdir under dist', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     vi.mocked(resolveXpcshellAppdirArg).mockResolvedValueOnce({
@@ -412,7 +421,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
   it('passes --marionette-port through to the stale-browser probe', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -435,7 +445,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
   it('auto-forwards setpref and mochitest --marionette client for browser-chrome paths', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -456,7 +467,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
   it('auto-forwards --setpref=marionette.port=N for toolkit widget HTML paths', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -477,7 +489,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
   it('auto-forwards --setpref for xpcshell filesystem paths without --flavor=xpcshell', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -501,7 +514,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
     // not duplicate the operator's arg in extraArgs.
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -527,7 +541,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
   it('does not add a second --marionette when --mach-arg already sets the client endpoint', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -552,7 +567,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
     // wrapper preflight checks that port rather than the default 2828.
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -571,7 +587,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
   it('does not auto-forward to mach for an explicit xpcshell flavor', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -597,7 +614,8 @@ describe('testCommand Marionette and appdir forwarding', () => {
   it('passes --marionette-port through to the doctor preflight', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     vi.mocked(runMarionettePreflight).mockResolvedValue({

@@ -33,6 +33,12 @@ export const TREE_COMMAND_VERDICTS: Readonly<
 > = {
   setup: 'refused',
   source: 'refused',
+  authored: 'refused',
+  slot: 'refused',
+  job: 'refused',
+  prove: 'refused',
+  // Provisions the coordinator, the frozen toolchain and slots: host state a snapshot never touches.
+  host: 'refused',
   download: 'refused',
   bootstrap: 'refused',
   import: 'refused',

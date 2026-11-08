@@ -527,6 +527,39 @@ describe('furnace-config helpers', () => {
     ).toThrow('must not contain ".."');
   });
 
+  it.each([
+    ['ftlBasePath', '/abs/ftl'],
+    ['typecheckJsconfig', '/abs/jsconfig.json'],
+    ['typecheckJsconfig', ['ok/jsconfig.json', '/abs/jsconfig.json']],
+    ['typecheckTagMap', '/abs/tags.d.ts'],
+    ['scanPaths', ['browser', '/abs']],
+  ])('rejects an absolute %s that would be resolved outside its root', (field, value) => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {},
+        [field]: value,
+      })
+    ).toThrow('relative path');
+  });
+
+  it('rejects an absolute override basePath', () => {
+    expect(() =>
+      validateFurnaceConfig({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {
+          'moz-x': { type: 'full', description: 'd', basePath: '/etc', baseVersion: '1' },
+        },
+        custom: {},
+      })
+    ).toThrow('relative path');
+  });
+
   it('accepts typecheckJsconfig as a path or a list, and a .d.ts typecheckTagMap', () => {
     const base = { version: 1, componentPrefix: 'moz-', stock: [], overrides: {}, custom: {} };
     expect(

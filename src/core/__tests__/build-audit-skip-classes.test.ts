@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
+import { fakeEngineGit } from './engine-git-fixture.js';
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
@@ -37,9 +38,7 @@ vi.mock('../../utils/platform.js', async (importOriginal) => ({
 import { ensureDir, writeText } from '../../utils/fs.js';
 import { info, warn } from '../../utils/logger.js';
 import { auditBuildArtifacts } from '../build-audit.js';
-import * as git from '../git.js';
 import * as gitBase from '../git-base.js';
-import * as gitStatus from '../git-status.js';
 
 const UNSELECTED_BRANDING = 'browser/branding/testbrowser-unbranded/content/aboutDialog.css';
 const UNSELECTED_BRANDING_PREF = 'browser/branding/testbrowser-unbranded/pref/firefox-branding.js';
@@ -103,9 +102,7 @@ async function seed(options: { withBranding?: boolean } = {}): Promise<void> {
     'JAR_MANIFESTS = []\n'
   );
 
-  vi.spyOn(git, 'hasChanges').mockResolvedValue(true);
-  vi.spyOn(gitStatus, 'getUntrackedFiles').mockResolvedValue([...ALL_CHANGED]);
-  vi.spyOn(gitBase, 'git').mockResolvedValue('');
+  vi.spyOn(gitBase, 'git').mockImplementation(fakeEngineGit({ untracked: [...ALL_CHANGED] }));
 }
 
 beforeEach(async () => {

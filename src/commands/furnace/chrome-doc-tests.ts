@@ -40,7 +40,7 @@ export function chromeDocPackagingTestFileName(name: string): string {
 
 /**
  * Emits an xpcshell test that verifies the scaffolded chrome doc's
- * `.xhtml`, `-chrome.css`, and `.ftl` are all present under the packaged
+ * `.xhtml`, `.js`, `-chrome.css`, and `.ftl` are all present under the packaged
  * app directory. Each assertion carries the exact probed path in its
  * failure message so an operator reading a red CI run knows which
  * jar.mn entry or build step dropped the file.
@@ -54,7 +54,7 @@ export function generateChromeDocPackagingTest(name: string, header: string): st
 // Packaging verification for the "${name}" chrome document.
 //
 // Scope: reads the packaged tree under XCurProcD (the browser app dir
-// when firefox-appdir = "browser") and asserts that the three
+// when firefox-appdir = "browser") and asserts that the four
 // scaffolded files landed where the jar.mn / jar.inc.mn / locales/jar.mn
 // entries promised. Does NOT go through chrome:// URI resolution —
 // xpcshell's chrome manifest set lags the real browser's even with
@@ -81,7 +81,7 @@ add_task(async function test_${taskSuffix}_files_packaged() {
   // when BOTH layouts miss, which is the actual stale-build / missing
   // jar.mn entry case. A single-layout probe fails on macOS against layout
   // (2) even though the file is packaged correctly.
-  function probeEither(primary, fallback, description) {
+  function probeEither(primary, fallback, description, alternatives = []) {
     const primaryFile = appDir.clone();
     for (const segment of primary) {
       primaryFile.append(segment);
@@ -90,14 +90,17 @@ add_task(async function test_${taskSuffix}_files_packaged() {
     for (const segment of fallback) {
       fallbackFile.append(segment);
     }
-    const found = primaryFile.exists() ? primaryFile : fallbackFile.exists() ? fallbackFile : null;
+    const candidates = [primaryFile, fallbackFile, ...alternatives.map(segments => {
+      const file = appDir.clone();
+      for (const segment of segments) file.append(segment);
+      return file;
+    })];
+    const found = candidates.find(file => file.exists()) ?? null;
     Assert.ok(
       found !== null,
       description +
         " missing at both " +
-        primaryFile.path +
-        " and " +
-        fallbackFile.path +
+        candidates.map(file => file.path).join(" and ") +
         ' — run "fireforge build --ui" and retry. If one of those paths IS populated, the xpcshell harness is probing a stale build tree; the post-build audit should flag the same miss.',
     );
     if (found !== null) {
@@ -117,6 +120,11 @@ add_task(async function test_${taskSuffix}_files_packaged() {
     ["browser", "chrome", "browser", "content", "browser", "${name}.xhtml"],
     "${name}.xhtml",
   );
+  probeEither(
+    ["chrome", "browser", "content", "browser", "${name}.js"],
+    ["browser", "chrome", "browser", "content", "browser", "${name}.js"],
+    "${name}.js",
+  );
   // The scoped CSS is registered through jar.inc.mn under
   // \`content/browser/<name>-chrome.css\` (see \`chromeDocJarIncMnCssEntry\`
   // in \`src/commands/furnace/chrome-doc-templates.ts\`), so the packaged
@@ -127,6 +135,15 @@ add_task(async function test_${taskSuffix}_files_packaged() {
     ["chrome", "browser", "content", "browser", "${name}-chrome.css"],
     ["browser", "chrome", "browser", "content", "browser", "${name}-chrome.css"],
     "${name}-chrome.css",
+  );
+  probeEither(
+    ["localization", "en-US", "browser", "${name}.ftl"],
+    ["browser", "localization", "en-US", "browser", "${name}.ftl"],
+    "${name}.ftl",
+    [
+      ["chrome", "browser", "locale", "browser", "${name}.ftl"],
+      ["browser", "chrome", "browser", "locale", "browser", "${name}.ftl"],
+    ],
   );
 });
 `;

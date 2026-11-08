@@ -91,10 +91,17 @@ describe('patch-export rollback and supersede paths', () => {
         },
       ],
     } as never);
+    // Non-canonical on purpose: the rollback must put back these exact bytes.
+    const manifestText = '{"patches":[],  "version":1}';
     vi.mocked(pathExists).mockImplementation((filePath: string) =>
-      Promise.resolve(filePath === nativePath('/patches/001-ui-old.patch'))
+      Promise.resolve(
+        filePath === nativePath('/patches/001-ui-old.patch') ||
+          filePath === nativePath('/patches/patches.json')
+      )
     );
-    vi.mocked(readText).mockResolvedValueOnce('old patch');
+    vi.mocked(readText).mockImplementation((filePath: string) =>
+      Promise.resolve(filePath === nativePath('/patches/patches.json') ? manifestText : 'old patch')
+    );
     vi.mocked(addPatchToManifest).mockRejectedValueOnce(new Error('manifest exploded'));
 
     await expect(
@@ -112,7 +119,8 @@ describe('patch-export rollback and supersede paths', () => {
     expect(writeText).toHaveBeenCalledWith(nativePath('/patches/001-ui-dock.patch'), 'new patch');
     expect(removeFile).toHaveBeenCalledWith(nativePath('/patches/001-ui-dock.patch'));
     expect(writeText).toHaveBeenCalledWith(nativePath('/patches/001-ui-old.patch'), 'old patch');
-    expect(savePatchesManifest).toHaveBeenCalled();
+    expect(writeText).toHaveBeenCalledWith(nativePath('/patches/patches.json'), manifestText);
+    expect(savePatchesManifest).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -316,10 +324,8 @@ describe('patch-export rollback and supersede paths', () => {
     vi.mocked(pathExists).mockResolvedValue(false);
     vi.mocked(writeText).mockResolvedValueOnce(undefined); // patch write succeeds
     vi.mocked(addPatchToManifest).mockRejectedValueOnce(new Error('manifest fail'));
-    // Rollback removeFile also fails
-    vi.mocked(removeFile).mockRejectedValueOnce(new Error('rm fail'));
-    // Manifest rollback also fails
-    vi.mocked(savePatchesManifest).mockRejectedValueOnce(new Error('save fail'));
+    // Both rollback removals (the new patch and the never-existing manifest) fail
+    vi.mocked(removeFile).mockRejectedValue(new Error('rm fail'));
 
     await expect(
       commitExportedPatch({

@@ -1,23 +1,50 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  rmdir,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
 import { assert } from '../utils/assert.js';
-import { toError } from '../utils/errors.js';
+import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
+import {
+  type AuthoredImage,
+  authoredImage,
+  authoredImageMatches,
+  authoredStagingFile,
+  type AuthoredTarget,
+  authoredTargetForFile,
+  observeAuthoredMutations,
+  withAuthoredPathLock,
+} from './authored/write-lock.js';
+import { routedAuthoringPath } from './authored/writer.js';
 
-interface FileSnapshot {
-  existed: boolean;
-  content?: Uint8Array;
-  mode?: number;
+const authoringAliases = new WeakMap<RollbackJournal, Map<string, string>>();
+
+interface FileSnapshot extends AuthoredImage {
+  compareBeforeRestore?: boolean;
+  postimage?: AuthoredImage;
 }
 
 export interface RollbackJournal {
   files: Map<string, FileSnapshot>;
   createdDirs: Set<string>;
+  /** Empty directories removed by a transaction; recreated only while absent. */
+  removedEmptyDirs?: Map<string, number>;
   /** Paths that were skipped during snapshotDir because they are symlinks. */
   skippedSymlinks: Set<string>;
+  /** Standalone writers require compare-before-restore for legacy paths as well. */
+  conditionalLegacy?: boolean;
 }
 
 /** Creates an empty rollback journal for tracking touched files and created directories. */
@@ -27,6 +54,40 @@ export function createRollbackJournal(): RollbackJournal {
     createdDirs: new Set(),
     skippedSymlinks: new Set(),
   };
+}
+
+/** Removes only an empty real directory and journals its mode for rollback. */
+export async function removeEmptyDirectory(journal: RollbackJournal, path: string): Promise<void> {
+  const metadata = await lstat(path);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink())
+    throw new FurnaceError(`Refusing to remove a non-directory orphan: ${path}`);
+  await rmdir(path);
+  (journal.removedEmptyDirs ??= new Map()).set(path, metadata.mode & 0o777);
+}
+
+/** Attribute cooperative publications to this operation without absorbing later peer writes. */
+export function trackRollbackMutations<T>(
+  journal: () => RollbackJournal | undefined,
+  operation: () => Promise<T>
+): Promise<T> {
+  return observeAuthoredMutations(
+    {
+      before: (images) => {
+        for (const [path, image] of images) {
+          const snapshot = journal()?.files.get(path);
+          if (!snapshot || !authoredImageMatches(image, snapshot.postimage ?? snapshot))
+            throw new FurnaceError(`authored-rollback-preimage-moved: ${path}`);
+        }
+      },
+      after: (images) => {
+        for (const [path, image] of images) {
+          const snapshot = journal()?.files.get(path);
+          if (snapshot) snapshot.postimage = image;
+        }
+      },
+    },
+    operation
+  );
 }
 
 /** Records a directory that should be removed if the operation later rolls back. */
@@ -63,7 +124,11 @@ export async function snapshotDir(journal: RollbackJournal, dirPath: string): Pr
 }
 
 /** Snapshots a file once so rollback can restore its previous contents or absence. */
-export async function snapshotFile(journal: RollbackJournal, filePath: string): Promise<void> {
+export async function snapshotFile(
+  journal: RollbackJournal,
+  filePath: string,
+  options: { compareBeforeRestore?: boolean } = {}
+): Promise<void> {
   // Journal keys are the paths rollback will later write back to, and the
   // restore runs from whatever cwd the process happens to be in by then. A
   // relative key would therefore restore somewhere other than where the
@@ -72,12 +137,25 @@ export async function snapshotFile(journal: RollbackJournal, filePath: string): 
   // keeps it that way.
   assert(isAbsolute(filePath), () => `snapshot path is absolute (got "${filePath}")`);
 
+  const original = filePath;
+  const routed = await routedAuthoringPath(filePath);
+  if (routed !== filePath && (await pathExists(routed))) filePath = routed;
+  const authored = await authoredTargetForFile(filePath);
+  if (authored) filePath = authored.file;
+  if (filePath !== original) {
+    let aliases = authoringAliases.get(journal);
+    if (!aliases) {
+      aliases = new Map();
+      authoringAliases.set(journal, aliases);
+    }
+    aliases.set(original, filePath);
+  }
   if (journal.files.has(filePath)) {
     return;
   }
 
   if (!(await pathExists(filePath))) {
-    journal.files.set(filePath, { existed: false });
+    journal.files.set(filePath, { existed: false, ...options });
     return;
   }
 
@@ -86,6 +164,7 @@ export async function snapshotFile(journal: RollbackJournal, filePath: string): 
     existed: true,
     content,
     mode: fileStat.mode,
+    ...options,
   });
 }
 
@@ -111,12 +190,16 @@ export function assertSnapshotted(
   context: string
 ): void {
   assert(
-    journal.files.has(filePath),
+    journal.files.has(authoringAliases.get(journal)?.get(filePath) ?? filePath),
     () => `${context} snapshotted "${filePath}" before mutating it`
   );
 }
 
-async function restoreFile(filePath: string, snapshot: FileSnapshot): Promise<void> {
+async function restoreFile(
+  filePath: string,
+  snapshot: FileSnapshot,
+  authoredRoot?: string
+): Promise<void> {
   if (!snapshot.existed) {
     await rm(filePath, { force: true });
     return;
@@ -124,7 +207,8 @@ async function restoreFile(filePath: string, snapshot: FileSnapshot): Promise<vo
 
   await mkdir(dirname(filePath), { recursive: true });
 
-  // Write to a sibling temp file and atomically rename it over the target. A
+  // Publish restored bytes with an atomic rename. Authored files stage in
+  // ignored runtime storage; legacy paths retain a sibling temp file. A
   // direct writeFile would race with any in-flight write by the body (e.g. a
   // signal-handler-driven rollback landing on top of a still-running
   // `writeFile('corrupted')`), producing interleaved byte sequences like
@@ -132,7 +216,9 @@ async function restoreFile(filePath: string, snapshot: FileSnapshot): Promise<vo
   // the trailing byte from the body write. rename(2) is atomic within a
   // filesystem, so either write wins outright and the target is never left
   // in a hybrid state.
-  const tempPath = `${filePath}.rollback-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const tempPath = authoredRoot
+    ? await authoredStagingFile(authoredRoot)
+    : `${filePath}.rollback-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     await writeFile(tempPath, snapshot.content ?? new Uint8Array());
     if (snapshot.mode !== undefined) {
@@ -148,35 +234,78 @@ async function restoreFile(filePath: string, snapshot: FileSnapshot): Promise<vo
 /** Maximum number of concurrent file restorations during rollback. */
 const RESTORE_CONCURRENCY = 8;
 
+interface RestoreGroup {
+  target?: AuthoredTarget;
+  entries: Array<[string, FileSnapshot]>;
+}
+
+async function restoreGroups(entries: Array<[string, FileSnapshot]>): Promise<RestoreGroup[]> {
+  const groups = new Map<string, RestoreGroup>();
+  for (const entry of entries) {
+    const target = await authoredTargetForFile(entry[0]);
+    const key = target
+      ? `${target.root}\0${target.path.normalize('NFC').toLocaleLowerCase('en-US')}`
+      : entry[0];
+    let group = groups.get(key);
+    if (!group) {
+      group = { entries: [], ...(target ? { target } : {}) };
+      groups.set(key, group);
+    }
+    group.entries.push(entry);
+  }
+  return [...groups.values()];
+}
+
+async function restoreGroup(group: RestoreGroup, conditionalLegacy = false): Promise<void> {
+  const restore = async (): Promise<void> => {
+    for (const [path, snapshot] of group.entries) {
+      if (group.target || conditionalLegacy || snapshot.compareBeforeRestore)
+        if (!authoredImageMatches(await authoredImage(path), snapshot.postimage ?? snapshot))
+          throw new FurnaceError(`authored-rollback-drift: ${path}; preserving a later edit`);
+    }
+    for (const [path, snapshot] of group.entries) {
+      await restoreFile(path, snapshot, group.target?.root);
+      if (group.target || conditionalLegacy)
+        snapshot.postimage = {
+          existed: snapshot.existed,
+          ...(snapshot.content ? { content: snapshot.content } : {}),
+          ...(snapshot.mode !== undefined ? { mode: snapshot.mode } : {}),
+        };
+    }
+  };
+  if (group.target) await withAuthoredPathLock(group.target.root, group.target.path, restore);
+  else await restore();
+}
+
 /** Restores all snapshotted files and removes directories created during the operation. */
 export async function restoreRollbackJournal(journal: RollbackJournal): Promise<void> {
   const fileEntries = [...journal.files.entries()].sort(
     ([left], [right]) => right.length - left.length
   );
+  const groups = await restoreGroups(fileEntries);
 
-  // Restore files in parallel with bounded concurrency. Each restoreFile uses
-  // atomic rename, so concurrent restorations to different paths are safe.
+  // Restore independent groups in parallel with bounded concurrency. A source
+  // and its declaration share one lock and one preflight before either changes.
   const errors: Array<{ path: string; error: string }> = [];
   let index = 0;
 
   async function worker(): Promise<void> {
-    while (index < fileEntries.length) {
+    while (index < groups.length) {
       const current = index++;
-      const entry = fileEntries[current];
-      if (!entry) break;
-      const [filePath, snapshot] = entry;
+      const group = groups[current];
+      if (!group) break;
       try {
-        await restoreFile(filePath, snapshot);
+        await restoreGroup(group, journal.conditionalLegacy);
       } catch (error: unknown) {
         errors.push({
-          path: filePath,
+          path: group.entries.map(([path]) => path).join(', '),
           error: toError(error).message,
         });
       }
     }
   }
 
-  const workers = Array.from({ length: Math.min(RESTORE_CONCURRENCY, fileEntries.length) }, () =>
+  const workers = Array.from({ length: Math.min(RESTORE_CONCURRENCY, groups.length) }, () =>
     worker()
   );
   await Promise.all(workers);
@@ -194,9 +323,27 @@ export async function restoreRollbackJournal(journal: RollbackJournal): Promise<
   // outstanding.
   assert(errors.length === 0, 'all journal files restored before created directories are removed');
 
+  for (const [path, mode] of journal.removedEmptyDirs ?? []) {
+    try {
+      await mkdir(path, { mode });
+      await chmod(path, mode);
+    } catch (error) {
+      // Never chmod or replace a directory created by a later writer.
+      throw new FurnaceError(
+        `Cannot restore removed empty directory ${path}: ${toError(error).message}`
+      );
+    }
+  }
+
   const createdDirs = [...journal.createdDirs].sort((left, right) => right.length - left.length);
   for (const dirPath of createdDirs) {
-    await rm(dirPath, { recursive: true, force: true });
+    if (await authoredTargetForFile(dirPath)) {
+      try {
+        await rmdir(dirPath);
+      } catch (error) {
+        if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(getNodeErrorCode(error) ?? '')) throw error;
+      }
+    } else await rm(dirPath, { recursive: true, force: true });
   }
 }
 

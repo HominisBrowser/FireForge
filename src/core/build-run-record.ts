@@ -124,15 +124,16 @@ export async function withBuildRunRecord<T extends { exitCode: number }>(
  * @param projectRoot - Project root holding `.fireforge/`
  */
 export async function readBuildRunState(projectRoot: string): Promise<BuildRunState> {
-  let record: BuildRunRecord;
+  let value: unknown;
   try {
-    record = JSON.parse(await readFile(recordPath(projectRoot), 'utf8')) as BuildRunRecord;
+    value = JSON.parse(await readFile(recordPath(projectRoot), 'utf8'));
   } catch {
     return { kind: 'none' };
   }
-  if (typeof record.pid !== 'number' || typeof record.startedAt !== 'string') {
+  if (!isBuildRunRecord(value)) {
     return { kind: 'none' };
   }
+  const record = value;
   if (record.status === 'failed') return { kind: 'failed', record };
   return {
     kind: isLockOwnerAlive({ pid: record.pid, startTick: record.startTick })
@@ -140,6 +141,31 @@ export async function readBuildRunState(projectRoot: string): Promise<BuildRunSt
       : 'interrupted',
     record,
   };
+}
+
+function isBuildRunRecord(value: unknown): value is BuildRunRecord {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  return (
+    'status' in value &&
+    (value.status === 'running' || value.status === 'failed') &&
+    'pid' in value &&
+    typeof value.pid === 'number' &&
+    Number.isSafeInteger(value.pid) &&
+    value.pid > 0 &&
+    'startedAt' in value &&
+    typeof value.startedAt === 'string' &&
+    'command' in value &&
+    typeof value.command === 'string' &&
+    'machCommand' in value &&
+    typeof value.machCommand === 'string' &&
+    (!('startTick' in value) ||
+      (typeof value.startTick === 'number' &&
+        Number.isFinite(value.startTick) &&
+        value.startTick >= 0)) &&
+    (!('endedAt' in value) || typeof value.endedAt === 'string') &&
+    (!('exitCode' in value) ||
+      (typeof value.exitCode === 'number' && Number.isInteger(value.exitCode)))
+  );
 }
 
 /**

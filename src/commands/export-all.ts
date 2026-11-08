@@ -37,6 +37,7 @@ import {
   runPatchLint,
   runSupersedeAndOverlapGates,
 } from './export-shared.js';
+import { runUnderEngineLock } from './with-engine-lock.js';
 
 /**
  * The engine paths an export-all entry owns: its current file plus, for a
@@ -466,10 +467,13 @@ export function registerExportAll(
         waitLock?: boolean | number;
       }) => {
         const { category, ...rest } = options;
-        await exportAllCommand(getProjectRoot(), {
-          ...pickDefined(rest),
-          ...(category !== undefined ? { category } : {}),
-        });
+        const projectRoot = getProjectRoot();
+        await runUnderEngineLock(projectRoot, 'export-all', options, () =>
+          exportAllCommand(projectRoot, {
+            ...pickDefined(rest),
+            ...(category !== undefined ? { category } : {}),
+          })
+        );
       }
     )
   );

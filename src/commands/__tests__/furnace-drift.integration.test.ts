@@ -166,16 +166,26 @@ describe('Furnace drift detection (integration)', () => {
     // no drift and the apply should be a fast-path skip. The workspace file
     // is left untouched.
     expect(await readFile(workspaceButtonCss, 'utf8')).toBe(OVERRIDE_BUTTON_CSS);
+    logger.outro.mockClear();
     await furnaceApplyCommand(projectRoot);
 
     expect(await readFile(engineButtonCss, 'utf8')).toBe(engineBefore);
+    expect(logger.outro).toHaveBeenCalledWith(expect.stringMatching(/^Applied 0, skipped 1\b/));
     // The state file's appliedChecksums section should be unchanged.
     const stateAfter = await readFile(stateFile, 'utf8');
-    const checksumLineBefore = stateBefore.match(
-      /"override:moz-button:moz-button\.css":\s*"[^"]+"/
-    );
-    const checksumLineAfter = stateAfter.match(/"override:moz-button:moz-button\.css":\s*"[^"]+"/);
-    expect(checksumLineAfter?.[0]).toBe(checksumLineBefore?.[0]);
+    const before: unknown = JSON.parse(stateBefore);
+    const after: unknown = JSON.parse(stateAfter);
+    const checksum = (value: unknown): unknown => {
+      if (!value || typeof value !== 'object' || !('appliedChecksums' in value)) return undefined;
+      const entries = value.appliedChecksums;
+      return entries &&
+        typeof entries === 'object' &&
+        'override/moz-button/moz-button.css' in entries
+        ? entries['override/moz-button/moz-button.css']
+        : undefined;
+    };
+    expect(checksum(before)).toEqual(expect.any(String));
+    expect(checksum(after)).toBe(checksum(before));
   });
 
   it('reports patch-owned drift after deploying an edited component over its exported patch', async () => {

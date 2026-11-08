@@ -13,6 +13,7 @@
  * alphabetical, and groups related commands together.
  */
 import type { CommandRegistrar } from '../types/cli.js';
+import { registerAuthored } from './authored.js';
 import { registerBootstrap } from './bootstrap.js';
 import { registerBuild } from './build.js';
 import { registerCheck } from './check.js';
@@ -23,11 +24,14 @@ import { registerDownload } from './download.js';
 import { registerExport } from './export.js';
 import { registerExportAll } from './export-all.js';
 import { registerFurnace } from './furnace/index.js';
+import { registerHost } from './host.js';
 import { registerImport } from './import.js';
+import { registerJob } from './job.js';
 import { registerLint } from './lint.js';
 import { registerPackage } from './package.js';
 import { registerPark } from './park.js';
 import { registerPatch } from './patch/index.js';
+import { registerProve } from './prove.js';
 import { registerReExport } from './re-export-register.js';
 import { registerRebase } from './rebase/index.js';
 import { registerRegister } from './register.js';
@@ -35,6 +39,7 @@ import { registerReset } from './reset.js';
 import { registerResolve } from './resolve.js';
 import { registerRun } from './run.js';
 import { registerSetup } from './setup.js';
+import { registerSlot } from './slot.js';
 import { registerSource } from './source.js';
 import { registerStatus } from './status.js';
 import { registerTest } from './test-register.js';
@@ -61,6 +66,13 @@ export interface CommandManifestEntry {
    * Group label used by the root CLI help and generated documentation.
    */
   group: 'project' | 'workflow' | 'engine' | 'diagnostics' | 'components';
+  /**
+   * True when the command rewrites `engine/` and therefore holds the
+   * engine-session lock for its run (shared under `--dry-run`). The
+   * registration test drives every flagged command and fails when one does
+   * not acquire the lock.
+   */
+  mutatesEngine?: true;
   /** Registers the command (and any subcommands) on the Commander program. */
   register: CommandRegistrar;
 }
@@ -72,21 +84,26 @@ export interface CommandManifestEntry {
 export const COMMAND_MANIFEST: readonly CommandManifestEntry[] = [
   { name: 'setup', group: 'project', register: registerSetup },
   { name: 'source', group: 'project', register: registerSource },
+  { name: 'authored', group: 'workflow', register: registerAuthored },
+  { name: 'host', group: 'workflow', register: registerHost },
+  { name: 'slot', group: 'workflow', register: registerSlot },
+  { name: 'job', group: 'workflow', register: registerJob },
+  { name: 'prove', group: 'workflow', register: registerProve },
   { name: 'download', group: 'engine', register: registerDownload },
   { name: 'bootstrap', group: 'engine', register: registerBootstrap },
-  { name: 'import', group: 'workflow', register: registerImport },
-  { name: 'resolve', group: 'workflow', register: registerResolve },
+  { name: 'import', group: 'workflow', mutatesEngine: true, register: registerImport },
+  { name: 'resolve', group: 'workflow', mutatesEngine: true, register: registerResolve },
   { name: 'build', group: 'workflow', register: registerBuild },
   { name: 'run', group: 'workflow', register: registerRun },
   { name: 'status', group: 'workflow', register: registerStatus },
-  { name: 'reset', group: 'workflow', register: registerReset },
-  { name: 'discard', group: 'workflow', register: registerDiscard },
-  { name: 'export', group: 'workflow', register: registerExport },
-  { name: 'export-all', group: 'workflow', register: registerExportAll },
-  { name: 're-export', group: 'workflow', register: registerReExport },
-  { name: 'park', group: 'workflow', register: registerPark },
+  { name: 'reset', group: 'workflow', mutatesEngine: true, register: registerReset },
+  { name: 'discard', group: 'workflow', mutatesEngine: true, register: registerDiscard },
+  { name: 'export', group: 'workflow', mutatesEngine: true, register: registerExport },
+  { name: 'export-all', group: 'workflow', mutatesEngine: true, register: registerExportAll },
+  { name: 're-export', group: 'workflow', mutatesEngine: true, register: registerReExport },
+  { name: 'park', group: 'workflow', mutatesEngine: true, register: registerPark },
   { name: 'patch', group: 'workflow', register: registerPatch },
-  { name: 'rebase', group: 'workflow', register: registerRebase },
+  { name: 'rebase', group: 'workflow', mutatesEngine: true, register: registerRebase },
   { name: 'package', group: 'workflow', register: registerPackage },
   { name: 'watch', group: 'workflow', register: registerWatch },
   { name: 'test', group: 'workflow', register: registerTest },

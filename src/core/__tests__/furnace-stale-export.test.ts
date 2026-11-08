@@ -20,6 +20,10 @@ vi.mock('../furnace-apply-helpers.js', () => ({
   hasComponentChanged: vi.fn(),
 }));
 
+vi.mock('../furnace-composed-source.js', () => ({
+  matchDeployedComponentFiles: vi.fn(() => Promise.resolve(new Map())),
+}));
+
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
 }));
@@ -29,6 +33,7 @@ vi.mock('../../utils/logger.js', () => createLoggerMock());
 import { GeneralError } from '../../errors/base.js';
 import { verbose, warn } from '../../utils/logger.js';
 import { hasComponentChanged } from '../furnace-apply-helpers.js';
+import { matchDeployedComponentFiles } from '../furnace-composed-source.js';
 import {
   furnaceConfigExists,
   getFurnacePaths,
@@ -98,6 +103,7 @@ function seedFurnace(ftlBasePath?: string): void {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(furnaceConfigExists).mockResolvedValue(false);
+  vi.mocked(matchDeployedComponentFiles).mockResolvedValue(new Map());
 });
 
 describe('findStaleFurnaceComponentsForFiles', () => {
@@ -118,6 +124,50 @@ describe('findStaleFurnaceComponentsForFiles', () => {
       '/project/components/custom/moz-tiles',
       expect.anything()
     );
+  });
+
+  it('treats a changed record as current when the engine bytes are the composed source', async () => {
+    seedFurnace();
+    vi.mocked(hasComponentChanged).mockResolvedValue(true);
+    vi.mocked(matchDeployedComponentFiles).mockResolvedValue(
+      new Map([['toolkit/content/widgets/moz-tiles/moz-tiles.mjs', 'composed-source']])
+    );
+
+    await expect(
+      findStaleFurnaceComponentsForFiles('/project', [
+        'toolkit/content/widgets/moz-tiles/moz-tiles.mjs',
+      ])
+    ).resolves.toEqual([]);
+  });
+
+  it.each(['fragment-refresh', 'previous-deploy'] as const)(
+    'still reports a stale component whose engine bytes only match by %s',
+    async (match) => {
+      seedFurnace();
+      vi.mocked(hasComponentChanged).mockResolvedValue(true);
+      vi.mocked(matchDeployedComponentFiles).mockResolvedValue(
+        new Map([['toolkit/content/widgets/moz-tiles/moz-tiles.mjs', match]])
+      );
+
+      const stale = await findStaleFurnaceComponentsForFiles('/project', [
+        'toolkit/content/widgets/moz-tiles/moz-tiles.mjs',
+      ]);
+      expect(stale.map((component) => component.name)).toEqual(['moz-tiles']);
+    }
+  );
+
+  it('reports a component when only some captured files match the composed source', async () => {
+    seedFurnace();
+    vi.mocked(hasComponentChanged).mockResolvedValue(true);
+    vi.mocked(matchDeployedComponentFiles).mockResolvedValue(
+      new Map([['toolkit/content/widgets/moz-tiles/moz-tiles.mjs', 'composed-source']])
+    );
+
+    const stale = await findStaleFurnaceComponentsForFiles('/project', [
+      'toolkit/content/widgets/moz-tiles/moz-tiles.mjs',
+      'toolkit/content/widgets/moz-tiles/moz-tiles.css',
+    ]);
+    expect(stale.map((component) => component.name)).toEqual(['moz-tiles']);
   });
 
   it('returns empty for files outside any furnace-managed prefix', async () => {

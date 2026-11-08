@@ -43,7 +43,10 @@ export function machineErrorCode(error: FireForgeError): string {
  * @returns True when `--json` or `--raw` is present
  */
 export function wantsMachineOutput(argv: readonly string[] = process.argv): boolean {
-  return argv.includes('--json') || argv.includes('--raw');
+  // Everything after `--` is positional (`run -- --json` passes the flag to the program).
+  const end = argv.indexOf('--');
+  const options = end === -1 ? argv : argv.slice(0, end);
+  return options.includes('--json') || options.includes('--raw');
 }
 
 /**

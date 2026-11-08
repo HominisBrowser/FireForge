@@ -59,6 +59,31 @@ describe('wire-init', () => {
     expect(updated).toContain('// FIREFORGE: wire-init DockController');
   });
 
+  it('matches --after against whole identifiers, not name prefixes', () => {
+    const content = `
+const gBrowserInit = {
+  onLoad() {
+    try {
+      if (typeof FooBar !== "undefined") {
+        FooBar.init();
+      }
+    } catch (e) {}
+
+    try {
+      if (typeof Foo !== "undefined") {
+        Foo.init();
+      }
+    } catch (e) {}
+  },
+};
+`.trim();
+    const updated = addInitAST(content, 'Dock.init()', 'Foo');
+    expect(updated.indexOf('Foo.init();')).toBeLessThan(updated.indexOf('Dock.init();'));
+    expect(legacyAddInit(content, 'Dock.init()', 'Foo').indexOf('Foo.init();')).toBeLessThan(
+      legacyAddInit(content, 'Dock.init()', 'Foo').indexOf('Dock.init();')
+    );
+  });
+
   it('uses the caller-supplied marker so patch-lint recognises wire-generated edits', () => {
     // A fork whose `binaryName` is `freshforge` expects the marker to
     // be `FRESHFORGE:`, and the emitted comment must include the

@@ -18,7 +18,7 @@
 
 import { readFile } from 'node:fs/promises';
 
-import type { StartMarkers } from './test-run-completeness.js';
+import type { RawRunSummary, StartMarkers } from './test-harness-signature.js';
 
 /** One test file's outcome, from its `test_end` and failing `test_status` records. */
 export interface RawTestResult {
@@ -34,6 +34,10 @@ export interface RawTestResult {
   unexpectedSubtests: number;
   /** Wall time between `test_start` and `test_end`, when both carried a time. */
   durationMs?: number;
+  /** Exact unexpected assertion labels reported by mozlog test_status. */
+  unexpectedAssertions?: string[];
+  /** Status pairs distinguish assertion failures from an unexpected pass. */
+  unexpectedAssertionResults?: Array<{ assertion: string; status: string; expected: string }>;
 }
 
 /** Everything one raw log says about the run. */
@@ -44,6 +48,15 @@ export interface RawTestLog {
   markers: StartMarkers;
   /** Started tests that never ended (a crash or a cut-off run). */
   unfinished: string[];
+  /** A `suite_end` closed every `suite_start`. mozlog opens every log with one. */
+  suiteCompleted: boolean;
+  /**
+   * Every test id the `suite_start` records announced, once each, groups in
+   * sorted key order. mozlog writes `tests` as a map of group (a manifest) to
+   * ids, a list being stored as the group `default`; a run can write several
+   * `suite_start` records, and their rosters are joined.
+   */
+  roster: string[];
 }
 
 interface RawRecord {
@@ -52,6 +65,35 @@ interface RawRecord {
   status?: unknown;
   expected?: unknown;
   time?: unknown;
+  subtest?: unknown;
+  known_intermittent?: unknown;
+  tests?: unknown;
+}
+
+/**
+ * The test ids one `suite_start` announces. Groups go in sorted key order, the
+ * order mochitest runs its manifests in, so the first id never started is
+ * where the run stopped.
+ */
+function rosterOf(tests: unknown): string[] {
+  const groups: unknown[] = Array.isArray(tests)
+    ? [tests]
+    : typeof tests === 'object' && tests !== null
+      ? Object.keys(tests)
+          .sort()
+          .map((key) => (tests as Record<string, unknown>)[key])
+      : [];
+  return groups.flatMap((ids) =>
+    Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []
+  );
+}
+
+/** mozlog's own test: a status listed as a known intermittent is not unexpected. */
+function isUnexpectedStatus(record: RawRecord): boolean {
+  if (typeof record.expected !== 'string' || record.expected === record.status) return false;
+  return !(
+    Array.isArray(record.known_intermittent) && record.known_intermittent.includes(record.status)
+  );
 }
 
 function parseRecord(line: string): RawRecord | undefined {
@@ -76,8 +118,20 @@ export function parseRawTestLog(text: string): RawTestLog {
   const started: string[] = [];
   const startTimes = new Map<string, number>();
   const subtestFailures = new Map<string, number>();
+  const assertions = new Map<
+    string,
+    Array<{ assertion: string; status: string; expected: string }>
+  >();
+  let suitesStarted = 0;
+  let suitesEnded = 0;
+  const roster = new Set<string>();
   for (const line of text.split(/\r?\n/)) {
     const record = parseRecord(line.trim());
+    if (record?.action === 'suite_start') {
+      suitesStarted += 1;
+      for (const id of rosterOf(record.tests)) roster.add(id);
+    }
+    if (record?.action === 'suite_end') suitesEnded += 1;
     if (record === undefined || typeof record.test !== 'string') continue;
     const test = record.test;
     if (record.action === 'test_start') {
@@ -85,9 +139,19 @@ export function parseRawTestLog(text: string): RawTestLog {
       if (typeof record.time === 'number') startTimes.set(test, record.time);
       continue;
     }
-    if (record.action === 'test_status' && typeof record.expected === 'string') {
+    if (
+      record.action === 'test_status' &&
+      typeof record.expected === 'string' &&
+      typeof record.status === 'string' &&
+      isUnexpectedStatus(record)
+    ) {
       // mozlog sets `expected` on a status record only when it differs.
       subtestFailures.set(test, (subtestFailures.get(test) ?? 0) + 1);
+      if (typeof record.subtest === 'string')
+        assertions.set(test, [
+          ...(assertions.get(test) ?? []),
+          { assertion: record.subtest, status: record.status, expected: record.expected },
+        ]);
       continue;
     }
     if (record.action !== 'test_end' || typeof record.status !== 'string') continue;
@@ -98,8 +162,14 @@ export function parseRawTestLog(text: string): RawTestLog {
       test,
       status: record.status,
       expected,
-      unexpected: expected !== record.status || unexpectedSubtests > 0,
+      unexpected: isUnexpectedStatus(record) || unexpectedSubtests > 0,
       unexpectedSubtests,
+      ...(assertions.has(test)
+        ? {
+            unexpectedAssertions: (assertions.get(test) ?? []).map((result) => result.assertion),
+            unexpectedAssertionResults: assertions.get(test) ?? [],
+          }
+        : {}),
       ...(start !== undefined && typeof record.time === 'number'
         ? { durationMs: record.time - start }
         : {}),
@@ -113,7 +183,18 @@ export function parseRawTestLog(text: string): RawTestLog {
       skipped: results.filter((r) => r.status === 'SKIP').map((r) => r.test),
     },
     unfinished: started.filter((test) => !ended.has(test)),
+    suiteCompleted: suitesEnded === suitesStarted,
+    roster: [...roster],
   };
+}
+
+/**
+ * The classifier's view of a raw log.
+ *
+ * @param log - A parsed raw log
+ */
+export function summarizeRawLog(log: RawTestLog): RawRunSummary {
+  return { testsEnded: log.results.length, suiteCompleted: log.suiteCompleted };
 }
 
 /**
@@ -149,6 +230,17 @@ export function forwardedRawLogPath(args: readonly string[]): string | undefined
     if (value !== undefined) return value === '-' ? undefined : value;
   }
   return undefined;
+}
+
+/**
+ * True when the dispatch arguments make mochitest pass over announced tests
+ * without a start or skip record: `--start-at` and `--end-at` trim the list in
+ * the browser, after `suite_start` named every test.
+ *
+ * @param args - The dispatch's extra mach arguments
+ */
+export function trimsAnnouncedTests(args: readonly string[]): boolean {
+  return args.some((arg) => /^--(?:start|end)-at(?:=|$)/.test(arg));
 }
 
 /** True when the dispatch arguments already carry any `--log-raw`. */

@@ -11,18 +11,15 @@ const jsToolingFiles = ['eslint.config.js', 'scripts/**/*.mjs', 'eslint-rules/**
 
 const sharedRules = {
   'no-throw-literal': 'error',
-  // `Object.hasOwn` everywhere. One straggler still called
-  // `Object.prototype.hasOwnProperty.call(...)`.
+  // `Object.hasOwn` everywhere, not `Object.prototype.hasOwnProperty.call(...)`.
   'prefer-object-has-own': 'error',
   'prefer-const': 'error',
   'no-var': 'error',
-  // Ceiling chosen in 0.31.0, after refactoring everything that exceeded it.
-  // Command orchestrators legitimately sit in the 20s, so a lower bar would
+  // The tree meets this ceiling. Command orchestrators legitimately sit in the 20s, so a lower bar would
   // force splits that spread linear flows across helpers.
   complexity: ['error', 30],
-  // Twenty functions had grown to 7-10 positional parameters, which forced
-  // callers to pad with `undefined` to reach a trailing optional. All of them
-  // now take one options object. 6 is the ceiling the tree already meets.
+  // More than 6 positional parameters force callers to pad with `undefined` to
+  // reach a trailing optional: take one options object instead.
   'max-params': ['error', 6],
   'max-lines': ['error', { max: 500, skipBlankLines: true, skipComments: true }],
   'max-lines-per-function': [
@@ -76,10 +73,7 @@ export default tseslint.config(
     rules: {
       ...sharedRules,
       // Local rules (eslint-rules/index.js). Each one pins a convention that
-      // the 2026-08-06 quality survey found hand-rolled across dozens of
-      // files, in two cases with a silently broken copy. They landed in 0.41.0
-      // together with the last of the corresponding fixes, so they start
-      // clean.
+      // would otherwise be hand-rolled again, sometimes with a silently broken copy.
       'fireforge/no-open-coded-to-error': 'error',
       'fireforge/no-errno-cast': 'error',
       'fireforge/prefer-shared-regex-escape': 'error',
@@ -135,9 +129,8 @@ export default tseslint.config(
         },
       ],
       'no-console': ['error', { allow: ['error'] }],
-      // The "process.exit only in bin/" invariant used to be enforced by
-      // comments alone. The bin/** override below grants the one legitimate
-      // caller. Setting process.exitCode stays legal everywhere.
+      // `process.exit` is only legal in bin/: the bin/** override below grants
+      // the one legitimate caller. Setting process.exitCode stays legal everywhere.
       'no-restricted-properties': [
         'error',
         {
@@ -183,6 +176,33 @@ export default tseslint.config(
     },
   },
   {
+    files: ['runtime/**/*.cjs', 'src/**/*.cjs'],
+    ...tseslint.configs.disableTypeChecked,
+    plugins: { 'simple-import-sort': simpleImportSort },
+    languageOptions: {
+      ...tseslint.configs.disableTypeChecked.languageOptions,
+      sourceType: 'commonjs',
+      globals: {
+        require: 'readonly',
+        module: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        process: 'readonly',
+        console: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+      },
+    },
+    rules: {
+      ...sharedRules,
+      ...tseslint.configs.disableTypeChecked.rules,
+      '@typescript-eslint/no-require-imports': 'off',
+      'no-console': ['error', { allow: ['error'] }],
+    },
+  },
+  {
     files: ['src/**/__tests__/**/*.ts', 'src/**/*.test.ts', 'src/test-utils/**/*.ts'],
     rules: {
       'jsdoc/require-jsdoc': 'off',
@@ -215,8 +235,7 @@ export default tseslint.config(
     },
     rules: {
       // `check-param-names` catches an @param list that has drifted from the
-      // signature. 37 doc blocks had drifted, including two attached to the
-      // wrong declaration. Destructured-property checking is off on purpose:
+      // signature. Destructured-property checking is off on purpose:
       // with it on, the rule demands an `@param options.x` line for every
       // field of every options bag, which is 29 complaints about a convention
       // this codebase does not follow and never claimed to.

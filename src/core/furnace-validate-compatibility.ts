@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import type { ComponentType, FurnaceConfig, ValidationIssue } from '../types/furnace.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { escapeRegex, hasRawCssColors } from '../utils/regex.js';
-import { getProjectPaths } from './config.js';
+import { pristineRepositoryFor, readSourceBlob } from './authored/git.js';
+import { readPristineEntry } from './authored/provider.js';
+import { loadConfig, loadState } from './config.js';
 import { createIssue } from './furnace-validate-helpers.js';
 
 async function validateMjsCompatibility(
@@ -412,13 +414,24 @@ async function collectInheritedOverrideVariables(
     return inheritedVariables;
   }
 
-  const { engine: engineDir } = getProjectPaths(root);
-  const originalCssPath = join(engineDir, basePath, `${tagName}.css`);
-  if (!(await pathExists(originalCssPath))) {
+  let originalCssContent: string;
+  try {
+    const forge = await loadConfig(root);
+    const pin =
+      forge.sources?.pristineCommit ??
+      config.overrides[tagName]?.baseCommit ??
+      (await loadState(root)).baseCommit;
+    if (!pin) return inheritedVariables;
+    const repository = pristineRepositoryFor(root);
+    const entry = await readPristineEntry(repository, pin, `${basePath}/${tagName}.css`);
+    if (!entry) return inheritedVariables;
+    originalCssContent = stripCssBlockComments(
+      (await readSourceBlob(repository, entry.blob)).toString('utf8')
+    );
+  } catch {
+    // An unauthenticated or unavailable baseline grants no exemption. Source validation stays strict.
     return inheritedVariables;
   }
-
-  const originalCssContent = stripCssBlockComments(await readText(originalCssPath));
   for (const variableName of collectCssVariableReferences(originalCssContent)) {
     inheritedVariables.add(variableName);
   }

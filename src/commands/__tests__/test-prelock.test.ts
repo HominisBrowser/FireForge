@@ -22,6 +22,9 @@ vi.mock('../../core/config.js', () => ({
 vi.mock('../../core/engine-precondition.js', () => ({
   assertEngineExists: vi.fn(() => Promise.resolve()),
 }));
+vi.mock('../../core/engine-session-lock.js', () => ({
+  readEngineSessionLockStatus: vi.fn(() => Promise.resolve({ held: true, queueDepth: 0 })),
+}));
 vi.mock('../../core/mach.js', () => ({
   hasBuildArtifacts: vi.fn(),
   hasRunnableBundle: vi.fn(),
@@ -59,6 +62,7 @@ vi.mock('../test-modes.js', async (importOriginal) => ({
 
 import { readBuildRunState } from '../../core/build-run-record.js';
 import { loadConfig } from '../../core/config.js';
+import { readEngineSessionLockStatus } from '../../core/engine-session-lock.js';
 import { hasBuildArtifacts, hasRunnableBundle } from '../../core/mach.js';
 import {
   assertMarionettePortAvailable,
@@ -90,6 +94,15 @@ beforeEach(() => {
 });
 
 describe('resolveLaunchablePathForTests', () => {
+  it('admits an explicitly requested repair build while build-less dispatch still refuses', async () => {
+    vi.mocked(hasRunnableBundle).mockResolvedValue({ runnable: false, expectedPath: APP });
+    await expect(
+      resolveLaunchablePathForTests(ROOT, `${ROOT}/engine`, 'mybrowser', 'obj-debug', true)
+    ).resolves.toBe(APP);
+    await expect(
+      resolveLaunchablePathForTests(ROOT, `${ROOT}/engine`, 'mybrowser', 'obj-debug')
+    ).rejects.toMatchObject({ note: 'no-launchable-binary' });
+  });
   it('names an interrupted peer build as the cause of a missing binary', async () => {
     vi.mocked(hasRunnableBundle).mockResolvedValue({ runnable: false, expectedPath: APP });
     vi.mocked(readBuildRunState).mockResolvedValue({
@@ -233,6 +246,34 @@ describe('runTestPreLockPreflight', () => {
     expect(result).toEqual({ waitBrowser: 10, doctor: true, spentWaits: { waitPort: 10 } });
   });
 
+  it('refuses a stale run before a wait that would block, with the lock free', async () => {
+    vi.mocked(readEngineSessionLockStatus).mockResolvedValueOnce({
+      held: false,
+      queueDepth: 0,
+    });
+    vi.mocked(ensureLaunchableBrowserNotRunning).mockRejectedValueOnce(
+      new PreflightRefusalError('a browser is running', 'browser-running')
+    );
+    vi.mocked(enforceStaleBuildGate).mockRejectedValueOnce(
+      new PreflightRefusalError('stale', 'stale-build')
+    );
+    await expect(runTestPreLockPreflight(ROOT, [FILE], { waitBrowser: 300 })).rejects.toThrow(
+      'stale'
+    );
+    expect(waitBeforeLock).not.toHaveBeenCalled();
+  });
+
+  it('pays no walk of the engine when no wait would block and the lock is free', async () => {
+    vi.mocked(readEngineSessionLockStatus).mockResolvedValueOnce({
+      held: false,
+      queueDepth: 0,
+    });
+    vi.mocked(enforceStaleBuildGate).mockClear();
+    await runTestPreLockPreflight(ROOT, [FILE], { waitBrowser: 300, waitPort: 300 });
+    expect(enforceStaleBuildGate).not.toHaveBeenCalled();
+    expect(waitBeforeLock).toHaveBeenCalled();
+  });
+
   it('puts the spent budgets back for a check that follows work under the lock', async () => {
     const spent = await runTestPreLockPreflight(ROOT, [FILE], { waitBrowser: 120, waitPort: 30 });
     expect(spent).not.toHaveProperty('waitBrowser');
@@ -250,6 +291,34 @@ describe('runTestPreLockPreflight', () => {
 });
 
 describe('packaging and control refusals before the lock', () => {
+  it('does not walk the engine for a refusal the in-lock gate gives right away', async () => {
+    vi.mocked(readEngineSessionLockStatus).mockResolvedValue({
+      held: false,
+      queueDepth: 0,
+    });
+    await runTestPreLockPreflight(ROOT, [FILE], {});
+    expect(enforceStaleBuildGate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a queued peer', { held: false, queueDepth: 1 }, {}],
+    ['a shared holder, for an exclusive run', { held: false, queueDepth: 0, sharedHolders: 2 }, {}],
+  ])('spares the wait behind %s', async (_label, status, options) => {
+    vi.mocked(readEngineSessionLockStatus).mockResolvedValue(status);
+    await runTestPreLockPreflight(ROOT, [FILE], options);
+    expect(enforceStaleBuildGate).toHaveBeenCalledTimes(1);
+  });
+
+  it('has no wait to spare behind shared holders when this run is shared too', async () => {
+    vi.mocked(readEngineSessionLockStatus).mockResolvedValue({
+      held: false,
+      queueDepth: 0,
+      sharedHolders: 2,
+    });
+    await runTestPreLockPreflight(ROOT, [FILE], { sharedLock: true, autoPorts: true });
+    expect(enforceStaleBuildGate).not.toHaveBeenCalled();
+  });
+
   it('runs the stale gate quietly for a build-less run, and never for a build', async () => {
     await runTestPreLockPreflight(ROOT, [FILE], {});
     expect(enforceStaleBuildGate).toHaveBeenCalledWith(
@@ -267,16 +336,15 @@ describe('packaging and control refusals before the lock', () => {
     expect(enforceStaleBuildGate).not.toHaveBeenCalled();
   });
 
-  it('tells a build-less --negative-control to add --build', async () => {
-    vi.mocked(enforceStaleBuildGate).mockRejectedValueOnce(
-      new PreflightRefusalError('Stale build.', 'stale-build')
+  it('tells the gate a build-less --negative-control has no --build', async () => {
+    await runTestPreLockPreflight(ROOT, [FILE], { negativeControl: 'c.diff' });
+    expect(enforceStaleBuildGate).toHaveBeenCalledWith(
+      ROOT,
+      `${ROOT}/engine`,
+      { negativeControl: 'c.diff' },
+      [FILE],
+      expect.objectContaining({ controlWithoutBuild: true })
     );
-    await expect(
-      runTestPreLockPreflight(ROOT, [FILE], { negativeControl: 'c.diff' })
-    ).rejects.toMatchObject({
-      note: 'stale-build',
-      message: expect.stringContaining('Add --build') as string,
-    });
     const plain = new PreflightRefusalError('Stale build.', 'stale-build');
     vi.mocked(enforceStaleBuildGate).mockRejectedValueOnce(plain);
     await expect(runTestPreLockPreflight(ROOT, [FILE], {})).rejects.toBe(plain);
@@ -285,6 +353,7 @@ describe('packaging and control refusals before the lock', () => {
   it('refuses a build-less control on compiled source, and leaves other plan errors to the lock', async () => {
     vi.mocked(planNegativeControl).mockResolvedValueOnce({
       diffFile: 'c.diff',
+      diffDigest: 'fixture',
       targets: [],
       compiled: ['gfx/x.cpp'],
     });

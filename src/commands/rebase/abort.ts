@@ -11,6 +11,7 @@ import {
   getRebaseSessionPath,
   readRebaseSession,
 } from '../../core/rebase-session.js';
+import { takeRecoverySnapshot } from '../../core/recovery-snapshot.js';
 import { NoRebaseSessionError } from '../../errors/rebase.js';
 import { intro, outro, spinner, success, warn } from '../../utils/logger.js';
 import { clearPendingResolution } from '../pending-resolution.js';
@@ -51,6 +52,8 @@ export async function handleAbort(projectRoot: string, yes?: boolean): Promise<v
   ) {
     return;
   }
+
+  await takeRecoverySnapshot(paths.engine, 'rebase-abort');
 
   const s = spinner('Restoring engine to pre-rebase state...');
 

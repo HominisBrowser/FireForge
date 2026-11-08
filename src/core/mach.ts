@@ -92,7 +92,7 @@ export interface MachOptions {
    */
   onOutputChunk?: (stream: 'stdout' | 'stderr', chunk: string) => void;
   /** Exec-layer hook, see {@link ProcessGroupOptions.onProcessGroup}. Capture-only. */
-  onProcessGroup?: (pgid: number) => void;
+  onProcessGroup?: import('../utils/process.js').ProcessGroupOptions['onProcessGroup'];
   /** Exec-layer hook, see {@link ProcessGroupOptions.postCloseSweep}. Capture-only. */
   postCloseSweep?: () => Promise<void>;
   /**

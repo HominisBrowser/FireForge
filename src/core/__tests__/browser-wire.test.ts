@@ -50,6 +50,16 @@ vi.mock('../moz-manifest-register.js', () => ({
 // keep asserting their own behaviour without interference. The rollback
 // itself is exercised end-to-end by
 // `browser-wire-rollback.integration.test.ts`.
+vi.mock('../furnace-operation.js', () => ({
+  runFurnaceMutation: (
+    _root: string,
+    _kind: string,
+    body: (ctx: { registerJournal(journal: unknown): void }) => Promise<unknown>
+  ) => body({ registerJournal: () => undefined }),
+  completeJournalRollback: (_ctx: unknown, _journal: unknown, error: unknown) =>
+    Promise.reject(error instanceof Error ? error : new Error(String(error))),
+}));
+
 vi.mock('../furnace-rollback.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../furnace-rollback.js')>();
   return {

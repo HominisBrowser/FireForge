@@ -4,6 +4,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { nativePath } from '../../test-utils/index.js';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
+// These unit fixtures exercise legacy orchestration through their existing fs mocks.
+// Real authored path/writer behavior is covered by authored/furnace-lifecycle.test.ts.
+vi.mock('../../core/authored/fs.js', async () => import('../../utils/fs.js'));
+vi.mock('../../core/authored/writer.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/authored/writer.js')>()),
+  authoringProjectPaths: async (root: string) =>
+    (await import('../../core/config.js')).getProjectPaths(root),
+  authoringProjectRoot: () => Promise.resolve('/project'),
+}));
+
 vi.mock('@clack/prompts', () => ({
   confirm: vi.fn(() => Promise.resolve(true)),
 }));
@@ -937,22 +947,56 @@ describe('furnaceRemoveCommand — concurrent mutation re-check', () => {
 describe('furnaceRemoveCommand — browser mochitest cleanup', () => {
   beforeEach(resetRemoveMocks);
 
-  it('warns and continues when the project config cannot be loaded', async () => {
-    // Both cleanup helpers read the config independently, so an unloadable
-    // fireforge.json degrades each of them separately rather than aborting
-    // a removal that has already deregistered the component.
-    vi.mocked(loadConfig).mockRejectedValue(new Error('fireforge.json is corrupt'));
+  it('reports a transient config read failure during secondary cleanup without claiming a clean removal', async () => {
+    vi.mocked(removeJarMnEntries).mockImplementationOnce(() => {
+      // The deployed-file policy check succeeds; the next independent
+      // cleanup read fails after registration changes have completed.
+      vi.mocked(loadConfig)
+        .mockResolvedValueOnce({ binaryName: 'mybrowser' } as never)
+        .mockRejectedValueOnce(new Error('temporary config read failure'));
+      return Promise.resolve();
+    });
 
     await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('Could not load config for test cleanup — fireforge.json is corrupt')
+      expect.stringContaining('Could not load config for test cleanup')
     );
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining(
-        'Could not load config for xpcshell test cleanup — fireforge.json is corrupt'
-      )
+      expect.stringContaining('removed with 1 test-cleanup warning')
     );
+    expect(writeFurnaceConfig).toHaveBeenCalledWith(
+      '/project',
+      expect.objectContaining({ custom: {} })
+    );
+  });
+
+  it('preserves TOML defaults and the next test section when deleting a middle section', async () => {
+    existsFor('browser/base/content/test/mybrowser');
+    vi.mocked(readText).mockResolvedValue(
+      '[DEFAULT]\nhead = "head.js"\n\n["browser_mybrowser_audit_widget.js"]\nskip-if = ["debug"]\n\n["browser_other.js"]\n'
+    );
+    vi.mocked(readdir).mockResolvedValue(['browser_other.js'] as never);
+
+    await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
+
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining('browser.toml'),
+      '[DEFAULT]\nhead = "head.js"\n\n["browser_other.js"]\n'
+    );
+    expect(removeDir).not.toHaveBeenCalledWith(
+      nativePath('/project/engine/browser/base/content/test/mybrowser')
+    );
+  });
+
+  it('refuses before mutation when project config cannot establish source/engine authority', async () => {
+    vi.mocked(loadConfig).mockRejectedValue(new Error('fireforge.json is corrupt'));
+
+    await expect(
+      furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true })
+    ).rejects.toThrow('fireforge.json is corrupt');
+    expect(writeFurnaceConfig).not.toHaveBeenCalled();
+    expect(removeCustomElementRegistration).not.toHaveBeenCalled();
   });
 
   it('warns and continues when the test file cannot be unlinked', async () => {
@@ -998,13 +1042,13 @@ describe('furnaceRemoveCommand — browser mochitest cleanup', () => {
     expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Deleted empty test directory'));
   });
 
-  it('deletes the test directory once no browser tests remain', async () => {
+  it('preserves unrelated support content when no browser tests remain', async () => {
     existsFor('browser/base/content/test/mybrowser');
     vi.mocked(readdir).mockResolvedValue(['some-support-file.json'] as never);
 
     await furnaceRemoveCommand('/project', 'moz-audit-widget', { yes: true });
 
-    expect(info).toHaveBeenCalledWith(
+    expect(info).not.toHaveBeenCalledWith(
       expect.stringContaining('Deleted empty test directory: browser/base/content/test/mybrowser/')
     );
   });

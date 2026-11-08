@@ -4,20 +4,14 @@
  */
 
 import { ConfigError } from '../errors/config.js';
-import type {
-  FireForgeConfig,
-  PatchLintCheckJsCompilerOptions,
-  PatchLintSeverityGate,
-  TypecheckConfig,
-} from '../types/config.js';
-import { verbose } from '../utils/logger.js';
+import type { FireForgeConfig, TypecheckConfig } from '../types/config.js';
 import { type ParsedRecord, parseObject } from '../utils/parse.js';
 import { isContainedRelativePath, isExplicitAbsolutePath } from '../utils/paths.js';
 import {
   describeProductVersionIncompatibility,
   FIREFOX_PRODUCTS,
-  isObject,
   isValidAppId,
+  isValidBinaryName,
   isValidFirefoxCandidate,
   isValidFirefoxProduct,
   isValidFirefoxVersion,
@@ -27,11 +21,19 @@ import {
 import { SUPPORTED_CONFIG_ROOT_KEYS } from './config-paths.js';
 import { parseBuildAuditConfig } from './config-validate-build-audit.js';
 import { parseCheckConfig } from './config-validate-check.js';
-import { parsePatchLintSizeFields } from './config-validate-file-size.js';
+import { parseExportQueueConfig } from './config-validate-export-queue.js';
 import { parseHistoryBlock } from './config-validate-history.js';
+import { assertKnownConfigKeys } from './config-validate-keys.js';
+import {
+  parsePatchLintBlock,
+  parseSeverityGate,
+  parseShimPath,
+} from './config-validate-patch-lint.js';
 import { parsePatchPolicyBlock } from './config-validate-patch-policy.js';
+import { parseProofConfig } from './config-validate-proof.js';
+import { parseBuildRelease, parseSlotsConfig } from './config-validate-slots.js';
+import { parseAuthoredSourceConfig } from './config-validate-sources.js';
 import { parseExternalToolchainsBlock, parseTestBlock } from './config-validate-test-toolchains.js';
-import { parsePatchLintTokenScales } from './config-validate-token-scales.js';
 
 /**
  * Parses and validates the four required identity fields (`name`,
@@ -78,6 +80,23 @@ function parseIdentityFields(
     throw new ConfigError('Config field "binaryName" must not be an absolute path');
   }
 
+  // The rendered mozconfig is shell-evaluated, so the executable name and the
+  // free-text fields are restricted to what cannot carry shell syntax.
+  if (!isValidBinaryName(binaryName)) {
+    throw new ConfigError(
+      'Config field "binaryName" must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens'
+    );
+  }
+  for (const [field, value] of [
+    ['name', name],
+    ['vendor', vendor],
+  ] as const) {
+    // eslint-disable-next-line no-control-regex -- control characters break out of mozconfig comments
+    if (/[\x00-\x1f\x7f]/.test(value)) {
+      throw new ConfigError(`Config field "${field}" must not contain control characters`);
+    }
+  }
+
   if (!isValidAppId(appId)) {
     throw new ConfigError(
       'Config field "appId" must be a valid reverse-domain identifier (e.g., "org.example.browser")'
@@ -101,6 +120,11 @@ function parseFirefoxBlock(rec: ParsedRecord): FireForgeConfig['firefox'] {
     throw new ConfigError('Config field "firefox" must be an object');
   }
 
+  assertKnownConfigKeys(
+    firefoxRec.keys(),
+    ['version', 'product', 'sha256', 'allowUnverifiedDownload', 'candidate'],
+    'firefox'
+  );
   const firefoxVersion = requireConfigString(firefoxRec, 'version', 'firefox.version');
   if (!isValidFirefoxVersion(firefoxVersion)) {
     throw new ConfigError(
@@ -157,6 +181,7 @@ function parseFirefoxBlock(rec: ParsedRecord): FireForgeConfig['firefox'] {
 function parseBuildBlock(rec: ParsedRecord, config: FireForgeConfig): void {
   const buildRec = optionalConfigObject(rec, 'build');
   if (buildRec) {
+    assertKnownConfigKeys(buildRec.keys(), ['jobs', 'release'], 'build');
     config.build = {};
     const jobs = buildRec.raw('jobs');
     if (jobs !== undefined) {
@@ -165,6 +190,8 @@ function parseBuildBlock(rec: ParsedRecord, config: FireForgeConfig): void {
       }
       config.build.jobs = jobs;
     }
+    const release = buildRec.raw('release');
+    if (release !== undefined) config.build.release = parseBuildRelease(release);
   }
 }
 
@@ -172,6 +199,7 @@ function parseBuildBlock(rec: ParsedRecord, config: FireForgeConfig): void {
 function parseWireBlock(rec: ParsedRecord, config: FireForgeConfig): void {
   const wireRec = optionalConfigObject(rec, 'wire');
   if (wireRec) {
+    assertKnownConfigKeys(wireRec.keys(), ['subscriptDir'], 'wire');
     config.wire = {};
     const subscriptDir = optionalConfigString(wireRec, 'subscriptDir', 'wire.subscriptDir');
     if (subscriptDir !== undefined) {
@@ -213,17 +241,31 @@ export function validateConfig(data: unknown): FireForgeConfig {
     throw new ConfigError('Config must be an object');
   }
 
+  assertKnownConfigKeys(rec.keys(), SUPPORTED_CONFIG_ROOT_KEYS);
   const identity = parseIdentityFields(rec);
   const firefox = parseFirefoxBlock(rec);
 
   const config: FireForgeConfig = { ...identity, firefox };
 
   parseBuildBlock(rec, config);
+  const slotsRaw = rec.raw('slots');
+  if (slotsRaw !== undefined) config.slots = parseSlotsConfig(slotsRaw);
   const buildAuditRaw = rec.raw('buildAudit');
   if (buildAuditRaw !== undefined) {
     config.buildAudit = parseBuildAuditConfig(buildAuditRaw);
   }
+  const exportQueueRaw = rec.raw('exportQueue');
+  if (exportQueueRaw !== undefined) config.exportQueue = parseExportQueueConfig(exportQueueRaw);
   parseTestBlock(rec, config);
+  const sources = rec.raw('sources');
+  if (sources !== undefined) {
+    config.sources = parseAuthoredSourceConfig(sources);
+    if (config.test?.reapOrphans !== 'owned') {
+      throw new ConfigError(
+        'Authored source mode requires test.reapOrphans="owned" to fence older executables.'
+      );
+    }
+  }
   parseHistoryBlock(rec, config);
   parseExternalToolchainsBlock(rec, config);
   parseWireBlock(rec, config);
@@ -259,12 +301,9 @@ export function validateConfig(data: unknown): FireForgeConfig {
     config.check = parseCheckConfig(checkRaw);
   }
 
-  // Warn on unknown root keys
-  const knownRootKeys = new Set<string>(SUPPORTED_CONFIG_ROOT_KEYS);
-  for (const key of rec.keys()) {
-    if (!knownRootKeys.has(key)) {
-      verbose(`Unknown config key "${key}" in fireforge.json — it will be ignored.`);
-    }
+  const proofRaw = rec.raw('proof');
+  if (proofRaw !== undefined) {
+    config.proof = parseProofConfig(proofRaw);
   }
 
   return config;
@@ -328,222 +367,6 @@ function optionalConfigObject(rec: ParsedRecord, key: string): ParsedRecord | un
   }
 }
 
-const SEVERITY_GATE_VALUES: readonly PatchLintSeverityGate[] = ['off', 'warning', 'error'];
-
-/** Allowlisted keys for `patchLint.checkJsCompilerOptions` (boolean overrides only). */
-const PATCH_LINT_CHECKJS_COMPILER_OPTION_KEYS = [
-  'strictNullChecks',
-  'strictFunctionTypes',
-  'strictBindCallApply',
-  'noImplicitThis',
-  'useUnknownInCatchVariables',
-  'strictPropertyInitialization',
-  'noUnusedLocals',
-  'noUnusedParameters',
-] as const satisfies readonly (keyof PatchLintCheckJsCompilerOptions)[];
-
-/**
- * Validates the reviewed `paths` mapping: an object of pattern → string[]
- * targets, each pattern carrying at most one `*`. Lets patch-owned modules
- * be typed from their real sources without an ambient stub shim.
- */
-function parseCheckJsPathsMapping(raw: unknown): Record<string, string[]> {
-  if (!isObject(raw)) {
-    throw new ConfigError(
-      'Config field "patchLint.checkJsCompilerOptions.paths" must be a plain object'
-    );
-  }
-  const rec = raw;
-  const out: Record<string, string[]> = {};
-  for (const [pattern, targets] of Object.entries(rec)) {
-    if ((pattern.match(/\*/g) ?? []).length > 1) {
-      throw new ConfigError(
-        `Config field "patchLint.checkJsCompilerOptions.paths" key "${pattern}" may contain at most one "*"`
-      );
-    }
-    if (!Array.isArray(targets) || targets.some((t: unknown) => typeof t !== 'string')) {
-      throw new ConfigError(
-        `Config field "patchLint.checkJsCompilerOptions.paths.${pattern}" must be an array of strings`
-      );
-    }
-    out[pattern] = targets as string[];
-  }
-  return out;
-}
-
-function parsePatchLintCheckJsCompilerOptions(raw: unknown): PatchLintCheckJsCompilerOptions {
-  if (!isObject(raw)) {
-    throw new ConfigError('Config field "patchLint.checkJsCompilerOptions" must be a plain object');
-  }
-  const rec = raw;
-  const allowed = new Set<string>(PATCH_LINT_CHECKJS_COMPILER_OPTION_KEYS);
-  const out: PatchLintCheckJsCompilerOptions = {};
-  for (const key of Object.keys(rec)) {
-    if (key === 'paths') {
-      out.paths = parseCheckJsPathsMapping(rec[key]);
-      continue;
-    }
-    if (!allowed.has(key)) {
-      throw new ConfigError(
-        `Config field "patchLint.checkJsCompilerOptions" has unknown key "${key}"`
-      );
-    }
-    const val = rec[key];
-    if (typeof val !== 'boolean') {
-      throw new ConfigError(
-        `Config field "patchLint.checkJsCompilerOptions.${key}" must be a boolean`
-      );
-    }
-    (out as Record<string, boolean>)[key] = val;
-  }
-  return out;
-}
-
-function parseSeverityGate(raw: unknown, label: string): PatchLintSeverityGate | undefined {
-  if (raw === undefined) return undefined;
-  if (typeof raw !== 'string' || !(SEVERITY_GATE_VALUES as readonly string[]).includes(raw)) {
-    throw new ConfigError(
-      `Config field "${label}" must be one of: ${SEVERITY_GATE_VALUES.join(', ')}`
-    );
-  }
-  return raw as PatchLintSeverityGate;
-}
-
-/**
- * Reads an optional boolean `patchLint` field, rejecting a non-boolean with
- * the field-named message. Three identical inline copies of this shape were
- * part of what held `parsePatchLintBlock` at complexity 25/30.
- */
-function optionalPatchLintBoolean(rec: ParsedRecord, key: string): boolean | undefined {
-  const value = rec.raw(key);
-  if (value === undefined) return undefined;
-  if (typeof value !== 'boolean') {
-    throw new ConfigError(`Config field "patchLint.${key}" must be a boolean`);
-  }
-  return value;
-}
-
-/** Severity-gate fields, each parsed and assigned identically. */
-const PATCH_LINT_SEVERITY_GATE_KEYS = [
-  'prettier',
-  'jsdocClassMethods',
-  'testAssertionFloor',
-  'chromeScriptJsDoc',
-  'undefinedIdentifiers',
-] as const;
-
-function parsePatchLintBlock(rec: ParsedRecord): NonNullable<FireForgeConfig['patchLint']> {
-  const out: NonNullable<FireForgeConfig['patchLint']> = {};
-
-  const checkJs = optionalPatchLintBoolean(rec, 'checkJs');
-  if (checkJs !== undefined) out.checkJs = checkJs;
-
-  const checkJsStrict = optionalPatchLintBoolean(rec, 'checkJsStrict');
-  if (checkJsStrict !== undefined) out.checkJsStrict = checkJsStrict;
-
-  const checkJsCompilerOptionsRaw = rec.raw('checkJsCompilerOptions');
-  if (checkJsCompilerOptionsRaw !== undefined) {
-    out.checkJsCompilerOptions = parsePatchLintCheckJsCompilerOptions(checkJsCompilerOptionsRaw);
-  }
-
-  const checkJsExtraShim = rec.raw('checkJsExtraShim');
-  if (checkJsExtraShim !== undefined) {
-    out.checkJsExtraShim = parseShimPath(checkJsExtraShim, 'patchLint.checkJsExtraShim');
-  }
-
-  const checkJsTestFiles = optionalPatchLintBoolean(rec, 'checkJsTestFiles');
-  if (checkJsTestFiles !== undefined) out.checkJsTestFiles = checkJsTestFiles;
-
-  const checkJsTestShim = rec.raw('checkJsTestShim');
-  if (checkJsTestShim !== undefined) {
-    out.checkJsTestShim = parseShimPath(checkJsTestShim, 'patchLint.checkJsTestShim');
-  }
-
-  const litTypes = optionalPatchLintBoolean(rec, 'litTypes');
-  if (litTypes !== undefined) out.litTypes = litTypes;
-
-  const rawColorAllowlist = rec.raw('rawColorAllowlist');
-  if (rawColorAllowlist !== undefined) {
-    if (
-      !Array.isArray(rawColorAllowlist) ||
-      rawColorAllowlist.some((v: unknown) => typeof v !== 'string')
-    ) {
-      throw new ConfigError(
-        'Config field "patchLint.rawColorAllowlist" must be an array of strings'
-      );
-    }
-    out.rawColorAllowlist = rawColorAllowlist as string[];
-  }
-
-  Object.assign(
-    out,
-    parsePatchLintSizeFields((key) => rec.raw(key))
-  );
-
-  const forwardRegistration = rec.raw('forwardRegistration');
-  if (forwardRegistration !== undefined) {
-    if (forwardRegistration !== 'support-files' && forwardRegistration !== 'extended') {
-      throw new ConfigError(
-        'Config field "patchLint.forwardRegistration" must be one of: support-files, extended'
-      );
-    }
-    out.forwardRegistration = forwardRegistration;
-  }
-
-  const tokenScales = rec.raw('tokenScales');
-  if (tokenScales !== undefined) out.tokenScales = parsePatchLintTokenScales(tokenScales);
-
-  for (const key of PATCH_LINT_SEVERITY_GATE_KEYS) {
-    const gate = parseSeverityGate(rec.raw(key), `patchLint.${key}`);
-    if (gate !== undefined) out[key] = gate;
-  }
-
-  if (out.checkJsStrict === true && out.checkJs !== true) {
-    throw new ConfigError(
-      'Config field "patchLint.checkJsStrict" requires "patchLint.checkJs": true'
-    );
-  }
-  if (out.checkJsCompilerOptions !== undefined && out.checkJsStrict !== true) {
-    throw new ConfigError(
-      'Config field "patchLint.checkJsCompilerOptions" requires "patchLint.checkJsStrict": true'
-    );
-  }
-  if (out.checkJsTestFiles === true && out.checkJs !== true) {
-    throw new ConfigError(
-      'Config field "patchLint.checkJsTestFiles" requires "patchLint.checkJs": true'
-    );
-  }
-  if (out.checkJsTestShim !== undefined && out.checkJsTestFiles !== true) {
-    throw new ConfigError(
-      'Config field "patchLint.checkJsTestShim" requires "patchLint.checkJsTestFiles": true'
-    );
-  }
-  if (out.litTypes === true && out.checkJs !== true) {
-    throw new ConfigError('Config field "patchLint.litTypes" requires "patchLint.checkJs": true');
-  }
-
-  return out;
-}
-
-/**
- * Validates a path field that should point at a project-relative `.d.ts`
- * file. Shared between `patchLint.checkJsExtraShim` and
- * `typecheck.extraShim` so both fields reject the same absolute-path /
- * traversal / empty-string inputs with consistent error messages. The
- * file's existence is not checked here. That lives at the engine layer,
- * where a missing file produces a typed runtime error pointing at the
- * actual command, rather than blocking config reads for unrelated commands.
- */
-function parseShimPath(raw: unknown, label: string): string {
-  if (typeof raw !== 'string' || raw.trim() === '') {
-    throw new ConfigError(`Config field "${label}" must be a non-empty string`);
-  }
-  if (!isContainedRelativePath(raw)) {
-    throw new ConfigError(`Config field "${label}" must be a project-relative path`);
-  }
-  return raw;
-}
-
 /**
  * Validates the optional top-level `typecheck` block. Empty `projects`
  * is rejected because a silent no-op for `fireforge typecheck` is a
@@ -576,6 +399,11 @@ function parseTypecheckBlock(rec: ParsedRecord): TypecheckConfig {
     projects.push(entry);
   }
 
+  assertKnownConfigKeys(
+    rec.keys(),
+    ['projects', 'extraShim', 'projectOverrides', 'undefinedIdentifiers', 'litTypes'],
+    'typecheck'
+  );
   const out: TypecheckConfig = { projects };
 
   const extraShim = rec.raw('extraShim');

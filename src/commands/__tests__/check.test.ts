@@ -227,6 +227,13 @@ describe('step summaries', () => {
         exitCode: 0,
       })
     ).toBe('3 changed file(s), none failing');
+    expect(
+      summarizeStatus({
+        stdout: JSON.stringify({ authority: 'authored', summary: { total: 7 } }),
+        combined: '',
+        exitCode: 0,
+      })
+    ).toBe('7 captured path(s), none failing');
     expect(summarizeStatus({ stdout: 'nope', combined: '■  boom\n', exitCode: 1 })).toBe('boom');
   });
 
@@ -432,6 +439,24 @@ describe('selectCheckSteps and parseCheckJobs', () => {
     expect(selectCheckSteps(plan, { skip: 'lint' }).map((s) => s.name)).not.toContain('lint');
   });
 
+  it('refuses empty, skip-all and entirely non-executable selections', () => {
+    expect(() => selectCheckSteps(plan, { only: '' })).toThrow(/no executable steps/);
+    expect(() => selectCheckSteps(plan, { skip: plan.map((step) => step.name).join(',') })).toThrow(
+      /no executable steps/
+    );
+    expect(() =>
+      selectCheckSteps(
+        plan.map((step) => ({ ...step, skipReason: 'configured skip' })),
+        {}
+      )
+    ).toThrow(/no executable steps/);
+    expect(judgeCheck([])).toMatchObject({ passed: false, reason: 'empty-plan' });
+    expect(judgeCheck([result({ status: 'skipped', skipKind: 'config' })])).toMatchObject({
+      passed: false,
+      reason: 'empty-plan',
+    });
+  });
+
   it('refuses an unknown step name', () => {
     expect(() => selectCheckSteps(plan, { skip: 'nope' })).toThrow('Unknown --skip step "nope"');
   });
@@ -444,6 +469,10 @@ describe('selectCheckSteps and parseCheckJobs', () => {
 });
 
 describe('checkCommand', () => {
+  it('refuses an empty selection before launching any command', async () => {
+    await expect(checkCommand('/project', { only: '' })).rejects.toThrow(/no executable steps/);
+    expect(execStream).not.toHaveBeenCalled();
+  });
   it('passes, prints the table, and ends with the verdict line', async () => {
     scriptChildren({ status: { stdout: JSON.stringify({ summary: { total: 0 } }) } });
     const out = capture();
@@ -452,7 +481,7 @@ describe('checkCommand', () => {
     } finally {
       out.restore();
     }
-    expect(out.text()).toBe('FIREFORGE-VERDICT: PASS steps=2 skipped=0\n');
+    expect(out.text()).toBe('FIREFORGE-VERDICT: PASS steps=2 skipped=0 selection=narrowed\n');
     expect(note).toHaveBeenCalledWith(expect.stringContaining('none failing'), 'Steps');
     expect(setStdoutSealed).toHaveBeenCalledWith(true);
   });

@@ -29,13 +29,11 @@ jobs:
       contents: read
       security-events: write
     steps:
-      # CodeQL runs unconditionally. This job previously probed
-      # `/code-scanning/alerts` and skipped itself on 403/404, but that
-      # endpoint 404s until an analysis exists, and the probe prevented the
-      # analysis, so the guard could never open and CodeQL never ran once.
+      # CodeQL runs unconditionally: probing `/code-scanning/alerts` first would
+      # skip the analysis that creates the first alert, so it could never run.
       # The ruleset (scripts/setup-rulesets.sh) lists `codeql` as a required
-      # check, which made that a check satisfiable by a job that analysed
-      # nothing. This repository is public, so SARIF upload is available.
+      # check, so the job must always analyse. This repository is public, so
+      # SARIF upload is available.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

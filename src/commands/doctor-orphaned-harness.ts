@@ -5,10 +5,10 @@
  * A mach invocation that dies at harness startup can strand a Python
  * `multiprocessing` spawn worker plus its resource tracker. The worker
  * reparents to launchd (PPID 1) and busy-spins at 100% CPU indefinitely.
- * The dispatch-side fix is the process-group reaping in `utils/process.ts`.
- * This check covers orphans that predate it (or leaked from non-FireForge
- * invocations), detecting them by PPID 1 + large accumulated CPU TIME + a
- * `multiprocessing.spawn`/`resource_tracker` command line.
+ * FireForge's own dispatches terminate their process tree on exit
+ * (`utils/process-group.ts`). This check covers orphans from before that ran or
+ * from non-FireForge invocations, detecting them by PPID 1 + large accumulated
+ * CPU TIME + a `multiprocessing.spawn`/`resource_tracker` command line.
  *
  * Report-only: FireForge never kills pre-existing processes it did not
  * spawn, so the check names each candidate and suggests the kill.
@@ -19,7 +19,8 @@
 
 import type { DoctorCheck } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
-import { exec } from '../utils/process.js';
+import { listProcessText } from '../utils/process-list.js';
+import { parseProcessListing } from '../utils/process-listing.js';
 import { parsePsDuration } from '../utils/ps-duration.js';
 import type { DoctorCheckDefinition } from './doctor-check-core.js';
 import { ok, warning } from './doctor-check-core.js';
@@ -57,13 +58,8 @@ export function findOrphanedHarnessWorkers(
   minCpuSeconds: number = DEFAULT_MIN_CPU_SECONDS
 ): OrphanedHarnessWorker[] {
   const workers: OrphanedHarnessWorker[] = [];
-  for (const line of psOutput.split('\n')) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/.exec(line);
-    if (!match) continue;
-    const pid = Number(match[1]);
-    const ppid = Number(match[2]);
-    const cpuTime = match[3] ?? '';
-    const command = (match[4] ?? '').trim();
+  const rows = parseProcessListing(psOutput, ['pid', 'ppid', 'time', 'command'] as const);
+  for (const { pid, ppid, time: cpuTime, command } of rows) {
     if (ppid !== 1) continue;
     if (!HARNESS_WORKER_COMMAND_PATTERN.test(command)) continue;
     const cpuSeconds = parsePsDuration(cpuTime);
@@ -73,21 +69,12 @@ export function findOrphanedHarnessWorkers(
   return workers;
 }
 
-/** Thin exec wrapper for the process listing (tests mock `exec` instead). */
-async function listSystemProcesses(): Promise<string> {
-  const result = await exec('ps', ['-axo', 'pid=,ppid=,time=,command='], { timeout: 10000 });
-  if (result.exitCode !== 0) {
-    throw new Error(`ps exited ${result.exitCode}`);
-  }
-  return result.stdout;
-}
-
 const CHECK_NAME = 'Orphaned harness workers';
 
 async function runOrphanedHarnessCheck(): Promise<DoctorCheck> {
   let psOutput: string;
   try {
-    psOutput = await listSystemProcesses();
+    psOutput = await listProcessText(['pid', 'ppid', 'time', 'command']);
   } catch (error: unknown) {
     return warning(
       CHECK_NAME,
@@ -107,8 +94,7 @@ async function runOrphanedHarnessCheck(): Promise<DoctorCheck> {
   return warning(
     CHECK_NAME,
     `Found ${orphans.length} orphaned Python multiprocessing worker(s) — PPID 1 with ` +
-      `high accumulated CPU time, the shape a test harness that died at startup leaves behind ` +
-      `(field incident: one such worker busy-spun for ~26 days). ${rows}`,
+      `high accumulated CPU time, the shape a test harness that died at startup leaves behind. ${rows}`,
     `These look like workers orphaned by a crashed test harness. Verify each command line, ` +
       `then terminate with: kill ${pids} (or kill -9 if a process survives). ` +
       'FireForge never kills pre-existing processes automatically.'
@@ -117,8 +103,8 @@ async function runOrphanedHarnessCheck(): Promise<DoctorCheck> {
 
 /**
  * Doctor check reporting orphaned harness workers. Windows has no `ps`, so
- * the check is skipped there (best-effort platform gap, matching the
- * process-group reaper's POSIX-only sweep).
+ * the check is skipped there (best-effort platform gap, matching the POSIX-only
+ * process-tree teardown).
  */
 export const ORPHANED_HARNESS_DOCTOR_CHECK: DoctorCheckDefinition = {
   name: CHECK_NAME,

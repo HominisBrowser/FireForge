@@ -26,6 +26,7 @@ import { furnaceRenameCommand } from './rename.js';
 import { furnaceScanCommand } from './scan.js';
 import { furnaceStatusCommand } from './status.js';
 import { furnaceSyncCommand } from './sync.js';
+import { furnaceTypesCommand } from './types.js';
 import { furnaceValidateCommand } from './validate.js';
 import { parseMaxWarnings } from './validate-report.js';
 
@@ -110,7 +111,8 @@ function registerFurnaceDeployCommand(furnace: Command, context: CommandContext)
     .option('--skip-validate', 'Skip the validation step (apply only)')
     .option(
       '--owner <patch>',
-      'The patch being exported: refuse the whole deploy, before any write, when it would overwrite a deployed file another patch owns'
+      'Repeat for every owning patch: refuse the whole deploy when it would overwrite a deployed file owned only by unnamed patches',
+      (value: string, previous: string[] | undefined) => [...(previous ?? []), value]
     )
     .addHelpText(
       'after',
@@ -131,7 +133,7 @@ function registerFurnaceDeployCommand(furnace: Command, context: CommandContext)
           dryRun?: boolean;
           force?: boolean;
           skipValidate?: boolean;
-          owner?: string;
+          owner?: string | string[];
           waitLock?: number | boolean;
         }
       ) => {
@@ -147,6 +149,21 @@ function registerFurnaceDeployCommand(furnace: Command, context: CommandContext)
         await runEngineLockedFurnaceCommand(context, 'furnace deploy', run, waitLockSeconds);
       }
     )
+  );
+}
+
+function registerFurnaceTypesCommand(furnace: Command, context: CommandContext): void {
+  const { getProjectRoot, withErrorHandling } = context;
+  const types = furnace
+    .command('types')
+    .description(
+      'Write the typecheckJsconfig paths and the typecheckTagMap declaration from the component workspace (in source mode, the tracked copies)'
+    )
+    .option('--check', 'Write nothing; fail when a generated file is out of date');
+  addWaitLockOption(types).action(
+    withErrorHandling(async (options: { check?: boolean; waitLock?: number | boolean }) => {
+      await furnaceTypesCommand(getProjectRoot(), withFurnaceLockBudget(options));
+    })
   );
 }
 
@@ -504,6 +521,7 @@ function registerFurnaceModifyCommands(furnace: Command, context: CommandContext
     )
   );
 
+  registerFurnaceTypesCommand(furnace, context);
   registerFurnaceSyncCommand(furnace, context);
 }
 

@@ -225,6 +225,8 @@ async function lintQueuedPatch(
 interface PerPatchTotals {
   linted: number;
   skipped: number;
+  /** Filenames of the skipped patches, in queue order. */
+  skippedNames: string[];
   cacheDirty: boolean;
   reusedCacheEntries: number;
   suppressed: number;
@@ -265,6 +267,7 @@ async function applyPerPatchResults(
   const totals: PerPatchTotals = {
     linted: 0,
     skipped: 0,
+    skippedNames: [],
     cacheDirty: false,
     reusedCacheEntries: 0,
     suppressed: 0,
@@ -276,6 +279,7 @@ async function applyPerPatchResults(
     if (!patch || !result) continue;
     if (result.status === 'skipped') {
       totals.skipped++;
+      totals.skippedNames.push(patch.filename);
       continue;
     }
 
@@ -396,21 +400,32 @@ function reportPerPatchOutcome(
   issues: PatchLintIssue[],
   linted: number,
   skipped: number,
+  skippedNames: readonly string[],
   options: LintCommandOptions,
   heldNotices: HeldNotice[] | undefined
 ): void {
   if (heldNotices !== undefined) {
     reportNoticeSummary(heldNotices, issues);
   }
+  // A run that linted no patch checked nothing about them: refusing keeps a
+  // CI gate on an engine/ without the queue applied from passing.
+  const nothingLinted = linted === 0 && skipped > 0;
+  const skippedList = (): string => {
+    const shown = skippedNames.slice(0, 5).join(', ');
+    return skippedNames.length > 5 ? `${shown}, ... (${skippedNames.length - 5} more)` : shown;
+  };
+  const unappliedError = (): GeneralError =>
+    new GeneralError(
+      `No patch in the queue was linted: the files of all ${skipped} patch(es) are absent from engine/ (${skippedList()}). Run "fireforge import" first.`
+    );
   if (issues.length === 0) {
-    if (linted === 0 && skipped > 0) {
-      info(
-        `No patches in the queue have been applied to engine/. Run "fireforge import" first if you want lint findings against the staged hunks; otherwise this is expected.`
-      );
+    if (nothingLinted) {
+      outro('Lint failed');
+      throw unappliedError();
     }
     const summary =
       skipped > 0
-        ? `No lint issues found across ${linted} patch(es) (${skipped} skipped — files not present in engine/).`
+        ? `No lint issues found across ${linted} patch(es) (${skipped} skipped, files not present in engine/: ${skippedList()}).`
         : `No lint issues found across ${linted} patch(es).`;
     success(summary);
     outro('Lint passed');
@@ -435,6 +450,11 @@ function reportPerPatchOutcome(
     throw new GeneralError(
       `Patch lint found ${errors.length} error(s) across ${linted} patch(es). Fix these before exporting.`
     );
+  }
+
+  if (nothingLinted) {
+    outro('Lint failed');
+    throw unappliedError();
   }
 
   if (options.maxWarnings !== undefined && warnings.length > options.maxWarnings) {
@@ -582,7 +602,7 @@ async function lintPerPatchInner(
   });
 
   const heldNotices = options.notices === 'summary' ? [] : undefined;
-  const { linted, skipped, cacheDirty, reusedCacheEntries, suppressed } =
+  const { linted, skipped, skippedNames, cacheDirty, reusedCacheEntries, suppressed } =
     await applyPerPatchResults(subset, results, issues, checkJs, cache, heldNotices);
 
   const queueIssues: PatchLintIssue[] = [];
@@ -609,5 +629,5 @@ async function lintPerPatchInner(
     await writePerPatchLintReport(options.report, subset, results, config, queueIssues);
   }
 
-  reportPerPatchOutcome(issues, linted, skipped, options, heldNotices);
+  reportPerPatchOutcome(issues, linted, skipped, skippedNames, options, heldNotices);
 }

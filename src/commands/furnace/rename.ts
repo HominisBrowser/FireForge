@@ -2,7 +2,16 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { copyFile, ensureDir, pathExists, readText, writeText } from '../../core/authored/fs.js';
+import { authoringProjectPaths } from '../../core/authored/writer.js';
+import { loadConfig } from '../../core/config.js';
+import {
+  refusePartialAuthoredMutation,
+  removeAuthoringDir,
+  removeAuthoringFile,
+  retireGeneratedDeclarations,
+} from '../../core/furnace-authored-lifecycle.js';
+import { mapDeployedComponentSources } from '../../core/furnace-composed-source.js';
 import type { FurnacePaths } from '../../core/furnace-config.js';
 import {
   getFurnacePaths,
@@ -36,15 +45,6 @@ import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceRenameOptions } from '../../types/commands/index.js';
 import { toError } from '../../utils/errors.js';
-import {
-  copyFile,
-  ensureDir,
-  pathExists,
-  readText,
-  removeDir,
-  removeFile,
-  writeText,
-} from '../../utils/fs.js';
 import { info, intro, note, outro, warn } from '../../utils/logger.js';
 import { escapeRegex } from '../../utils/regex.js';
 import { updateBrowserChromeTestContent } from './rename-browser-test.js';
@@ -88,7 +88,11 @@ async function renameTestFiles(
   // Rename the test JS file
   const oldTestPath = join(testDir, oldTestFileName);
   const newTestPath = join(testDir, newTestFileName);
-  if (await pathExists(oldTestPath)) {
+  if ((await pathExists(oldTestPath)) && (await pathExists(newTestPath))) {
+    warn(
+      `Not renaming test file ${oldTestFileName}: ${newTestFileName} already exists and would be overwritten. Merge them manually if needed.`
+    );
+  } else if (await pathExists(oldTestPath)) {
     try {
       await snapshotFile(journal, oldTestPath);
       await snapshotFile(journal, newTestPath);
@@ -97,9 +101,10 @@ async function renameTestFiles(
         newTestPath,
         updateBrowserChromeTestContent(content, oldName, newName, binaryName)
       );
-      await removeFile(oldTestPath);
+      await removeAuthoringFile(oldTestPath, journal);
       info(`Renamed test file: ${oldTestFileName} → ${newTestFileName}`);
     } catch (error: unknown) {
+      await refusePartialAuthoredMutation(engineDir, error);
       warn(`Could not rename test file — ${toError(error).message}. Rename it manually if needed.`);
     }
   }
@@ -116,6 +121,7 @@ async function renameTestFiles(
         info(`Updated browser.toml: ${oldTestFileName} → ${newTestFileName}`);
       }
     } catch (error: unknown) {
+      await refusePartialAuthoredMutation(engineDir, error);
       warn(
         `Could not update browser.toml — ${toError(error).message}. Update it manually if needed.`
       );
@@ -145,9 +151,10 @@ async function removeStaleDeployedComponentDir(
 
   try {
     await snapshotDir(journal, oldDeployed);
-    await removeDir(oldDeployed);
+    await removeAuthoringDir(oldDeployed, journal);
     info(`Removed stale deployed widget directory: ${oldTargetPath}`);
   } catch (error: unknown) {
+    await refusePartialAuthoredMutation(engineDir, error);
     warn(
       `Could not remove stale deployed widget directory at ${oldTargetPath}: ${toError(error).message}. Remove it manually if needed.`
     );
@@ -183,7 +190,11 @@ async function renameMochikitTestFiles(
   const oldTestPath = join(testDir, oldTestFileName);
   const newTestPath = join(testDir, newTestFileName);
 
-  if (await pathExists(oldTestPath)) {
+  if ((await pathExists(oldTestPath)) && (await pathExists(newTestPath))) {
+    warn(
+      `Not renaming mochikit test ${oldTestFileName}: ${newTestFileName} already exists and would be overwritten. Merge them manually if needed.`
+    );
+  } else if (await pathExists(oldTestPath)) {
     try {
       await snapshotFile(journal, oldTestPath);
       const content = await readText(oldTestPath);
@@ -210,9 +221,10 @@ async function renameMochikitTestFiles(
         );
       await snapshotFile(journal, newTestPath);
       await writeText(newTestPath, updatedContent);
-      await removeFile(oldTestPath);
+      await removeAuthoringFile(oldTestPath, journal);
       info(`Renamed mochikit test: ${oldTestFileName} → ${newTestFileName}`);
     } catch (error: unknown) {
+      await refusePartialAuthoredMutation(engineDir, error);
       warn(
         `Could not rename mochikit test file — ${toError(error).message}. Rename it manually if needed.`
       );
@@ -234,11 +246,32 @@ async function renameMochikitTestFiles(
         info(`Updated chrome.toml: ${oldTestFileName} → ${newTestFileName}`);
       }
     } catch (error: unknown) {
+      await refusePartialAuthoredMutation(engineDir, error);
       warn(
         `Could not update widgets chrome.toml — ${toError(error).message}. Update it manually if needed.`
       );
     }
   }
+}
+
+/** Runtime cache cleanup is legacy-only; tracked source changes never address ignored deployment trees. */
+async function cleanLegacyRenameOutputs(options: {
+  engineDir: string;
+  oldName: string;
+  oldTarget: string | undefined;
+  sourceMode: boolean;
+  journal: RollbackJournal;
+}): Promise<void> {
+  if (options.sourceMode) return;
+  const { engineDir, oldName, journal } = options;
+  const oldStoryPath = join(getStoriesDir(engineDir), 'furnace', `${oldName}.stories.mjs`);
+  if (await pathExists(oldStoryPath)) {
+    await snapshotFile(journal, oldStoryPath);
+    await removeAuthoringFile(oldStoryPath, journal);
+    info(`Deleted stale story file: ${oldName}.stories.mjs`);
+  }
+  if (options.oldTarget)
+    await removeStaleDeployedComponentDir(engineDir, options.oldTarget, journal);
 }
 
 /**
@@ -262,9 +295,12 @@ async function performRenameMutations(args: {
     const journal = createRollbackJournal();
     ctx.registerJournal(journal);
 
-    let newDir = args.newDir;
     try {
       const config = await loadFurnaceConfig(projectRoot);
+      const sourceMode = (await loadConfig(projectRoot)).sources !== undefined;
+      const previousGenerated = sourceMode
+        ? new Set((await mapDeployedComponentSources(projectRoot, config)).keys())
+        : undefined;
       const isCustom = oldName in config.custom;
       const isOverride = oldName in config.overrides;
       if (!isCustom && !isOverride) {
@@ -288,7 +324,7 @@ async function performRenameMutations(args: {
       const componentDirLabel = isCustom ? 'custom' : 'overrides';
       const baseDir = isCustom ? args.furnacePaths.customDir : args.furnacePaths.overridesDir;
       const oldDir = join(baseDir, oldName);
-      newDir = join(baseDir, newName);
+      const newDir = join(baseDir, newName);
       const oldCustomTargetPath = isCustom ? config.custom[oldName]?.targetPath : undefined;
 
       if (!(await pathExists(oldDir))) {
@@ -304,6 +340,13 @@ async function performRenameMutations(args: {
         );
       }
 
+      const sourceEntries = await readdir(oldDir, { withFileTypes: true });
+      const unsupported = sourceEntries.find((entry) => !entry.isFile());
+      if (unsupported)
+        throw new FurnaceError(
+          `Cannot rename component containing a directory, symlink or special entry: ${unsupported.name}. Move it explicitly before renaming.`,
+          oldName
+        );
       await snapshotDir(journal, oldDir);
       await snapshotFile(journal, args.furnaceConfigPath);
       // Journal the state file before step 4 re-keys its checksums, plus
@@ -357,10 +400,12 @@ async function performRenameMutations(args: {
         updateConfigForOverrideRename(config, oldName, newName);
       }
       await writeFurnaceConfig(projectRoot, config);
+      if (previousGenerated !== undefined)
+        await retireGeneratedDeclarations(projectRoot, config, journal, previousGenerated);
 
       // 3. Update engine registrations (custom components only)
       const newConfig = config.custom[newName];
-      if (isCustom && newConfig?.register && (await pathExists(args.engineDir))) {
+      if (isCustom && newConfig && (await pathExists(args.engineDir))) {
         await updateEngineRegistrations({
           engineDir: args.engineDir,
           oldName,
@@ -377,17 +422,18 @@ async function performRenameMutations(args: {
       await rekeyStateChecksums(args.projectRoot, componentType, oldName, newName);
 
       // 5. Remove old directory
-      await removeDir(oldDir);
+      await removeAuthoringDir(oldDir, journal);
 
       // 6. Clean up stale Storybook story file for the old name (if it exists
       // from a previous `furnace preview` session). The next preview will
       // regenerate the story under the new name via `syncStories`.
-      const oldStoryPath = join(getStoriesDir(args.engineDir), 'furnace', `${oldName}.stories.mjs`);
-      if (await pathExists(oldStoryPath)) {
-        await snapshotFile(journal, oldStoryPath);
-        await removeFile(oldStoryPath);
-        info(`Deleted stale story file: ${oldName}.stories.mjs`);
-      }
+      await cleanLegacyRenameOutputs({
+        engineDir: args.engineDir,
+        oldName,
+        oldTarget: oldCustomTargetPath,
+        sourceMode,
+        journal,
+      });
 
       // 7. Rename test files created by `furnace create --with-tests` (custom only).
       if (isCustom && (await pathExists(args.engineDir))) {
@@ -406,28 +452,10 @@ async function performRenameMutations(args: {
         // references the pre-rename component, plus a test file whose
         // underscored name references the old tag.
         await renameXpcshellTestFiles(args.engineDir, projectRoot, oldName, newName, journal);
-        // Clear the stale deployed component directory so the next
-        // `furnace apply` is the single writer of the new name's deployment.
-        // Without it the old widget stays at
-        // `engine/toolkit/content/widgets/<old>/` alongside the
-        // newly-deployed `<new>/`, with no signal to `status` / `verify`.
-        if (oldCustomTargetPath) {
-          await removeStaleDeployedComponentDir(args.engineDir, oldCustomTargetPath, journal);
-        }
       }
 
       info(`Renamed ${componentType} component: ${oldName} → ${newName}`);
     } catch (error: unknown) {
-      // Extra best-effort step this site owns: the half-created new
-      // directory is not in the journal, so drop it before the shared
-      // restore puts the old one back.
-      try {
-        if (await pathExists(newDir)) {
-          await removeDir(newDir);
-        }
-      } catch {
-        // Best effort cleanup
-      }
       return await completeJournalRollback(ctx, journal, error, {
         projectRoot,
         operation: 'rename-rollback',
@@ -474,7 +502,7 @@ export async function furnaceRenameCommand(
 
   const config = await loadFurnaceConfig(projectRoot);
   const furnacePaths = getFurnacePaths(projectRoot);
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
 
   const isCustom = oldName in config.custom;
   const isOverride = oldName in config.overrides;
@@ -552,7 +580,9 @@ export async function furnaceRenameCommand(
       'Next steps:\n' +
       '  1. Review the renamed files for any remaining references\n' +
       '  2. Run "fireforge furnace validate" to verify\n' +
-      '  3. Run "fireforge furnace apply" to update the engine',
+      ((await loadConfig(projectRoot)).sources
+        ? '  3. Capture tracked inputs with "fireforge authored capture" and submit a frozen job.'
+        : '  3. Run "fireforge furnace apply" to update the engine'),
     newName
   );
 

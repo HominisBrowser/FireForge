@@ -52,6 +52,7 @@ import {
   GENERIC_PATH_SEGMENTS,
   isTestPath,
   resolveBestArtifact,
+  withBasenameIndex,
 } from './build-audit-resolve.js';
 import {
   AUDIT_SKIP_REASONS,
@@ -64,7 +65,7 @@ import {
 } from './build-audit-skip.js';
 import { resolveArtifactByKnownTransform } from './build-audit-transforms.js';
 import type { BuildBaseline } from './build-baseline-types.js';
-import { collectChangedEnginePaths } from './engine-changes.js';
+import { collectChangedEnginePaths, dropPathsMatchingFingerprints } from './engine-changes.js';
 import { loadPatchesManifest } from './patch-manifest-io.js';
 import { buildPatchClaims } from './status-classify.js';
 
@@ -688,11 +689,20 @@ function describeOwnership(ownersByPath: ReadonlyMap<string, string[]>, source: 
  * @param baseline Optional previous-build baseline marker.
  * @returns Summary of artifact status counts.
  */
-export async function auditBuildArtifacts(
+export function auditBuildArtifacts(
   projectRoot: string,
   engineDir: string,
   baseline: BuildBaseline | undefined,
   options: { unpackaged?: readonly UnpackagedDeclaration[] } = {}
+): Promise<AuditSummary> {
+  return withBasenameIndex(() => auditChangedPaths(projectRoot, engineDir, baseline, options));
+}
+
+async function auditChangedPaths(
+  projectRoot: string,
+  engineDir: string,
+  baseline: BuildBaseline | undefined,
+  options: { unpackaged?: readonly UnpackagedDeclaration[] }
 ): Promise<AuditSummary> {
   const summary: AuditSummary = {
     updated: 0,
@@ -711,7 +721,13 @@ export async function auditBuildArtifacts(
   const testsRoot = await resolveTestsRoot(engineDir);
   const testsPackaged = await hasPackagedTestsMarker(testsRoot);
 
-  const changed = await collectChangedEnginePaths(engineDir, baseline, 'Audit');
+  // A path still byte-identical to what the previous build packaged is not news:
+  // a patched checkout keeps thousands of paths dirty against pristine.
+  const changed = await dropPathsMatchingFingerprints(
+    engineDir,
+    await collectChangedEnginePaths(engineDir, baseline, 'Audit'),
+    baseline?.packageableFingerprints
+  );
   if (changed.length === 0) {
     return summary;
   }

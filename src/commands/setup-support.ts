@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { group, select, text } from '@clack/prompts';
 
 import { getProjectPaths, writeConfig } from '../core/config.js';
+import { replaceMozconfigVariables } from '../core/mach-mozconfig.js';
 import { PATCHES_MANIFEST, savePatchesManifest } from '../core/patch-manifest-io.js';
 import { CancellationError, InvalidArgumentError } from '../errors/base.js';
 import type { SetupOptions } from '../types/commands/index.js';
@@ -16,6 +17,7 @@ import {
   FIREFOX_PRODUCTS,
   inferProductFromVersion,
   isValidAppId,
+  isValidBinaryName,
   isValidFirefoxProduct,
   isValidFirefoxVersion,
   isValidProjectLicense,
@@ -103,7 +105,7 @@ export function validateSetupOptions(options: SetupOptions): void {
       '--app-id'
     );
   }
-  if (options.binaryName !== undefined && !/^[a-z][a-z0-9-]*$/.test(options.binaryName)) {
+  if (options.binaryName !== undefined && !isValidBinaryName(options.binaryName)) {
     throw new InvalidArgumentError(
       'Binary name must start with a letter and contain only lowercase letters, numbers, and hyphens',
       '--binary-name'
@@ -507,11 +509,7 @@ export async function writeSetupProjectFiles(
       continue;
     }
 
-    const content = (await readText(srcPath))
-      .replace(/\$\{name\}/g, config.name)
-      .replace(/\$\{vendor\}/g, config.vendor)
-      .replace(/\$\{appId\}/g, config.appId)
-      .replace(/\$\{binaryName\}/g, config.binaryName);
+    const content = replaceMozconfigVariables(await readText(srcPath), config);
 
     await writeText(destPath, content);
   }

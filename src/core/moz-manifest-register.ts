@@ -9,7 +9,8 @@
 import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
+import { jarHasEntry } from './moz-manifest-entries.js';
 import { insertJarMnEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 
@@ -52,14 +53,14 @@ export async function registerToolkitWidget(
   const content = await readText(manifestPath);
 
   // Idempotency check
-  if (content.includes(`content/global/elements/${fileName}`)) {
+  if (
+    jarHasEntry(content, [`content/global/elements/${fileName}`], `widgets/${tagName}/${fileName}`)
+  ) {
     return { manifest, entry, skipped: true };
   }
 
-  // Tokenized like the other three jar.mn registrars. The hand-rolled
-  // line scan this replaced re-derived the section bounds and the sort
-  // key with its own regexes, so it was the one jar.mn target that did
-  // not inherit fixes made to the shared path.
+  // Tokenized like the other jar.mn registrars, so section bounds and the
+  // sort key come from the shared path.
   const { result, previousEntry } = insertJarMnEntry(content, entry, {
     sortPattern: /content\/global\/elements\/([^\s]+)/,
     sortKey: fileName,

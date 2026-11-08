@@ -5,13 +5,16 @@ import { Command, InvalidArgumentError as CommanderInvalidArgumentError } from '
 
 import { validateBrandOverride } from '../core/brand-validation.js';
 import { auditBuildArtifacts } from '../core/build-audit.js';
-import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
+import { writeBuildBaseline } from '../core/build-baseline.js';
 import type { BuildBaseline } from '../core/build-baseline-types.js';
+import { readUsableBuildBaseline } from '../core/build-baseline-usable.js';
 import { describeSignalShapedExit, prepareBuildEnvironment } from '../core/build-prepare.js';
+import { readBuildRunState } from '../core/build-run-record.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
-import { cleanDevProfile } from '../core/dev-profile.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
 import { withEngineSessionLock } from '../core/engine-session-lock.js';
+import { withEngineStateHold } from '../core/engine-state.js';
+import { prepareOwnedBuildClean } from '../core/jobs/build-clean.js';
 import type { MachCommandResult, ProtectedMachBuildResult } from '../core/mach.js';
 import {
   attemptMozinfoRewrite,
@@ -23,7 +26,10 @@ import {
   runMach,
   withBuildLock,
 } from '../core/mach.js';
-import { findObjdirRelocationViolation } from '../core/mach-build-artifacts.js';
+import {
+  type BuildArtifactCheck,
+  findObjdirRelocationViolation,
+} from '../core/mach-build-artifacts.js';
 import { ensureLaunchableBrowserNotRunning } from '../core/marionette-port.js';
 import { assertHealthyPartialConfig, pruneDanglingTestLinks } from '../core/objdir-maintenance.js';
 import { waitForPreflight } from '../core/preflight-wait.js';
@@ -290,8 +296,47 @@ async function preflightBuildObjdir(
   if (pruned > 0) notice(`Pruned ${pruned} dangling _tests symlink(s).`);
 }
 
+/** Validate UI prerequisites, admitting a recorded interrupted build only through full repair. */
+async function prepareUiBuildRepair(
+  projectRoot: string,
+  engineDir: string,
+  binaryName: string,
+  buildCheck: BuildArtifactCheck,
+  options: BuildOptions
+): Promise<void> {
+  if (!options.ui) return;
+  if (!buildCheck.exists || !buildCheck.objDir) {
+    const detail = buildCheck.objDir
+      ? `Build artifacts incomplete in ${buildCheck.objDir}/`
+      : 'No completed obj-* build artifacts found.';
+    throw new GeneralError(
+      `UI-only builds require a completed full build first. ${detail}\n\n` +
+        'Run "fireforge build" and let it finish, then retry "fireforge build --ui".'
+    );
+  }
+  const bundleCheck = await hasRunnableBundle(engineDir, binaryName, buildCheck.objDir);
+  if (!bundleCheck.runnable) {
+    const prior = await readBuildRunState(projectRoot);
+    if (prior.kind === 'interrupted' || prior.kind === 'failed') {
+      info(
+        'The previous build left no launchable binary; escalating this UI build to a full repair build.'
+      );
+      options.ui = false;
+    } else {
+      const expectedSuffix = bundleCheck.expectedPath
+        ? ` Expected launchable binary at engine/${bundleCheck.expectedPath}.`
+        : '';
+      throw new GeneralError(
+        `UI-only builds require a completed full build first.${expectedSuffix}\n\n` +
+          'Freshly imported or partially built trees cannot use `mach build faster` yet. ' +
+          'Run "fireforge build" and let it finish, then retry "fireforge build --ui".'
+      );
+    }
+  }
+}
+
 async function runBuildCommandBody(projectRoot: string, options: BuildOptions): Promise<void> {
-  const buildType = options.ui ? 'UI-only' : 'Full';
+  options = { ...options };
 
   // Load configuration
   const config = await loadConfig(projectRoot);
@@ -319,6 +364,7 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
     );
   }
 
+  await prepareOwnedBuildClean(projectRoot, paths.engine, options.ui === true);
   const buildCheck = await hasBuildArtifacts(paths.engine);
   if (buildCheck.ambiguous && buildCheck.objDirs && buildCheck.objDirs.length > 0) {
     throw new AmbiguousBuildArtifactsError(buildCheck.objDirs);
@@ -336,28 +382,7 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
       throw new GeneralError(mismatchMessage);
     }
   }
-  if (options.ui) {
-    if (!buildCheck.exists || !buildCheck.objDir) {
-      const detail = buildCheck.objDir
-        ? `Build artifacts incomplete in ${buildCheck.objDir}/`
-        : 'No completed obj-* build artifacts found.';
-      throw new GeneralError(
-        `UI-only builds require a completed full build first. ${detail}\n\n` +
-          'Run "fireforge build" and let it finish, then retry "fireforge build --ui".'
-      );
-    }
-    const bundleCheck = await hasRunnableBundle(paths.engine, config.binaryName, buildCheck.objDir);
-    if (!bundleCheck.runnable) {
-      const expectedSuffix = bundleCheck.expectedPath
-        ? ` Expected launchable binary at engine/${bundleCheck.expectedPath}.`
-        : '';
-      throw new GeneralError(
-        `UI-only builds require a completed full build first.${expectedSuffix}\n\n` +
-          'Freshly imported or partially built trees cannot use `mach build faster` yet. ' +
-          'Run "fireforge build" and let it finish, then retry "fireforge build --ui".'
-      );
-    }
-  }
+  await prepareUiBuildRepair(projectRoot, paths.engine, config.binaryName, buildCheck, options);
 
   // Log brand info if specified
   if (options.brand) {
@@ -371,20 +396,26 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
   // last successful build. The post-build audit below reuses the same
   // baseline to diff engine changes against dist artifacts.
   await preflightBuildObjdir(paths.engine, config.binaryName, buildCheck.objDir, options);
-  const previousBaseline = await readBuildBaseline(projectRoot);
+  const usable = await readUsableBuildBaseline(projectRoot, paths.engine);
+  const previousBaseline = usable.baseline;
+  if (usable.anchorMissing) options.ui = false;
 
   // Shared pre-flight: branding, Furnace, mozconfig, auto-configure
-  await prepareBuildEnvironment(projectRoot, paths, config, {
+  const preparation = await prepareBuildEnvironment(projectRoot, paths, config, {
     previousBaseline,
     ...(options.refuseUnexportedDrift !== undefined
       ? { refuseUnexportedDrift: options.refuseUnexportedDrift }
       : {}),
   });
+  if (options.ui && preparation.fullBuildRequired) {
+    notice(preparation.fullBuildReason ?? 'Changed packaging manifests require a full build.');
+    options.ui = false;
+  }
 
   const jobs = resolveJobCount(options, config.build?.jobs);
 
   // Run build
-  info(`Starting ${buildType.toLowerCase()} build...`);
+  info(`Starting ${options.ui ? 'ui-only' : 'full'} build...`);
   if (jobs !== undefined) {
     info(`Using ${jobs} parallel jobs`);
   }
@@ -467,26 +498,28 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
   // edited in engine/ but never registered for packaging) against the
   // previous-build baseline. Never fails the build. The worst case is a
   // warning an operator chooses to investigate.
-  try {
-    await auditBuildArtifacts(projectRoot, paths.engine, previousBaseline, {
-      ...(config.buildAudit?.unpackaged ? { unpackaged: config.buildAudit.unpackaged } : {}),
-    });
-  } catch (auditError: unknown) {
-    verbose(`Audit skipped: ${toError(auditError).message}`);
-  }
+  await withEngineStateHold(async () => {
+    try {
+      await auditBuildArtifacts(projectRoot, paths.engine, previousBaseline, {
+        ...(config.buildAudit?.unpackaged ? { unpackaged: config.buildAudit.unpackaged } : {}),
+      });
+    } catch (auditError: unknown) {
+      verbose(`Audit skipped: ${toError(auditError).message}`);
+    }
 
-  // Record a fresh baseline only on clean success so the next run audits
-  // against this build's HEAD. A failed build keeps the prior baseline so
-  // the next attempt still catches long-standing packaging drops.
-  await recordFullBuildBaseline(
-    projectRoot,
-    paths.engine,
-    config.binaryName,
-    options.ui === true,
-    previousBaseline
-  );
+    // Record a fresh baseline only on clean success so the next run audits
+    // against this build's HEAD. A failed build keeps the prior baseline so
+    // the next attempt still catches long-standing packaging drops.
+    await recordFullBuildBaseline(
+      projectRoot,
+      paths.engine,
+      config.binaryName,
+      options.ui === true,
+      previousBaseline
+    );
+  });
 
-  if (options.ui) await reportUiBuildStartupCache(paths.engine);
+  if (options.ui) reportUiBuildStartupCache();
 
   outro(`Build completed in ${timeStr}!`);
 }
@@ -496,16 +529,14 @@ async function runBuildCommandBody(projectRoot: string, options: BuildOptions): 
  * so a reused profile would keep running the chrome scripts an earlier build
  * cached. mach's post-build step leaves a `.purgecaches` sentinel in the app
  * directory, which the next launch of any profile honours and deletes. The
- * objdir dev profile loses its startup cache here, and the operator learns
- * which launches still need `-purgecaches`.
+ * operator learns which launches still need `-purgecaches`. Profile locks
+ * and caches belong to Firefox; builds never remove them offline.
  */
-async function reportUiBuildStartupCache(engineDir: string): Promise<void> {
-  const removed = await cleanDevProfile(engineDir, { removeParentLock: false });
-  const devProfile = removed > 0 ? "removed profile-default's startup cache; " : '';
+function reportUiBuildStartupCache(): void {
   info(
-    `Startup cache: ${devProfile}the next browser launch purges its profile's cache once; ` +
+    "Startup cache: the next browser launch purges its profile's cache once; " +
       'a reused profile started after that needs -purgecaches ' +
-      '(fireforge run --profile passes it).'
+      '(fireforge run passes it for default and named profiles).'
   );
 }
 
@@ -538,7 +569,11 @@ async function recordFullBuildBaseline(
       controlBuild: ui ? previousBaseline?.controlBuild : undefined,
     });
   } catch (baselineError: unknown) {
-    verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
+    warn(
+      `The build succeeded but its baseline could not be recorded: ${toError(baselineError).message}. ` +
+        'Until a later build records one, build-less "fireforge test" runs refuse or judge this ' +
+        'runtime against an older record.'
+    );
   }
 }
 

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { readFile, rm, stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { withFileLock } from '../core/file-lock.js';
 import { applyAllComponents } from '../core/furnace-apply.js';
 import { hasCustomEngineDrift, hasOverrideEngineDrift } from '../core/furnace-apply-helpers.js';
 import {
@@ -16,12 +17,13 @@ import {
   resolveFtlDir,
   WIDGETS_DIR,
 } from '../core/furnace-constants.js';
-import { getFurnaceLockPath, runFurnaceMutation } from '../core/furnace-operation.js';
-import { hasBlockingStepErrors } from '../core/furnace-step-errors.js';
+import { adoptCrashedFurnaceMutation, getFurnaceLockPath } from '../core/furnace-operation.js';
+import { countApplyFailures } from '../core/furnace-step-errors.js';
 import { validateAllComponents } from '../core/furnace-validate.js';
 import type {
   ApplyResult,
   FurnaceConfig,
+  FurnacePendingRepair,
   FurnacePendingRepairOperation,
 } from '../types/furnace.js';
 import { isProcessAlive, toError } from '../utils/errors.js';
@@ -30,6 +32,7 @@ import type { CheckResult, DoctorCheckDefinition } from './doctor-check-core.js'
 import { failure, ok, warning } from './doctor-check-core.js';
 import { furnaceConfigSyncCheck } from './doctor-furnace-config-sync.js';
 import { furnaceStaleJarRegistrationCheck } from './doctor-furnace-jar.js';
+import { runDoctorFurnaceRepair } from './doctor-furnace-transaction.js';
 
 const ENGINE_REPAIRABLE_OPERATIONS: readonly FurnacePendingRepairOperation[] = [
   'preview-teardown',
@@ -42,22 +45,6 @@ function isEngineRepairableOperation(operation: FurnacePendingRepairOperation): 
   return ENGINE_REPAIRABLE_OPERATIONS.includes(operation);
 }
 
-async function runRepairApply(projectRoot: string): Promise<ApplyResult> {
-  return runFurnaceMutation(
-    projectRoot,
-    'apply-rollback',
-    (ctx) => applyAllComponents(projectRoot, false, { operationContext: ctx }),
-    { skipPendingRepairCheck: true }
-  );
-}
-
-function countApplyFailures(applyResult: ApplyResult): number {
-  const appliedWithStepErrors = applyResult.applied.filter((entry) =>
-    hasBlockingStepErrors(entry)
-  ).length;
-  return applyResult.errors.length + appliedWithStepErrors;
-}
-
 function firstApplyFailure(applyResult: ApplyResult): string {
   return (
     applyResult.errors[0]?.error ??
@@ -68,8 +55,13 @@ function firstApplyFailure(applyResult: ApplyResult): string {
   );
 }
 
-async function clearPendingRepairMarker(projectRoot: string): Promise<void> {
+async function clearPendingRepairMarker(
+  projectRoot: string,
+  expected: FurnacePendingRepair
+): Promise<void> {
   await updateFurnaceState(projectRoot, (current) => {
+    if (JSON.stringify(current.pendingRepair) !== JSON.stringify(expected))
+      throw new Error('Furnace repair marker changed during repair; retaining the current marker.');
     const next = { ...current };
     delete next.pendingRepair;
     return next;
@@ -252,23 +244,32 @@ const furnaceStateConsistencyCheck: DoctorCheckDefinition = {
     }
 
     try {
-      await updateFurnaceState(ctx.projectRoot, (current) => {
-        const result = { ...current };
-        if (current.appliedChecksums) {
-          result.appliedChecksums = Object.fromEntries(
-            Object.entries(current.appliedChecksums).filter(([key]) => !staleKeys.includes(key))
-          );
-        }
-        if (current.engineChecksums) {
-          result.engineChecksums = Object.fromEntries(
-            Object.entries(current.engineChecksums).filter(([key]) => !staleKeys.includes(key))
-          );
-        }
-        return result;
+      const removed = new Set<string>();
+      await runDoctorFurnaceRepair(ctx.projectRoot, async () => {
+        const freshConfig = await loadFurnaceConfig(ctx.projectRoot);
+        await updateFurnaceState(ctx.projectRoot, (current) => {
+          const result = { ...current };
+          const keep = ([key]: [string, string]): boolean => {
+            const stale = collectStaleChecksumKeys({ [key]: '' }, freshConfig).includes(key);
+            if (stale) removed.add(key);
+            return !stale;
+          };
+          if (current.appliedChecksums) {
+            result.appliedChecksums = Object.fromEntries(
+              Object.entries(current.appliedChecksums).filter(keep)
+            );
+          }
+          if (current.engineChecksums) {
+            result.engineChecksums = Object.fromEntries(
+              Object.entries(current.engineChecksums).filter(keep)
+            );
+          }
+          return result;
+        });
       });
       return warning(
         'Furnace state consistency',
-        `Cleared ${staleKeys.length} stale checksum entr${staleKeys.length === 1 ? 'y' : 'ies'} from .fireforge/furnace-state.json (${ghostList.join(', ')}).`
+        `Cleared ${removed.size} stale checksum entr${removed.size === 1 ? 'y' : 'ies'} from .fireforge/furnace-state.json (${ghostList.join(', ')}).`
       );
     } catch (err: unknown) {
       return failure(
@@ -298,6 +299,9 @@ const furnaceEngineStateCheck: DoctorCheckDefinition = {
       return [];
     }
 
+    // A killed authoring/removal leaves a sidecar, not a marker. Surface it
+    // as a marker before reading state so this run reports it.
+    await adoptCrashedFurnaceMutation(ctx.projectRoot, false);
     const state = await loadFurnaceState(ctx.projectRoot);
     const pendingRepair = state.pendingRepair;
 
@@ -334,87 +338,48 @@ const furnaceEngineStateCheck: DoctorCheckDefinition = {
       return failure('Furnace engine state', message, guidance);
     }
 
-    if (pendingRepair && !isEngineRepairableOperation(pendingRepair.operation)) {
-      try {
-        const validationResults = await validateAllComponents(ctx.projectRoot);
-        const validationIssues = [...validationResults.values()].flat();
-        const validationErrors = validationIssues.filter((issue) => issue.severity === 'error');
-        const validationWarnings = validationIssues.filter(
-          (issue) => issue.severity === 'warning'
-        ).length;
-
-        if (validationErrors.length > 0) {
-          const firstError = validationErrors[0];
-          const firstMessage = firstError
-            ? `${firstError.component} [${firstError.check}] ${firstError.message}`
-            : 'unknown validation error';
-          return failure(
-            'Furnace engine state',
-            `Authoring rollback marker from ${pendingRepair.operation} is still unresolved: validation found ${validationErrors.length} error(s) (first: ${firstMessage}).`,
-            'Inspect furnace.json and the affected component files, finish or remove the partial authoring change, then retry "fireforge doctor --repair-furnace".'
-          );
-        }
-
-        let applyResult: ApplyResult | null = null;
-        if (driftedNames.length > 0) {
-          applyResult = await runRepairApply(ctx.projectRoot);
-          const totalFailures = countApplyFailures(applyResult);
-          if (totalFailures > 0) {
-            return failure(
-              'Furnace engine state',
-              `Repair attempted after ${pendingRepair.operation}, but apply reported ${totalFailures} failure${totalFailures === 1 ? '' : 's'} (first: ${firstApplyFailure(applyResult)}).`,
-              'Fix the underlying component issue, or remove the partial authoring change, and retry the doctor command.'
-            );
-          }
-        }
-
-        await clearPendingRepairMarker(ctx.projectRoot);
-
-        const summary =
-          driftedNames.length > 0 && applyResult
-            ? `Reconciled engine drift after ${pendingRepair.operation} (${applyResult.applied.length} applied, ${applyResult.skipped.length} skipped) and cleared the repair marker.`
-            : `Cleared the ${pendingRepair.operation} repair marker after validation passed${validationWarnings > 0 ? ` (${validationWarnings} warning${validationWarnings === 1 ? '' : 's'} remain)` : ''}.`;
-        return warning('Furnace engine state', summary);
-      } catch (err: unknown) {
-        return failure(
-          'Furnace engine state',
-          `Repair failed: ${toError(err).message}`,
-          'Inspect the error above, fix the partial authoring state, and retry the doctor command.'
-        );
-      }
-    }
-
-    // Repair path: run apply to reconcile the engine with the workspace
-    // state, then clear the pendingRepair marker on success. We re-run
-    // apply even when only the marker is set. The marker exists
-    // specifically because the last mutation could not clean up, so
-    // re-reconciling end-to-end is the cheapest honest thing to do.
     try {
-      const applyResult = await runRepairApply(ctx.projectRoot);
-      const totalFailures = countApplyFailures(applyResult);
-
-      if (totalFailures > 0) {
-        return failure(
-          'Furnace engine state',
-          `Repair attempted but apply reported ${totalFailures} failure${totalFailures === 1 ? '' : 's'} (first: ${firstApplyFailure(applyResult)}).`,
-          'Fix the underlying component issue and retry the doctor command.'
+      return await runDoctorFurnaceRepair(ctx.projectRoot, async (operation) => {
+        const freshConfig = await loadFurnaceConfig(ctx.projectRoot);
+        const freshState = await loadFurnaceState(ctx.projectRoot);
+        if (JSON.stringify(freshState.pendingRepair) !== JSON.stringify(pendingRepair))
+          throw new Error(
+            'Furnace repair marker changed while waiting for the lock; retry Doctor.'
+          );
+        const freshDrift = await collectFurnaceDrift(
+          ctx.projectRoot,
+          ctx.paths.engine,
+          freshConfig,
+          resolveFtlDir(freshConfig.ftlBasePath)
         );
-      }
-
-      // Apply succeeded, so clear the pendingRepair marker so subsequent
-      // doctor runs stop reporting the issue. updateFurnaceState merges
-      // its return value via `validateFurnaceState` which simply writes
-      // whatever object we return, so dropping the key from the spread
-      // copy is enough to persist the cleared marker.
-      if (pendingRepair) {
-        await clearPendingRepairMarker(ctx.projectRoot);
-      }
-
-      const summary =
-        driftedNames.length > 0
-          ? `Reconciled ${applyResult.applied.length} component${applyResult.applied.length === 1 ? '' : 's'} (${driftedNames.join(', ')} re-applied).`
-          : `Reconciled via furnace apply (${applyResult.applied.length} applied, ${applyResult.skipped.length} skipped).`;
-      return warning('Furnace engine state', summary);
+        const authoring = pendingRepair && !isEngineRepairableOperation(pendingRepair.operation);
+        if (authoring) {
+          const issues = [...(await validateAllComponents(ctx.projectRoot)).values()].flat();
+          const errors = issues.filter((issue) => issue.severity === 'error');
+          if (errors.length > 0)
+            throw new Error(
+              `Authoring rollback marker from ${pendingRepair.operation} is still unresolved: validation found ${errors.length} error(s) (first: ${errors[0]?.message}).`
+            );
+        }
+        let applied: ApplyResult | undefined;
+        if (!authoring || freshDrift.drifted.length > 0) {
+          applied = await applyAllComponents(ctx.projectRoot, false, {
+            operationContext: operation,
+          });
+          const failures = countApplyFailures(applied);
+          if (failures > 0)
+            throw new Error(
+              `Repair apply reported ${failures} failure(s) (first: ${firstApplyFailure(applied)}).`
+            );
+        }
+        if (pendingRepair) await clearPendingRepairMarker(ctx.projectRoot, pendingRepair);
+        return warning(
+          'Furnace engine state',
+          applied
+            ? `Reconciled via furnace apply (${applied.applied.length} applied, ${applied.skipped.length} skipped)${pendingRepair ? ' and cleared the repair marker' : ''}.`
+            : `Cleared the ${pendingRepair?.operation} repair marker after validation passed.`
+        );
+      });
     } catch (err: unknown) {
       return failure(
         'Furnace engine state',
@@ -640,13 +605,16 @@ const furnaceStaleLockCheck: DoctorCheckDefinition = {
     }
 
     try {
-      await rm(lockPath, { recursive: true, force: true });
-      return warning('Furnace lock', `Removed stale furnace lock at ${lockPath}${ageSuffix}.`);
+      await withFileLock(lockPath, () => Promise.resolve(), { timeoutMs: 0, staleMs: 60_000 });
+      return warning(
+        'Furnace lock',
+        `Recovered stale furnace lock at ${lockPath}${ageSuffix} through ownership-aware acquisition.`
+      );
     } catch (err: unknown) {
       return failure(
         'Furnace lock',
         `Could not remove stale furnace lock at ${lockPath}: ${toError(err).message}`,
-        'Remove the directory manually (rm -rf .fireforge/furnace.lock) and retry.'
+        'Retry once any current owner finishes; an unowned or replaced lock is retained.'
       );
     }
   },
@@ -660,11 +628,11 @@ const furnaceStaleLockCheck: DoctorCheckDefinition = {
  */
 export const FURNACE_DOCTOR_CHECKS: readonly DoctorCheckDefinition[] = [
   furnaceConfigurationCheck,
+  furnaceStaleLockCheck,
   furnaceStateConsistencyCheck,
   furnaceStaleJarRegistrationCheck,
   furnaceEnginePathsCheck,
   furnaceStorybookCheck,
-  furnaceStaleLockCheck,
   furnaceEngineStateCheck,
   furnaceComponentValidationCheck,
   furnaceConfigSyncCheck,

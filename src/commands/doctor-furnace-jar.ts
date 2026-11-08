@@ -6,11 +6,16 @@
  * that file within the line budget.
  */
 
-import { getFurnacePaths } from '../core/furnace-config.js';
+import { join } from 'node:path';
+
+import { getFurnacePaths, loadFurnaceConfig } from '../core/furnace-config.js';
+import { JAR_MN } from '../core/furnace-constants.js';
 import { findStaleJarMnEntries, pruneStaleJarMnEntries } from '../core/furnace-registration.js';
+import { snapshotFile } from '../core/furnace-rollback.js';
 import { toError } from '../utils/errors.js';
 import type { DoctorCheckDefinition } from './doctor-check-core.js';
 import { failure, ok, warning } from './doctor-check-core.js';
+import { runDoctorFurnaceRepair } from './doctor-furnace-transaction.js';
 
 /**
  * "Furnace jar.mn registrations" check: detect widget registration lines
@@ -47,14 +52,19 @@ export const furnaceStaleJarRegistrationCheck: DoctorCheckDefinition = {
     }
 
     try {
-      const pruned = await pruneStaleJarMnEntries(
-        ctx.paths.engine,
-        furnacePaths.customDir,
-        managedTags
-      );
+      const pruned = await runDoctorFurnaceRepair(ctx.projectRoot, async (_operation, journal) => {
+        const fresh = await loadFurnaceConfig(ctx.projectRoot);
+        await snapshotFile(journal, join(ctx.paths.engine, JAR_MN));
+        return pruneStaleJarMnEntries(
+          ctx.paths.engine,
+          furnacePaths.customDir,
+          Object.keys(fresh.custom)
+        );
+      });
+      if (pruned.length === 0) return ok('Furnace jar.mn registrations');
       return warning(
         'Furnace jar.mn registrations',
-        `Pruned ${pruned.length} stale jar.mn registration line${pruned.length === 1 ? '' : 's'} (${staleList}).`
+        `Pruned ${pruned.length} stale jar.mn registration line${pruned.length === 1 ? '' : 's'} (${pruned.map((entry) => `${entry.tagName}/${entry.fileName}`).join(', ')}).`
       );
     } catch (err: unknown) {
       return failure(

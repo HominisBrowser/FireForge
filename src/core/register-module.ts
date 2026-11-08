@@ -6,8 +6,9 @@
 import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { normalizePathSlashes } from '../utils/paths.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
+import { mozBuildListContains } from './moz-manifest-entries.js';
 import { insertMozBuildListEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 import { scaffoldModuleMozBuild } from './register-scaffold.js';
@@ -21,7 +22,7 @@ function registerFireForgeModuleTokenized(
   entry: string
 ): { result: string; previousEntry: string | undefined } {
   return insertMozBuildListEntry(content, entry, {
-    listPattern: /EXTRA_JS_MODULES/,
+    listPattern: /^EXTRA_JS_MODULES\b/,
     sortKey: fileName,
     missingListMessage: 'Could not find EXTRA_JS_MODULES in moz.build',
   });
@@ -66,7 +67,7 @@ export async function registerFireForgeModule(
   const content = await readText(manifestPath);
 
   // Idempotency check
-  if (content.includes(`"${fileName}"`)) {
+  if (mozBuildListContains(content, 'EXTRA_JS_MODULES', fileName)) {
     return { manifest, entry, skipped: true };
   }
 

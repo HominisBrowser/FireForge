@@ -113,7 +113,7 @@ export async function tokenCoverageCommand(projectRoot: string): Promise<void> {
 
   const summary = `Token coverage: ${coverage}% (${report.tokenUsages} tokens / ${denominator} total) — ${report.rawColorCount} raw colors, ${report.unknownVarUsages} unknown vars`;
 
-  if (coverage === 100 && report.rawColorCount === 0) {
+  if (coverage === 100 && report.rawColorCount === 0 && report.unknownVarUsages === 0) {
     success(summary);
   } else {
     warn(summary);

@@ -11,7 +11,7 @@ const VERDICT_PREFIX = 'FIREFORGE-VERDICT: ';
 
 /** One finished sub-run. */
 export interface SubRunResult {
-  /** 1-based repetition this run belongs to. */
+  /** 1-based repetition this run belongs to; a control's unmutated baseline is 0. */
   repetition: number;
   /** The harness half of a mixed invocation. */
   harness?: 'xpcshell' | 'mochitest';
@@ -26,11 +26,16 @@ export interface SubRunResult {
   error?: unknown;
 }
 
+/** The `repetition` of a control's unmutated baseline dispatch. */
+export const CONTROL_BASELINE_REPETITION = 0;
+
 /**
- * How a negative control came out: `caught` when every repetition went red
- * on test failures, `missed` when a repetition stayed green (the tests did
- * not detect the mutation), `inconclusive` when any run failed for another
- * reason or the invocation stopped early.
+ * How a negative control came out: `caught` when the selection was green
+ * without the mutation and every repetition went red on test failures with it,
+ * `missed` when a repetition stayed green (the tests did not detect the
+ * mutation), `inconclusive` when the unmutated baseline was not green, any run
+ * failed for another reason, or the invocation stopped early. A selection that
+ * is already red says nothing about the mutation.
  */
 export type ControlOutcome = 'caught' | 'missed' | 'inconclusive';
 
@@ -62,7 +67,9 @@ export function parseCapturedVerdict(
  */
 export function formatRunLine(result: SubRunResult, index: number, total: number): string {
   const harness = result.harness === undefined ? '' : ` harness=${result.harness}`;
-  return `FIREFORGE-RUN: ${result.body} run=${index + 1}/${total}${harness}`;
+  const run =
+    result.repetition === CONTROL_BASELINE_REPETITION ? 'baseline' : `${index + 1}/${total}`;
+  return `FIREFORGE-RUN: ${result.body} run=${run}${harness}`;
 }
 
 /** Most structural first: the reason an aggregate failure reports. */
@@ -104,6 +111,8 @@ export function deriveControlOutcome(
   complete: boolean
 ): ControlOutcome {
   if (!complete) return 'inconclusive';
+  const baseline = results.filter((result) => result.repetition === CONTROL_BASELINE_REPETITION);
+  if (baseline.length === 0 || baseline.some((result) => !result.passed)) return 'inconclusive';
   if (results.some((result) => !result.passed && result.reason !== 'test-failures')) {
     return 'inconclusive';
   }
@@ -114,6 +123,21 @@ export function deriveControlOutcome(
     if (!red) return 'missed';
   }
   return 'caught';
+}
+
+/**
+ * The aggregate body when a control's unmutated baseline failed, so no mutated
+ * run started. A red baseline reads `note=baseline-red`; a refusal keeps the
+ * note naming its gate.
+ *
+ * @param baseline - The failed baseline run
+ * @param plannedMutated - How many mutated runs were planned
+ */
+export function formatBaselineFailureBody(baseline: SubRunResult, plannedMutated: number): string {
+  const reason = baseline.reason ?? 'preflight';
+  const note = baseline.note ?? (reason === 'preflight' ? undefined : 'baseline-red');
+  const noteKey = note === undefined ? '' : ` note=${note}`;
+  return `FAIL reason=${reason}${noteKey} runs=0/${plannedMutated} control=inconclusive`;
 }
 
 /**
@@ -147,6 +171,6 @@ export function describeControlOutcome(outcome: ControlOutcome): string {
     case 'missed':
       return 'Negative control: the tests STAYED GREEN with the mutation applied, so they do not detect it (control=missed).';
     case 'inconclusive':
-      return 'Negative control: inconclusive, a run failed for a reason other than test failures or did not run (control=inconclusive).';
+      return 'Negative control: inconclusive, the selection was not green without the mutation, or a run failed for a reason other than test failures or did not run (control=inconclusive).';
   }
 }

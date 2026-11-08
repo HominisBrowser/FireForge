@@ -20,14 +20,14 @@
  * That is the contract, not an accident.
  */
 
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
 import type { PatchLintSeverityGate } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import { verbose } from '../utils/logger.js';
 import { exec, type ExecResult } from '../utils/process.js';
+import { boundPrettierConfiguration } from './prettier-bound-config.js';
 
 /** How long prettier gets before the pass gives up (ms). */
 const PRETTIER_TIMEOUT_MS = 120_000;
@@ -38,8 +38,8 @@ const PRETTIER_WARN_LINE = /^\[warn]\s+(.+)$/;
 /** Summary lines prettier prints alongside the per-file ones. */
 const PRETTIER_SUMMARY_LINE = /^\[warn]\s+(?:Code style issues|Forgot to run)/;
 
-/** Resolved prettier invocation: a binary, or `npx` with a leading arg. */
-interface PrettierInvocation {
+/** Exact installed formatter invocation, also bound by coordinated tool identity. */
+export interface PrettierInvocation {
   command: string;
   prefixArgs: string[];
 }
@@ -49,20 +49,19 @@ interface PrettierInvocation {
  *
  * Order matters: the engine's own `node_modules` is the install whose
  * version matches the engine's config, the project's is the next best
- * guess, and `npx` is the last resort (it can download, so it is never
- * preferred over something already present).
+ * guess. An independently resolved npx cache is not an installed project tool.
  */
-async function resolvePrettier(
+export async function resolvePatchLintPrettier(
   engineDir: string,
   projectRoot: string
-): Promise<PrettierInvocation> {
+): Promise<PrettierInvocation | undefined> {
   for (const root of [engineDir, projectRoot]) {
     const candidate = join(root, 'node_modules', '.bin', 'prettier');
     if (await pathExists(candidate)) {
       return { command: candidate, prefixArgs: [] };
     }
   }
-  return { command: 'npx', prefixArgs: ['--no-install', 'prettier'] };
+  return undefined;
 }
 
 /**
@@ -85,13 +84,22 @@ export async function invokePatchLintPrettier(
   if (gate === 'off' || files.length === 0) return [];
   const severity = gate === 'error' ? ('error' as const) : ('warning' as const);
 
-  const invocation = await resolvePrettier(engineDir, projectRoot);
   let result: ExecResult;
   try {
-    result = await exec(invocation.command, [...invocation.prefixArgs, '--check', ...files], {
-      cwd: engineDir,
-      timeout: PRETTIER_TIMEOUT_MS,
-    });
+    const invocation = await resolvePatchLintPrettier(engineDir, projectRoot);
+    if (invocation === undefined) throw new Error('No installed project or engine formatter');
+    const bounded =
+      process.env['FIREFORGE_JOB_TOKEN'] === undefined
+        ? []
+        : (await boundPrettierConfiguration(engineDir, projectRoot, files)).args;
+    result = await exec(
+      invocation.command,
+      [...invocation.prefixArgs, ...bounded, '--check', ...files],
+      {
+        cwd: engineDir,
+        timeout: PRETTIER_TIMEOUT_MS,
+      }
+    );
   } catch (error: unknown) {
     return [
       {
@@ -124,19 +132,20 @@ export async function invokePatchLintPrettier(
   }
 
   const unformatted = new Set<string>();
+  const selected = new Map(files.map((file) => [resolve(engineDir, file), file]));
+  let unrecognized = false;
   for (const line of output.split(/\r?\n/)) {
     const trimmed = line.trim();
+    if (trimmed === '' || trimmed === 'Checking formatting...') continue;
     if (PRETTIER_SUMMARY_LINE.test(trimmed)) continue;
     const match = PRETTIER_WARN_LINE.exec(trimmed);
     const file = match?.[1]?.trim();
-    if (file !== undefined && file.length > 0) unformatted.add(file);
-  }
-  if (unformatted.size === 0) {
-    verbose('patchLint.prettier: prettier exited 1 but named no file; reporting nothing.');
-    return [];
+    const owned = file === undefined ? undefined : selected.get(resolve(engineDir, file));
+    if (owned === undefined) unrecognized = true;
+    else unformatted.add(owned);
   }
 
-  return [...unformatted].sort().map((file) => ({
+  const issues: PatchLintIssue[] = [...unformatted].sort().map((file) => ({
     file,
     check: 'prettier-format' as const,
     message:
@@ -146,4 +155,15 @@ export async function invokePatchLintPrettier(
       `Fix with "prettier --write ${file}" run from engine/.`,
     severity,
   }));
+  if (unformatted.size === 0 || unrecognized) {
+    issues.push({
+      file: '(prettier)',
+      check: 'prettier-format',
+      message:
+        'prettier exited 1 without a complete recognized formatting result; the check is inconclusive: ' +
+        (output.trim().split('\n').slice(-5).join(' ').slice(0, 400) || '(no output)'),
+      severity,
+    });
+  }
+  return issues;
 }

@@ -76,12 +76,9 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:package
-      # The whole suite runs on every OS in the matrix. It was previously a
-      # hand-listed 10-file subset that nothing kept in sync: 15 of the 17
-      # test files that branch on `win32` had drifted out of it, so the
-      # platform-specific code paths this leg exists to cover were the ones
-      # not running. The full suite takes ~35s, which is cheaper than
-      # maintaining the list.
+      # The whole suite runs on every OS in the matrix, so platform-specific code
+      # paths are covered. Suites that need the POSIX-only job coordinator are
+      # excluded on Windows by vitest.config.ts, not by a list kept here.
       - run: npm test
 
   # Node-version axis, Ubuntu only. A separate job rather than a wider

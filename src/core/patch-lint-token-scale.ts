@@ -336,3 +336,22 @@ export function lintTokenScaleFloors(
   }
   return issues;
 }
+
+/** Exclusions must name at least one queue-owned path rather than silently surviving retirement. */
+export function lintStaleTokenScaleExcludes(
+  ownedPaths: Iterable<string>,
+  scales: readonly PatchLintTokenScale[]
+): PatchLintIssue[] {
+  const owned = [...new Set(ownedPaths)];
+  return scales.flatMap((scale, index) =>
+    (scale.exclude ?? [])
+      .filter((exclude) => !owned.some((path) => matchesAnyGlob(path, [exclude])))
+      .map((exclude) => ({
+        file: 'fireforge.json',
+        check: 'stale-token-scale-exclude',
+        severity: 'warning' as const,
+        fingerprint: `stale-token-scale-exclude:${index}:${exclude}`,
+        message: `Token scale ${index + 1} excludes ${exclude}, but no patch creates or modifies a matching path. Remove the retired exception after review.`,
+      }))
+  );
+}

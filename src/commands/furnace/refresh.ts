@@ -13,17 +13,13 @@ import { resolveFtlDir } from '../../core/furnace-constants.js';
 import { isComponentSourceFile } from '../../core/furnace-constants.js';
 import {
   completeJournalRollback,
+  type FurnaceOperationContext,
   runFurnaceMutation,
   waitLockMutationOptions,
 } from '../../core/furnace-operation.js';
 import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
 import { type RefreshFileResult, refreshOverrideFile } from '../../core/furnace-refresh.js';
-import {
-  createRollbackJournal,
-  restoreRollbackJournal,
-  snapshotDir,
-  snapshotFile,
-} from '../../core/furnace-rollback.js';
+import { createRollbackJournal, snapshotDir, snapshotFile } from '../../core/furnace-rollback.js';
 import { getHead } from '../../core/git.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceRefreshOptions } from '../../types/commands/index.js';
@@ -95,6 +91,21 @@ async function refreshSingleOverride(
   name: string,
   options: FurnaceRefreshOptions = {}
 ): Promise<{ results: RefreshFileResult[]; currentVersion: string }> {
+  return runFurnaceMutation(
+    projectRoot,
+    'refresh-rollback',
+    (ctx) => refreshOverrideLocked(projectRoot, name, options, ctx),
+    { dryRun: options.dryRun ?? false, ...waitLockMutationOptions(options.waitLockSeconds) }
+  );
+}
+
+/** Resolve the target and all merge inputs only after mutation admission. */
+async function refreshOverrideLocked(
+  projectRoot: string,
+  name: string,
+  options: FurnaceRefreshOptions,
+  ctx: FurnaceOperationContext
+): Promise<{ results: RefreshFileResult[]; currentVersion: string }> {
   const config = await loadFurnaceConfig(projectRoot);
   const paths = getProjectPaths(projectRoot);
   const furnacePaths = getFurnacePaths(projectRoot);
@@ -128,13 +139,15 @@ async function refreshSingleOverride(
         'Three-way merge skipped — current workspace content is preserved as-is.'
     );
     if (!options.dryRun) {
-      const freshConfig = await loadFurnaceConfig(projectRoot);
-      freshConfig.overrides[name] = {
+      const journal = createRollbackJournal();
+      ctx.registerJournal(journal);
+      await snapshotFile(journal, furnacePaths.furnaceConfig);
+      config.overrides[name] = {
         ...overrideConfig,
         baseVersion: currentVersion,
         baseCommit: headCommit,
       };
-      await writeFurnaceConfig(projectRoot, freshConfig);
+      await writeFurnaceConfig(projectRoot, config);
     }
     return { results: [], currentVersion };
   }
@@ -171,74 +184,69 @@ async function refreshSingleOverride(
   const strategy = options.strategy;
 
   // Run all merges within a transactional mutation so failures can be rolled back
-  const results: RefreshFileResult[] = await runFurnaceMutation(
-    projectRoot,
-    'refresh-rollback',
-    async (ctx) => {
-      const journal = createRollbackJournal();
-      ctx.registerJournal(journal);
+  const results: RefreshFileResult[] = await (async () => {
+    const journal = createRollbackJournal();
+    ctx.registerJournal(journal);
 
-      try {
-        const fileResults: RefreshFileResult[] = [];
+    try {
+      const fileResults: RefreshFileResult[] = [];
 
-        if (!dryRun) {
-          // Snapshot all override files before mutation
-          await snapshotDir(journal, overrideDir);
-          await snapshotFile(journal, furnacePaths.furnaceConfig);
-        }
-
-        for (const entry of overrideFiles) {
-          const overridePath = join(overrideDir, entry.name);
-          const engineRelPath = getOverrideEngineTargetPath(
-            paths.engine,
-            overrideConfig,
-            entry.name,
-            ftlDir
-          ).slice(paths.engine.length + 1);
-
-          const result = await refreshOverrideFile({
-            engineDir: paths.engine,
-            overridePath,
-            engineRelPath,
-            baseCommit,
-            fileName: entry.name,
-            dryRun,
-            strategy,
-          });
-          fileResults.push(result);
-        }
-
-        // Update baseVersion and baseCommit on clean merge (not dry-run, no conflicts)
-        const hasConflicts = fileResults.some((r) => r.status === 'conflict');
-        if (!dryRun && !hasConflicts) {
-          // Re-load config to pick up any concurrent changes from a prior override
-          // in a batch refresh.
-          const freshConfig = await loadFurnaceConfig(projectRoot);
-          freshConfig.overrides[name] = {
-            ...overrideConfig,
-            baseVersion: currentVersion,
-            baseCommit: await getHead(paths.engine),
-          };
-          await writeFurnaceConfig(projectRoot, freshConfig);
-        }
-
-        return fileResults;
-      } catch (error: unknown) {
-        // A dry run wrote nothing, so there is no journal to restore. It
-        // rethrows without touching the lifecycle wrapper.
-        if (!dryRun) {
-          return await completeJournalRollback(ctx, journal, error, {
-            projectRoot,
-            operation: 'refresh-rollback',
-            failureMessage: `Failed to refresh override "${name}"`,
-            subject: `override "${name}"`,
-          });
-        }
-        throw error;
+      if (!dryRun) {
+        // Snapshot all override files before mutation
+        await snapshotDir(journal, overrideDir);
+        await snapshotFile(journal, furnacePaths.furnaceConfig);
       }
-    },
-    { dryRun, ...waitLockMutationOptions(options.waitLockSeconds) }
-  );
+
+      for (const entry of overrideFiles) {
+        const overridePath = join(overrideDir, entry.name);
+        const engineRelPath = getOverrideEngineTargetPath(
+          paths.engine,
+          overrideConfig,
+          entry.name,
+          ftlDir
+        ).slice(paths.engine.length + 1);
+
+        const result = await refreshOverrideFile({
+          engineDir: paths.engine,
+          overridePath,
+          engineRelPath,
+          baseCommit,
+          fileName: entry.name,
+          dryRun,
+          strategy,
+        });
+        fileResults.push(result);
+      }
+
+      // Update baseVersion and baseCommit on clean merge (not dry-run, no conflicts)
+      const hasConflicts = fileResults.some((r) => r.status === 'conflict');
+      if (!dryRun && !hasConflicts) {
+        // Re-load config to pick up any concurrent changes from a prior override
+        // in a batch refresh.
+        const freshConfig = await loadFurnaceConfig(projectRoot);
+        freshConfig.overrides[name] = {
+          ...overrideConfig,
+          baseVersion: currentVersion,
+          baseCommit: await getHead(paths.engine),
+        };
+        await writeFurnaceConfig(projectRoot, freshConfig);
+      }
+
+      return fileResults;
+    } catch (error: unknown) {
+      // A dry run wrote nothing, so there is no journal to restore. It
+      // rethrows without touching the lifecycle wrapper.
+      if (!dryRun) {
+        return await completeJournalRollback(ctx, journal, error, {
+          projectRoot,
+          operation: 'refresh-rollback',
+          failureMessage: `Failed to refresh override "${name}"`,
+          subject: `override "${name}"`,
+        });
+      }
+      throw error;
+    }
+  })();
 
   return { results, currentVersion };
 }
@@ -316,6 +324,10 @@ export async function furnaceRefreshCommand(
   name: string | undefined,
   options: FurnaceRefreshOptions = {}
 ): Promise<void> {
+  if ((await loadConfig(projectRoot)).sources)
+    throw new FurnaceError(
+      'Use "fireforge authored refresh --snapshot <file> --new-pin <json> --new-pristine-repository <donor> --out <external-empty-directory>". Source refresh compares authenticated old/new pin objects and writes a disposable proposal; legacy Furnace engine-HEAD/baseCommit refresh is not source authority. Adoption remains a separate reviewed Git operation.'
+    );
   const refreshAll = options.all ?? false;
 
   if (!name && !refreshAll) {
@@ -362,27 +374,9 @@ export async function furnaceRefreshCommand(
     return;
   }
 
-  // Snapshot furnace.json before the batch loop so an unexpected failure
-  // (process crash, unhandled error) can be recovered from. Per-component
-  // errors caught below are expected and do not trigger a restore. Only
-  // an error that escapes the loop entirely warrants rolling back.
-  const batchJournal = dryRun ? undefined : createRollbackJournal();
-  if (batchJournal) {
-    const furnacePaths = getFurnacePaths(projectRoot);
-    await snapshotFile(batchJournal, furnacePaths.furnaceConfig);
-  }
-
-  let tally: BatchRefreshTally;
-  try {
-    tally = await runBatchRefresh(projectRoot, overrideNames, options);
-  } catch (error: unknown) {
-    // Unexpected batch-level failure: restore furnace.json to its
-    // pre-batch state so the config is not left partially updated.
-    if (batchJournal) {
-      await restoreRollbackJournal(batchJournal);
-    }
-    throw error;
-  }
+  // Each override owns its journal under the mutation lock. A batch snapshot
+  // must never restore over peer changes between independently locked overrides.
+  const tally = await runBatchRefresh(projectRoot, overrideNames, options);
 
   const { totalMerged, totalConflicts, totalUnchanged, totalSkipped } = tally;
   const { conflictComponents, failedOverrides } = tally;

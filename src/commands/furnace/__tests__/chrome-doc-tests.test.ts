@@ -25,7 +25,7 @@ describe('generateChromeDocPackagingTest', () => {
     // reflects that it tries both a primary and a fallback packaged-tree
     // layout before failing.
     expect(test).toContain('Services.dirsvc.get("XCurProcD"');
-    expect(test).toMatch(/primaryFile\.exists\(\)|fallbackFile\.exists\(\)/);
+    expect(test).toContain('candidates.find(file => file.exists())');
     // The assertion chain must not go through NetUtil / newChannel, which
     // would re-introduce the xpcshell chrome-URI registration dependency
     // the scaffold exists to sidestep. We tolerate the string appearing in

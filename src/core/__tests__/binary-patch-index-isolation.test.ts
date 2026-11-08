@@ -59,7 +59,7 @@ describe('untracked binary patch generation (real git)', () => {
 
   it('leaves the shared index and `git status` byte-identical', async () => {
     // This is the invariant the parallel gate lanes broke. The probe that
-    // matters is exactly `snapshotEngineGeneration`'s: HEAD plus porcelain.
+    // matters is exactly `captureEngineGeneration`'s: HEAD plus porcelain.
     const repo = await initRepo();
     await writeFile(join(repo, 'icon.png'), BINARY);
 

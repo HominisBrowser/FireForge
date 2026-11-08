@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Shared pre-flight logic for build and package commands:
+ * Shared pre-flight logic for the build commands:
  * story cleanup, branding setup, Furnace component application, and mozconfig generation.
  */
 
@@ -27,6 +27,7 @@ import {
 } from './build-overwrite-guard.js';
 import { hashEngineFile } from './coverage-extend.js';
 import { collectChangedEnginePaths, dropPathsMatchingFingerprints } from './engine-changes.js';
+import { invalidateEngineState, withEngineStateHold } from './engine-state.js';
 import { applyAllComponents, type ApplyAllComponentsResult } from './furnace-apply.js';
 import { logApplyWarnings } from './furnace-apply-output.js';
 import {
@@ -36,6 +37,7 @@ import {
   loadFurnaceState,
 } from './furnace-config.js';
 import { runFurnaceMutation } from './furnace-operation.js';
+import { describeStaleFurnaceComponents, FURNACE_STALE_REASON_TEXT } from './furnace-staleness.js';
 import { countEntriesWithBlockingStepErrors } from './furnace-step-errors.js';
 import { cleanStories } from './furnace-stories.js';
 import { generateMozconfig, type MachCommandResult, runMachCapture } from './mach.js';
@@ -250,7 +252,23 @@ async function reportUnexportedDriftBeforeOverwrite(
   config: FireForgeConfig,
   options: PrepareBuildOptions
 ): Promise<void> {
-  const { atRisk, deployedUnexported } = await assessUnexportedDrift(projectRoot, config);
+  if (config.sources) {
+    // Captured slots validate closed writer inputs/output ledgers. A queue cannot
+    // describe authored authority and must not become an alternate source of truth.
+    const { readAdmittedSnapshot } = await import('./jobs/guard.js');
+    await readAdmittedSnapshot(projectRoot);
+    return;
+  }
+  const { atRisk, deployedUnexported, probeError } = await assessUnexportedDrift(
+    projectRoot,
+    config
+  );
+  if (probeError !== undefined) {
+    const message = `Unexported-drift safety could not be established: ${probeError}. Repair the probe before overwriting engine files.`;
+    if (options.refuseUnexportedDrift === true) throw new GeneralError(message);
+    notice(message);
+    return;
+  }
   // Deployed Furnace files that are their component source's own
   // deployment never block: the overwrite loses nothing. Say so, since
   // their patches still owe a re-export.
@@ -307,6 +325,10 @@ async function applyFurnaceBeforeBuild(
     Object.keys(furnaceConfig.overrides).length > 0 || Object.keys(furnaceConfig.custom).length > 0;
 
   if (!hasComponents) return [];
+  // Read before the apply rewrites the record: it says why each deployed
+  // component was behind, which is what tells a session whether the build
+  // shipped an edit it did not make.
+  const dispatchState = await describeStaleFurnaceComponents(projectRoot).catch(() => []);
   const furnaceSpinner = spinner('Applying Furnace components...');
   let result: ApplyAllComponentsResult;
   try {
@@ -368,6 +390,15 @@ async function applyFurnaceBeforeBuild(
     notice(
       `Furnace: source → engine sync wrote ${furnaceApplied} component${furnaceApplied === 1 ? '' : 's'} before build (${appliedNames}). engine/ now matches components/.`
     );
+    const reasons = result.applied.flatMap((entry) => {
+      const state = dispatchState.find((candidate) => candidate.name === entry.name);
+      return state === undefined
+        ? []
+        : [`${entry.name}: ${FURNACE_STALE_REASON_TEXT[state.reason]}`];
+    });
+    if (reasons.length > 0) {
+      notice(`Furnace dispatch state (engine/ before this build):\n  ${reasons.join('\n  ')}`);
+    }
   } else {
     furnaceSpinner.stop('Components up to date');
   }
@@ -415,7 +446,26 @@ async function runAutoConfigure(engineDir: string, triggers: string): Promise<vo
 }
 
 /**
- * Runs the shared pre-flight steps for build and package commands:
+ * Refuses while Furnace has an unresolved repair marker: the engine may be in an
+ * inconsistent state after a failed rollback, so nothing should be built or
+ * packaged from it.
+ *
+ * @param projectRoot - Project root
+ */
+export async function assertNoPendingFurnaceRepair(projectRoot: string): Promise<void> {
+  const furnaceStatePath = getFurnacePaths(projectRoot).furnaceState;
+  if (!(await pathExists(furnaceStatePath))) return;
+  const { pendingRepair } = await loadFurnaceState(projectRoot);
+  if (pendingRepair) {
+    throw new FurnaceError(
+      `Furnace has an unresolved repair marker (from ${pendingRepair.operation}). ` +
+        'Run "fireforge doctor --repair-furnace" to reconcile engine state before building.'
+    );
+  }
+}
+
+/**
+ * Runs the shared pre-flight steps for the build commands:
  * 1. Warns (or refuses) about unexported engine drift the writes below
  * would destroy
  * 2. Cleans Furnace stories from engine (prevents leaking into production)
@@ -437,23 +487,10 @@ export async function prepareBuildEnvironment(
   config: FireForgeConfig,
   options: PrepareBuildOptions = {}
 ): Promise<BuildPreparation> {
-  // Block the build if Furnace has an unresolved repair marker. This prevents
-  // building against an engine that may be in an inconsistent state after a
-  // failed rollback.
-  const furnaceStatePath = getFurnacePaths(projectRoot).furnaceState;
-  if (await pathExists(furnaceStatePath)) {
-    const furnaceState = await loadFurnaceState(projectRoot);
-    if (furnaceState.pendingRepair) {
-      throw new FurnaceError(
-        `Furnace has an unresolved repair marker (from ${furnaceState.pendingRepair.operation}). ` +
-          'Run "fireforge doctor --repair-furnace" to reconcile engine state before building.'
-      );
-    }
-  }
+  await assertNoPendingFurnaceRepair(projectRoot);
 
-  await reportUnexportedDriftBeforeOverwrite(projectRoot, config, options);
-
-  // Auto-configure census: if any backend-invalidating file (moz.build,
+  // Warns before the overwrite (see reportUnexportedDriftBeforeOverwrite), then
+  // the auto-configure census: if any backend-invalidating file (moz.build,
   // moz.configure, Makefile.in) changed since the last successful build,
   // `mach configure` runs before the build step. Prevents incremental builds
   // from silently skipping work against a stale recursive-make backend. The
@@ -465,7 +502,10 @@ export async function prepareBuildEnvironment(
   const configureTriggers: string[] = [];
   let fullBuildRequired = false;
   let fullBuildReason: string | undefined;
-  if (options.previousBaseline) {
+  // Both reads judge the tree as it stands before the writes below.
+  await withEngineStateHold(async () => {
+    await reportUnexportedDriftBeforeOverwrite(projectRoot, config, options);
+    if (!options.previousBaseline) return;
     const changed = await collectChangedBuildInputs(paths.engine, options.previousBaseline);
     const invalidating = changed.filter(isBackendInvalidatingFile);
     const jarEscalation = await decideJarEscalation(paths.engine, changed);
@@ -476,10 +516,10 @@ export async function prepareBuildEnvironment(
         `${invalidating.length} file${invalidating.length === 1 ? '' : 's'} touched`
       );
     }
-  }
+  });
 
   // Clean stories before build to ensure they don't leak into production binary
-  await cleanStories(paths.engine);
+  const storiesCleaned = await cleanStories(paths.engine);
 
   // Set up custom branding directory and patch moz.configure. Thread the
   // project license through so `buildConfigureScriptContent` /
@@ -494,7 +534,8 @@ export async function prepareBuildEnvironment(
     binaryName: config.binaryName,
     ...(config.license !== undefined ? { license: config.license } : {}),
   };
-  if (!(await isBrandingSetup(paths.engine, brandingConfig))) {
+  const brandingMissing = !(await isBrandingSetup(paths.engine, brandingConfig));
+  if (brandingMissing) {
     const brandingSpinner = spinner('Setting up branding...');
     try {
       await setupBranding(paths.engine, brandingConfig);
@@ -539,6 +580,18 @@ export async function prepareBuildEnvironment(
   if (configureTriggers.length > 0) {
     await runAutoConfigure(paths.engine, configureTriggers.join('; '));
     reconfigured = true;
+  }
+
+  // Each step above writes only when it has something to do. An enclosing hold
+  // keeps its measurement unless one did, which spares a walk of the engine.
+  if (
+    storiesCleaned > 0 ||
+    brandingMissing ||
+    furnaceAppliedNames.length > 0 ||
+    mozconfigWritten ||
+    reconfigured
+  ) {
+    invalidateEngineState(paths.engine);
   }
 
   return {

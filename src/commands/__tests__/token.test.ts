@@ -42,7 +42,6 @@ vi.mock('../../core/token-manager.js', async (importOriginal) => ({
       skipped: false,
     })
   ),
-  validateTokenAdd: vi.fn(() => Promise.resolve()),
   getTokensCssPath: vi.fn(() => 'browser/themes/shared/mybrowser-tokens.css'),
 }));
 
@@ -63,14 +62,13 @@ vi.mock('../token-list.js', () => ({
 
 import { loadConfig } from '../../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
-import { addToken, validateTokenAdd } from '../../core/token-manager.js';
+import { addToken } from '../../core/token-manager.js';
 import { info, outro, success, warn } from '../../utils/logger.js';
 import { registerToken, tokenAddCommand } from '../token.js';
 import { tokenLintCommand } from '../token-lint.js';
 import { tokenListCommand, tokenShowCommand } from '../token-list.js';
 
 const mockedAddToken = vi.mocked(addToken);
-const mockedValidateTokenAdd = vi.mocked(validateTokenAdd);
 const mockedLoadConfig = vi.mocked(loadConfig);
 const mockedLoadFurnaceConfig = vi.mocked(loadFurnaceConfig);
 const mockedFurnaceConfigExists = vi.mocked(furnaceConfigExists);
@@ -106,7 +104,6 @@ describe('tokenAddCommand', () => {
       countUpdated: true,
       skipped: false,
     });
-    mockedValidateTokenAdd.mockResolvedValue();
   });
 
   it('validates dry-run token additions before printing a preview', async () => {
@@ -117,7 +114,7 @@ describe('tokenAddCommand', () => {
       dryRun: true,
     });
 
-    expect(mockedValidateTokenAdd).toHaveBeenCalledWith('/project', {
+    expect(mockedAddToken).toHaveBeenCalledWith('/project', {
       tokenName: '--mybrowser-audit-gap',
       value: '12px',
       category: 'Spacing',
@@ -125,11 +122,10 @@ describe('tokenAddCommand', () => {
       darkValue: '16px',
       dryRun: true,
     });
-    expect(mockedAddToken).not.toHaveBeenCalled();
   });
 
   it('surfaces dry-run validation errors instead of pretending the add would succeed', async () => {
-    mockedValidateTokenAdd.mockRejectedValue(
+    mockedAddToken.mockRejectedValue(
       new InvalidArgumentError('Override mode requires --dark-value to be specified.', 'darkValue')
     );
 
@@ -140,7 +136,6 @@ describe('tokenAddCommand', () => {
         dryRun: true,
       })
     ).rejects.toThrow(/dark-value/i);
-    expect(mockedAddToken).not.toHaveBeenCalled();
   });
 
   it('prefixes bare token names from the configured Furnace token prefix', async () => {
@@ -150,7 +145,7 @@ describe('tokenAddCommand', () => {
       dryRun: true,
     });
 
-    expect(mockedValidateTokenAdd).toHaveBeenCalledWith('/project', {
+    expect(mockedAddToken).toHaveBeenCalledWith('/project', {
       tokenName: '--mybrowser-canvas-gap',
       value: '12px',
       category: 'Spacing',
@@ -171,7 +166,7 @@ describe('tokenAddCommand', () => {
     expect(info).toHaveBeenCalledWith(
       expect.stringContaining('already starts with the configured prefix')
     );
-    expect(mockedValidateTokenAdd).toHaveBeenCalledWith('/project', {
+    expect(mockedAddToken).toHaveBeenCalledWith('/project', {
       tokenName: '--mybrowser-shadow-low',
       value: '0 1px 2px #000',
       category: 'Shadows',
@@ -187,7 +182,7 @@ describe('tokenAddCommand', () => {
       dryRun: true,
     });
 
-    expect(mockedValidateTokenAdd).toHaveBeenCalledWith(
+    expect(mockedAddToken).toHaveBeenCalledWith(
       '/project',
       expect.objectContaining({ tokenName: '--mybrowser' })
     );
@@ -202,7 +197,7 @@ describe('tokenAddCommand', () => {
       dryRun: true,
     });
 
-    expect(mockedValidateTokenAdd).toHaveBeenCalledWith(
+    expect(mockedAddToken).toHaveBeenCalledWith(
       '/project',
       expect.objectContaining({ tokenName: '--mybrowser-mybrowserish-gap' })
     );
@@ -218,7 +213,7 @@ describe('tokenAddCommand', () => {
     });
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('furnace.json could not be loaded'));
-    expect(mockedValidateTokenAdd).toHaveBeenCalledWith('/project', {
+    expect(mockedAddToken).toHaveBeenCalledWith('/project', {
       tokenName: '--canvas-gap',
       value: '12px',
       category: 'Spacing',
@@ -236,7 +231,7 @@ describe('tokenAddCommand', () => {
       dryRun: true,
     });
 
-    expect(mockedValidateTokenAdd).toHaveBeenCalledWith('/project', {
+    expect(mockedAddToken).toHaveBeenCalledWith('/project', {
       tokenName: '--canvas-gap',
       value: '12px',
       category: 'Spacing',
@@ -253,7 +248,7 @@ describe('tokenAddCommand', () => {
       })
     ).rejects.toThrow(/invalid mode/i);
 
-    expect(mockedValidateTokenAdd).not.toHaveBeenCalled();
+    expect(mockedAddToken).not.toHaveBeenCalled();
     expect(mockedAddToken).not.toHaveBeenCalled();
   });
 
@@ -292,7 +287,7 @@ describe('tokenAddCommand', () => {
       dryRun: true,
     });
 
-    expect(mockedValidateTokenAdd).toHaveBeenCalledWith('/project', {
+    expect(mockedAddToken).toHaveBeenCalledWith('/project', {
       tokenName: '--mybrowser-audit-gap',
       value: '12px',
       category: 'Spacing',
@@ -311,7 +306,7 @@ describe('tokenAddCommand', () => {
       dryRun: true,
     });
 
-    expect(mockedValidateTokenAdd).toHaveBeenCalledWith('/project', {
+    expect(mockedAddToken).toHaveBeenCalledWith('/project', {
       tokenName: '--mybrowser-canvas-bg',
       value: '#101010',
       category: 'Colors',
@@ -457,7 +452,7 @@ describe('tokenAddCommand', () => {
     // Must refuse before the token manager gets a chance to throw its
     // generic "file not found" error.
     expect(mockedAddToken).not.toHaveBeenCalled();
-    expect(mockedValidateTokenAdd).not.toHaveBeenCalled();
+    expect(mockedAddToken).not.toHaveBeenCalled();
   });
 });
 
@@ -471,7 +466,6 @@ describe('registerToken', () => {
       ReturnType<typeof loadFurnaceConfig>
     >);
     mockedFurnaceConfigExists.mockResolvedValue(true);
-    mockedValidateTokenAdd.mockResolvedValue();
     mockedAddToken.mockResolvedValue({
       cssAdded: true,
       docsAdded: true,
@@ -502,7 +496,7 @@ describe('registerToken', () => {
       '--dry-run',
     ]);
 
-    expect(mockedValidateTokenAdd).toHaveBeenCalledWith('/project', {
+    expect(mockedAddToken).toHaveBeenCalledWith('/project', {
       tokenName: '--mybrowser-canvas-gap',
       value: '12px',
       category: 'Spacing',

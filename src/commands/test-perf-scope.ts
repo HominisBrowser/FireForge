@@ -65,7 +65,7 @@ export async function describePerfStaleImpact(
 }
 
 /**
- * Tolerance for `assertEngineGenerationUnchanged` on a `--perf-samples` run:
+ * Tolerance for `judgeEngineGeneration` on a `--perf-samples` run:
  * true (with a warning naming the edits) when HEAD did not move and no
  * changed path is packaged by the running build.
  *
@@ -97,7 +97,7 @@ export function perfGenerationTolerance(
 }
 
 /**
- * Tolerance for `assertEngineGenerationUnchanged` on an ordinary run: true
+ * Tolerance for `judgeEngineGeneration` on an ordinary run: true
  * (with a warning, and `drift-tolerated=<n>` on the verdict) when HEAD did
  * not move and every changed path is one the running browser cannot see.
  *

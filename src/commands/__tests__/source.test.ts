@@ -52,6 +52,27 @@ describe('sourceSetCommand', () => {
     );
   });
 
+  it('drops a checksum that pinned another archive, and says what happened to it', async () => {
+    await sourceSetCommand(projectRoot, {
+      version: '152.0b6',
+      product: 'firefox-devedition',
+      sha256: 'b'.repeat(64),
+    });
+    vi.mocked(success).mockClear();
+    await sourceSetCommand(projectRoot, { version: '152.0b6', product: 'firefox-devedition' });
+    const retained = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
+      firefox: { sha256?: string };
+    };
+    expect(retained.firefox.sha256).toBe('b'.repeat(64));
+    expect(success).not.toHaveBeenCalledWith(expect.stringContaining('Set firefox.sha256'));
+
+    await sourceSetCommand(projectRoot, { version: '152.0b7', product: 'firefox-devedition' });
+    const moved = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
+      firefox: { sha256?: string };
+    };
+    expect(moved.firefox.sha256).toBeUndefined();
+  });
+
   it('edits the firefox keys in place and keeps the rest of the file byte for byte', async () => {
     const compact = [
       '{',

@@ -10,9 +10,10 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 
 import {
-  assertEngineGenerationUnchanged,
-  snapshotEngineGeneration,
-} from '../core/engine-session-lock.js';
+  captureEngineGeneration,
+  judgeEngineGeneration,
+  refreshEngineGeneration,
+} from '../core/engine-state.js';
 import { autoPortsRequested, detectHarnessPortFallback } from '../core/harness-port-fallback.js';
 import {
   type HarnessPortReservation,
@@ -110,9 +111,9 @@ async function verifyEngineGenerationOrEmitInconclusive(
   }
 ): Promise<void> {
   try {
-    await assertEngineGenerationUnchanged(
-      engineDir,
+    await judgeEngineGeneration(
       before,
+      await refreshEngineGeneration(engineDir),
       inputs.perfSamples === undefined
         ? runGenerationTolerance(engineDir, inputs.requested, (count) => {
             setVerdictRunAttribute('drift-tolerated', String(count));
@@ -286,7 +287,7 @@ export async function dispatchTests(inputs: TestDispatchInputs): Promise<void> {
     notice(describeSharding(shards.length, options, jobs));
     const base = jobs > 1 ? await instanceContext(runCtx, 0, inputs.xpcshellOnly) : runCtx;
     if (jobs > 1) stampParallelAttributes(runCtx, jobs, shards.length);
-    const generationBefore = await snapshotEngineGeneration(engineDir);
+    const generationBefore = await captureEngineGeneration(engineDir);
     let summary: ShardedRunSummary;
     const reservation = await reserveParallelServerPorts(
       engineDir,
@@ -324,7 +325,7 @@ export async function dispatchTests(inputs: TestDispatchInputs): Promise<void> {
 
   const combinedDispatchPaths = inputs.dispatchGroups.flatMap((group) => group.paths);
   let outcome: TestRunOutcome;
-  const generationBefore = await snapshotEngineGeneration(engineDir);
+  const generationBefore = await captureEngineGeneration(engineDir);
   try {
     outcome = await runTestsWithRetries(runCtx, combinedDispatchPaths);
   } catch (error: unknown) {

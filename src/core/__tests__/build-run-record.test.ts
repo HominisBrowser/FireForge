@@ -104,4 +104,18 @@ describe('build run record', () => {
     ).resolves.toEqual({ exitCode: 1 });
     expect(await readFile(join(blocked, '.fireforge'), 'utf8')).toBe('');
   });
+
+  it.each([
+    null,
+    [],
+    1,
+    'running',
+    true,
+    { status: 'unknown', pid: 1, startedAt: 'now', command: 'build', machCommand: 'mach build' },
+    { status: 'running', pid: -1, startedAt: 'now', command: 'build', machCommand: 'mach build' },
+  ])('treats valid but malformed JSON %j as absent', async (value) => {
+    await mkdir(join(root, '.fireforge'), { recursive: true });
+    await writeFile(recordFile, JSON.stringify(value));
+    await expect(readBuildRunState(root)).resolves.toEqual({ kind: 'none' });
+  });
 });

@@ -18,6 +18,7 @@
  *      via `isPackageablePath`.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { readdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
@@ -166,6 +167,18 @@ export function scoreCandidate(sourcePath: string, candidatePath: string): numbe
   return trailing * 10 + bonus;
 }
 
+/** Per-root basename indexes, shared by every lookup inside {@link withBasenameIndex}. */
+const basenameIndexes = new AsyncLocalStorage<Map<string, Promise<Map<string, string[]>>>>();
+
+/**
+ * Lets every {@link findAllByBasename} call `operation` makes share one walk of
+ * each root. A dist tree runs to tens of thousands of files and an audit asks
+ * about one basename per source, so the trees must not move while it runs.
+ */
+export function withBasenameIndex<T>(operation: () => Promise<T>): Promise<T> {
+  return basenameIndexes.run(new Map(), operation);
+}
+
 /**
  * Walks a tree under `root` and returns every file whose basename equals
  * `name`. Skips dotfile / hidden directories so the symlinked
@@ -182,7 +195,21 @@ export async function findAllByBasename(
   name: string,
   maxDepth: number = MAX_SCAN_DEPTH
 ): Promise<string[]> {
-  const results: string[] = [];
+  const indexes = basenameIndexes.getStore();
+  if (indexes === undefined || maxDepth !== MAX_SCAN_DEPTH) {
+    return (await walkBasenames(root, maxDepth)).get(name) ?? [];
+  }
+  let index = indexes.get(root);
+  if (index === undefined) {
+    index = walkBasenames(root, MAX_SCAN_DEPTH);
+    indexes.set(root, index);
+  }
+  return (await index).get(name) ?? [];
+}
+
+/** Every file under `root`, keyed by basename. */
+async function walkBasenames(root: string, maxDepth: number): Promise<Map<string, string[]>> {
+  const results = new Map<string, string[]>();
   if (!(await pathExists(root))) return results;
   const stack: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
   while (stack.length > 0) {
@@ -204,9 +231,9 @@ export async function findAllByBasename(
         stack.push({ dir: fullPath, depth: entry.depth + 1 });
         continue;
       }
-      if (child.name === name) {
-        results.push(fullPath);
-      }
+      const named = results.get(child.name);
+      if (named === undefined) results.set(child.name, [fullPath]);
+      else named.push(fullPath);
     }
   }
   return results;

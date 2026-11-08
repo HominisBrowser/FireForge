@@ -17,17 +17,17 @@
  */
 
 import type { Dirent } from 'node:fs';
-import { readdir, rmdir } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { withFileLock } from '../core/file-lock.js';
 import { getFurnacePaths, loadFurnaceConfig, writeFurnaceConfig } from '../core/furnace-config.js';
-import { getFurnaceLockPath } from '../core/furnace-operation.js';
+import { removeEmptyDirectory, type RollbackJournal } from '../core/furnace-rollback.js';
 import type { FurnaceConfig, OverrideComponentConfig } from '../types/furnace.js';
 import { toError } from '../utils/errors.js';
 import { pathExistsStrict, readJson } from '../utils/fs.js';
 import type { CheckResult, DoctorCheckDefinition } from './doctor-check-core.js';
 import { failure, ok, warning } from './doctor-check-core.js';
+import { runDoctorFurnaceRepair } from './doctor-furnace-transaction.js';
 
 interface OrphanOverride {
   name: string;
@@ -199,7 +199,6 @@ async function repairOrphans(
   const outcome = emptyOutcome();
   if (orphans.overrides.length === 0 && orphans.customNames.length === 0) return outcome;
 
-  const lockPath = getFurnaceLockPath(projectRoot);
   // One catch covers four distinct phases. Naming the one that failed keeps
   // the report honest. A lock timeout otherwise renders as "failed while
   // writing furnace.json", the phase least likely to have been reached.
@@ -209,28 +208,31 @@ async function repairOrphans(
   // in the catch below.
   const progress = { phase: 'waiting for the furnace lock', persisted: false };
   try {
-    await withFileLock(
-      lockPath,
-      async () => {
-        progress.phase = 'loading furnace.json under the lock';
-        const freshConfig = await loadFurnaceConfig(projectRoot);
-        repairOverridesLocked(freshConfig, orphans.overrides, outcome);
-        if (outcome.restored.length > 0) {
-          progress.phase = 'writing furnace.json';
-          await writeFurnaceConfig(projectRoot, freshConfig);
-        }
-        // From here the restore (if any) is on disk. A later failure must not
-        // report the whole repair as if it never happened.
-        progress.persisted = true;
-        progress.phase = 'cleaning custom orphan directories';
-        await deleteEmptyCustomOrphans(projectRoot, freshConfig, orphans.customNames, outcome);
-      },
-      {
-        onTimeoutMessage:
-          `Timed out waiting for the furnace lock at ${lockPath}. ` +
-          'Another fireforge furnace command may be running; retry the repair once it finishes.',
+    await runDoctorFurnaceRepair(projectRoot, async (_operation, journal) => {
+      progress.phase = 'loading furnace.json under the lock';
+      const freshConfig = await loadFurnaceConfig(projectRoot);
+      const freshOrphans = await collectOrphans(projectRoot, freshConfig);
+      // Report names registered while waiting, without absorbing a stale sidecar.
+      for (const old of [...orphans.overrides.map((entry) => entry.name), ...orphans.customNames])
+        if (old in freshConfig.overrides || old in freshConfig.custom)
+          if (!outcome.reconciled.includes(old)) outcome.reconciled.push(old);
+      repairOverridesLocked(freshConfig, freshOrphans.overrides, outcome);
+      if (outcome.restored.length > 0) {
+        progress.phase = 'writing furnace.json';
+        await writeFurnaceConfig(projectRoot, freshConfig);
       }
-    );
+      // From here the restore (if any) is on disk. A later failure must not
+      // report the whole repair as if it never happened.
+      progress.persisted = true;
+      progress.phase = 'cleaning custom orphan directories';
+      await deleteEmptyCustomOrphans(
+        projectRoot,
+        freshConfig,
+        freshOrphans.customNames,
+        outcome,
+        journal
+      );
+    });
   } catch (err: unknown) {
     if (progress.persisted) {
       outcome.errors.push(`repair failed while ${progress.phase}: ${toError(err).message}`);
@@ -273,7 +275,8 @@ async function deleteEmptyCustomOrphans(
   projectRoot: string,
   freshConfig: FurnaceConfig,
   customNames: string[],
-  outcome: RepairOutcome
+  outcome: RepairOutcome,
+  journal: RollbackJournal
 ): Promise<void> {
   if (customNames.length === 0) return;
   const furnacePaths = getFurnacePaths(projectRoot);
@@ -304,7 +307,7 @@ async function deleteEmptyCustomOrphans(
       // "deleted N empty directories" report was unreachable. `rmdir` is also
       // the exact semantics wanted here: it refuses a non-empty directory,
       // which keeps the emptiness check above from being the only safeguard.
-      await rmdir(dir);
+      await removeEmptyDirectory(journal, dir);
       outcome.deleted.push(name);
     } catch (err: unknown) {
       outcome.errors.push(`${name}: ${toError(err).message}`);

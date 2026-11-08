@@ -19,11 +19,7 @@ import {
   type StaleFragmentIncluder,
 } from '../../core/furnace-fragment-includers.js';
 import type { FurnaceOperationContext } from '../../core/furnace-operation.js';
-import {
-  getPersistableAppliedEntry,
-  persistSingleComponentState,
-  shouldPersistSingleComponentState,
-} from '../../core/furnace-state-persist.js';
+import { appliedCleanly } from '../../core/furnace-step-errors.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
 
 /** Outcome of the includer follow-up. */
@@ -90,16 +86,10 @@ export async function refreshStaleFragmentIncluders(args: {
   for (const includer of stale) {
     const result = await applyAllComponents(projectRoot, false, {
       componentName: includer.tag,
-      persistState: false,
       operationContext,
     });
     results.push(result);
-    if (shouldPersistSingleComponentState(result, false)) {
-      await persistSingleComponentState(
-        projectRoot,
-        getPersistableAppliedEntry('Deploy', includer.tag, result.applied[0]),
-        furnacePaths
-      );
+    if (appliedCleanly(result)) {
       refreshed.push(includer.tag);
     } else {
       failed.push(includer);

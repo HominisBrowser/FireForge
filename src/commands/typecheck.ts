@@ -14,17 +14,26 @@
  * fail.
  */
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 
+import { assertSourcePath } from '../core/authored/paths.js';
+import {
+  authoredGateContext,
+  checkAuthoredTypes,
+  type SourceGateContext,
+} from '../core/authored-gates.js';
+import { resolveSourceScope } from '../core/authored-scope.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.js';
 import {
   findJsconfigPathsDrift,
+  GENERATED_TYPES_REMEDY,
   syncJsconfigPaths,
   typecheckJsconfigList,
 } from '../core/furnace-jsconfig.js';
 import { syncFurnaceTagMap } from '../core/furnace-tag-map.js';
 import { withPrivateGitIndex } from '../core/git-readonly-index.js';
+import { recordDerivedOutput } from '../core/jobs/derived.js';
 import { buildPatchQueueContext } from '../core/patch-lint.js';
 import { relativeForDisplay, runTypecheck } from '../core/typecheck.js';
 import { explainTypecheckFile } from '../core/typecheck-explain.js';
@@ -32,14 +41,17 @@ import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PatchLintIssue } from '../types/commands/index.js';
 import type { FireForgeConfig, ProjectPaths, TypecheckConfig } from '../types/config.js';
+import type { FurnaceConfig } from '../types/furnace.js';
 import type { TypecheckIssue, TypecheckProjectResult } from '../types/typecheck.js';
 import { pathExists } from '../utils/fs.js';
-import { info, intro, message, outro, success, warn } from '../utils/logger.js';
+import { info, intro, message, notice, outro, success, warn } from '../utils/logger.js';
 import { buildPerRunCheckJs } from './lint-per-run-checkjs.js';
 import { formatTypecheckExplanation } from './typecheck-explain.js';
 
 /** Command-line options Commander forwards from `fireforge typecheck`. */
 export interface TypecheckCommandOptions {
+  /** Strict source-scoped feedback; complete project type proof remains required. */
+  sourceFiles?: string[];
   /**
    * Override `typecheck.projects` with a single jsconfig.json path
    * for one-off verification. Replaces (does not augment) the config,
@@ -47,11 +59,6 @@ export interface TypecheckCommandOptions {
    * issues without waiting for the full set.
    */
   project?: string;
-  /**
-   * Build every project from scratch and write no incremental build info
-   * (`--no-cache`).
-   */
-  noCache?: boolean;
   /**
    * Explain how both passes see this file instead of running a check
    * (`--explain <file>`).
@@ -107,46 +114,87 @@ export async function typecheckCommand(
   options: TypecheckCommandOptions
 ): Promise<void> {
   intro('FireForge typecheck');
+  const config = await loadConfig(projectRoot);
+  if (config.sources) return runTypecheckCommandBody(projectRoot, options, config);
 
   // Read-only to the operator, an index WRITER to git without this scope:
   // the Furnace jsconfig reconciler and the project resolution
   // below touch `engine/`, and any git plumbing they reach would refresh
   // the primary checkout's index under a concurrent `fireforge test`.
   return withPrivateGitIndex(getProjectPaths(projectRoot).engine, () =>
-    runTypecheckCommandBody(projectRoot, options)
+    runTypecheckCommandBody(projectRoot, options, config)
   );
 }
 
 async function runTypecheckCommandBody(
   projectRoot: string,
-  options: TypecheckCommandOptions
+  options: TypecheckCommandOptions,
+  config: FireForgeConfig
 ): Promise<void> {
   // Validate project is initialised. `loadConfig` throws on missing
   // fireforge.json, and withErrorHandling at the CLI layer renders the
   // resulting `ConfigNotFoundError` cleanly, so we don't need to
   // re-wrap.
   const paths = getProjectPaths(projectRoot);
-  const config = await loadConfig(projectRoot);
+
+  if (options.sourceFiles !== undefined) {
+    if (!config.sources || options.sourceFiles.length === 0 || options.project || options.explain)
+      throw new InvalidArgumentError(
+        '--source-files requires authored mode and cannot combine with --project or --explain.',
+        '--source-files'
+      );
+    options.sourceFiles.forEach((path) => {
+      assertSourcePath(path);
+    });
+    const context = await authoredGateContext(projectRoot);
+    const scope = resolveSourceScope(
+      context.snapshot.files.map((file) => file.path),
+      options.sourceFiles,
+      '--source-files'
+    );
+    info(`Checking ${scope.size} source file(s) selected by --source-files.`);
+    const issues = await checkAuthoredTypes(context, scope);
+    reportResults(projectRoot, [], issues, 'authored scope');
+    return;
+  }
 
   if (options.explain !== undefined) {
     await explainFile(paths, config, options);
     return;
   }
 
+  // Source mode outside a job judges a private view of a snapshot: it has no
+  // engine to read and no admitted phase to record generated outputs under. The
+  // view holds no pristine files, so a project's own program, which reads upstream
+  // through `engine/`, would report every upstream symbol as missing. Unless one was
+  // named, those programs wait for a slot, and the result says so.
+  const view =
+    config.sources && process.env['FIREFORGE_JOB_ID'] === undefined
+      ? await authoredGateContext(projectRoot)
+      : undefined;
+  if (view !== undefined && options.project === undefined) {
+    if (config.typecheck?.projects.length) {
+      notice(
+        `Strict source typing only: ${config.typecheck.projects.join(', ')} need the full engine a slot has, and run in "fireforge job run --check".`
+      );
+    }
+    reportResults(view.projectRoot, [], await checkAuthoredTypes(view), 'authored source');
+    return;
+  }
   const cfg = resolveTypecheckProjects(config.typecheck, options.project);
+  const checkedRoot = view?.projectRoot ?? projectRoot;
 
   // Regenerate a stale Furnace-managed jsconfig before running: the generated
   // `compilerOptions.paths` shim drifts when components are added or renamed
   // without a re-deploy, and a stale shim reports type errors in files the
   // session never touched. Run the same reconciler `furnace deploy`/`sync`
-  // use so typecheck checks against the current workspace.
-  await regenerateStaleGeneratedJsconfig(projectRoot);
+  // use so typecheck checks against the current workspace. A source-mode job
+  // judges the committed copies instead.
+  await regenerateStaleGeneratedJsconfig(checkedRoot, config.sources !== undefined && !view);
 
   info(`Running typecheck across ${cfg.projects.length} project(s): ${cfg.projects.join(', ')}`);
 
-  const results = await runTypecheck(projectRoot, cfg, {
-    ...(options.noCache === true ? { noCache: true } : {}),
-  });
+  const results = await runTypecheck(checkedRoot, cfg);
   // Fold the EXPORT-TIME authority into this pass. Per-patch lint runs
   // checkJs over the queue's patch-owned modules in relative isolation and
   // resolves imported typedefs differently from the whole-project pass, so
@@ -155,8 +203,13 @@ async function runTypecheckCommandBody(
   // authorities that disagree, with the stricter one speaking only at export
   // time, is not a usable CI gate: running both here makes `typecheck` green
   // MEAN export-clean types.
-  const patchIssues = await collectPatchLintCheckJsIssues(projectRoot);
-  reportResults(projectRoot, results, patchIssues);
+  const patchIssues = await collectPatchLintCheckJsIssues(projectRoot, view);
+  reportResults(
+    checkedRoot,
+    results,
+    patchIssues,
+    config.sources ? 'authored source' : 'per-patch'
+  );
 }
 
 /**
@@ -191,10 +244,14 @@ async function explainFile(
  * Returns an empty list when `patchLint.checkJs` is off or the project has
  * no patch queue: there is no second authority to reconcile then.
  */
-async function collectPatchLintCheckJsIssues(projectRoot: string): Promise<PatchLintIssue[]> {
+async function collectPatchLintCheckJsIssues(
+  projectRoot: string,
+  view: SourceGateContext | undefined
+): Promise<PatchLintIssue[]> {
   const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
   if (config.patchLint?.checkJs !== true) return [];
+  if (config.sources) return checkAuthoredTypes(view ?? (await authoredGateContext(projectRoot)));
   if (!(await pathExists(paths.patches))) return [];
 
   const ctx = await buildPatchQueueContext(paths.patches, config);
@@ -213,14 +270,23 @@ async function collectPatchLintCheckJsIssues(projectRoot: string): Promise<Patch
  * furnace.json or configures neither.
  * A missing `typecheckJsconfig` file surfaces the reconciler's own clear
  * error rather than producing phantom type diagnostics.
+ *
+ * @param projectRoot - Root to reconcile: the checkout, a slot, or a private view
+ * @param recordDerived - This is an admitted job phase, which records what it derives
  */
-async function regenerateStaleGeneratedJsconfig(projectRoot: string): Promise<void> {
+async function regenerateStaleGeneratedJsconfig(
+  projectRoot: string,
+  recordDerived: boolean
+): Promise<void> {
   if (!(await furnaceConfigExists(projectRoot))) return;
   const furnaceConfig = await loadFurnaceConfig(projectRoot);
+  if (recordDerived) {
+    await recordCommittedGeneratedTypes(projectRoot, furnaceConfig);
+    return;
+  }
   for (const jsconfig of typecheckJsconfigList(furnaceConfig)) {
     const drift = await findJsconfigPathsDrift(projectRoot, furnaceConfig, jsconfig);
     if (!drift.changed) continue;
-
     info(
       `Regenerating stale generated jsconfig ${jsconfig} before typecheck ` +
         `(+${drift.added.length} added, ~${drift.updated.length} updated, ` +
@@ -236,6 +302,33 @@ async function regenerateStaleGeneratedJsconfig(projectRoot: string): Promise<vo
 }
 
 /**
+ * Source mode: the committed copies are what every slot gets, so a job
+ * types against them as captured and records them as its derived outputs.
+ * A stale one is left alone and named here; `furnace validate` fails on it.
+ */
+async function recordCommittedGeneratedTypes(
+  projectRoot: string,
+  furnaceConfig: FurnaceConfig
+): Promise<void> {
+  for (const jsconfig of typecheckJsconfigList(furnaceConfig)) {
+    if ((await findJsconfigPathsDrift(projectRoot, furnaceConfig, jsconfig)).changed) {
+      warn(`${jsconfig} is out of date with the component workspace. ${GENERATED_TYPES_REMEDY}`);
+      continue;
+    }
+    await recordDerivedOutput(projectRoot, jsconfig, { generatorVersion: 'furnace-jsconfig-v1' });
+  }
+  const tagMap = await syncFurnaceTagMap(projectRoot, furnaceConfig, { dryRun: true });
+  if (tagMap === undefined) return;
+  if (tagMap.changed) {
+    warn(
+      `${tagMap.file} ${tagMap.missing ? 'is not in the captured source' : 'is out of date with the component workspace'}. ${GENERATED_TYPES_REMEDY}`
+    );
+    return;
+  }
+  await recordDerivedOutput(projectRoot, tagMap.file, { generatorVersion: 'furnace-tag-map-v1' });
+}
+
+/**
  * Prints all issues, computes the per-project + total counts, and
  * throws on errors. Extracted so it can be exercised directly by
  * the CLI test without spawning a child process.
@@ -243,7 +336,8 @@ async function regenerateStaleGeneratedJsconfig(projectRoot: string): Promise<vo
 export function reportResults(
   projectRoot: string,
   results: ReadonlyArray<TypecheckProjectResult>,
-  patchLintIssues: ReadonlyArray<PatchLintIssue> = []
+  patchLintIssues: ReadonlyArray<PatchLintIssue> = [],
+  sourceLabel = 'per-patch'
 ): void {
   let totalErrors = 0;
   let totalWarnings = 0;
@@ -253,7 +347,7 @@ export function reportResults(
   for (const issue of patchLintIssues) {
     if (issue.severity === 'error') totalErrors += 1;
     else totalWarnings += 1;
-    warn(`[per-patch ${issue.check}] ${issue.file}: ${issue.message}`);
+    warn(`[${sourceLabel} ${issue.check}] ${issue.file}: ${issue.message}`);
   }
   for (const result of results) {
     const errors = result.issues.filter((i) => i.category === 'error');
@@ -269,7 +363,7 @@ export function reportResults(
     `Typecheck: ${totalErrors} error(s), ${totalWarnings} warning(s) across ` +
     `${results.length} project(s)` +
     (patchLintIssues.length > 0
-      ? ` (including ${patchLintIssues.length} per-patch checkJs finding(s))`
+      ? ` (including ${patchLintIssues.length} ${sourceLabel} checkJs finding(s))`
       : '');
   if (totalErrors === 0) {
     success(summary);
@@ -301,8 +395,8 @@ export function registerTypecheck(
       'Override typecheck.projects with a single jsconfig.json path (one-off run)'
     )
     .option(
-      '--no-cache',
-      'Check every project from scratch; neither read nor write the incremental build info in .fireforge/typecheck/'
+      '--source-files <paths...>',
+      'Strict authored source-scoped feedback with the complete resolution universe; full project proof remains required'
     )
     .option(
       '--explain <file>',
@@ -310,15 +404,20 @@ export function registerTypecheck(
         'and whether a per-patch checkJs program checks it (owning patch, heads, resolvable ' +
         'modules, imports typed any)'
     )
+    .addOption(new Option('--no-cache', 'Accepted and ignored').hideHelp())
     .action(
       withErrorHandling(
-        async (options: { project?: string; cache?: boolean; explain?: string }) => {
+        async (options: {
+          project?: string;
+          explain?: string;
+          sourceFiles?: string[];
+          cache?: boolean;
+        }) => {
+          if (options.cache === false) info('--no-cache has no effect: typecheck keeps no cache.');
           const opts: TypecheckCommandOptions = {};
+          if (options.sourceFiles !== undefined) opts.sourceFiles = options.sourceFiles;
           if (options.project !== undefined) {
             opts.project = options.project;
-          }
-          if (options.cache === false) {
-            opts.noCache = true;
           }
           if (options.explain !== undefined) {
             opts.explain = options.explain;

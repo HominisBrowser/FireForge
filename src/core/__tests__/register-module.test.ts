@@ -147,4 +147,25 @@ describe('registerFireForgeModule', () => {
     expect(written).toContain(']');
     expect(written.indexOf('    "FirstModule.sys.mjs",')).toBeLessThan(written.indexOf(']'));
   });
+
+  it('registers into the namespaced list the module scaffold writes', async () => {
+    mockReadText.mockResolvedValue('EXTRA_JS_MODULES.testbrowser += [\n    "Alpha.sys.mjs",\n]\n');
+
+    const added = await registerFireForgeModule(
+      '/engine',
+      'Bravo.sys.mjs',
+      'browser/modules/testbrowser'
+    );
+    expect(added.skipped).toBe(false);
+    expect(mockWriteText.mock.calls[0]?.[1]).toBe(
+      'EXTRA_JS_MODULES.testbrowser += [\n    "Alpha.sys.mjs",\n    "Bravo.sys.mjs",\n]\n'
+    );
+
+    const again = await registerFireForgeModule(
+      '/engine',
+      'Alpha.sys.mjs',
+      'browser/modules/testbrowser'
+    );
+    expect(again.skipped).toBe(true);
+  });
 });

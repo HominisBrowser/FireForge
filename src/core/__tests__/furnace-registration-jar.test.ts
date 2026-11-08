@@ -316,6 +316,15 @@ describe('stale jar.mn registrations', () => {
     ]);
   });
 
+  it('does not classify or prune commented-out widget mappings', async () => {
+    const comment = '# content/global/elements/retired.mjs (widgets/moz-panel/retired.mjs)';
+    mockReadText.mockResolvedValue(`${JAR_WITH_STALE}\n${comment}\n`);
+    mockPathExists.mockImplementation((path: string) => Promise.resolve(path.endsWith('jar.mn')));
+    const removed = await pruneStaleJarMnEntries('/engine', '/ws/custom', ['moz-panel']);
+    expect(removed.map((entry) => entry.fileName)).not.toContain('retired.mjs');
+    expect(mockWriteText.mock.calls[0]?.[1]).toContain(comment);
+  });
+
   it('ignores tags that are not furnace-managed', async () => {
     mockReadText.mockResolvedValue(JAR_WITH_STALE);
     mockPathExists.mockImplementation((p: string) => Promise.resolve(p.endsWith('jar.mn')));

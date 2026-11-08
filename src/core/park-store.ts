@@ -34,8 +34,8 @@ import {
   writeJson,
   writeText,
 } from '../utils/fs.js';
-import { exec } from '../utils/process.js';
 import { FIREFORGE_DIR } from './config-paths.js';
+import { gitResult } from './git-base.js';
 
 /** One parked file: both sides, null meaning absent. */
 export interface ParkedFile {
@@ -213,19 +213,22 @@ export async function mergeThreeWay(
     await writeFile(files.ours, ours);
     await writeFile(files.base, base);
     await writeFile(files.theirs, theirs);
-    const result = await exec('git', [
-      'merge-file',
-      '-p',
-      '-L',
-      `${path} (now)`,
-      '-L',
-      `${path} (parked from)`,
-      '-L',
-      `${path} (parked)`,
-      files.ours,
-      files.base,
-      files.theirs,
-    ]);
+    const result = await gitResult(
+      [
+        'merge-file',
+        '-p',
+        '-L',
+        `${path} (now)`,
+        '-L',
+        `${path} (parked from)`,
+        '-L',
+        `${path} (parked)`,
+        files.ours,
+        files.base,
+        files.theirs,
+      ],
+      scratch
+    );
     if (result.exitCode < 0 || result.exitCode > 127) {
       throw new Error(`git merge-file failed for ${path}: ${result.stderr.trim()}`);
     }

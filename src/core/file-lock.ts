@@ -4,14 +4,20 @@ import { mkdir, rename, rm, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { LockContentionError } from '../errors/base.js';
-import { getNodeErrorCode, toError } from '../utils/errors.js';
+import { getNodeErrorCode, isProcessAlive, toError } from '../utils/errors.js';
 import { ensureDir } from '../utils/fs.js';
 import { verbose, warn } from '../utils/logger.js';
+import { setChildGroupListener } from '../utils/process-cleanup.js';
 import { sleep } from '../utils/sleep.js';
 import {
+  forgetChildGroup,
   isLockOwnerAlive,
+  isLockOwnerProvablyGone,
   LOCK_PID_FILE,
+  type LockOwner,
+  LockOwnerDisplacedError,
   readLockOwner,
+  recordChildGroup,
   writeLockOwner,
 } from './file-lock-owner.js';
 import {
@@ -23,6 +29,7 @@ import {
 } from './file-lock-queue.js';
 import {
   countLiveSharedHolders,
+  currentSharedHolds,
   type LockMode,
   registerSharedHold,
   releaseSharedHoldsForSignal,
@@ -138,6 +145,18 @@ export interface FileLockOptions {
   mode?: LockMode | undefined;
 }
 
+/** The snapshot of a lock owner that status and wait output show. */
+function lockHolderFrom(owner: LockOwner): LockHolder | undefined {
+  if (!owner.present) return undefined;
+  const alive = isLockOwnerAlive(owner);
+  // A lock held only by what a dead holder left running looks wrong without this.
+  const groups =
+    alive && owner.childGroups !== undefined && !isProcessAlive(owner.pid)
+      ? [`holder exited; process group ${owner.childGroups.join(', ')} may still be running`]
+      : [];
+  return { pid: owner.pid, alive, metadata: [...owner.metadata, ...groups] };
+}
+
 /** Derives the sibling lock-directory path used to guard a file-based resource. */
 export function createSiblingLockPath(filePath: string, suffix = '.fireforge.lock'): string {
   return `${filePath}${suffix}`;
@@ -174,10 +193,7 @@ export async function readLockStatus(lockPath: string): Promise<LockStatusSnapsh
   } catch {
     return { held: false, queueDepth: queue.depth, ...sharedPart };
   }
-  const owner = await readLockOwner(lockPath);
-  const holder: LockHolder | undefined = owner.present
-    ? { pid: owner.pid, alive: isLockOwnerAlive(owner), metadata: owner.metadata }
-    : undefined;
+  const holder = lockHolderFrom(await readLockOwner(lockPath));
   return { held: true, holder, heldForMs, queueDepth: queue.depth, ...sharedPart };
 }
 
@@ -192,11 +208,21 @@ async function probeWaitState(
   lockPath: string,
   self: QueueSelf
 ): Promise<{ holder: LockHolder | undefined; queue: LockQueueState }> {
-  const owner = await readLockOwner(lockPath);
-  const holder: LockHolder | undefined = owner.present
-    ? { pid: owner.pid, alive: isLockOwnerAlive(owner), metadata: owner.metadata }
-    : undefined;
+  const holder = lockHolderFrom(await readLockOwner(lockPath));
   return { holder, queue: await readLockQueue(lockPath, self) };
+}
+
+/**
+ * Whether what a reaper just moved aside really is stale. The directory may not
+ * be the one the probe judged: the lock can have been released and re-acquired
+ * in between, with or without its new record written yet. A record that cannot
+ * be read says nothing about its owner, so it is not stale.
+ */
+async function isConfirmedStale(reapPath: string, staleMs: number): Promise<boolean> {
+  const owner = await readLockOwner(reapPath);
+  if (owner.present) return isLockOwnerProvablyGone(owner);
+  if (owner.unreadable === true) return false;
+  return Date.now() - (await stat(reapPath)).mtimeMs > staleMs;
 }
 
 /**
@@ -208,12 +234,16 @@ async function probeWaitState(
  * own lock, and the other's already-decided `rm` then deletes the fresh
  * lock, putting two processes inside the critical section at once.
  *
- * Rename-aside closes it: `rename()` is atomic, so exactly one reaper wins
- * ownership of the directory (the loser gets ENOENT and re-polls), and
- * nothing ever deletes the live path directly. After winning the rename the
- * owner is re-read from the renamed dir. If it is now a live process (the
- * lock was released and re-acquired between the staleness read and the
- * rename), it is renamed back instead of reaped.
+ * Two things close it. Only the head of the queue reaps, and it keeps its
+ * ticket until its owner record is on disk, so the next waiter cannot start
+ * judging a lock whose record has not landed. And rename-aside is atomic, so one
+ * reaper wins ownership of the directory (the loser gets ENOENT and re-polls),
+ * nothing ever deletes the live path directly, and the directory is judged
+ * again once it cannot change. A live one goes back.
+ *
+ * `rename` silently replaces an empty directory, so going back could overwrite
+ * a third process's fresh `mkdir`; that process's exclusive record write then
+ * finds this record and it returns to waiting ({@link LockOwnerDisplacedError}).
  *
  * @returns true when the caller should immediately retry `mkdir` (the lock
  *   path is now free or was freed by someone else), false when the lock is
@@ -222,6 +252,7 @@ async function probeWaitState(
 async function reapStaleLock(
   lockPath: string,
   ageMs: number,
+  staleMs: number,
   onStaleLockMessage?: (ageMs: number) => string | undefined
 ): Promise<boolean> {
   const reapPath = `${lockPath}.reaping-${process.pid}-${randomUUID()}`;
@@ -237,22 +268,17 @@ async function reapStaleLock(
     return false;
   }
 
-  // We exclusively own reapPath now. Re-verify: the owner may have changed
-  // between the staleness probe and the rename (release + fresh acquire).
-  const owner = await readLockOwner(reapPath);
-  if (owner.present && isLockOwnerAlive(owner)) {
+  if (!(await isConfirmedStale(reapPath, staleMs))) {
     try {
       await rename(reapPath, lockPath);
-      verbose(
-        `Aborted stale-lock reap of ${lockPath}: owner PID ${owner.pid} is alive (lock was re-acquired mid-probe)`
-      );
+      verbose(`Aborted stale-lock reap of ${lockPath}: the lock changed hands mid-probe`);
     } catch (restoreError: unknown) {
-      // Rename-back can only fail if a third process mkdir'd the lock path
-      // in this instant. The displaced live owner keeps running without its
-      // lock, so surface it loudly instead of hiding the lost exclusion.
+      // The path now holds another owner's record. The owner of the directory
+      // moved aside keeps running without its lock, so surface it loudly
+      // instead of hiding the lost exclusion.
       warn(
-        `Could not restore live lock for PID ${owner.pid} at ${lockPath} ` +
-          `(${toError(restoreError).message}). Displaced lock kept at ${reapPath} for inspection.`
+        `Could not restore live lock at ${lockPath} (${toError(restoreError).message}). ` +
+          `Displaced lock kept at ${reapPath} for inspection.`
       );
     }
     return false;
@@ -290,27 +316,33 @@ async function removeIfStaleLock(
     // PID-first check an explicitly-dead owner unblocks immediately.
     const owner = await readLockOwner(lockPath);
     if (owner.present) {
-      if (!isLockOwnerAlive(owner)) {
-        return await reapStaleLock(lockPath, ageMs, onStaleLockMessage);
+      if (await isLockOwnerProvablyGone(owner)) {
+        return await reapStaleLock(lockPath, ageMs, staleMs, onStaleLockMessage);
       }
-      // The owner is alive (PID exists and, where `/proc` can tell, it is
-      // the process that acquired the lock, not a recycled PID), so respect
-      // it regardless of age. A slow `mach build` legitimately holds the
-      // lock past the stale threshold and we don't want to race-remove it.
+      // The owner is alive (its identity checks out, or a process group it
+      // started is still running), so respect it regardless of age. A slow
+      // `mach build` legitimately holds the lock past the stale threshold and
+      // we don't want to race-remove it.
       verbose(
         `Lock at ${lockPath} is ${Math.round(ageMs / 1000)}s old but PID ${owner.pid} is still running — not removing`
       );
       return false;
     }
 
-    // No readable PID file. Fall back to the age-only heuristic so locks
-    // written by earlier FireForge releases (which may not have written a
-    // PID file) still clear after the staleness window elapses.
+    // A record that exists but cannot be read says nothing about its holder. A
+    // process short on file descriptors must not take a multi-hour build's lock.
+    if (owner.unreadable === true) {
+      verbose(`Lock at ${lockPath} has an unreadable owner record — not removing`);
+      return false;
+    }
+
+    // No PID file: a holder that died between `mkdir` and writing its record.
+    // Age is all there is to go on, and a record lands within milliseconds.
     if (ageMs <= staleMs) {
       return false;
     }
 
-    return await reapStaleLock(lockPath, ageMs, onStaleLockMessage);
+    return await reapStaleLock(lockPath, ageMs, staleMs, onStaleLockMessage);
   } catch (error: unknown) {
     const code = getNodeErrorCode(error);
     if (code === 'ENOENT') {
@@ -466,15 +498,45 @@ async function runWaitProbe(
 }
 
 /**
+ * Takes the lock directory and records this process as its owner.
+ *
+ * The ticket stays with the caller until this returns: the next waiter must not
+ * start judging a lock with no record yet. A failed write is fatal: an
+ * owner-less lock is reaped by the age heuristic after five minutes, which for a
+ * multi-hour build means a second holder mid-critical-section.
+ *
+ * @returns Undefined once the lock is ours, otherwise why it is not
+ * @throws Anything other than losing the race
+ */
+async function tryAcquire(
+  lockPath: string,
+  ownerToken: string,
+  ownerMetadata: readonly string[] | undefined
+): Promise<Error | undefined> {
+  try {
+    await mkdir(lockPath);
+    await writeLockOwner(lockPath, ownerToken, ownerMetadata);
+    return undefined;
+  } catch (error: unknown) {
+    const lost = getNodeErrorCode(error) === 'EEXIST' || error instanceof LockOwnerDisplacedError;
+    if (!lost) throw error;
+    return toError(error);
+  }
+}
+
+/**
  * Whether it is this waiter's turn to contend for the lock: no live waiter
  * arrived before it. Ties and dead or stalled tickets are settled by
- * {@link readLockQueue}, so every waiter agrees on who is at the head.
+ * {@link readLockQueue}, so every waiter agrees on who is at the head. A waiter
+ * without a ticket (no contention seen yet, or a registry that could not be
+ * written) has no place to wait for.
  */
 async function isWaiterTurn(
   lockPath: string,
   startedAt: number,
-  waiter: WaiterRegistration
+  waiter: WaiterRegistration | undefined
 ): Promise<boolean> {
+  if (waiter?.ticket === undefined) return true;
   return (await readLockQueue(lockPath, { startedAt, ticket: waiter.ticket })).ahead === 0;
 }
 
@@ -494,6 +556,21 @@ async function isWaiterTurn(
  * different process acquired in the meantime.
  */
 const heldLocks = new Set<string>();
+
+// A group this process starts outlives a SIGKILL of this process, so every lock
+// held at that moment records it (see `isLockOwnerAlive`).
+setChildGroupListener({
+  started(pgid) {
+    for (const lockPath of [...heldLocks, ...currentSharedHolds()]) {
+      recordChildGroup(lockPath, pgid);
+    }
+  },
+  ended(pgid) {
+    for (const lockPath of [...heldLocks, ...currentSharedHolds()]) {
+      forgetChildGroup(lockPath, pgid);
+    }
+  },
+});
 
 /**
  * Releases every lock this process still holds, for the signal path.
@@ -529,7 +606,7 @@ export async function withFileLock<T>(
   const extend = options.extendWhileAdvancing;
   const hardDeadline = extend !== undefined ? startedAt + extend.maxWaitMs : undefined;
   let deadline = startedAt + timeoutMs;
-  let lastStaleProbeAt: number | undefined;
+  let lastStaleProbeAt = Number.NEGATIVE_INFINITY;
   let currentPollMs = pollMs;
   let lastProbeAt = startedAt;
   /** Best (lowest) queue position seen so far. Used to detect an advance. */
@@ -542,6 +619,7 @@ export async function withFileLock<T>(
   let waiter: WaiterRegistration | undefined;
   /** The last `EEXIST`, carried as the cause of a timeout refusal. */
   let contention: unknown;
+  const ownerToken = randomUUID();
 
   // One cadence drives both the progress line and the deadline extension.
   // Either feature alone is enough to want the probe. Neither is worth a
@@ -563,28 +641,26 @@ export async function withFileLock<T>(
     }
 
     for (;;) {
-      // Only the head of the queue contends for the lock. A waiter without
-      // a ticket (no contention seen yet, or a registry that could not be
-      // written) contends as every waiter did before tickets existed.
-      if (waiter?.ticket === undefined || (await isWaiterTurn(lockPath, startedAt, waiter))) {
-        try {
-          await mkdir(lockPath);
-          break;
-        } catch (error: unknown) {
-          if (getNodeErrorCode(error) !== 'EEXIST') {
-            throw error;
-          }
-          contention = error;
-        }
+      // Only the head of the queue contends for the lock.
+      let head = await isWaiterTurn(lockPath, startedAt, waiter);
+      if (head) {
+        contention = await tryAcquire(lockPath, ownerToken, options.ownerMetadata);
+        if (contention === undefined) break;
       }
 
       // Take a ticket so the queue is visible to the wait output and to
       // `fireforge status --lock`, and so the grant follows arrival order.
-      waiter ??= await registerWaiter(lockPath, startedAt);
+      if (waiter === undefined) {
+        waiter = await registerWaiter(lockPath, startedAt);
+        head = await isWaiterTurn(lockPath, startedAt, waiter);
+      }
       await waiter.heartbeat();
       const self: QueueSelf = { startedAt, ticket: waiter.ticket };
 
-      if (lastStaleProbeAt === undefined || Date.now() - lastStaleProbeAt >= staleReprobeMs) {
+      // Only the head reaps, for the reason it alone contends: a waiter further
+      // back deciding the old owner is dead can move aside the fresh lock the
+      // head has just taken.
+      if (head && Date.now() - lastStaleProbeAt >= staleReprobeMs) {
         lastStaleProbeAt = Date.now();
         if (await removeIfStaleLock(lockPath, staleMs, options.onStaleLockMessage)) {
           continue;
@@ -613,17 +689,11 @@ export async function withFileLock<T>(
         // advance, the opening probe would hand out a free full budget: a
         // `--wait-lock 300` run would outlive its 300 s even against a queue
         // that never moved once.
-        if (hardDeadline !== undefined) {
-          if (bestAhead === undefined) {
-            bestAhead = probe.queue.ahead;
-          } else if (probe.queue.ahead < bestAhead) {
-            bestAhead = probe.queue.ahead;
-            deadline = Math.min(Date.now() + timeoutMs, hardDeadline);
-            options.onWaitExtended?.({
-              ahead: probe.queue.ahead,
-              budgetMs: deadline - startedAt,
-            });
-          }
+        const advanced = bestAhead !== undefined && probe.queue.ahead < bestAhead;
+        bestAhead = Math.min(probe.queue.ahead, bestAhead ?? probe.queue.ahead);
+        if (advanced && hardDeadline !== undefined) {
+          deadline = Math.min(Date.now() + timeoutMs, hardDeadline);
+          options.onWaitExtended?.({ ahead: probe.queue.ahead, budgetMs: deadline - startedAt });
         }
       }
 
@@ -653,14 +723,6 @@ export async function withFileLock<T>(
     await waiter?.deregister();
   }
 
-  // Stamp ownership (PID + per-acquisition token + acquisition time) into
-  // the lock directory so stale-lock recovery can check liveness and release
-  // can verify the lock is still ours before removing it. Fatal on failure:
-  // an owner-less lock is reaped by the age heuristic after five minutes,
-  // which for a multi-hour build meant a second holder mid-critical-section.
-  // `writeLockOwner` removes the just-created directory before throwing.
-  const ownerToken = randomUUID();
-  await writeLockOwner(lockPath, ownerToken, options.ownerMetadata);
   return runWhileHeld(lockPath, ownerToken, operation, options, {
     deadline: Math.max(deadline, Date.now() + pollMs),
     pollMs,
@@ -716,8 +778,12 @@ async function waitForSharedHoldersToDrain(
   pollMs: number
 ): Promise<void> {
   let announced = false;
+  let lastBirthCheckAt = 0;
   for (;;) {
-    const live = await countLiveSharedHolders(lockPath);
+    // A polled holder is checked by PID alone; a recorded birth costs a `ps`.
+    const verifyBirth = Date.now() - lastBirthCheckAt >= STALE_REPROBE_INTERVAL_MS;
+    if (verifyBirth) lastBirthCheckAt = Date.now();
+    const live = await countLiveSharedHolders(lockPath, { verifyBirth });
     if (live === 0) return;
     if (Date.now() >= deadline) {
       throw new LockContentionError(

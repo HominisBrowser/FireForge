@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { PythonNotFoundError } from '../errors/build.js';
 import { toError } from '../utils/errors.js';
@@ -163,6 +163,15 @@ export async function ensurePython(engineDir?: string): Promise<void> {
  * @returns The resolved Python executable name
  */
 export async function getPython(engineDir?: string): Promise<string> {
+  if (process.env['FIREFORGE_JOB_TOKEN'] !== undefined) {
+    const { assertExecutorCommand, coordinatorNamespace } = await import('./jobs/guard.js');
+    const { readHostToolchain } = await import('./jobs/native-tools.js');
+    await assertExecutorCommand(
+      process.env['FIREFORGE_ADAPTER_COMMAND'] ?? 'status',
+      engineDir === undefined ? process.cwd() : dirname(engineDir)
+    );
+    return (await readHostToolchain(coordinatorNamespace())).python.executable;
+  }
   await ensurePython(engineDir);
   if (pythonCache === undefined) {
     throw new PythonNotFoundError();

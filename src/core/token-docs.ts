@@ -7,7 +7,8 @@
 
 import { join } from 'node:path';
 
-import { pathExists, readText, writeText } from '../utils/fs.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
+import { authoringProjectRoot } from './authored/writer.js';
 import {
   findTableAfterHeading,
   findTableByColumns,
@@ -61,7 +62,7 @@ export async function addTokenToDocs(
   options: TokenDocInput,
   annotation: string
 ): Promise<{ docsAdded: boolean; unmappedAdded: boolean; countUpdated: boolean }> {
-  const filePath = join(engineDir, '..', TOKENS_DOC);
+  const filePath = join(await authoringProjectRoot(engineDir), TOKENS_DOC);
 
   if (!(await pathExists(filePath))) {
     // Docs file is optional

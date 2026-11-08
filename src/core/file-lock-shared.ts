@@ -30,7 +30,12 @@ import { join } from 'node:path';
 
 import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
-import { isLockOwnerAlive, readLockOwner, writeLockOwner } from './file-lock-owner.js';
+import {
+  isLockOwnerAlive,
+  isLockOwnerProvablyGone,
+  readLockOwner,
+  writeLockOwner,
+} from './file-lock-owner.js';
 
 /** How a caller holds a lock. */
 export type LockMode = 'exclusive' | 'shared';
@@ -48,11 +53,12 @@ const heldShares = new Set<string>();
  * gone. A missing directory means none.
  *
  * @param lockPath - The lock directory
- * @param options - `reap: false` only counts (status reads)
+ * @param options - `reap: false` only counts (status reads). `verifyBirth`
+ *   also compares a recorded birth, which costs a `ps` per holder on macOS.
  */
 export async function countLiveSharedHolders(
   lockPath: string,
-  options: { reap?: boolean } = {}
+  options: { reap?: boolean; verifyBirth?: boolean } = {}
 ): Promise<number> {
   const dir = sharedHoldersDir(lockPath);
   let entries: string[];
@@ -67,7 +73,18 @@ export async function countLiveSharedHolders(
   for (const entry of entries) {
     const holder = join(dir, entry);
     const owner = await readLockOwner(holder);
-    if (owner.present && isLockOwnerAlive(owner)) {
+    // A record that exists but cannot be read (EMFILE, EIO) proves nothing about
+    // its holder, and a writer must not start beside a holder it could not read.
+    if (!owner.present && owner.unreadable === true) {
+      live += 1;
+      continue;
+    }
+    const alive =
+      owner.present &&
+      (options.verifyBirth === true
+        ? !(await isLockOwnerProvablyGone(owner))
+        : isLockOwnerAlive(owner));
+    if (alive) {
       live += 1;
       continue;
     }
@@ -79,6 +96,11 @@ export async function countLiveSharedHolders(
     }
   }
   return live;
+}
+
+/** The record directories of the shared holds this process has right now. */
+export function currentSharedHolds(): string[] {
+  return [...heldShares];
 }
 
 /** A registered shared hold. */

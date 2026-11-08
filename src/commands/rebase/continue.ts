@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { getProjectPaths } from '../../core/config.js';
 import { getStagedDiffForFiles } from '../../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../../core/git-file-ops.js';
+import { filesSharedWithOtherPatches } from '../../core/ownership-table.js';
 import { updatePatchAndMetadata } from '../../core/patch-export.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import {
@@ -78,6 +79,19 @@ export async function handleContinue(
   const meta = manifest.patches.find((p) => p.filename === currentPatch.filename);
   if (!meta) throw new GeneralError(`Patch ${currentPatch.filename} not found in manifest.`);
 
+  // The body written below is the cumulative HEAD..worktree diff, so a file
+  // another patch also lists would bring that patch's hunks into this one.
+  // Such a patch is marked resolved without a rewrite, as the apply loop's own
+  // re-export does, and the operator re-exports it per patch afterwards.
+  const sharedFiles = filesSharedWithOtherPatches(manifest.patches, meta);
+  if (sharedFiles.length > 0) {
+    warn(
+      `Not rewriting ${currentPatch.filename}: file(s) shared with other patches ` +
+        `(${sharedFiles.join(', ')}). Re-export it with ` +
+        `"fireforge re-export ${currentPatch.filename} --hunks-from <diff>", naming only its own hunks.`
+    );
+  }
+
   // Re-export the resolved patch from current engine state
   const activeFiles: string[] = [];
   for (const f of meta.filesAffected) {
@@ -86,38 +100,40 @@ export async function handleContinue(
     }
   }
 
-  let staged = false;
-  try {
-    await stageFiles(paths.engine, activeFiles);
-    staged = true;
-    const diffContent = await getStagedDiffForFiles(paths.engine, activeFiles);
+  if (sharedFiles.length === 0) {
+    let staged = false;
+    try {
+      await stageFiles(paths.engine, activeFiles);
+      staged = true;
+      const diffContent = await getStagedDiffForFiles(paths.engine, activeFiles);
 
-    if (!diffContent.trim()) {
-      warn('No diff generated — the files may not have changed from HEAD.');
-      warn(
-        'Either apply your fixes and re-run --continue, or skip this patch (not yet supported).'
-      );
-      return;
-    }
+      if (!diffContent.trim()) {
+        warn('No diff generated — the files may not have changed from HEAD.');
+        warn(
+          'Either apply your fixes and re-run --continue, or skip this patch (not yet supported).'
+        );
+        return;
+      }
 
-    // Write the patch body and the manifest metadata atomically under the
-    // shared patch-directory lock. A lock-free updatePatch +
-    // updatePatchMetadata sequence can interleave with a concurrent export /
-    // re-export / patch reorder / patch compact and leave the manifest
-    // disagreeing with the freshly-written patch body. Mirrors resolve.ts.
-    await updatePatchAndMetadata({
-      patchesDir: paths.patches,
-      filename: currentPatch.filename,
-      newContent: diffContent,
-      updates: {
-        sourceEsrVersion: session.toVersion,
-        sourceVersion: session.toVersion,
-        ...(session.toProduct !== undefined ? { sourceProduct: session.toProduct } : {}),
-      },
-    });
-  } finally {
-    if (staged) {
-      await unstageFiles(paths.engine, activeFiles);
+      // Write the patch body and the manifest metadata atomically under the
+      // shared patch-directory lock. A lock-free updatePatch +
+      // updatePatchMetadata sequence can interleave with a concurrent export /
+      // re-export / patch reorder / patch compact and leave the manifest
+      // disagreeing with the freshly-written patch body. Mirrors resolve.ts.
+      await updatePatchAndMetadata({
+        patchesDir: paths.patches,
+        filename: currentPatch.filename,
+        newContent: diffContent,
+        updates: {
+          sourceEsrVersion: session.toVersion,
+          sourceVersion: session.toVersion,
+          ...(session.toProduct !== undefined ? { sourceProduct: session.toProduct } : {}),
+        },
+      });
+    } finally {
+      if (staged) {
+        await unstageFiles(paths.engine, activeFiles);
+      }
     }
   }
 

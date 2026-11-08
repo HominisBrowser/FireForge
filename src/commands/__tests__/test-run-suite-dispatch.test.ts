@@ -7,7 +7,7 @@
  * budget. `--generic-mach-test` opts back into the generic command.
  */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -49,7 +49,11 @@ vi.mock('../../core/parent-exit-watchdog.js', () => ({
   startParentExitWatchdog: vi.fn(() => ({ stop: vi.fn() })),
 }));
 
-const GREEN = { exitCode: 0, stdout: 'TEST-START | t\nTEST-PASS | t\n', stderr: '' };
+const GREEN = {
+  exitCode: 0,
+  stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
+  stderr: '',
+};
 // The exact macOS mozlog resource-monitor startup traceback that aborts
 // generic `mach test` before any test runs.
 const RESOURCE_MONITOR_CRASH = {
@@ -249,7 +253,8 @@ describe('runTestsWithRetries under a parent exit', () => {
   it('fails an exit-0 run that stopped before a requested file started (was PASS)', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | dir/browser_a.js\nTEST-OK | dir/browser_a.js\nUnexpected results: 0\n',
+      stdout:
+        'TEST-START | dir/browser_a.js\nTEST-OK | dir/browser_a.js\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -364,5 +369,64 @@ describe('start counting past the 2 MB capture tail', () => {
       kind: 'test-failures',
       incomplete: { started: 2, requested: 4, firstUnstarted: FILES[2], startedSource: 'stream' },
     });
+  });
+});
+
+describe('coverage evidence at real dispatch boundary', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'ff-coverage-dispatch-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('rejects green harness output when no process emitted coverage and retries in fresh directories', async () => {
+    vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
+    const outcome = await runTestsWithRetries({ ...makeCtx('mochitest', 1), coverageDir: dir }, [
+      'browser_x.js',
+    ]);
+    expect(outcome.verdict).toMatchObject({ kind: 'harness-crash', note: 'coverage-incomplete' });
+    expect(outcome.attempts).toBe(2);
+    expect(await readdir(dir)).toHaveLength(2);
+  });
+
+  it('accepts the actual per-process flush and parent barrier receipts', async () => {
+    vi.mocked(runMachTestSuite).mockImplementation(async (_kind, options) => {
+      const output = options.env?.['JS_CODE_COVERAGE_OUTPUT_DIR'];
+      if (output === undefined) throw new Error('coverage environment missing');
+      const manifest = JSON.parse(
+        await readFile(join(output, 'extension/manifest.json'), 'utf8')
+      ) as { applications: { gecko: { id: string } } };
+      const token = manifest.applications.gecko.id.slice(
+        'coverage-'.length,
+        -'@fireforge.invalid'.length
+      );
+      await writeFile(
+        join(output, '42.started.json'),
+        JSON.stringify({ schemaVersion: 1, token, pid: 42 })
+      );
+      await writeFile(
+        join(output, '42.flushed.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          token,
+          pid: 42,
+          globals: 1,
+          sourceRecords: 1,
+          errors: [],
+        })
+      );
+      await writeFile(join(output, '42.lcov'), 'SF:resource://test.mjs\nDA:1,1\nend_of_record\n');
+      await writeFile(
+        join(output, '42.barrier.json'),
+        JSON.stringify({ schemaVersion: 1, token, pid: 42, pending: [], missingReady: 0 })
+      );
+      return GREEN;
+    });
+    expect(
+      (await runTestsWithRetries({ ...makeCtx('mochitest'), coverageDir: dir }, ['browser_x.js']))
+        .verdict.kind
+    ).toBe('tests-ran-ok');
   });
 });

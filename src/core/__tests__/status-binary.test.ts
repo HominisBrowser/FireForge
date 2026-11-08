@@ -150,7 +150,7 @@ describe('classifyBinaryOwnedFile', () => {
     expect(missing?.classification).toBe('patch-owned-drift');
   });
 
-  it('returns null for a live text file so the utf-8 comparison path runs unchanged', async () => {
+  it('compares a recorded binary section even when replacement live bytes contain no NUL', async () => {
     await writeFile(join(engineDir, PNG), 'plain text now\n', 'utf-8');
     await seedPatch(binaryBody('1'.repeat(40), '2'.repeat(40)));
     const result = await classifyBinaryOwnedFile({
@@ -160,7 +160,7 @@ describe('classifyBinaryOwnedFile', () => {
       matchClassification: 'patch-backed',
       owner: '001-ui-img.patch',
     });
-    expect(result).toBeNull();
+    expect(result?.classification).toBe('patch-owned-drift');
   });
 
   it('refuses to trust the index hash of a "Binary files … differ" stub', async () => {

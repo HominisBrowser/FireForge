@@ -5,9 +5,11 @@
  *
  * Helper module: no registrar, called from `token.ts`.
  */
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
+import { authoredGateContext } from '../core/authored-gates.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { missingEngineMessage } from '../core/engine-precondition.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.js';
 import { buildPatchQueueContext } from '../core/patch-lint.js';
 import { buildJarTargetIndex } from '../core/patch-lint-forward-registration-extended.js';
@@ -70,18 +72,77 @@ async function loadTokenSettings(projectRoot: string, binaryName: string): Promi
   }
 }
 
-async function collectTokenLint(projectRoot: string): Promise<TokenLintReport> {
+/** The engine tree to judge and the files the project changed in it. */
+interface LintUniverse {
+  /** Root whose furnace.json applies: the project, or a snapshot view of it. */
+  root: string;
+  engine: string;
+  /** Engine-relative paths the project created or changed. */
+  touched: string[];
+  /** Jar-mapped `chrome://` targets to the source path they package. */
+  jarTargets: () => Promise<Map<string, string>>;
+}
+
+/** Queue mode: every file a patch touches, read from the live engine. */
+async function queueUniverse(projectRoot: string): Promise<LintUniverse> {
   const paths = getProjectPaths(projectRoot);
+  const manifest = await loadPatchesManifest(paths.patches);
+  return {
+    root: projectRoot,
+    engine: paths.engine,
+    touched: [...new Set((manifest?.patches ?? []).flatMap((patch) => patch.filesAffected))],
+    jarTargets: async () =>
+      buildJarTargetIndex((await buildPatchQueueContext(paths.patches)).entries),
+  };
+}
+
+/**
+ * Source mode: every created, overridden and generated file of the captured
+ * snapshot, as source-mode lint judges them (the admitted slot inside a job,
+ * a private view of the checkout elsewhere).
+ */
+async function authoredUniverse(projectRoot: string): Promise<LintUniverse> {
+  const context = await authoredGateContext(projectRoot);
+  const touched = context.snapshot.files.flatMap((file) => (file.blob ? [file.path] : []));
+  return {
+    root: context.projectRoot,
+    engine: context.engine,
+    touched,
+    // A whole jar.mn rather than a patch's added lines: unchanged upstream
+    // entries only map sheets the project does not touch.
+    jarTargets: async () =>
+      buildJarTargetIndex([
+        {
+          filename: 'authored-source',
+          order: 0,
+          metadata: null,
+          createdFiles: new Set(),
+          newFiles: await readEngineFiles(
+            context.engine,
+            touched.filter((file) => basename(file) === 'jar.mn')
+          ),
+          modifiedFileAdditions: new Map(),
+        },
+      ]),
+  };
+}
+
+async function collectTokenLint(projectRoot: string): Promise<TokenLintReport> {
   const config = await loadConfig(projectRoot);
+  const universe = config.sources
+    ? await authoredUniverse(projectRoot)
+    : await queueUniverse(projectRoot);
   const tokensCssPath = getTokensCssPath(config.binaryName);
-  const tokensFile = join(paths.engine, tokensCssPath);
+  const tokensFile = join(universe.engine, tokensCssPath);
   if (!(await pathExists(tokensFile))) {
     throw new GeneralError(
-      `Token CSS file not found: ${tokensCssPath}. Run "fireforge furnace init" to seed it.`
+      config.sources || (await pathExists(universe.engine))
+        ? `Token CSS file not found: ${tokensCssPath}. Run "fireforge furnace init" to seed it.`
+        : await missingEngineMessage(universe.engine)
     );
   }
   const { tokenPrefix, exempt, siblingSheets } = await loadTokenSettings(
-    projectRoot,
+    universe.root,
     config.binaryName
   );
   const tokensCss = await readText(tokensFile);
@@ -93,18 +154,17 @@ async function collectTokenLint(projectRoot: string): Promise<TokenLintReport> {
     ...lintUndeclaredTokenReferences(tokensCssPath, tokensCss, tokenPrefix, declared, exempt),
   ];
 
-  // Every CSS file the patch queue touches: the fork's own stylesheets and
-  // the upstream ones it edits.
-  const manifest = await loadPatchesManifest(paths.patches);
-  const touched = [...new Set((manifest?.patches ?? []).flatMap((patch) => patch.filesAffected))];
+  // Every CSS file the project touches: its own stylesheets and the upstream
+  // ones it edits.
+  const { engine, touched } = universe;
   const cssFiles = touched.filter((file) => file.endsWith('.css') && file !== tokensCssPath).sort();
   const contents = await readEngineFiles(
-    paths.engine,
+    engine,
     touched.filter((file) => LINKING_FILE.test(file))
   );
   const siblings = buildSiblingSheetMap({
     documents: contents,
-    jarTargets: buildJarTargetIndex((await buildPatchQueueContext(paths.patches)).entries),
+    jarTargets: await universe.jarTargets(),
     sheets: cssFiles,
     explicit: siblingSheets,
   });
@@ -118,7 +178,7 @@ async function collectTokenLint(projectRoot: string): Promise<TokenLintReport> {
         file,
         css,
         tokenPrefix,
-        await withSiblingDeclarations(paths.engine, declared, siblings.get(file), contents),
+        await withSiblingDeclarations(engine, declared, siblings.get(file), contents),
         exempt
       )
     );

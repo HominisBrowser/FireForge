@@ -98,6 +98,41 @@ describe('test results collector', () => {
     expect(chunk).not.toHaveProperty('file');
   });
 
+  it('retains selected, started, completed, skipped and unfinished file rosters separately', () => {
+    recordTestResults(
+      [
+        {
+          test: 'd/browser_a.js',
+          status: 'OK',
+          expected: 'OK',
+          unexpected: false,
+          unexpectedSubtests: 0,
+        },
+      ],
+      ['d/browser_b.js'],
+      {
+        run: 1,
+        shard: 'd',
+        logLine: 1,
+        shardFiles: ['d/browser_a.js', 'd/browser_b.js', 'd/browser_c.js'],
+        markers: { started: ['d/browser_a.js', 'd/browser_b.js'], skipped: [] },
+        attempts: 2,
+      }
+    );
+    expect(collectedTestResults().dispatches).toEqual([
+      {
+        run: 1,
+        shard: 'd',
+        requested: ['d/browser_a.js', 'd/browser_b.js', 'd/browser_c.js'],
+        started: ['d/browser_a.js', 'd/browser_b.js'],
+        completed: ['d/browser_a.js'],
+        skipped: [],
+        unfinished: ['d/browser_b.js'],
+        attempts: 2,
+      },
+    ]);
+  });
+
   it('removes the raw-log scratch directory even when the body throws', async () => {
     let seen = '';
     await expect(
@@ -107,5 +142,30 @@ describe('test results collector', () => {
       })
     ).rejects.toThrow('boom');
     await expect(access(seen)).rejects.toThrow();
+  });
+});
+
+describe('a control baseline in the results document', () => {
+  it('stays out of files and unfinished, whose run is 1 or more for every reader', () => {
+    resetTestResults();
+    const result = {
+      test: 'a/browser_a.js',
+      status: 'OK',
+      expected: 'OK',
+      unexpected: false,
+      unexpectedSubtests: 0,
+    };
+    const markers = { started: ['a/browser_a.js', 'a/browser_b.js'], skipped: [] };
+    recordTestResults([result], ['a/browser_b.js'], { run: 0, shard: 's', logLine: 1, markers });
+    recordTestResults([result], [], { run: 1, shard: 's', logLine: 9, markers });
+    const document = collectedTestResults();
+    expect(document.files.map((file) => file.run)).toEqual([1]);
+    expect(document.unfinished).toEqual([]);
+    expect(document.controlBaseline?.files.map((file) => file.run)).toEqual([0]);
+    expect(document.controlBaseline?.unfinished).toEqual([
+      { test: 'a/browser_b.js', run: 0, shard: 's' },
+    ]);
+    expect(document.dispatches?.map((dispatch) => dispatch.run)).toEqual([0, 1]);
+    resetTestResults();
   });
 });

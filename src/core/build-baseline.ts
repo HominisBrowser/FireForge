@@ -50,8 +50,8 @@ import {
 } from './build-baseline-validate.js';
 import { FIREFORGE_DIR } from './config-paths.js';
 import { hashEngineFile } from './coverage-extend.js';
-import { getHead, hasChanges, isMissingHeadError } from './git.js';
-import { git } from './git-base.js';
+import { readEngineInventory } from './engine-state.js';
+import { getHead, isMissingHeadError } from './git.js';
 import { historyRecordIdentity } from './history-log-file.js';
 
 /*
@@ -217,17 +217,10 @@ export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Pr
     }
   }
 
-  const packageableFingerprints = await collectPackageableFingerprints(engineDir);
-  const testInputFingerprints = await collectDirtyFingerprints(
-    engineDir,
-    () => true,
-    'test staging fingerprint'
-  );
-  const buildInputFingerprints = await collectBuildInputFingerprints(
-    engineDir,
-    previousBaseline,
-    buildKind
-  );
+  const dirty = await hashDirtyEngineFiles(engineDir);
+  const packageableFingerprints = selectFingerprints(dirty, isPackageablePath);
+  const testInputFingerprints = selectFingerprints(dirty, () => true);
+  const buildInputFingerprints = recordBuildInputFingerprints(dirty, previousBaseline, buildKind);
 
   // A full-coverage write (and a no-claim `fireforge build` record)
   // just recompiled the StaticComponents table, so it anchors the table to
@@ -237,12 +230,13 @@ export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Pr
     staticComponentsHandling === 'refresh' ||
     (staticComponentsHandling === 'auto' &&
       (testPackagingCoverage === undefined || testPackagingCoverage === 'full'))
-      ? await collectStaticComponentsBaseline(engineDir, engineHeadSha)
+      ? recordStaticComponentsBaseline(dirty, engineHeadSha)
       : previousBaseline?.staticComponentsBaseline;
 
   const mozconfigHash = await hashEngineFile(engineDir, 'mozconfig');
 
   const baseline: BuildBaseline = {
+    buildKind,
     engineHeadSha,
     builtAt: new Date().toISOString(),
     binaryName,
@@ -262,48 +256,78 @@ export async function writeBuildBaseline(options: WriteBuildBaselineOptions): Pr
 }
 
 /**
- * Reads the current engine workdir and computes a SHA-256 fingerprint for
- * every packageable path that is either modified against HEAD or untracked.
- * The stale-build preflight (`checkStaleBuildForTest`) compares the live
- * fingerprint for each packageable-dirty file to the baseline's entry: a
- * matching hash means the build already saw this exact content, a differing
- * or new one means the file is genuinely stale.
+ * The hash of every dirty engine file (modified against HEAD or untracked), or
+ * undefined when git cannot enumerate them. A path whose content could not be
+ * read maps to undefined. The record kinds below are selections of this one
+ * pass.
  *
- * Returns `undefined` on any git failure so a broken probe never corrupts
- * the on-disk baseline with `{}`. The stale-check then falls back to a
- * path-only comparison.
+ * The stale-build preflight (`checkStaleBuildForTest`) compares a live hash to
+ * the baseline's entry: a match means the build already saw this exact content,
+ * a differing or absent one means the file is genuinely stale.
  */
-async function collectPackageableFingerprints(
+async function hashDirtyEngineFiles(
   engineDir: string
-): Promise<Record<string, string> | undefined> {
-  return collectDirtyFingerprints(engineDir, isPackageablePath, 'packageable fingerprint');
+): Promise<ReadonlyMap<string, string | undefined> | undefined> {
+  let paths: readonly string[];
+  try {
+    ({ paths } = await readEngineInventory(engineDir));
+  } catch (error: unknown) {
+    verbose(`Build baseline: dirty-file probe failed — ${toError(error).message}`);
+    return undefined;
+  }
+  const entries = await mapWithConcurrency(paths, FINGERPRINT_IO_CONCURRENCY, async (relPath) => {
+    try {
+      return [relPath, sha256Hex(await readFile(join(engineDir, relPath)))] as const;
+    } catch (fileError: unknown) {
+      // A path git reported but absent on disk is normally a tracked deletion.
+      // The tombstone lets the next stale check prove it was already built.
+      if (getNodeErrorCode(fileError) === 'ENOENT') {
+        return [relPath, DELETED_FILE_FINGERPRINT] as const;
+      }
+      verbose(`Build baseline: cannot fingerprint ${relPath} — ${toError(fileError).message}`);
+      return [relPath, undefined] as const;
+    }
+  });
+  return new Map(entries);
+}
+
+/**
+ * The fingerprints of the dirty paths `includePath` accepts. Undefined when the
+ * probe failed or one of those files was unreadable: an incomplete record cannot
+ * prove anything unchanged, and a broken probe must never write `{}`, so the
+ * field is omitted and consumers fall back to their path-only comparison.
+ */
+function selectFingerprints(
+  dirty: ReadonlyMap<string, string | undefined> | undefined,
+  includePath: (path: string) => boolean
+): Record<string, string> | undefined {
+  if (dirty === undefined) return undefined;
+  const fingerprints: Record<string, string> = {};
+  for (const [path, hash] of dirty) {
+    if (!includePath(path)) continue;
+    if (hash === undefined) return undefined;
+    fingerprints[path] = hash;
+  }
+  return fingerprints;
 }
 
 /**
  * Content fingerprints of the dirty build-input manifests
- * ({@link isBuildInputPath}) this build consumed. Backend inputs
- * (`moz.build` & co) are always taken from the live tree: the
- * auto-configure preflight reconfigured against them before this build
- * ran. `jar.mn` entries are taken from the live tree only after a full
- * build. A `faster` write carries the previous record's `jar.mn` entries
- * forward verbatim, because `mach build faster` is the build the
- * `jar.mn` escalation exists to bypass, and recording a `jar.mn` it did
- * not install would silence the next escalation. Returns `undefined` on
- * probe failure so the field is omitted rather than written as `{}`.
+ * ({@link isBuildInputPath}) this build consumed. Backend inputs (`moz.build` &
+ * co) are always taken from the live tree: the auto-configure preflight
+ * reconfigured against them before this build ran. `jar.mn` entries are taken
+ * from the live tree only after a full build. A `faster` write carries the
+ * previous record's `jar.mn` entries forward verbatim, because `mach build
+ * faster` is the build the `jar.mn` escalation exists to bypass, and recording a
+ * `jar.mn` it did not install would silence the next escalation.
  */
-async function collectBuildInputFingerprints(
-  engineDir: string,
+function recordBuildInputFingerprints(
+  dirty: ReadonlyMap<string, string | undefined> | undefined,
   previousBaseline: BuildBaseline | undefined,
   buildKind: BaselineBuildKind
-): Promise<Record<string, string> | undefined> {
-  const live = await collectDirtyFingerprints(
-    engineDir,
-    isBuildInputPath,
-    'build-input fingerprint'
-  );
-  if (live === undefined || buildKind === 'full') {
-    return live;
-  }
+): Record<string, string> | undefined {
+  const live = selectFingerprints(dirty, isBuildInputPath);
+  if (live === undefined || buildKind === 'full') return live;
   const fingerprints: Record<string, string> = {};
   for (const [path, hash] of Object.entries(live)) {
     if (!isJarManifestPath(path)) fingerprints[path] = hash;
@@ -315,99 +339,16 @@ async function collectBuildInputFingerprints(
 }
 
 /**
- * Anchor for the compiled StaticComponents table: the engine HEAD SHA of
- * this (full) build plus content fingerprints of the `components.conf`
- * manifests dirty right now, using the same dirty-path probe family as
- * {@link collectPackageableFingerprints}, filtered to XPCOM manifests.
- * Returns `undefined` on probe failure so a broken probe omits the field
- * (the static-components stale check then degrades to "fresh") rather than
- * anchoring to a garbage record.
+ * Anchor for the compiled StaticComponents table: the engine HEAD SHA of this
+ * (full) build plus the fingerprints of the `components.conf` manifests dirty
+ * right now. Undefined on a failed probe, which omits the field (the
+ * static-components stale check then degrades to "fresh") rather than anchoring
+ * to a garbage record.
  */
-async function collectStaticComponentsBaseline(
-  engineDir: string,
+function recordStaticComponentsBaseline(
+  dirty: ReadonlyMap<string, string | undefined> | undefined,
   engineHeadSha: string
-): Promise<StaticComponentsBaseline | undefined> {
-  const fingerprints = await collectDirtyFingerprints(
-    engineDir,
-    isXpcomManifestPath,
-    'static-components fingerprint'
-  );
-  if (fingerprints === undefined) {
-    return undefined;
-  }
-  return { engineHeadSha, fingerprints };
-}
-
-/**
- * Shared dirty-path fingerprint probe backing
- * {@link collectPackageableFingerprints} and
- * {@link collectStaticComponentsBaseline}: enumerates engine workdir
- * modifications (tracked and untracked), keeps the paths `includePath`
- * accepts, and hashes each. Returns `undefined` on any git failure so a
- * broken probe never corrupts the on-disk baseline with `{}`.
- */
-async function collectDirtyFingerprints(
-  engineDir: string,
-  includePath: (path: string) => boolean,
-  contextLabel: string
-): Promise<Record<string, string> | undefined> {
-  try {
-    const dirtyPaths = new Set<string>();
-    if (await hasChanges(engineDir)) {
-      // NUL-separated and unquoted: git's default output backslash-quotes a
-      // non-ASCII path (`"a/\303\251.js"`), which is neither the file on
-      // disk nor a key the baseline validator accepts.
-      const worktreeDiff = await git(
-        ['-c', 'core.quotePath=false', 'diff', '--name-only', '-z', 'HEAD'],
-        engineDir
-      );
-      const untracked = await git(
-        ['-c', 'core.quotePath=false', 'ls-files', '--others', '--exclude-standard', '-z'],
-        engineDir
-      );
-      for (const path of `${worktreeDiff}\0${untracked}`.split('\0')) {
-        if (path.length > 0) dirtyPaths.add(path);
-      }
-    }
-
-    const included = [...dirtyPaths].filter(includePath);
-    if (included.length === 0) {
-      return {};
-    }
-
-    const entries = await mapWithConcurrency(
-      included,
-      FINGERPRINT_IO_CONCURRENCY,
-      async (relPath) => {
-        try {
-          const buffer = await readFile(join(engineDir, relPath));
-          return [relPath, sha256Hex(buffer)] as const;
-        } catch (fileError: unknown) {
-          if (getNodeErrorCode(fileError) === 'ENOENT') {
-            // A path reported by git but absent on disk is normally a tracked
-            // deletion, not a failed fingerprint. Recording the tombstone lets
-            // the next stale check prove that deletion was already built.
-            return [relPath, DELETED_FILE_FINGERPRINT] as const;
-          }
-          // A file that disappeared between status probe and hash is
-          // expected in concurrent scenarios. Non-ENOENT failures remain
-          // untrusted and are skipped without failing the whole baseline write.
-          verbose(
-            `Build baseline: skipping ${contextLabel} for ${relPath} — ${toError(fileError).message}`
-          );
-          return undefined;
-        }
-      }
-    );
-    const fingerprints: Record<string, string> = {};
-    // Incomplete maps cannot prove retained test inputs unchanged.
-    if (entries.some((entry) => entry === undefined)) return undefined;
-    for (const entry of entries) {
-      if (entry !== undefined) fingerprints[entry[0]] = entry[1];
-    }
-    return fingerprints;
-  } catch (error: unknown) {
-    verbose(`Build baseline: ${contextLabel} probe failed — ${toError(error).message}`);
-    return undefined;
-  }
+): StaticComponentsBaseline | undefined {
+  const fingerprints = selectFingerprints(dirty, isXpcomManifestPath);
+  return fingerprints === undefined ? undefined : { engineHeadSha, fingerprints };
 }

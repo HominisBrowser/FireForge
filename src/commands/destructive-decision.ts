@@ -9,9 +9,9 @@ const DRY_RUN_OUTRO = 'Dry run complete — no changes made';
  * Closes out a {@link DestructiveOpResult} and says whether to run the
  * mutation.
  *
- * Eleven commands had copied the same tail: `if (decision === 'dry-run') {
- * outro(…); return; } if (decision === 'declined') { outro(…); return; }`.
- * The dry-run wording is a user-facing contract that must not drift between
+ * Every destructive command ends the same way: on `'dry-run'` print the
+ * outro and return, on `'declined'` print its own outro and return. The
+ * dry-run wording is a user-facing contract that must not drift between
  * commands, so it lives here. The declined wording is per-command and stays
  * a parameter.
  *

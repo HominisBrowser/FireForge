@@ -42,6 +42,13 @@ vi.mock('../../core/mach.js', () => ({
   withBuildLock: vi.fn((_projectRoot: string, operation: () => Promise<unknown>) => operation()),
 }));
 
+vi.mock('../../core/mach-build-artifacts.js', async (original) => ({
+  ...(await original<typeof import('../../core/mach-build-artifacts.js')>()),
+  hasRunnableBundle: vi.fn(() =>
+    Promise.resolve({ runnable: true, expectedPath: 'obj-debug/dist/bin/mybrowser' })
+  ),
+}));
+
 vi.mock('../../core/branding.js', () => ({
   isBrandingSetup: vi.fn(() => Promise.resolve(true)),
   setupBranding: vi.fn(() => Promise.resolve()),
@@ -69,6 +76,10 @@ vi.mock('../../core/furnace-config.js', () => ({
   })),
 }));
 
+vi.mock('../../core/build-provenance.js', () => ({
+  assessBuildProvenance: vi.fn(() => Promise.resolve({})),
+}));
+
 vi.mock('../../utils/fs.js', () => ({
   pathExists: vi.fn(() => Promise.resolve(true)),
   checkDiskSpace: vi.fn().mockResolvedValue(undefined),
@@ -84,6 +95,7 @@ vi.mock('../../utils/logger.js', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
   info: vi.fn(),
+  notice: vi.fn(),
   error: vi.fn(),
   warn: vi.fn(),
   verbose: vi.fn(),
@@ -122,7 +134,8 @@ describe('brand override handling', () => {
   it('allows the configured brand name as a no-op alias', async () => {
     await expect(buildCommand('/project', { brand: 'mybrowser' })).resolves.toBeUndefined();
     await expect(packageCommand('/project', { brand: 'mybrowser' })).resolves.toBeUndefined();
-    expect(generateMozconfig).toHaveBeenCalledTimes(2);
+    // Only the build writes one: packaging ships the objdir as it stands.
+    expect(generateMozconfig).toHaveBeenCalledTimes(1);
     expect(build).toHaveBeenCalledTimes(1);
     expect(machPackageCapture).toHaveBeenCalledTimes(1);
   });

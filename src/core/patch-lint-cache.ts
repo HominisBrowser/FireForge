@@ -1,39 +1,32 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import type { PatchLintIssue, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import type { JsonValue } from '../types/json.js';
+import { toError } from '../utils/errors.js';
 import { pathExists, readJson, writeJson } from '../utils/fs.js';
 import { sha256Hex } from '../utils/hash.js';
+import { warn } from '../utils/logger.js';
 import { getPackageVersion } from '../utils/package-root.js';
 import { getFurnacePaths } from './furnace-config.js';
 import { git } from './git-base.js';
+import { cacheQualityIdentity } from './jobs/quality-tools.js';
 import { collectNewFileCreatorsByPath, type PatchQueueContext } from './patch-lint.js';
 import { checkJsWorldDigest, isCheckJsCacheRelevant } from './patch-lint-cache-checkjs.js';
 
-// Schema 2: entries additionally carry the lintIgnore-suppressed issues and
-// the measured non-binary line count, so a warm run can report waived size
-// measurements identically to a cold one. A cache hit must never surface
-// less than a fresh lint.
-// Schema 3: the key additionally content-hashes the
-// `patchLint.checkJsTestShim` file exactly as `checkJsExtraShim`'s already
-// was. Without it, editing the test shim in place replays every cached
-// verdict.
-// Schema 4: each entry records the lint-ignore waiver set that produced it,
-// and a lookup whose effective waiver set differs is refused even when the
-// key matches. The key already hashes `patch.lintIgnore`, so this is
-// belt-and-braces on purpose: a waiver change is the one mutation that makes
-// a replayed verdict actively wrong (an operator writes a waiver, re-runs,
-// and is shown the finding they just waived), and the class must not depend
-// on every future key input staying complete. Bumping the schema also
-// discards every pre-4 entry, which is itself the cure for a cache that
-// already holds a mismatched verdict.
-// Schema 5: a patch with a checkJs-relevant file additionally keys on the
-// checkJs world its programs read (see patch-lint-cache-checkjs.ts): the
-// queue order, the content of other patches' modules, test heads and
-// `paths` targets, and the TypeScript version.
+// Schema 5. An entry carries its lintIgnore-suppressed issues and measured
+// line count, so a warm run reports waived size measurements exactly as a
+// cold run does. The key content-hashes both shim files
+// (`patchLint.checkJsExtraShim`, `patchLint.checkJsTestShim`). Each entry
+// records the waiver set that produced it and a lookup whose effective set
+// differs is refused even when the key matches, because a replayed verdict
+// that ignores a fresh waiver is actively wrong. A patch with a
+// checkJs-relevant file also keys on the checkJs world its programs read
+// (see patch-lint-cache-checkjs.ts): queue order, other patches' modules,
+// test heads, `paths` targets and the TypeScript version.
 export const LINT_CACHE_SCHEMA_VERSION = 5;
 const LINT_IMPLEMENTATION_VERSION = 1;
 
@@ -71,6 +64,8 @@ export interface PerPatchLintCacheKeyInput {
   queueContext: PatchQueueContext;
   engineHeadSha?: string;
   packageVersion?: string;
+  /** Exact candidate being linted, which can differ from the current patch or engine. */
+  diffContent?: string;
 }
 
 function stableJson(value: JsonValue): string {
@@ -146,6 +141,33 @@ function buildOwnershipFingerprint(
   return entries;
 }
 
+const unidentifiedTools = new Map<string, string>();
+
+/**
+ * The installed-tools part of a lint cache key. Identifying the tools protects a
+ * cache, not a verdict: a tree it cannot read means this run misses the cache and
+ * lints for real, which is a warning and never a failure. Only an admitted job,
+ * whose identity was qualified at admission, still refuses.
+ *
+ * @param projectRoot - Root whose installed tools are identified
+ */
+export async function lintQualityIdentity(projectRoot: string): Promise<string> {
+  try {
+    return await cacheQualityIdentity(projectRoot);
+  } catch (error: unknown) {
+    if (process.env['FIREFORGE_JOB_TOKEN'] !== undefined) throw error;
+    let token = unidentifiedTools.get(projectRoot);
+    if (token === undefined) {
+      token = `unidentified:${randomUUID()}`;
+      unidentifiedTools.set(projectRoot, token);
+      warn(
+        `Could not identify the installed lint tools (${toError(error).message}); this run does not use the lint cache.`
+      );
+    }
+    return token;
+  }
+}
+
 /**
  * Builds the complete per-patch lint cache key for one lintable patch.
  * The key includes source, metadata, config, engine state, and ownership
@@ -190,6 +212,7 @@ export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput
       : null;
 
   return stableHash({
+    resolvedQualityTools: await lintQualityIdentity(input.projectRoot),
     cacheSchemaVersion: LINT_CACHE_SCHEMA_VERSION,
     engineHeadSha: input.engineHeadSha ?? null,
     lintImplementationVersion: LINT_IMPLEMENTATION_VERSION,
@@ -198,6 +221,11 @@ export async function buildPerPatchLintCacheKey(input: PerPatchLintCacheKeyInput
     // cache for no correctness gain.
     packageVersion: input.packageVersion ?? getPackageVersion(),
     patchFile: await fileHash(join(input.patchesDir, input.patch.filename)),
+    candidateDiff: sha256Hex(
+      input.diffContent ??
+        input.queueContext.entries.find((entry) => entry.filename === input.patch.filename)?.diff ??
+        ''
+    ),
     patchMetadata: normalizePatchMetadata(input.patch),
     lintConfig: normalizeLintConfig(input.config),
     furnaceConfig: await fileHash(furnaceConfigPath),

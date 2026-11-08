@@ -109,17 +109,23 @@ describe('runFurnaceMutation', () => {
   it('serializes two concurrent furnace mutations against the same root', async () => {
     const root = await makeTempProject('fireforge-furnace-op-serial-');
     const events: string[] = [];
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
 
     const first = runFurnaceMutation(root, 'apply-rollback', async () => {
       events.push('a-start');
+      entered();
       await new Promise((resolve) => setTimeout(resolve, 30));
       events.push('a-end');
       return 'a';
     });
 
-    // Give the first mutation a beat to acquire the lock before the second
-    // starts polling.
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    // The lock promises exclusion, not that the earlier call wins: both run
+    // async pre-flight reads before contending. So the second starts only once
+    // the first holds the lock, and must then wait for it.
+    await Promise.race([inside, first]);
 
     const second = runFurnaceMutation(root, 'apply-rollback', async () => {
       events.push('b-start');
@@ -330,6 +336,7 @@ describe('runFurnaceMutation rollback on a thrown error', () => {
 
   it('does not double-restore when a signal lands during the throw-path rollback', async () => {
     const root = await makeTempProject('fireforge-furnace-op-throw-signal-');
+    let signal: Promise<void> | undefined;
     const sentinel = join(root, 'engine-file.txt');
     await writeFile(sentinel, 'pristine');
 
@@ -341,7 +348,7 @@ describe('runFurnaceMutation rollback on a thrown error', () => {
         ctx.registerCleanup(async () => {
           // Cleanups run inside the throw path's rollback, which has already
           // claimed the operation, so this signal must find nothing to do.
-          await rollbackActiveOperationsForSignal('SIGINT');
+          signal = rollbackActiveOperationsForSignal('SIGINT');
         });
         await writeFile(sentinel, 'corrupted');
         throw new Error('boom');
@@ -350,6 +357,7 @@ describe('runFurnaceMutation rollback on a thrown error', () => {
 
     const { readFile } = await import('node:fs/promises');
     expect(await readFile(sentinel, 'utf8')).toBe('pristine');
+    await signal;
     // The signal path must not have written its "before any state was
     // captured" marker for an operation the throw path owns.
     expect(updateFurnaceStateMock).not.toHaveBeenCalled();
@@ -558,13 +566,18 @@ describe('rollbackActiveOperationsForSignal', () => {
     await rollbackActiveOperationsForSignal('SIGTERM');
 
     expect(updateFurnaceStateMock).toHaveBeenCalled();
-    const lastCall = updateFurnaceStateMock.mock.calls.at(-1)!;
-    const updater = lastCall[1] as (state: Record<string, unknown>) => Record<string, unknown>;
-    const next = updater({});
-    expect(next['pendingRepair']).toMatchObject({
-      operation: 'remove-rollback',
-      reason: expect.stringContaining('before any state was captured'),
-    });
+    // The in-progress marker write and clear surround the signal's own marker.
+    const markers = updateFurnaceStateMock.mock.calls
+      .map(([, updater]) =>
+        (updater as (state: Record<string, unknown>) => Record<string, unknown>)({})
+      )
+      .map((next) => next['pendingRepair']);
+    expect(markers).toContainEqual(
+      expect.objectContaining({
+        operation: 'remove-rollback',
+        reason: expect.stringContaining('before any state was captured'),
+      })
+    );
 
     releaseBody!();
     await runPromise;

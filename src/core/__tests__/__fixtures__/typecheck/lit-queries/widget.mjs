@@ -6,6 +6,9 @@ import { MozLitElement } from 'chrome://global/content/lit-utils.mjs';
 const Base = /** @type {MozLitElementWith<{ input: HTMLInputElement }>} */ (MozLitElement);
 
 export class MozQueries extends Base {
+  static get observedAttributes() {
+    return [...super.observedAttributes, 'hidden'];
+  }
   static queries = { input: 'input' };
 
   focusInput() {

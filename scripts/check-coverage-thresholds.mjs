@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 
 const COVERAGE_SUMMARY_PATH = resolve('coverage/coverage-summary.json');
 
@@ -85,8 +85,35 @@ const MODULE_THRESHOLDS = {
   // and the two furnace state/step-error modules own the invariants whose
   // divergence caused the named-apply state wipe and the rollback-contract
   // drift. Pins keep those regression nets from silently thinning.
+  // What decides a process gets signalled or a verdict is green, just under their
+  // measured coverage. The supervisor's real-process suites run these in subprocesses,
+  // which v8 coverage here cannot see, so these numbers count in-process execution only:
+  // a cancel's escalation and `abandon` are proved by supervisor-exit.test.ts, unmeasured.
+  'src/core/jobs/supervisor.ts': { lines: 90, branches: 76, functions: 87 },
+  'src/core/jobs/phase-runner.ts': { lines: 88, branches: 69, functions: 80 },
+  'src/core/jobs/phase-outcome.ts': { lines: 98, branches: 95, functions: 100 },
+  'src/core/jobs/phase-report.ts': { lines: 90, branches: 64, functions: 100 },
+  'src/core/jobs/recovery.ts': { lines: 98, branches: 80, functions: 100 },
+  'src/core/jobs/executor-cleanup.ts': { lines: 98, branches: 90, functions: 100 },
+  'src/core/jobs/executor.ts': { lines: 96, branches: 76, functions: 85 },
+  'src/core/jobs/runner.ts': { lines: 90, branches: 79, functions: 88 },
+  'src/core/jobs/slot-lock.ts': { lines: 95, branches: 72, functions: 100 },
+  'src/core/jobs/process-tracker.ts': { lines: 91, branches: 72, functions: 95 },
+  'src/core/jobs/host-quarantine.ts': { lines: 91, branches: 78, functions: 85 },
+  'src/core/jobs/phase-capability.ts': { lines: 83, branches: 68, functions: 100 },
+  'src/core/jobs/admission.ts': { lines: 98, branches: 91, functions: 100 },
+  'src/core/jobs/keep-awake.ts': { lines: 98, branches: 95, functions: 100 },
+  'src/core/jobs/step-environment.ts': { lines: 98, branches: 98, functions: 100 },
+  'src/core/jobs/adapter-arguments.ts': { lines: 87, branches: 71, functions: 78 },
+  'src/utils/process-group.ts': { lines: 95, branches: 90, functions: 84 },
+  'src/utils/process-birth.ts': { lines: 90, branches: 75, functions: 98 },
+  'src/utils/process-lifecycle.ts': { lines: 93, branches: 83, functions: 93 },
+  'src/core/file-lock.ts': { lines: 92, branches: 90, functions: 100 },
+  'src/core/file-lock-shared.ts': { lines: 90, branches: 80, functions: 100 },
+  'src/core/proof/evidence.ts': { lines: 95, branches: 90, functions: 100 },
+  'src/core/proof/plan.ts': { lines: 96, branches: 92, functions: 100 },
   'src/core/patch-apply-fuzz.ts': { lines: 90, branches: 80, functions: 100 },
-  'src/core/furnace-state-persist.ts': { lines: 80, branches: 70, functions: 100 },
+  'src/core/furnace-apply-state.ts': { lines: 98, branches: 95, functions: 100 },
   'src/core/furnace-step-errors.ts': { lines: 98, branches: 95, functions: 100 },
   'src/utils/platform.ts': { lines: 98, branches: 95, functions: 100 },
   'src/core/register-browser-content.ts': { lines: 98, branches: 94 },
@@ -257,6 +284,17 @@ function loadCoverageSummary() {
   return JSON.parse(readFileSync(COVERAGE_SUMMARY_PATH, 'utf8'));
 }
 
+/**
+ * The `src/…` or `runtime/…` path of a summary entry, relative to the project root. A checkout
+ * that itself lives under a directory named `src` or `runtime` must not shift the key.
+ */
+function projectModulePath(entryPath) {
+  const relativePath = (
+    isAbsolute(entryPath) ? relative(process.cwd(), entryPath) : entryPath
+  ).replace(/\\/g, '/');
+  return /^(?:src|runtime)\//.test(relativePath) ? relativePath : null;
+}
+
 function findCoverageEntry(summary, modulePath) {
   if (summary[modulePath]) {
     return summary[modulePath];
@@ -348,10 +386,8 @@ function main() {
   for (const [entryPath, entry] of Object.entries(summary)) {
     if (entryPath === 'total') continue;
     if (!entry.statements || entry.statements.total === 0) continue;
-    const normalized = entryPath.replace(/\\/g, '/');
-    const index = normalized.indexOf('src/');
-    if (index === -1) continue;
-    const modulePath = normalized.slice(index);
+    const modulePath = projectModulePath(entryPath);
+    if (modulePath === null) continue;
     if (MODULE_THRESHOLDS[modulePath] !== undefined) continue;
     if (UNPINNED_FLOOR_EXEMPT.has(modulePath)) continue;
     checkMetric(failures, modulePath, entry, 'lines', UNPINNED_FLOOR.lines);

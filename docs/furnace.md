@@ -2,10 +2,9 @@
 
 # Furnace components
 
-Furnace is how FireForge handles UI components. It tracks stock widgets,
-creates new fork-owned widgets, and overrides existing ones. The files still
-land inside the Firefox source directory and end up in the regular patches
-you export.
+Furnace handles UI components: it tracks stock widgets, creates fork-owned
+widgets and overrides existing ones. The files land inside the Firefox source
+directory and end up in the patches you export.
 
 ```bash
 npx fireforge furnace scan
@@ -20,120 +19,125 @@ npx fireforge furnace preview
 
 ## Shared CSS fragments
 
-CSS used by more than one widget can live in a single file. Put the fragment
-in `components/shared/` and reference it from a widget stylesheet with a
-comment:
+Put CSS used by more than one widget in `components/shared/` and reference it from
+a widget stylesheet:
 
 ```css
 /* @fireforge-include base-button.css */
 ```
 
-`deploy` expands the fragment into the deployed copy only, so editing the
-fragment shows up as component drift until the next deploy. `furnace diff`
-compares the deployed copy against this composed form (and says so in the
-`+++` header), so a freshly deployed includer shows no difference.
+`deploy` expands the fragment into the deployed copy only, so editing a fragment
+shows as component drift until the next deploy. `furnace diff` compares the
+deployed copy against the composed form, so a freshly deployed includer shows no
+difference.
 
 ## Deploying and applying
 
-`furnace deploy` takes any number of names and deploys them under one lock
-hold (`fireforge furnace deploy moz-a moz-b moz-c`), so a batch of widgets
-waits for the engine lock once rather than once per widget. Each name is its
-own atomic unit: it is applied and its state persisted before the next starts.
-An unknown name refuses the whole invocation before anything is written, and
-a stock name is warned about and skipped. With no name, everything deploys.
+`furnace deploy` takes any number of names and deploys them under one lock hold
+(`fireforge furnace deploy moz-a moz-b`). Each name is its own atomic unit with a
+rollback journal: a failing unit restores its own files, and a failure or signal in
+a later unit never reverts one already committed. An unknown name refuses the whole
+invocation before anything is written; a stock name is warned about and skipped.
+With no name, everything deploys.
 
-Deploy registers every `.mjs` and `.css` file in a custom component directory
-in `toolkit/content/jar.mn`, including extra modules beside the main one. Add
-the file to the directory and deploy instead of writing the jar line by hand.
-A line that already registers the file anywhere in the jar (same target, or
-same `(widgets/<tag>/<file>)` source) is kept and never duplicated, so mach
-does not fail with "Item already in manifest". Removing a file from the
-directory drops only its line, and `furnace rename` rewrites the widget's
-lines where they stand, so the rest of the block keeps its order and the
-owning patch carries no reorder hunks.
+Deploy copies a component's whole folder and registers every `.mjs` and `.css` file
+of a custom component in `toolkit/content/jar.mn`. Add the file to the directory and
+deploy rather than writing the jar line by hand. A line that already registers the
+file (same target, or same `(widgets/<tag>/<file>)` source) is kept, never
+duplicated; removing a file drops only its line.
 
-The apply and deploy summaries name why each component was skipped, for
-example `Applied 0, skipped 1 (1 already current)`. "Already current" means
-the source is unchanged since the last recorded apply and the engine copy
-still matches it. The apply state is shared by every session on the checkout,
-so that apply may have been another session's, such as a peer's
-`test --build`.
+Summaries name why each component was skipped (`Applied 0, skipped 1 (1 already
+current)`). "Already current" means the source is unchanged since the last recorded
+apply and the engine copy still matches. The apply state is shared by every session
+on the checkout, so that apply may have been a peer's.
 
-Deploy copies a component's whole folder. When it replaces a deployed file
-whose engine bytes differ from the component source and a patch owns that
-file, it warns, naming the file and the owning patch. On a shared checkout,
-where two sessions edit different files of one folder for different patches,
-name the patch being exported with `--owner <patch>`
-(`fireforge furnace deploy moz-tiles --owner 205`). Any such file owned by a
-different patch then refuses the whole deploy before a file is written,
-across every named component, and the refusal lists each file with its
-owning patches. Park the other session's work or export that patch first. A
-file the named patch shares with another stays the named patch's to deploy,
-an unknown patch refuses, and `--dry-run` refuses the same way.
+`test --build` prints a "dispatch state" notice naming why each deployed component
+was behind: source changed since its last deploy, no recorded deploy, or an engine
+copy missing or different. A component behind for a reason you did not cause is
+another session's edit and is in the build under test. `--furnace-apply all`
+(default) deploys every such component; `reached` deploys a stale component only if a
+reached custom component `composes` it, or one whose engine copy was erased; `none`
+deploys nothing. None removes a copy a peer already deployed.
+
+A deploy, apply or build refuses only when a component _it applied_ had its source
+edited while being copied; a peer's edit to another component is reported by name.
+
+When deploy replaces a file whose engine bytes differ from the source and a patch
+owns it, it warns naming the file and patch. On a shared checkout where sessions
+edit different files of one folder for different patches, name the patch being
+exported: `fireforge furnace deploy moz-tiles --owner 205`. A file owned by a
+different patch then refuses the whole deploy before any write, listing each file
+with its owners; park the other work or export that patch first. A file the named
+patch shares with another stays its to deploy, an unknown patch refuses, and
+`--dry-run` refuses the same way.
+
+`build` and `test` rewrite deployed component files from their sources first.
+`--refuse-unexported-drift` refuses when that would destroy engine content no patch
+records. A deployed file that is a Furnace deployment of its own source
+(`deployed-unexported`: it equals the composed source, differs only inside fragment
+expansions, or is exactly what the last apply deployed) is allowed and listed, since
+its patch still owes a re-export.
 
 ## Renaming
 
-`furnace rename <old> <new>` moves the component and rewrites its
-registrations in place. The `customElements.js` entry keeps its position,
-layout and `// <MARKER>:` comments (the marker is `markerComment` from
-`fireforge.json`, else the upper-cased `binaryName`); an entry is only added
-fresh, with the marker, when none existed. The old entry never survives the
-rename. The locale `jar.mn` line is re-pointed only when the old component had
-one, so a `sharedFtl` component never gains a per-component `.ftl` line.
-`--dry-run` prints every file move and engine edit without writing.
+`furnace rename <old> <new>` moves the component and rewrites its registrations in
+place. The `customElements.js` entry keeps its position, layout and
+`// <MARKER>:` comments (`markerComment` from `fireforge.json`, else the upper-cased
+`binaryName`); an entry is added fresh, with the marker, only when none existed, and
+the old entry never survives. The locale `jar.mn` line is re-pointed only when the
+old component had one. Package and locale entries are maintained for
+`register: false` libraries too. Rename refuses nested directories, symlinks and
+special entries before mutation and never removes a destination a competing command
+created. `--dry-run` prints every move and engine edit.
 
 ## Typed cross-module imports
 
-For multi-file components, set `furnace.json#typecheckJsconfig` to a
-consumer-owned jsconfig, or to a list of them. `deploy` and `sync` then
-maintain `compilerOptions.paths` entries in each one that map each
-deployed `chrome://global/content/elements/<file>.mjs` URL to its workspace
-source, relative to that jsconfig's own directory. List every project whose
-files import widget modules, for example the components project and the
-chrome-script project that holds the tests.
+Set `furnace.json#typecheckJsconfig` to a consumer-owned jsconfig, or a list of
+them, and `furnace types`, `deploy` and `sync` maintain `compilerOptions.paths` entries in each,
+mapping every deployed `chrome://global/content/elements/<file>.mjs` URL to its
+workspace source. List every project whose files import widget modules. An entry
+inside the components workspace counts as Furnace-managed: a hand-written entry is
+preserved, and a managed entry whose helper was deleted is pruned. Every path in
+`furnace.json` (`typecheckJsconfig`, `typecheckTagMap`, `ftlBasePath`, `scanPaths`,
+an override's `basePath`, a custom component's `targetPath`) must be relative and
+free of `..`.
 
-An entry counts as Furnace-managed if it is contained in the components
-workspace. A hand-written entry is therefore preserved, and a managed entry
-whose helper was deleted is pruned.
-
-`furnace.json#typecheckTagMap: "<path>.d.ts"` has `deploy` and `sync` also
-write a declaration file that adds each custom component's tag to
-`HTMLElementTagNameMap`:
+`furnace.json#typecheckTagMap: "<path>.d.ts"` has the same commands also write a
+declaration adding each custom component's tag to `HTMLElementTagNameMap`, typed
+`HTMLElement & import(...)` of the component class:
 
 ```ts
 interface HTMLElementTagNameMap {
-  'moz-dock-button': import('chrome://global/content/elements/moz-dock-button.mjs').MozDockButton;
+  'moz-dock-button': HTMLElement &
+    import('chrome://global/content/elements/moz-dock-button.mjs').MozDockButton;
 }
 ```
 
-`document.createElement("moz-dock-button")` and `querySelector` then type as
-the component's class. A component gets an entry for each
-`customElements.define("<tag>", <Class>)` in its `.mjs` files whose class
-the module exports, by name or as `default`. A `kind: "library"` or
-`register: false` component, an unexported or inline class, and a
-customized built-in (`{ extends: … }`) get none. The types resolve through
-the managed `paths`, so include the file only in a project that is listed
-in `typecheckJsconfig`. Elsewhere the URL falls to the shim's `chrome:*`
-wildcard, which has no members. Furnace rewrites the whole file, so do not
-edit it.
+`createElement` and `querySelector` then type as the class. A component gets an
+entry per `customElements.define("<tag>", <Class>)` in its `.mjs` files whose class
+the module exports (by name or as `default`); `kind: "library"` or
+`register: false` components, unexported or inline classes and customized built-ins
+get none. Include the file only in a project listed in `typecheckJsconfig`;
+elsewhere the URL falls to the shim's memberless `chrome:*` wildcard. Furnace
+rewrites the whole file: do not edit it.
 
-`furnace validate` reports a jsconfig whose managed entries are out of date
-as `jsconfig-paths-drift`, naming the file, and an out-of-date tag map as
-`tag-map-drift`. Both are warnings, and `furnace deploy` clears them.
-`fireforge typecheck` regenerates stale `paths` and a stale tag map itself
-before it runs.
+`fireforge furnace types` writes both files and nothing else; `--check` writes
+nothing and fails while either is out of date. `validate` reports a stale tag map as
+`tag-map-drift` and stale managed jsconfig entries as `jsconfig-paths-drift`. In a
+patch-queue project both are warnings, and `fireforge typecheck` regenerates the
+files itself before it runs. In source mode the committed copies are what a slot
+gets, so both are errors, `typecheck` in a job leaves the files as they are, and a
+configured `engine/<path>` names the tracked `<sources.root>/<path>` (see
+[authored-sources.md](authored-sources.md#furnace-and-writers)).
 
 ## Validation as a gate
 
-`furnace validate` prints its findings for people. A gate reads
-`furnace validate --json` instead: one document with the verdict
-(`passed`), the counts, per-component counts and every finding, specified in
-[`machine-output.md`](machine-output.md). Errors fail the run.
-`--max-warnings <n>` also fails it when more than `n` warnings remain, so
-`--max-warnings 0` keeps a component tree warning-clean.
+`furnace validate` prints findings for people; a gate reads `furnace validate --json`
+(one document with the verdict, counts, per-component counts and every finding; see
+[`machine-output.md`](machine-output.md)). Errors fail the run. `--max-warnings <n>`
+also fails it when more than `n` warnings remain.
 
-A finding that was reviewed and accepted is recorded in `furnace.json`
-rather than in a gate script:
+Record a reviewed finding in `furnace.json`, not in a gate script:
 
 ```json
 {
@@ -147,108 +151,58 @@ rather than in a gate script:
 }
 ```
 
-An entry suppresses every finding of `check` (the name `validate` prints in
-brackets) on `component`. Each field is required and the reason must be
-non-empty, because the entry is the review record. Suppressed findings are
-still listed, with their reason, under `excepted` in the JSON document and
-counted in the summary. An entry that matches nothing is stale: the finding
-it records is gone, so `validate` reports a `stale-validation-exception`
-warning asking for the entry to be deleted. A run over one component judges
-only that component's entries. `deploy` honours the same entries when it
-validates, but leaves the staleness report to `validate`.
+| Field       | Effect                                                                                                                                 |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `component` | Required. The component the entry applies to.                                                                                          |
+| `check`     | Required. The name `validate` prints in brackets.                                                                                      |
+| `reason`    | Required, non-empty: the review record.                                                                                                |
+| `tag`       | Optional. Narrows to findings about one element tag; a finding naming several tags is suppressed only when entries cover them all.     |
+| `file`      | Optional. Narrows to one module of the component (`hardcoded-text` names the modules it found text in). A `tag` or a `file`, not both. |
 
-An entry never suppresses an error: an error blocks apply,
-and a review record cannot make a broken component deployable. The error
-stays counted, and the entry is reported as a
-`validation-exception-on-error` error until the finding is fixed and the
-entry deleted.
+A matching entry suppresses the finding, which is still listed with its reason under
+`excepted` and counted. An entry matching nothing is stale and reported as a
+`stale-validation-exception` warning; a run over one component judges only that
+component's entries. An entry never suppresses an error: the error stays counted and
+the entry is reported as `validation-exception-on-error` until the finding is fixed
+and the entry deleted.
 
-An optional `tag` narrows an entry to findings about one element tag, so a
-reviewed `<panel-list>` menu does not mute `no-keyboard-handler` for the
-rest of the component. A finding that names several tags (`no-keyboard-handler`
-names every synthetic element with an `@click`) is suppressed only when
-entries cover all of them:
+Accessibility checks judge the composed component: the host `<tag>.mjs` and its
+companion modules (`<tag>-*.mjs`, tests and stories excluded) read as one source, so
+moving a template between modules does not change findings. `hardcoded-text` judges
+each module alone, so a `// furnace-ignore: hardcoded-text` comment covers its own
+file. Toolkit's `panel-item` counts as natively keyboard-activated, beside `button`,
+form controls and the `moz-*` buttons.
 
-```json
-{
-  "component": "moz-vault",
-  "check": "no-keyboard-handler",
-  "tag": "li",
-  "reason": "Rows are reached through the list's roving focus."
-}
-```
+`minComponents` (`{ "minComponents": 40 }`) is the fewest components a full
+`furnace validate` must judge; a run under it, an empty tree included, fails with a
+`component-floor` error. A run naming one component is not held to it. Override CSS
+inherits token exemptions only from its pinned upstream CSS, never its deployed copy.
 
-An optional `file` narrows an entry the same way to findings
-in one module of the component, by file name. `hardcoded-text` names the
-modules it found text in, so a vendored bundle whose bytes are pinned (and
-so cannot carry a `furnace-ignore` comment) can be accepted while the
-authored modules beside it keep the check. An entry names a `tag` or a
-`file`, not both:
-
-```json
-{
-  "component": "moz-editor",
-  "check": "hardcoded-text",
-  "file": "moz-editor-codemirror.mjs",
-  "reason": "The vendored bundle's width probe is never rendered."
-}
-```
-
-Accessibility checks judge the composed component: the host
-`<tag>.mjs` and its companion modules (`<tag>-*.mjs`, tests and stories
-left out) read as one source. Moving a template between the component's
-modules therefore does not change its findings: a keyboard handler in a
-companion covers an `@click` in the host, and an `@click` in a companion
-is judged too. `hardcoded-text` judges each module on its own, so a
-`// furnace-ignore: hardcoded-text` comment covers the file it is in, not
-its siblings. Toolkit's `panel-item` counts as natively
-keyboard-activated, beside `button`, form controls and the `moz-*` buttons.
-
-`minComponents` sets the fewest components a full `furnace validate` must
-judge. A run under it, an empty tree included, fails with a
-`component-floor` error on `furnace.json`, so a moved or emptied
-components tree cannot pass by validating nothing. A run naming one
-component is not held to it.
-
-```json
-{ "minComponents": 40 }
-```
-
-`optInChecks` turns on checks that are off by default:
-
-```json
-{ "optInChecks": ["icon-button-label"] }
-```
-
-`icon-button-label` warns about an icon-only `<moz-button>` in a component's
-Lit templates (one with an `iconsrc` or an `icon` type, and no `label` or
-text content) that has neither `data-l10n-id` nor `aria-label`, so a screen
-reader would announce it only as "button". A button built with
+`optInChecks` enables checks that are off by default; `["icon-button-label"]` warns
+about an icon-only `<moz-button>` in a Lit template (an `iconsrc` or icon type, no
+`label` or text) with neither `data-l10n-id` nor `aria-label`. A button built with
 `document.createElement` is not seen.
 
 ## Safety
 
-Every furnace mutation runs through `runFurnaceMutation`, which gives it a
-per-root lock, a rollback journal restored on both a signal and a thrown
-error, and a `pendingRepair` marker that blocks further mutations when a
-rollback was incomplete. Clear the marker with
-`fireforge doctor --repair-furnace`. The full contract, including which
-commands take which locks, is in
-[`lifecycle-invariants.md`](lifecycle-invariants.md).
+Every furnace mutation takes a per-root lock and a rollback journal, restored on a
+signal and on a thrown error. An incomplete rollback leaves a `pendingRepair` marker
+that blocks further mutations. `create`, `override`, `scan`, `remove`, `rename`,
+`refresh` and `chrome-doc` also keep `.fireforge/furnace-inflight.json` while they
+run: a process killed outright (SIGKILL, out of memory, power loss) cannot roll back,
+and the next furnace mutation or `doctor` turns the sidecar into a `pendingRepair`
+marker naming it. `apply`, `deploy` and `preview` are idempotent and need no sidecar.
+Clear the marker with `fireforge doctor --repair-furnace`.
 
-`apply`, `deploy` and `sync` accept `--wait-lock [seconds]`, and that budget
-covers both locks they take. The leaves that take only the furnace lock
-(`create`, `remove`, `rename`, `refresh`, `scan`, `override`, `preview` and
-the `chrome-doc` pair) apply the flag to that lock. Without the flag, the
-session budget from `FIREFORGE_WAIT_LOCK` applies. See
-[`configuration.md`](configuration.md#lock-waits).
+`validate --fix` repairs registrations under the same lock and journals its writes;
+a writer failure rolls them back. Browser wiring uses attributed journals, so a
+peer's later edit is preserved and reported for repair rather than overwritten.
 
-`build` and `test` rewrite deployed component files from their sources before
-building, and `--refuse-unexported-drift` refuses when that would destroy
-engine content no patch records. A deployed file that is a Furnace deployment
-of its own source is classified `deployed-unexported` and allowed: it equals
-the composed current source, differs from it only inside generated fragment
-expansions, or is exactly what the last recorded apply deployed. Those files
-are listed in an informational note, since their patches still owe a
-re-export. Only content that matches no patch body, no baseline and none of
-these source forms is refused.
+`apply`, `deploy` and `sync` accept `--wait-lock [seconds]` covering both locks they
+take; the leaves that take only the furnace lock apply it to that lock. Without the
+flag, `FIREFORGE_WAIT_LOCK` applies ([`configuration.md`](configuration.md#lock-waits)).
+
+Chrome-document creation refuses collisions for every planned source and test output,
+including after a competing command finished while it waited. Removal matches jar
+lines across CRLF and trailing whitespace and keeps other lines. Generated packaging
+tests cover the supported unpacked layouts; packed `omni.ja` builds are not probed.

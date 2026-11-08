@@ -19,11 +19,11 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { FurnaceError } from '../errors/furnace.js';
 import type { FurnaceConfig } from '../types/furnace.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { sha256Hex } from '../utils/hash.js';
 import { normalizePathSlashes } from '../utils/paths.js';
-import { isOverrideCopyCandidate } from './furnace-apply-helpers.js';
 import { extractComponentChecksums, normalizeForChecksum } from './furnace-checksum-utils.js';
 import {
   furnaceConfigExists,
@@ -38,6 +38,7 @@ import {
   stripExpandedFragments,
 } from './furnace-css-fragments.js';
 import { isRegularFile } from './furnace-dir-entry.js';
+import { isOverrideCopyCandidate } from './furnace-source-files.js';
 
 /**
  * Composes one component source into the bytes apply deploys: a stylesheet
@@ -81,7 +82,8 @@ export interface FurnaceDeployedSource {
  */
 export async function mapDeployedComponentSources(
   root: string,
-  config: FurnaceConfig
+  config: FurnaceConfig,
+  options: { refuseCollisions?: boolean } = {}
 ): Promise<Map<string, FurnaceDeployedSource>> {
   const furnacePaths = getFurnacePaths(root);
   const ftlDir = resolveFtlDir(config.ftlBasePath);
@@ -97,6 +99,8 @@ export async function mapDeployedComponentSources(
         engineRel = normalizePathSlashes(join(ftlDir, fileName));
       }
       if (engineRel === undefined) continue;
+      if (options.refuseCollisions && sources.has(engineRel))
+        throw new FurnaceError(`Generated source ownership overlaps at ${engineRel}`);
       sources.set(engineRel, {
         type: 'custom',
         component,
@@ -112,7 +116,10 @@ export async function mapDeployedComponentSources(
       if (!isOverrideCopyCandidate(fileName, override.type)) continue;
       // Same target rule as `getOverrideEngineTargetPath`, engine-relative.
       const base = fileName.endsWith('.ftl') ? ftlDir : override.basePath;
-      sources.set(normalizePathSlashes(join(base, fileName)), {
+      const enginePath = normalizePathSlashes(join(base, fileName));
+      if (options.refuseCollisions && sources.has(enginePath))
+        throw new FurnaceError(`Generated source ownership overlaps at ${enginePath}`);
+      sources.set(enginePath, {
         type: 'override',
         component,
         fileName,

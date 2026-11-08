@@ -10,16 +10,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../utils/process.js', () => ({ exec: vi.fn() }));
+vi.mock('../../core/git-base.js', () => ({ gitResult: vi.fn() }));
 
 vi.mock('../../core/firefox.js', () => ({
   getFirefoxVersion: vi.fn(() => Promise.resolve(undefined)),
 }));
 
 import { getFirefoxVersion } from '../../core/firefox.js';
+import { gitResult } from '../../core/git-base.js';
 import type { DoctorCheck } from '../../types/commands/index.js';
 import type { FireForgeConfig, FireForgeState } from '../../types/config.js';
-import { exec } from '../../utils/process.js';
 import type { DoctorCheckContext } from '../doctor-check-core.js';
 import { SOURCE_PIN_DOCTOR_CHECK } from '../doctor-source-pin.js';
 
@@ -56,7 +56,7 @@ async function run(ctx: DoctorCheckContext): Promise<DoctorCheck | DoctorCheck[]
 describe('source pin doctor check', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(exec).mockResolvedValue({ exitCode: 1, stdout: '', stderr: '' });
+    vi.mocked(gitResult).mockResolvedValue({ exitCode: 1, stdout: '', stderr: '' });
     vi.mocked(getFirefoxVersion).mockResolvedValue(undefined);
   });
 
@@ -73,12 +73,13 @@ describe('source pin doctor check', () => {
   });
 
   it('uses pristine HEAD even when branding rewrites the working version', async () => {
-    vi.mocked(exec).mockResolvedValue({ exitCode: 0, stdout: '153.3.0esr\n', stderr: '' });
+    vi.mocked(gitResult).mockResolvedValue({ exitCode: 0, stdout: '153.3.0esr\n', stderr: '' });
     vi.mocked(getFirefoxVersion).mockResolvedValue('hominis-1.0');
     expect(await run(makeCtx({ version: '153.3.0esr' }))).toMatchObject({ severity: 'ok' });
-    expect(exec).toHaveBeenCalledWith('git', ['show', 'HEAD:browser/config/version.txt'], {
-      cwd: '/project/engine',
-    });
+    expect(gitResult).toHaveBeenCalledWith(
+      ['show', 'HEAD:browser/config/version.txt'],
+      '/project/engine'
+    );
     expect(getFirefoxVersion).not.toHaveBeenCalled();
   });
 
@@ -93,14 +94,14 @@ describe('source pin doctor check', () => {
   });
 
   it('accepts an ESR pin against a version.txt without the esr suffix', async () => {
-    vi.mocked(exec).mockResolvedValue({ exitCode: 0, stdout: '153.4.0\n', stderr: '' });
+    vi.mocked(gitResult).mockResolvedValue({ exitCode: 0, stdout: '153.4.0\n', stderr: '' });
     const check = await run(makeCtx({ version: '153.4.0esr', downloadedVersion: '153.4.0esr' }));
 
     expect(check).toMatchObject({ severity: 'ok' });
   });
 
   it('keeps the full pin for the last-download comparison and real engine mismatches', async () => {
-    vi.mocked(exec).mockResolvedValue({ exitCode: 0, stdout: '153.3.0\n', stderr: '' });
+    vi.mocked(gitResult).mockResolvedValue({ exitCode: 0, stdout: '153.3.0\n', stderr: '' });
     const check = await run(makeCtx({ version: '153.4.0esr', downloadedVersion: '153.4.0' }));
 
     expect(check).toMatchObject({ severity: 'warning' });

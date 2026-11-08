@@ -15,7 +15,13 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import { rm } from 'node:fs/promises';
 
-import { pathExistsStrict, removeDir, writeFileAtomic, writeTextIfChanged } from '../fs.js';
+import {
+  pathExistsStrict,
+  readJson,
+  removeDir,
+  writeFileAtomic,
+  writeTextIfChanged,
+} from '../fs.js';
 
 describe('removeDir', () => {
   beforeEach(() => {
@@ -155,5 +161,21 @@ describe('writeTextIfChanged', () => {
     expect(result).toBe(false);
     const { mtimeMs: after } = await import('node:fs/promises').then((fs) => fs.stat(filePath));
     expect(after).toBe(before);
+  });
+});
+
+describe('readJson', () => {
+  it('keeps every key, including ones named like prototype members', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'fireforge-fs-json-'));
+    try {
+      const path = join(dir, 'data.json');
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(path, '{"constructor":1,"prototype":2,"__proto__":{"x":3},"ok":4}');
+      const parsed = await readJson<Record<string, unknown>>(path);
+      expect(Object.keys(parsed).sort()).toEqual(['__proto__', 'constructor', 'ok', 'prototype']);
+      expect(Object.getPrototypeOf(parsed)).toBe(Object.prototype);
+    } finally {
+      await fsRm(dir, { recursive: true, force: true });
+    }
   });
 });

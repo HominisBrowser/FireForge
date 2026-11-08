@@ -29,6 +29,7 @@ import { buildPatchQueueContext, collectNewFileCreatorsByPath } from './patch-li
 import { createOwnedPathMatcher, pathsTargetCandidates } from './patch-lint-checkjs-resolve.js';
 import type { PatchQueueContext } from './patch-lint-cross.js';
 import {
+  isHeadScript,
   isTestScriptFile,
   resolvableModulesForTests,
   resolvePatchOwnedSysMjs,
@@ -106,8 +107,6 @@ export interface TypecheckExplanation {
   projects: ProjectExplanation[];
   perPatch: PerPatchExplanation;
 }
-
-const HEAD_SCRIPT = /^head(?:_.*)?\.js$/;
 
 /** URL specifiers in static imports, `import()` calls and JSDoc `import("…")` types. */
 function findUrlImports(source: string): string[] {
@@ -272,7 +271,7 @@ async function explainPerPatch(
     program = 'test';
     const dir = rel.slice(0, rel.lastIndexOf('/') + 1);
     heads = [...resolvePatchOwnedTestScripts(new Set(), ctx)].filter(
-      (f) => f !== rel && f.startsWith(dir) && HEAD_SCRIPT.test(f.slice(f.lastIndexOf('/') + 1))
+      (f) => f !== rel && f.startsWith(dir) && isHeadScript(f)
     );
     resolvable = [...resolvableModulesForTests(ctx)(rel)];
   }

@@ -89,7 +89,7 @@ it('uses pmset power-source output while charging and records a pegged system da
   expect(state.topProcess?.cpu).toBe(97);
   expect(vi.mocked(exec).mock.calls[1]?.[1]).toEqual(['-g', 'ps']);
   expect(reportTestHost(state, 'start')).toBe(true);
-  expect(reportTestHost({ load: 1, power: 'ac' }, 'start')).toBe(false);
+  expect(reportTestHost({ load: 1, power: 'ac', display: 'awake' }, 'start')).toBe(false);
   vi.mocked(exec)
     .mockResolvedValueOnce(result(''))
     .mockResolvedValueOnce(result("Now drawing from 'Battery Power'"));

@@ -82,6 +82,7 @@ describe('per-patch lint cache', () => {
       config?: FireForgeConfig;
       existingFiles?: string[];
       queueContext?: PatchQueueContext;
+      diffContent?: string;
     } = {}
   ): Promise<string> {
     return buildPerPatchLintCacheKey({
@@ -94,6 +95,7 @@ describe('per-patch lint cache', () => {
       queueContext: overrides.queueContext ?? ctx,
       engineHeadSha: 'test-head-sha',
       packageVersion: 'test-version',
+      ...(overrides.diffContent === undefined ? {} : { diffContent: overrides.diffContent }),
     });
   }
 
@@ -104,6 +106,36 @@ describe('per-patch lint cache', () => {
     });
 
     await expect(key()).resolves.not.toBe(before);
+  });
+
+  it('cannot replay a synthetic hunk verdict for a different full candidate on unchanged engine and patch bytes', async () => {
+    const small = ctx.entries[0]?.diff;
+    if (small === undefined) throw new Error('Fixture requires a queue candidate');
+    const full = small
+      .replace('@@ -0,0 +1 @@', '@@ -0,0 +1,2 @@')
+      .replace('+const a = 1;', '+const a = 1;\n+excluded edit requiring lint');
+    await writeFiles(engineDir, { 'browser/a.js': 'const a = 1;\nexcluded edit requiring lint\n' });
+    const syntheticKey = await key({ diffContent: small });
+    expect(await key()).toBe(syntheticKey);
+    const cache = await loadPerPatchLintCache(projectRoot);
+    setCachedPerPatchLintIssues({
+      cache,
+      patchFilename: patch.filename,
+      key: syntheticKey,
+      issues: [],
+      suppressed: [],
+      lineCount: 1,
+      lintIgnore: [],
+    });
+    await savePerPatchLintCache(projectRoot, cache);
+    const persisted = await loadPerPatchLintCache(projectRoot);
+    expect(getCachedPerPatchLintIssues(persisted, patch.filename, syntheticKey, [])).toMatchObject({
+      lineCount: 1,
+      issues: [],
+    });
+    expect(
+      getCachedPerPatchLintIssues(persisted, patch.filename, await key({ diffContent: full }), [])
+    ).toBeUndefined();
   });
 
   it('invalidates when relevant patch metadata changes', async () => {

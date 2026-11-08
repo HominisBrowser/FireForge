@@ -31,7 +31,6 @@ vi.mock('../../core/furnace-apply.js', () => ({
   applyOverrideComponent: vi.fn(),
   applyCustomComponent: vi.fn(),
   computeComponentChecksums: vi.fn(),
-  prefixChecksums: vi.fn(),
 }));
 
 vi.mock('../../core/furnace-config.js', () => ({
@@ -137,11 +136,7 @@ vi.mock('../../utils/logger.js', () => ({
 }));
 
 import { loadConfig } from '../../core/config.js';
-import {
-  applyAllComponents,
-  computeComponentChecksums,
-  prefixChecksums,
-} from '../../core/furnace-apply.js';
+import { applyAllComponents, computeComponentChecksums } from '../../core/furnace-apply.js';
 import { loadFurnaceConfig, updateFurnaceState } from '../../core/furnace-config.js';
 import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
@@ -186,7 +181,6 @@ describe('furnaceDeployCommand', () => {
     });
     vi.mocked(validateAllComponents).mockResolvedValue(new Map());
     vi.mocked(computeComponentChecksums).mockResolvedValue({});
-    vi.mocked(prefixChecksums).mockReturnValue({});
 
     await expect(furnaceDeployCommand('/project')).resolves.toBeUndefined();
 
@@ -221,7 +215,6 @@ describe('furnaceDeployCommand', () => {
     });
     vi.mocked(validateComponent).mockResolvedValue([]);
     vi.mocked(computeComponentChecksums).mockResolvedValue({ 'a.css': 'abc' });
-    vi.mocked(prefixChecksums).mockReturnValue({ 'override/moz-card/a.css': 'abc' });
 
     await expect(furnaceDeployCommand('/project', 'moz-card')).resolves.toBeUndefined();
 
@@ -231,59 +224,8 @@ describe('furnaceDeployCommand', () => {
     expect(applyAllComponents).toHaveBeenCalledWith(
       '/project',
       false,
-      expect.objectContaining({ componentName: 'moz-card', persistState: false })
+      expect.objectContaining({ componentName: 'moz-card' })
     );
-    expect(updateFurnaceState).toHaveBeenCalled();
-  });
-
-  it('replaces stale checksum entries for the selected component during named deploy', async () => {
-    vi.mocked(applyAllComponents).mockResolvedValue({
-      applied: [
-        {
-          name: 'moz-card',
-          type: 'override',
-          filesAffected: ['toolkit/content/widgets/moz-card/moz-card.css'],
-        },
-      ],
-      skipped: [],
-      errors: [],
-      actions: [],
-    });
-    vi.mocked(validateComponent).mockResolvedValue([]);
-    vi.mocked(computeComponentChecksums).mockResolvedValue({ 'new.css': 'abc' });
-    vi.mocked(prefixChecksums).mockReturnValue({ 'override/moz-card/new.css': 'abc' });
-
-    await furnaceDeployCommand('/project', 'moz-card');
-
-    const updater = vi.mocked(updateFurnaceState).mock.calls[0]?.[1];
-    expect(updater).toBeTypeOf('function');
-    const next = (
-      updater as (state: {
-        appliedChecksums?: Record<string, string>;
-        engineChecksums?: Record<string, string>;
-      }) => {
-        appliedChecksums?: Record<string, string>;
-        engineChecksums?: Record<string, string>;
-      }
-    )({
-      appliedChecksums: {
-        'override/moz-card/old.css': 'stale',
-        'custom/moz-sidebar/sidebar.css': 'keep',
-      },
-      engineChecksums: {
-        'override/moz-card/old.css': 'stale',
-        'custom/moz-sidebar/sidebar.css': 'keep',
-      },
-    });
-
-    expect(next.appliedChecksums).toEqual({
-      'custom/moz-sidebar/sidebar.css': 'keep',
-      'override/moz-card/new.css': 'abc',
-    });
-    expect(next.engineChecksums).toEqual({
-      'custom/moz-sidebar/sidebar.css': 'keep',
-      'override/moz-card/new.css': 'abc',
-    });
   });
 
   it('deploys a single custom component', async () => {
@@ -309,14 +251,13 @@ describe('furnaceDeployCommand', () => {
     });
     vi.mocked(validateComponent).mockResolvedValue([]);
     vi.mocked(computeComponentChecksums).mockResolvedValue({});
-    vi.mocked(prefixChecksums).mockReturnValue({});
 
     await expect(furnaceDeployCommand('/project', 'moz-sidebar')).resolves.toBeUndefined();
 
     expect(applyAllComponents).toHaveBeenCalledWith(
       '/project',
       false,
-      expect.objectContaining({ componentName: 'moz-sidebar', persistState: false })
+      expect.objectContaining({ componentName: 'moz-sidebar' })
     );
   });
 
@@ -620,7 +561,6 @@ describe('furnaceDeployCommand', () => {
     });
     vi.mocked(validateComponent).mockResolvedValue([]);
     vi.mocked(computeComponentChecksums).mockResolvedValue({});
-    vi.mocked(prefixChecksums).mockReturnValue({});
 
     await expect(furnaceDeployCommand('/project', 'moz-card')).rejects.toThrow(
       /stale against the Firefox version/i
@@ -706,7 +646,7 @@ describe('furnaceDeployCommand', () => {
     expect(applyAllComponents).toHaveBeenCalledWith(
       '/project',
       true,
-      expect.objectContaining({ componentName: 'moz-card', persistState: false })
+      expect.objectContaining({ componentName: 'moz-card' })
     );
   });
 
@@ -769,7 +709,6 @@ describe('furnaceDeployCommand', () => {
     });
     vi.mocked(validateAllComponents).mockResolvedValue(new Map());
     vi.mocked(computeComponentChecksums).mockResolvedValue({});
-    vi.mocked(prefixChecksums).mockReturnValue({});
 
     await expect(
       furnaceDeployCommand('/project', undefined, { force: true })
@@ -777,60 +716,6 @@ describe('furnaceDeployCommand', () => {
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('was created against Firefox'));
     expect(applyAllComponents).toHaveBeenCalled();
-  });
-
-  it('persists named-deploy state under the requested component name when apply succeeds', async () => {
-    // Sanity-check the happy path the `applied[0].name` assertion protects:
-    // when apply succeeds for the requested component, persistence runs
-    // under that exact name. The negative case (applied[0] for a *different*
-    // component) cannot be triggered from outside the deploy module without
-    // monkey-patching its internal accumulator. It is guarded by an
-    // assert-style throw in getPersistableAppliedEntry that future refactors
-    // must not strip.
-    vi.mocked(loadFurnaceConfig).mockResolvedValue({
-      version: 1,
-      componentPrefix: 'moz-',
-      stock: [],
-      overrides: {
-        'moz-card': {
-          type: 'css-only',
-          description: 'Override card',
-          basePath: 'toolkit/content/widgets/moz-card',
-          baseVersion: '145.0',
-        },
-      },
-      custom: {},
-    });
-    // Pin Firefox version so baseVersion drift does not fire. Earlier
-    // tests in this file leave loadConfig set to 147.0, which would trip
-    // the override-baseVersion preflight.
-    vi.mocked(loadConfig).mockResolvedValue({
-      name: 'Test Browser',
-      vendor: 'Test Vendor',
-      appId: 'org.example.test',
-      binaryName: 'testbrowser',
-      firefox: { version: '145.0', product: 'firefox' },
-    });
-    vi.mocked(applyAllComponents).mockResolvedValue({
-      applied: [{ name: 'moz-card', type: 'override', filesAffected: ['moz-card.css'] }],
-      skipped: [],
-      errors: [],
-      actions: [],
-    });
-    vi.mocked(computeComponentChecksums).mockResolvedValue({ 'moz-card.css': 'hash' });
-    vi.mocked(prefixChecksums).mockImplementation((_checks, type, name) => ({
-      [`${type}/${name}/moz-card.css`]: 'hash',
-    }));
-    vi.mocked(validateComponent).mockResolvedValue([]);
-
-    await expect(furnaceDeployCommand('/project', 'moz-card')).resolves.toBeUndefined();
-
-    expect(updateFurnaceState).toHaveBeenCalledTimes(1);
-    expect(prefixChecksums).toHaveBeenCalledWith(
-      { 'moz-card.css': 'hash' },
-      'override',
-      'moz-card'
-    );
   });
 });
 
@@ -867,7 +752,6 @@ describe('furnaceDeployCommand with several names', () => {
       },
     });
     vi.mocked(computeComponentChecksums).mockResolvedValue({ 'a.css': 'hash' });
-    vi.mocked(prefixChecksums).mockReturnValue({});
     vi.mocked(validateComponent).mockResolvedValue([]);
   });
 
@@ -901,8 +785,6 @@ describe('furnaceDeployCommand with several names', () => {
       'moz-card',
       'moz-sidebar',
     ]);
-    // Each named component is its own atomic unit: state per component.
-    expect(updateFurnaceState).toHaveBeenCalledTimes(2);
     expect(vi.mocked(validateComponent).mock.calls.map((call) => call[1])).toEqual([
       'moz-card',
       'moz-sidebar',
@@ -932,7 +814,6 @@ describe('furnaceDeployCommand with several names', () => {
       'Deploy completed with 1 apply error(s).'
     );
 
-    expect(updateFurnaceState).toHaveBeenCalledTimes(1);
     expect(vi.mocked(validateComponent).mock.calls.map((call) => call[1])).toEqual(['moz-sidebar']);
     expect(note).toHaveBeenCalledWith(
       expect.stringContaining('Skipped validation for 1 component(s) with apply errors'),
@@ -1025,7 +906,6 @@ describe('furnaceDeployCommand fragment includers', () => {
     vi.mocked(loadFurnaceConfig).mockResolvedValue(twoCustom);
     vi.mocked(validateComponent).mockResolvedValue([]);
     vi.mocked(computeComponentChecksums).mockResolvedValue({});
-    vi.mocked(prefixChecksums).mockReturnValue({});
     vi.mocked(applyAllComponents).mockResolvedValue({
       applied: [{ name: 'moz-sidebar', type: 'custom', filesAffected: ['moz-sidebar.css'] }],
       skipped: [],
@@ -1052,10 +932,6 @@ describe('furnaceDeployCommand fragment includers', () => {
 
     expect(refreshStaleFragmentIncluders).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'moz-sidebar', isDryRun: false, projectRoot: '/project' })
-    );
-    // The primary state is persisted before the includer pass starts.
-    expect(vi.mocked(updateFurnaceState).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(refreshStaleFragmentIncluders).mock.invocationCallOrder[0] ?? 0
     );
     expect(notice).toHaveBeenCalledWith(
       'Also refreshed 1 other includer of "shared-anims.css": moz-b.'

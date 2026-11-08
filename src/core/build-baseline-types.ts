@@ -11,6 +11,8 @@
 export const DELETED_FILE_FINGERPRINT = '<deleted>';
 
 export interface BuildBaseline {
+  /** Actual successful mach build kind; absent on historical baselines. */
+  buildKind?: 'full' | 'faster';
   /** SHA of engine HEAD at the time the build succeeded. */
   engineHeadSha: string;
   /**

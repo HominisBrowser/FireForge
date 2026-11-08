@@ -37,8 +37,8 @@ let emitted = false;
  * exported to the harness, so a red found by shuffling carries its own
  * reproduction on the one line an unattended reader keeps. `orphans-reaped`
  * is how many harness processes FireForge had to terminate itself, at
- * preflight (survivors of an earlier run) or at teardown (helpers this run
- * launched that outlived mach): a green after a reap is not the same
+ * teardown (processes of this run's tree and helpers this run launched that outlived mach):
+ * a green after a reap is not the same
  * finding as a green on a quiet machine. Cleared by
  * {@link resetVerdictEmission}, so a later run in the same process cannot
  * inherit them.
@@ -50,9 +50,14 @@ export type VerdictRunAttributeKey =
   | 'shuffle'
   | 'orphans-reaped'
   | 'host-load'
+  | 'host-load-peak'
+  | 'host-load-peak-at'
   | 'host-cpu-warning'
+  | 'host-slept'
+  | 'display'
   | 'power-source'
   | 'power-changed'
+  | 'baseline'
   | 'furnace-applied'
   | 'furnace-apply'
   | 'furnace-skipped'
@@ -64,11 +69,18 @@ export type VerdictRunAttributeKey =
   | 'jobs'
   | 'upload-dirs'
   | 'results'
+  | 'coverage'
+  | 'slot-generation'
   | 'build-paths';
 
 /** Records an additive attribute for this run's verdict line. */
 export function setVerdictRunAttribute(key: VerdictRunAttributeKey, value: string): void {
   runAttributes.set(key, value);
+}
+
+/** Read preparation evidence without changing the emitted verdict contract. */
+export function getVerdictRunAttribute(key: VerdictRunAttributeKey): string | undefined {
+  return runAttributes.get(key);
 }
 
 /**
@@ -89,10 +101,10 @@ export function formatVerdictPathList(paths: readonly string[]): string {
 /**
  * Adds to a counting attribute. The key appears only once the total is
  * positive, so a run that reaped nothing prints the line it always did.
- * Sums across the preflight census, every retry attempt and every shard.
+ * Sums across every retry attempt and every shard.
  */
 export function addVerdictRunCount(key: 'orphans-reaped', count: number): void {
-  // Written as a negated `> 0` so a NaN (a stubbed census, a bad parse) is
+  // Written as a negated `> 0` so a NaN (a bad parse) is
   // dropped rather than stamped on the line as `orphans-reaped=NaN`.
   if (!(count > 0)) return;
   const current = Number(runAttributes.get(key) ?? '0');
@@ -109,6 +121,14 @@ export function addVerdictRunCount(key: 'orphans-reaped', count: number): void {
  */
 let armed = false;
 
+/** When the run in flight began, for verdict attributes that say when something happened. */
+let runStartedAt = Date.now();
+
+/** When the run in flight began, in epoch milliseconds. */
+export function verdictRunStartedAt(): number {
+  return runStartedAt;
+}
+
 /**
  * Re-arms the verdict sink for a new run. Called at `testCommand` entry so
  * repeated programmatic invocations (and tests) each get their own
@@ -117,6 +137,7 @@ let armed = false;
 export function resetVerdictEmission(): void {
   emitted = false;
   armed = true;
+  runStartedAt = Date.now();
   runAttributes.clear();
   capture = undefined;
   setStdoutSealed(false);

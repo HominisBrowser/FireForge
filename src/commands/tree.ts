@@ -17,7 +17,7 @@
  * unrelocated clone would silently operate against the primary), and it is
  * what admits build-less `fireforge test` inside that tree.
  */
-import { spawn } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -43,6 +43,7 @@ import {
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { CommandContext } from '../types/cli.js';
+import { signalDirectChild } from '../utils/child-process.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import {
@@ -137,6 +138,29 @@ async function reconfigureClonedObjdir(
       'mach configure'
     );
   }
+}
+
+/** Signals that end this process without the child being in the terminal's foreground group. */
+const FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ['SIGTERM', 'SIGHUP'];
+
+/**
+ * Forwards SIGTERM and SIGHUP delivered to this process to a direct child, so
+ * terminating the parent alone does not leave the child running. SIGINT is
+ * not forwarded: a terminal sends it to the whole foreground group already.
+ *
+ * @returns A function that removes the handlers
+ */
+export function forwardTerminationSignals(child: ChildProcess): () => void {
+  const handlers = FORWARDED_SIGNALS.map((signal) => {
+    const handler = (): void => {
+      signalDirectChild(child, signal);
+    };
+    process.on(signal, handler);
+    return [signal, handler] as const;
+  });
+  return () => {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+  };
 }
 
 /** Creates a verification tree under `.fireforge/trees/<name>`. */
@@ -363,8 +387,13 @@ async function treeExecCommand(projectRoot: string, name: string, args: string[]
       cwd: treeRoot,
       stdio: 'inherit',
     });
-    child.on('error', rejectPromise);
+    const stopForwarding = forwardTerminationSignals(child);
+    child.on('error', (error) => {
+      stopForwarding();
+      rejectPromise(error);
+    });
     child.on('exit', (code) => {
+      stopForwarding();
       resolvePromise(code ?? 1);
     });
   }).finally(() => {

@@ -32,6 +32,12 @@ describe.skipIf(process.platform === 'win32')('objdir install manifests', () => 
   let projectRoot: string;
   let engineDir: string;
 
+  it('refuses a partial index when a relevant manifest cannot be read', async () => {
+    expect(await loadInstallManifestIndex(engineDir, OBJ)).toBeDefined();
+    await mkdir(join(engineDir, OBJ, 'faster', 'install_unreadable'));
+    expect(await loadInstallManifestIndex(engineDir, OBJ)).toBeUndefined();
+  });
+
   beforeEach(async () => {
     projectRoot = await createTempProject('ff-install-manifests-');
     engineDir = join(projectRoot, 'engine');

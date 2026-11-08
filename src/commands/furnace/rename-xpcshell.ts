@@ -12,11 +12,16 @@
  * Extracted to keep `rename.ts` under the per-file LOC budget. It already
  * carries mochikit + browser-mochitest + FTL handling.
  */
-
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { ensureDir, pathExists, readText, writeText } from '../../core/authored/fs.js';
 import { loadConfig } from '../../core/config.js';
+import {
+  refusePartialAuthoredMutation,
+  removeAuthoringDir,
+  removeAuthoringFile,
+} from '../../core/furnace-authored-lifecycle.js';
 import { xpcshellTestParentDir } from '../../core/furnace-constants.js';
 import {
   recordCreatedDir,
@@ -24,14 +29,6 @@ import {
   snapshotFile,
 } from '../../core/furnace-rollback.js';
 import { toError } from '../../utils/errors.js';
-import {
-  ensureDir,
-  pathExists,
-  readText,
-  removeDir,
-  removeFile,
-  writeText,
-} from '../../utils/fs.js';
 import { info, warn } from '../../utils/logger.js';
 import { escapeRegex } from '../../utils/regex.js';
 
@@ -111,13 +108,14 @@ export async function renameXpcshellTestFiles(
       }
 
       await writeText(newFilePath, updated);
-      await removeFile(oldFilePath);
+      await removeAuthoringFile(oldFilePath, journal);
     }
-    await removeDir(oldScaffoldDir);
+    await removeAuthoringDir(oldScaffoldDir, journal);
     info(
       `Renamed xpcshell scaffold directory: ${xpcshellTestParentDir(forgeConfig.binaryName)}/${oldName} → ${xpcshellTestParentDir(forgeConfig.binaryName)}/${newName}`
     );
   } catch (error: unknown) {
+    await refusePartialAuthoredMutation(engineDir, error);
     warn(
       `Could not rename xpcshell scaffold — ${toError(error).message}. Rename the scaffold files manually if needed.`
     );

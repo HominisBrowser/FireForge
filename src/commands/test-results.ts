@@ -16,7 +16,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { RawTestResult } from '../core/test-raw-log.js';
+import type { StartMarkers } from '../core/test-run-completeness.js';
 import { writeJson } from '../utils/fs.js';
+import { CONTROL_BASELINE_REPETITION } from './test-multi-verdict.js';
 
 /** One file's result in one dispatch. */
 export interface TestFileResult extends RawTestResult {
@@ -46,10 +48,62 @@ const HARNESS_PSEUDO_TEST = 'automation.py';
 /** The document `--results` writes. */
 export interface TestResultsDocument {
   schemaVersion: 1;
-  /** Files in dispatch-completion order. */
+  /** Files in dispatch-completion order, for the numbered runs. `run` is 1 or more. */
   files: TestFileResult[];
-  /** Started files that never ended, per dispatch. */
+  /** Started files that never ended, per dispatch of a numbered run. */
   unfinished: Array<{ test: string; run: number; shard: string }>;
+  /** A negative control's unmutated dispatch, which is not one of its runs. */
+  controlBaseline?: {
+    files: TestFileResult[];
+    unfinished: Array<{ test: string; run: number; shard: string }>;
+  };
+  /** Exact dispatch rosters from the structured log, including requests never started. */
+  dispatches?: TestDispatchRoster[];
+  /** Actual applied mutation/restoration evidence, never inferred from an unrelated red. */
+  controls?: TestControlEvidence[];
+}
+
+export interface TestControlEvidence {
+  run: number;
+  /** Orchestrated harness sub-run ordinal; repeats share the results' run number. */
+  dispatch: number;
+  harness?: 'xpcshell' | 'mochitest';
+  diffDigest: string;
+  mutationVerified: boolean;
+  restored: boolean;
+  compiled: boolean;
+  compiledRestoreBuild?: 'done' | 'failed' | 'not-built';
+  targets: Array<{
+    path: string;
+    originalSha256: string;
+    mutatedSha256: string;
+    mode: number;
+    restoredSha256: string;
+    restoredMode: number;
+  }>;
+}
+
+/** Append only after restoration was checked against the control's byte and mode journal. */
+export function recordControlEvidence(evidence: TestControlEvidence): void {
+  (collected.controls ??= []).push(evidence);
+}
+
+/** A compiled mutation is not cleaned up until the clean binary was rebuilt too. */
+export function recordCompiledControlRestore(state: 'done' | 'failed' | 'not-built'): void {
+  for (const control of collected.controls ?? [])
+    if (control.compiled) control.compiledRestoreBuild = state;
+}
+
+/** Runtime observations for one requested dispatch, without inferring task execution. */
+export interface TestDispatchRoster {
+  run: number;
+  shard: string;
+  requested: string[];
+  started: string[];
+  completed: string[];
+  skipped: string[];
+  unfinished: string[];
+  attempts: number;
 }
 
 let collected: TestResultsDocument = { schemaVersion: 1, files: [], unfinished: [] };
@@ -70,14 +124,39 @@ export function resetTestResults(): void {
 export function recordTestResults(
   results: readonly RawTestResult[],
   unfinished: readonly string[],
-  context: { run: number; shard: string; logLine: number; shardFiles?: readonly string[] }
+  context: {
+    run: number;
+    shard: string;
+    logLine: number;
+    shardFiles?: readonly string[];
+    markers?: StartMarkers;
+    attempts?: number;
+  }
 ): void {
-  const { shardFiles, ...dispatch } = context;
+  const { shardFiles, markers, attempts, ...dispatch } = context;
+  if (markers !== undefined) {
+    (collected.dispatches ??= []).push({
+      run: context.run,
+      shard: context.shard,
+      requested: [...(shardFiles ?? [])],
+      started: [...markers.started],
+      completed: results
+        .filter((result) => result.test !== HARNESS_PSEUDO_TEST)
+        .map((result) => result.test),
+      skipped: [...markers.skipped],
+      unfinished: [...unfinished],
+      attempts: attempts ?? 1,
+    });
+  }
+  const target =
+    context.run === CONTROL_BASELINE_REPETITION
+      ? (collected.controlBaseline ??= { files: [], unfinished: [] })
+      : collected;
   for (const result of results) {
-    collected.files.push({ ...result, ...dispatch, ...harnessRecordFiles(result, shardFiles) });
+    target.files.push({ ...result, ...dispatch, ...harnessRecordFiles(result, shardFiles) });
   }
   for (const test of unfinished) {
-    collected.unfinished.push({ test, run: context.run, shard: context.shard });
+    target.unfinished.push({ test, run: context.run, shard: context.shard });
   }
 }
 

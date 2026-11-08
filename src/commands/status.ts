@@ -10,7 +10,6 @@ import {
 } from '../core/engine-session-lock.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import { getHead, getStatusWithCodes, isGitRepository, isMissingHeadError } from '../core/git.js';
-import { listUntrackedFilesInDirs, resolveMaxUntrackedFilesPerDir } from '../core/git-status.js';
 import { renderOwnershipTable } from '../core/ownership-table.js';
 import { readProcessCpuSeconds } from '../core/process-cpu-time.js';
 import { type ClassifiedFile, classifyFiles, type StatusFile } from '../core/status-classify.js';
@@ -28,12 +27,14 @@ import {
   warn,
 } from '../utils/logger.js';
 import { emitMachineError } from '../utils/machine-output.js';
+import { statusAuthored } from './status-authored.js';
 import {
   policyNeedsOwnership,
   resolveStatusCheckPolicy,
   runStatusCheck,
   type StatusCheckPolicy,
 } from './status-check.js';
+import { expandStatusInventory, limitStatusDisplay } from './status-inventory.js';
 import { renderJsonStatus, renderJsonSummaryStatus } from './status-json.js';
 import {
   type ClassifiedBuckets,
@@ -58,81 +59,6 @@ function renderRawStatus(files: StatusFile[]): void {
   for (const { status, file } of files) {
     process.stdout.write(`${status.trim()}\t${file}\n`);
   }
-}
-
-// Resolved lazily at first use (shared with core/git-status): this module
-// is imported by the command manifest for every command, so a
-// module-load-time parse printed the status-specific env warning during
-// `fireforge build` etc.
-let maxUntrackedFilesPerDir: number | undefined;
-
-function getMaxUntrackedFilesPerDir(): number {
-  maxUntrackedFilesPerDir ??= resolveMaxUntrackedFilesPerDir();
-  return maxUntrackedFilesPerDir;
-}
-
-/**
- * Expands collapsed untracked directory entries into individual file entries.
- * Git status may report an entire untracked directory as a single entry (e.g. "?? dir/").
- * This function expands those into individual file entries so each file can be classified.
- *
- * Per-directory expansion is capped at FIREFORGE_MAX_UNTRACKED_FILES (default 5000)
- * entries. Any overflow is dropped with a warning. Git ls-files itself
- * does not infinite-recurse on symlink loops, but a directory full of
- * generated artefacts can still produce an arbitrarily large list, and
- * truncating gives the user a recoverable signal instead of an OOM.
- */
-interface TruncationRecord {
-  dir: string;
-  total: number;
-  shown: number;
-}
-
-function renderTruncationBanner(truncations: TruncationRecord[]): void {
-  if (truncations.length === 0) return;
-  const hidden = truncations.reduce((sum, rec) => sum + (rec.total - rec.shown), 0);
-  const dirList = truncations.map((r) => `${r.dir} (${r.total - r.shown} hidden)`).join(', ');
-  warn(
-    `⚠ Status output is truncated: ${hidden.toLocaleString()} untracked file(s) across ${truncations.length} director(y/ies) are not shown. ` +
-      `Truncated: ${dirList}. ` +
-      `Add a .gitignore entry or clean the directory before exporting, otherwise the export will omit these files.`
-  );
-}
-
-async function expandDirectoryEntries(
-  files: StatusFile[],
-  engineDir: string
-): Promise<{ entries: StatusFile[]; truncations: TruncationRecord[] }> {
-  const expanded: StatusFile[] = [];
-  const truncations: TruncationRecord[] = [];
-  const isCollapsedUntracked = (entry: StatusFile): boolean =>
-    entry.file.endsWith('/') && entry.status.includes('?');
-  const untrackedByDir = await listUntrackedFilesInDirs(
-    engineDir,
-    files.filter(isCollapsedUntracked).map((entry) => entry.file)
-  );
-  for (const entry of files) {
-    if (isCollapsedUntracked(entry)) {
-      const individualFiles = untrackedByDir.get(entry.file) ?? [];
-      const cap = getMaxUntrackedFilesPerDir();
-      if (individualFiles.length > cap) {
-        // Recorded once here, reported once by renderTruncationBanner. The
-        // previous per-directory warn duplicated the banner's content.
-        truncations.push({
-          dir: entry.file,
-          total: individualFiles.length,
-          shown: cap,
-        });
-      }
-      const limited = individualFiles.slice(0, cap);
-      for (const f of limited) {
-        expanded.push({ status: '??', file: f });
-      }
-    } else {
-      expanded.push(entry);
-    }
-  }
-  return { entries: expanded, truncations };
 }
 
 /**
@@ -182,11 +108,7 @@ async function scanEngineStatusFiles(
   if (!requireGitRepository && !(await isGitRepository(engineDir))) {
     return [];
   }
-  const { entries, truncations } = await expandDirectoryEntries(
-    await getStatusWithCodes(engineDir),
-    engineDir
-  );
-  renderTruncationBanner(truncations);
+  const entries = await expandStatusInventory(await getStatusWithCodes(engineDir), engineDir);
   return filterFireForgeTempFiles(entries);
 }
 
@@ -399,8 +321,10 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
     for (const line of formatEngineSessionLockStatus(snapshot, holderCpuSeconds)) {
       info(line);
     }
-    outro('Lock status');
-    return;
+    if (!checkPolicy.checkEnabled) {
+      outro('Lock status');
+      return;
+    }
   }
 
   // Test-coverage mode needs only the project root (the baseline lives
@@ -412,6 +336,10 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
 
   const paths = getProjectPaths(projectRoot);
   const config = await loadConfig(projectRoot);
+  if (config.sources) {
+    await statusAuthored(projectRoot, options);
+    return;
+  }
   const scope = await resolveStatusScope(paths.patches, options.patches);
 
   // Shared envelope: see src/utils/machine-output.ts and
@@ -515,14 +443,14 @@ async function runStatusCommandBody(projectRoot: string, options: StatusOptions)
 
   // Raw mode: existing behavior
   if (options.raw) {
-    renderRawStatus(files);
+    renderRawStatus(limitStatusDisplay(files));
     return;
   }
 
   // Patch-aware classification. The full scan is classified (claims need
   // every file) and the buckets show only what the scope covers.
   const allClassified = await classifyStatusFiles(files, paths, projectRoot, config.binaryName);
-  const classified = scopeClassified(allClassified, scope);
+  const classified = limitStatusDisplay(scopeClassified(allClassified, scope));
 
   const buckets: ClassifiedBuckets = {
     conflict: classified.filter((f) => f.classification === 'conflict'),

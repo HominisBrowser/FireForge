@@ -7,11 +7,10 @@
  * Fragment staleness was only ever a validator finding
  * (`stale-fragment-expansion` in {@link validateCssFragments}), printed per
  * includer by `furnace validate` and `deploy --dry-run`. A targeted deploy
- * validates only the component it was asked for, so the one command that
- * changes a fragment's deployed state for SOME includers is the one that
- * never mentioned the rest: after a fragment edit, `deploy <a> <b>` left
- * every other consumer carrying the old expansion, and nothing said so
- * until a `grep` over the engine found it.
+ * validates only the component it was asked for, yet changes a fragment's
+ * deployed state for SOME includers, so the other consumers of a changed
+ * fragment are listed here rather than left carrying the old expansion
+ * unannounced.
  *
  * Only custom components are indexed. Override components are copied
  * byte-for-byte and never expand fragments.

@@ -776,8 +776,10 @@ describe('owner record write at acquisition', () => {
     expect(tokenLine).toMatch(/^[0-9a-f-]{36}$/);
     expect(acquiredLine).toMatch(/^acquired-at-ms=\d+$/);
     expect(Number(acquiredLine?.slice('acquired-at-ms='.length))).toBeGreaterThanOrEqual(before);
-    // `start-tick=` is written only where procfs exposes it (Linux), so the
-    // assertion on the caller's metadata must not depend on the platform.
-    expect(trailing.filter((line) => !line.startsWith('start-tick='))).toEqual(['command=build']);
+    // The start identity line depends on the platform, so the assertion on the
+    // caller's metadata must not.
+    expect(trailing.filter((line) => !/^(?:start-tick|birth)=/.test(line))).toEqual([
+      'command=build',
+    ]);
   });
 });

@@ -3,11 +3,12 @@
  * CSS registration in browser/themes/shared/jar.inc.mn.
  */
 
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { normalizePathSlashes } from '../utils/paths.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
+import { jarHasEntry } from './moz-manifest-entries.js';
 import { insertJarMnEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 
@@ -107,7 +108,7 @@ export async function registerSharedCSS(
     throw new GeneralError(`Manifest not found: ${manifest}`);
   }
 
-  const name = basename(fileName, '.css');
+  const name = normalizePathSlashes(fileName).replace(/\.css$/, '');
   const content = await readText(manifestPath);
   const sourceColumn = measureSourceColumn(content);
   const entry = buildEntry(name, sourceColumn);
@@ -119,8 +120,11 @@ export async function registerSharedCSS(
   // already-chrome-doc-registered file reports `skipped` instead of
   // appending a duplicate `skin/classic/browser/...` row.
   if (
-    content.includes(`skin/classic/browser/${name}.css`) ||
-    content.includes(`content/browser/${name}.css`)
+    jarHasEntry(
+      content,
+      [`skin/classic/browser/${name}.css`, `content/browser/${name}.css`],
+      `../shared/${name}.css`
+    )
   ) {
     return { manifest, entry, skipped: true };
   }

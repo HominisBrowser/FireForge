@@ -24,12 +24,14 @@ vi.mock('../../core/harness-port-reservation.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../core/harness-port-reservation.js')>()),
   reserveHarnessServerPorts: vi.fn(),
 }));
-vi.mock('../../core/engine-session-lock.js', () => ({
-  snapshotEngineGeneration: vi.fn(() => Promise.resolve('before')),
-  assertEngineGenerationUnchanged: vi.fn(() => Promise.resolve()),
+vi.mock('../../core/engine-state.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/engine-state.js')>()),
+  captureEngineGeneration: vi.fn(() => Promise.resolve('before')),
+  refreshEngineGeneration: vi.fn(() => Promise.resolve('after')),
+  judgeEngineGeneration: vi.fn(() => Promise.resolve()),
 }));
 
-import { assertEngineGenerationUnchanged } from '../../core/engine-session-lock.js';
+import { judgeEngineGeneration } from '../../core/engine-state.js';
 import { detectHarnessPortFallback } from '../../core/harness-port-fallback.js';
 import { reserveHarnessServerPorts } from '../../core/harness-port-reservation.js';
 import { InvalidArgumentError } from '../../errors/base.js';
@@ -115,11 +117,7 @@ describe('dispatchTests', () => {
   it('runs one combined invocation for a single argument, under the run-scoped drift guard', async () => {
     await dispatchTests(inputs({}, [['d/browser_a.js', 'd/browser_b.js']]));
     expect(runTestsWithRetries).toHaveBeenCalledWith(CTX, ['d/browser_a.js', 'd/browser_b.js']);
-    expect(assertEngineGenerationUnchanged).toHaveBeenCalledWith(
-      '/engine',
-      'before',
-      expect.any(Function)
-    );
+    expect(judgeEngineGeneration).toHaveBeenCalledWith('before', 'after', expect.any(Function));
   });
 
   it('refuses --jobs on a browser run without auto ports, and allows it for xpcshell', async () => {
@@ -189,7 +187,7 @@ describe('dispatchTests', () => {
   });
 
   it('makes a sharded run inconclusive when the drift guard throws', async () => {
-    vi.mocked(assertEngineGenerationUnchanged).mockRejectedValueOnce(new Error('drift'));
+    vi.mocked(judgeEngineGeneration).mockRejectedValueOnce(new Error('drift'));
     await expect(dispatchTests(inputs({}, [['a.js'], ['b.js']]))).rejects.toThrow('drift');
   });
 

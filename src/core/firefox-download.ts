@@ -49,24 +49,45 @@ const DOWNLOAD_STALL_TIMEOUT_MS = 30_000;
  * un-retried checksum fetch would throw away a just-landed 600 MB archive
  * over one dropped connection.
  *
+ * A supplied consumer runs within the same deadline as the request headers;
+ * response-body failures retry the complete request. Archive callers instead
+ * use their streaming stall detector after this helper returns the headers.
+ *
  * @throws DownloadError once every attempt has failed with a retryable error
  */
-export async function fetchWithRetry(url: string): Promise<Response> {
+export function fetchWithRetry(url: string): Promise<Response>;
+export function fetchWithRetry<T>(
+  url: string,
+  consume: (response: Response) => Promise<T>
+): Promise<T>;
+export async function fetchWithRetry<T>(
+  url: string,
+  consume?: (response: Response) => Promise<T>
+): Promise<Response | T> {
   let lastError: unknown;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, REQUEST_TIMEOUT_MS);
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(
+          new DownloadError(`Request or response body timed out after ${REQUEST_TIMEOUT_MS}ms`, url)
+        );
+      }, REQUEST_TIMEOUT_MS);
+    });
 
     try {
-      const response = await fetch(url, { signal: controller.signal });
-
-      if (!RETRYABLE_STATUS_CODES.has(response.status)) {
-        return response;
-      }
-      lastError = new DownloadError(`HTTP ${response.status}: ${response.statusText}`, url);
+      return await Promise.race([
+        deadline,
+        (async () => {
+          const response = await fetch(url, { signal: controller.signal });
+          if (RETRYABLE_STATUS_CODES.has(response.status))
+            throw new DownloadError(`HTTP ${response.status}: ${response.statusText}`, url);
+          return consume === undefined ? response : await consume(response);
+        })(),
+      ]);
     } catch (error: unknown) {
       // Network / timeout errors are retryable
       lastError = error;

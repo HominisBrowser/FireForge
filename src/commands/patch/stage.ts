@@ -23,7 +23,7 @@ import { join, relative, sep } from 'node:path';
 import { Command } from 'commander';
 
 import { getProjectPaths } from '../../core/config.js';
-import { git } from '../../core/git-base.js';
+import { git, gitResult } from '../../core/git-base.js';
 import { withPatchDirectoryLock } from '../../core/patch-lock.js';
 import {
   loadPatchesManifestForWrite,
@@ -42,7 +42,6 @@ import { toError } from '../../utils/errors.js';
 import { pathExists } from '../../utils/fs.js';
 import { info, intro, outro } from '../../utils/logger.js';
 import { addWaitLockOption, pickDefined, resolveWaitLockSeconds } from '../../utils/options.js';
-import { exec } from '../../utils/process.js';
 
 /** A project-relative path in git's separator. */
 function gitPath(projectRoot: string, path: string): string {
@@ -54,7 +53,7 @@ async function readHeadManifest(
   projectRoot: string,
   manifestPath: string
 ): Promise<PatchesManifest | null> {
-  const shown = await exec('git', ['show', `HEAD:./${manifestPath}`], { cwd: projectRoot });
+  const shown = await gitResult(['show', `HEAD:./${manifestPath}`], projectRoot);
   if (shown.exitCode !== 0) return null;
   try {
     return validatePatchesManifest(JSON.parse(shown.stdout));
@@ -97,9 +96,7 @@ async function stagePatchFile(projectRoot: string, patchPath: string): Promise<v
     await git(['add', '--', patchPath], projectRoot);
     return;
   }
-  const tracked = await exec('git', ['ls-files', '--error-unmatch', '--', patchPath], {
-    cwd: projectRoot,
-  });
+  const tracked = await gitResult(['ls-files', '--error-unmatch', '--', patchPath], projectRoot);
   if (tracked.exitCode === 0) {
     await git(['rm', '--cached', '--quiet', '--', patchPath], projectRoot);
   }
@@ -131,7 +128,7 @@ export async function patchStageCommand(
   options: PatchStageOptions = {}
 ): Promise<void> {
   intro(options.dryRun ? 'FireForge patch stage (dry run)' : 'FireForge patch stage');
-  const probe = await exec('git', ['rev-parse', '--is-inside-work-tree'], { cwd: projectRoot });
+  const probe = await gitResult(['rev-parse', '--is-inside-work-tree'], projectRoot);
   if (probe.exitCode !== 0 || probe.stdout.trim() !== 'true') {
     throw new GeneralError('patch stage needs the project to be a git working tree.');
   }

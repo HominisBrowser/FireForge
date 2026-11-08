@@ -4,7 +4,7 @@
  * consumer typecheck: each `typecheckJsconfig` entry and `typecheckTagMap`.
  */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -79,5 +79,53 @@ describe('validateAllComponents — typecheck file drift', () => {
     const { loadFurnaceConfig } = await import('../furnace-config.js');
     await reportJsconfigPathsSync(root, await loadFurnaceConfig(root), false);
     expect((await validateAllComponents(root)).get('furnace') ?? []).toEqual([]);
+  });
+
+  it('in source mode judges the tracked copy of an engine/ jsconfig as an error naming furnace types', async () => {
+    await writeJson(join(root, 'fireforge.json'), {
+      name: 'Fresh',
+      vendor: 'Vendor',
+      appId: 'org.example.fresh',
+      binaryName: 'freshforge',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      test: { reapOrphans: 'owned' },
+      sources: {
+        schemaVersion: 1,
+        mode: 'authored',
+        root: 'src',
+        metadataRoot: '.fireforge-sources',
+        pristineCommit: 'a'.repeat(40),
+      },
+    });
+    const { loadFurnaceConfig } = await import('../furnace-config.js');
+    const config = await loadFurnaceConfig(root);
+    await writeJson(join(root, 'furnace.json'), {
+      ...config,
+      typecheckJsconfig: ['engine/browser/base/content/jsconfig.json'],
+    });
+    await ensureDir(join(root, 'src/browser/base/content'));
+    await writeFile(join(root, 'src/browser/base/content/jsconfig.json'), '{}\n');
+
+    const drift = (await validateAllComponents(root)).get('furnace') ?? [];
+    expect(drift.map((issue) => [issue.check, issue.severity])).toEqual([
+      ['jsconfig-paths-drift', 'error'],
+      ['tag-map-drift', 'error'],
+    ]);
+    expect(drift[0]?.message).toContain('Run "fireforge furnace types"');
+    expect(drift[1]?.message).toBe(
+      'types/tags.d.ts does not exist. Run "fireforge furnace types" and commit the result.'
+    );
+
+    await reportJsconfigPathsSync(root, await loadFurnaceConfig(root), false, undefined, 'src');
+    expect((await validateAllComponents(root)).get('furnace') ?? []).toEqual([]);
+    // Paths are computed for engine/browser/base/content, four levels below the root.
+    const written = JSON.parse(
+      await readFile(join(root, 'src/browser/base/content/jsconfig.json'), 'utf8')
+    ) as { compilerOptions: { paths: Record<string, string[]> } };
+    expect(written.compilerOptions.paths).toEqual({
+      'chrome://global/content/elements/moz-x.mjs': [
+        '../../../../components/custom/moz-x/moz-x.mjs',
+      ],
+    });
   });
 });

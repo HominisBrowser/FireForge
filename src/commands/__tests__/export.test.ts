@@ -312,6 +312,45 @@ describe('exportCommand - directory support', () => {
     );
   });
 
+  it.each([
+    ['dir/a.js', 'dir'],
+    ['dir', 'dir/a.js'],
+  ])(
+    'retains explicitly named owned files regardless of collection order: %s then %s',
+    async (first, second) => {
+      mockStatForPaths(['dir']);
+      vi.mocked(getModifiedFilesInDir).mockResolvedValue(['dir/a.js', 'dir/b.js']);
+      vi.mocked(getUntrackedFilesInDir).mockResolvedValue([]);
+      vi.mocked(getStatusWithCodes).mockResolvedValue([{ status: 'M', file: 'dir/a.js' }]);
+      vi.mocked(loadPatchesManifest).mockResolvedValueOnce({
+        version: 1,
+        patches: [
+          {
+            filename: '002-ui-earlier.patch',
+            order: 2,
+            category: 'ui',
+            name: 'earlier',
+            description: 'owns explicit file',
+            createdAt: '2025-01-01T00:00:00.000Z',
+            sourceEsrVersion: '140.0esr',
+            filesAffected: ['dir/a.js'],
+          },
+        ],
+      });
+      vi.mocked(generateFullFilePatch).mockResolvedValue(
+        'diff --git a/dir/a.js b/dir/a.js\n+content\n'
+      );
+      vi.mocked(extractAffectedFiles).mockReturnValue(['dir/a.js', 'dir/b.js']);
+      await exportCommand('/fake/root', [first, second], {
+        name: 'explicit',
+        category: 'ui',
+        description: 'test',
+      });
+      expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/a.js');
+      expect(generateFullFilePatch).toHaveBeenCalledWith(nativePath('/fake/engine'), 'dir/b.js');
+    }
+  );
+
   it('errors clearly when every directory file is owned by other patches', async () => {
     mockStatForPaths(['dir']);
     vi.mocked(getModifiedFilesInDir).mockResolvedValue(['dir/a.js']);

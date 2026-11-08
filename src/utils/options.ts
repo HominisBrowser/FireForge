@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 import type { Command } from 'commander';
-import { InvalidArgumentError as CommanderInvalidArgumentError } from 'commander';
+import { InvalidArgumentError as CommanderInvalidArgumentError, Option } from 'commander';
 
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { toError } from './errors.js';
@@ -211,10 +211,13 @@ export function sessionWaitLockMs(): number | undefined {
  * uniformity would be a lie.
  */
 export function addAcceptedWaitLockOption(command: Command): Command {
-  return command.option(
-    '--wait-lock [seconds]',
-    'Accepted for scripting uniformity and ignored: this command takes no FireForge lock',
-    commanderArgParser((raw: string) => resolveWaitLockSeconds(raw))
+  return command.addOption(
+    new Option(
+      '--wait-lock [seconds]',
+      'Accepted for scripting uniformity and ignored: this command takes no FireForge lock'
+    )
+      .argParser(commanderArgParser((raw: string) => resolveWaitLockSeconds(raw)))
+      .hideHelp()
   );
 }
 

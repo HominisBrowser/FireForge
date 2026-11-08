@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { GitError, GitNotFoundError } from '../errors/git.js';
-import { exec, executableExists } from '../utils/process.js';
+import { exec, type ExecOptions, type ExecResult, executableExists } from '../utils/process.js';
+import { type ExecBufferResult, execWithInput } from '../utils/process-input.js';
+import { HERMETIC_GIT_ENV_UNSET, hermeticGitEnvironment } from './git-hermetic.js';
 import { readOnlyGitIndexEnv } from './git-readonly-index.js';
+import { qualifiedGitRuntime } from './qualified-git.js';
 
 /**
  * Environment variable that overrides the monolithic `git add -A` timeout
@@ -108,36 +111,85 @@ export async function ensureGit(): Promise<void> {
   }
 }
 
+/** Execution options accepted by {@link git} and {@link gitResult}. */
+export interface GitRunOptions {
+  timeout?: number;
+  env?: Record<string, string>;
+}
+
 /**
- * Runs a git command in the specified directory.
+ * Resolves the executable and hermetic execution options for one Git call.
+ * Order of precedence, lowest first: the hermetic pins, the private-index
+ * overlay, the caller's own env, the admitted job's qualified runtime.
+ */
+async function gitInvocation(
+  cwd: string,
+  options?: GitRunOptions
+): Promise<{ executable: string; execOptions: ExecOptions }> {
+  const qualified = await qualifiedGitRuntime();
+  if (qualified === undefined) await ensureGit();
+  const execOptions: ExecOptions = {
+    cwd,
+    env: {
+      ...hermeticGitEnvironment(),
+      // A read-only command's private-index scope overlays GIT_INDEX_FILE so
+      // index refreshes never touch the primary checkout.
+      ...readOnlyGitIndexEnv(cwd),
+      ...options?.env,
+      ...qualified?.environment,
+    },
+    envUnset: HERMETIC_GIT_ENV_UNSET,
+  };
+  if (options?.timeout !== undefined) execOptions.timeout = options.timeout;
+  return { executable: qualified?.executable ?? 'git', execOptions };
+}
+
+/**
+ * Runs a git command under the hermetic environment and returns the raw
+ * result, leaving the exit code to the caller. Use it where a non-zero exit
+ * is an answer (`check-ignore`, `apply --check`) rather than a failure.
+ * @param args - Git command arguments
+ * @param cwd - Working directory
+ */
+export async function gitResult(
+  args: string[],
+  cwd: string,
+  options?: GitRunOptions
+): Promise<ExecResult> {
+  const { executable, execOptions } = await gitInvocation(cwd, options);
+  return exec(executable, args, execOptions);
+}
+
+/**
+ * Runs a git command in the specified directory under the hermetic
+ * environment, throwing {@link GitError} on a non-zero exit.
  * @param args - Git command arguments
  * @param cwd - Working directory
  * @returns Command output
  */
-export async function git(
-  args: string[],
-  cwd: string,
-  options?: { timeout?: number; env?: Record<string, string> }
-): Promise<string> {
-  await ensureGit();
-  const execOptions: Parameters<typeof exec>[2] = { cwd };
-  if (options?.timeout !== undefined) {
-    execOptions.timeout = options.timeout;
-  }
-  // A read-only command's private-index scope overlays GIT_INDEX_FILE so
-  // index refreshes never touch the primary checkout.
-  // Merged under the caller's own env so an explicit override still wins.
-  const readOnlyIndexEnv = readOnlyGitIndexEnv(cwd);
-  if (options?.env !== undefined || readOnlyIndexEnv !== undefined) {
-    execOptions.env = { ...readOnlyIndexEnv, ...options?.env };
-  }
-  const result = await exec('git', args, execOptions);
-
+export async function git(args: string[], cwd: string, options?: GitRunOptions): Promise<string> {
+  const result = await gitResult(args, cwd, options);
   if (result.exitCode !== 0) {
     throw new GitError(result.stderr.trim() || 'Git command failed', args.join(' '));
   }
-
   return result.stdout;
+}
+
+/**
+ * Runs a git command that reads `input` on stdin and returns raw stdout bytes,
+ * under the hermetic environment.
+ */
+export async function gitResultWithInput(
+  args: string[],
+  input: string | Buffer,
+  cwd: string,
+  options?: GitRunOptions
+): Promise<ExecBufferResult> {
+  const { executable, execOptions } = await gitInvocation(cwd, options);
+  return execWithInput(executable, args, input, {
+    cwd,
+    env: { ...execOptions.env, GIT_CONFIG_PARAMETERS: '' },
+  });
 }
 
 /**

@@ -80,7 +80,7 @@ vi.mock('../../core/xpcshell-appdir.js', async () =>
 // The orphan census shells out to `ps`. Stub it so the command suite stays
 // hermetic (the census itself is unit-tested in harness-orphans.test.ts).
 vi.mock('../../core/harness-orphans.js', () => ({
-  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve({ orphans: [], reaped: 0 })),
+  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve([])),
 }));
 // The pgid file is removed at the end of every run; the real helper is
 // covered in test-harness-teardown.test.ts, so here only the call is pinned.
@@ -126,6 +126,7 @@ import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
 import { info, notice, outro, success, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 import { removePgidFile } from '../test-harness-teardown.js';
+import { RECORDED_BUILD_BASELINE } from './test-command-mocks.js';
 
 // Every dispatch carries its kill-path hooks (helper-pid tracking, process
 // group announcement, post-close reap); their behaviour is covered in
@@ -174,7 +175,8 @@ describe('testCommand', () => {
   it('--results adds a raw log per dispatch, stamps results=, and warns when it cannot write', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | browser_x.js\nTEST-OK | browser_x.js\nUnexpected results: 0\n',
+      stdout:
+        'TEST-START | browser_x.js\nTEST-OK | browser_x.js\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     const writes: string[] = [];
@@ -357,7 +359,8 @@ describe('testCommand', () => {
   it('calls prepareBuildEnvironment before an incremental test rebuild', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -391,7 +394,8 @@ describe('testCommand', () => {
     });
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -409,7 +413,7 @@ describe('testCommand', () => {
       engineDir: '/project/engine',
       binaryName: 'mybrowser',
       testPackagingCoverage: ['browser/components/tests/unit/test_distribution.js'],
-      previousBaseline: undefined,
+      previousBaseline: RECORDED_BUILD_BASELINE,
       recordedBy: 'fireforge test --build browser/components/tests/unit/test_distribution.js',
       staticComponentsHandling: 'refresh',
       buildKind: 'full',
@@ -479,7 +483,7 @@ describe('testCommand', () => {
   it('forwards --auto through generic mach test when no paths are provided', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | auto\nTEST-OK | auto',
+      stdout: 'TEST-START | auto\nTEST-OK | auto\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -526,7 +530,8 @@ describe('testCommand', () => {
     vi.mocked(loadConfig).mockResolvedValueOnce(config).mockResolvedValueOnce(config);
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | browser_canary.js\nTEST-OK | browser_canary.js',
+      stdout:
+        'TEST-START | browser_canary.js\nTEST-OK | browser_canary.js\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -615,7 +620,7 @@ describe('testCommand', () => {
     });
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nTEST-OK | t',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -692,7 +697,7 @@ describe('testCommand', () => {
     });
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nTEST-OK | t',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -724,6 +729,7 @@ describe('testCommand', () => {
         'Traceback (most recent call last):',
         '  File "mach/telemetry.py", line 661, in submit_telemetry',
         'ConnectionError: telemetry submission failed',
+        ' 0:04.10 INFO | Ran 42 checks (40 subtests, 2 tests)',
         ' 0:04.10 INFO | Unexpected results: 0',
         ' 0:04.11 SUITE_END',
       ].join('\n'),
@@ -743,6 +749,7 @@ describe('testCommand', () => {
         '_collect failed: poll_interval unavailable',
         ' 0:00.60 TEST_START | shard-test',
         ' 0:02.18 INFO | TEST_END: Test PASS',
+        ' 0:04.10 INFO | Ran 42 checks (40 subtests, 2 tests)',
         ' 0:04.10 INFO | Unexpected results: 0',
         ' 0:04.11 SUITE_END',
       ].join('\n'),
@@ -760,7 +767,7 @@ describe('testCommand', () => {
   it('announces per-file sharding and points at --no-shard', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END',
       stderr: '',
     });
 
@@ -781,7 +788,7 @@ describe('testCommand', () => {
   it('does not announce sharding for a single path or under --no-shard', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END',
       stderr: '',
     });
 
@@ -819,7 +826,7 @@ describe('testCommand', () => {
     ]);
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END',
       stderr: '',
     });
 
@@ -866,7 +873,7 @@ describe('testCommand', () => {
     ]);
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nUnexpected results: 0\nSUITE_END',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END',
       stderr: '',
     });
 
@@ -893,7 +900,8 @@ describe('testCommand', () => {
   it('normalizes engine-prefixed test paths and passes headless through to mach test', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -914,7 +922,8 @@ describe('testCommand', () => {
   it('forwards --restart-between-tests to a mochitest dispatch (was an unknown option)', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | browser_a.js\nTEST-OK | browser_a.js',
+      stdout:
+        'TEST-START | browser_a.js\nTEST-OK | browser_a.js\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -932,20 +941,19 @@ describe('testCommand', () => {
   });
 
   // The census is report-only unless the invocation (--reap-orphans) or the
-  // repo (test.reapOrphans: "reap") opts in, and a reap must show on the
-  // verdict line so a green after one is not read as a green on a quiet
-  // machine.
+  // repo (test.reapOrphans: "reap") opts in. The census itself never signals,
+  // so only teardown's own kills stamp `orphans-reaped=` on the verdict.
   it('keeps the orphan census report-only by default', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nTEST-OK | t',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     await testCommand('/project', ['browser/components/tests/unit/test_distribution.js']);
     expect(reportOrphanedHarnessProcesses).toHaveBeenCalledWith('obj-debug', { reap: false });
   });
 
-  it('reaps at preflight under test.reapOrphans: "reap" and stamps the count on the verdict', async () => {
+  it('passes the reap posture to the census and stamps no reap count for a census-only finding', async () => {
     const config = {
       name: 'MyBrowser',
       vendor: 'My Company',
@@ -956,15 +964,12 @@ describe('testCommand', () => {
     };
     // Loaded twice: by the lock-free preflight and again under the lock.
     vi.mocked(loadConfig).mockResolvedValueOnce(config).mockResolvedValueOnce(config);
-    vi.mocked(reportOrphanedHarnessProcesses).mockResolvedValueOnce({
-      orphans: [
-        { pid: 19141, ppid: 1, elapsed: '01:00:00', elapsedSeconds: 3600, command: 'xpcshell' },
-      ],
-      reaped: 1,
-    });
+    vi.mocked(reportOrphanedHarnessProcesses).mockResolvedValueOnce([
+      { pid: 19141, ppid: 1, elapsed: '01:00:00', elapsedSeconds: 3600, command: 'xpcshell' },
+    ]);
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nTEST-OK | t',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -976,7 +981,8 @@ describe('testCommand', () => {
           (chunk): chunk is string =>
             typeof chunk === 'string' && chunk.startsWith('FIREFORGE-VERDICT')
         );
-      expect(verdict).toMatch(/^FIREFORGE-VERDICT: PASS .*orphans-reaped=1/);
+      expect(verdict).toMatch(/^FIREFORGE-VERDICT: PASS /);
+      expect(verdict).not.toContain('orphans-reaped');
     } finally {
       writeSpy.mockRestore();
     }
@@ -986,7 +992,7 @@ describe('testCommand', () => {
   it('lets --reap-orphans override a report posture', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nTEST-OK | t',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     await testCommand('/project', ['browser/components/tests/unit/test_distribution.js'], {
@@ -1014,7 +1020,8 @@ describe('testCommand', () => {
   it('strips a case-insensitive engine prefix on case-insensitive filesystems', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -1033,7 +1040,8 @@ describe('testCommand', () => {
   it('strips engine prefix using a Windows-style backslash separator', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -1054,7 +1062,8 @@ describe('testCommand', () => {
   it('trims surrounding whitespace from supplied test paths', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 

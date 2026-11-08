@@ -36,7 +36,7 @@ import {
 import { createPatchedContentContext } from '../core/patch-apply.js';
 import { formatPatchNotFoundError } from '../core/patch-identifier-suggest.js';
 import { loadPatchesManifest, resolvePatchIdentifier } from '../core/patch-manifest.js';
-import { parseDiffSections } from '../core/patch-parse.js';
+import { type DiffSection, parseDiffSections, withGitHeaders } from '../core/patch-parse.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { PatchesManifest, PatchMetadata } from '../types/commands/index.js';
@@ -63,17 +63,60 @@ async function baselinesOf(
   paths: ProjectPaths,
   patch: PatchMetadata
 ): Promise<Map<string, string | null>> {
+  const sections = parseDiffSections(await readText(join(paths.patches, patch.filename)));
+  if (sections.some((section) => section.isBinary)) {
+    throw new InvalidArgumentError(
+      `${patch.filename} contains binary sections; a full park cannot preserve binary bytes. ` +
+        'Use --hunks <diff> selecting only text edits, or preserve the binary files separately.',
+      'park'
+    );
+  }
   const { computePatched } = await createPatchedContentContext(paths.patches, paths.engine);
   const deleted = new Set(
-    parseDiffSections(await readText(join(paths.patches, patch.filename)))
-      .filter((section) => section.isDeletedFile)
-      .map((section) => section.targetPath)
+    sections.filter((section) => section.isDeletedFile).map((section) => section.targetPath)
   );
   const baselines = new Map<string, string | null>();
   for (const file of patch.filesAffected) {
     baselines.set(file, deleted.has(file) ? null : await computePatched(file));
   }
   return baselines;
+}
+
+/** Hunk parking is textual: reject every unsupported section before planning any writes. */
+function parkHunkSections(content: string): DiffSection[] {
+  const sections = parseDiffSections(withGitHeaders(content));
+  if (sections.length === 0) {
+    throw new InvalidArgumentError(
+      '--hunks holds no supported diff section. Supply a text unified diff with a "diff --git" ' +
+        'header or a "---"/"+++" file pair and @@ hunks (for example, git diff -- <file>).',
+      '--hunks'
+    );
+  }
+  for (const section of sections) {
+    if (section.isBinary || section.hunks.length === 0) {
+      throw new InvalidArgumentError(
+        `--hunks: ${section.targetPath} is binary or has no text hunks. ` +
+          'Select text edits with @@ hunks; binary and metadata-only sections cannot be parked by hunk.',
+        '--hunks'
+      );
+    }
+    for (const hunk of section.hunks) {
+      const oldCount = hunk.lines.filter((line) => line[0] !== '+').length;
+      const newCount = hunk.lines.filter((line) => line[0] !== '-').length;
+      if (
+        oldCount !== hunk.oldCount ||
+        newCount !== hunk.newCount ||
+        !hunk.lines.some((line) => line[0] === '+' || line[0] === '-')
+      ) {
+        throw new InvalidArgumentError(
+          `--hunks: ${section.targetPath} has malformed or non-editing @@ hunks. ` +
+            'Regenerate a text unified diff containing the edits to park.',
+          '--hunks'
+        );
+      }
+    }
+  }
+  return sections;
 }
 
 /** The files a park would change, with both sides. */
@@ -96,7 +139,7 @@ async function planPark(
   }
   const owned = new Set(patch.filesAffected);
   const files: ParkedFile[] = [];
-  for (const section of parseDiffSections(await readText(hunksPath))) {
+  for (const section of parkHunkSections(await readText(hunksPath))) {
     const path = normalizeEngineRelativeInput(section.targetPath, '--hunks');
     if (!owned.has(path)) {
       throw new InvalidArgumentError(
@@ -284,7 +327,7 @@ export function registerPark(
       "Set a session's edits in a patch's files aside (back to the queue-applied baseline, or minus the hunks a diff names) and three-way merge them back later"
     )
     .option('--label <label>', 'Name for the park (default: <patch>-<time>)')
-    .option('--hunks <diff>', 'Park only the hunks this diff names, not every drifted line')
+    .option('--hunks <diff>', 'Park selected text hunks from a Git or plain unified diff')
     .option('--restore <label>', 'Three-way merge a park back into the engine, then drop it')
     .option('--list', 'List the parks')
     .option('--drop <label>', 'Delete a park without restoring it')

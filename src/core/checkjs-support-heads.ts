@@ -24,6 +24,7 @@ import {
   buildSupportFileMatcher,
   extractSupportFileEntries,
 } from './patch-lint-forward-registration.js';
+import { isHeadScript } from './patch-lint-ownership.js';
 import { findLoadSubScriptTargets } from './patch-lint-unmanaged-companion.js';
 
 /** A same-directory head no patch owns, and why the pass includes it. */
@@ -34,7 +35,6 @@ export interface UnownedSupportHead {
   reason: string;
 }
 
-const HEAD_BASENAME_PATTERN = /^head(?:_.*)?\.js$/;
 const TEST_MANIFEST_PATTERN = /^(?:xpcshell|mochitest|browser|chrome|a11y)\.(?:toml|ini)$/;
 
 async function readOrUndefined(path: string): Promise<string | undefined> {
@@ -102,7 +102,7 @@ export async function findUnownedSupportHeads(
       .filter((name) => TEST_MANIFEST_PATTERN.test(name))
       .map((name) => `${dir}${name}`);
     const candidates = names
-      .filter((name) => HEAD_BASENAME_PATTERN.test(name))
+      .filter((name) => isHeadScript(name))
       .map((name) => `${dir}${name}`)
       .filter((file) => !owned.has(file));
     for (const file of candidates) {

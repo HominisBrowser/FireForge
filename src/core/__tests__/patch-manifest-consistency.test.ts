@@ -105,6 +105,7 @@ describe('patch manifest consistency', () => {
       {
         code: 'files-affected-mismatch',
         filename: '001-ui-toolbar.patch',
+        undeclaredFiles: ['browser/toolbar.js'],
         message:
           '001-ui-toolbar.patch declares [browser/wrong.js] in patches.json but the patch file targets [browser/toolbar.js].',
       },

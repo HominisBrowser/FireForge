@@ -246,6 +246,8 @@ export interface PatchLintStagedDeclaration {
 export interface PatchesManifest {
   /** Schema version for future compatibility */
   version: 1;
+  /** Where a generated queue came from: set by `authored export-queue`. */
+  source?: PatchQueueSource;
   /** Array of patch metadata entries */
   patches: PatchMetadata[];
   /**
@@ -265,6 +267,12 @@ export interface PatchesManifest {
    * write.
    */
   reserved?: PatchReservedSlot[];
+}
+
+/** The source snapshot an exported queue was generated from. */
+export interface PatchQueueSource {
+  /** The captured snapshot's id. */
+  snapshot: string;
 }
 
 /** One order held by `patch reserve` until its owner exports it. */

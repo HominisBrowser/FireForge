@@ -19,6 +19,13 @@ import { isBinaryFile } from './git-file-ops.js';
 import type { PatchedContentContext } from './patch-apply.js';
 import { createPatchedContentContext } from './patch-apply.js';
 import { classifyBinaryOwnedFile } from './status-binary.js';
+import {
+  ownedBinaryPaths,
+  ownedLastSection,
+  ownedModeMatches,
+  prepareOwnedModes,
+  readOwnedText,
+} from './status-mode.js';
 
 /**
  * Classification buckets for engine file changes:
@@ -156,20 +163,33 @@ async function classifySingleOwnerFile(
   owner: string,
   ctx: PatchedContentContext
 ): Promise<ClassifiedFile> {
+  let linkTarget: string | undefined;
+  if (getPrimaryStatusCode(entry.status) !== 'D') {
+    try {
+      if (!(await ownedModeMatches(ctx, engineDir, entry.file)))
+        return { ...entry, classification: 'patch-owned-drift', owner };
+      linkTarget = await readOwnedText(join(engineDir, entry.file));
+    } catch {
+      return { ...entry, classification: 'patch-owned-drift', owner };
+    }
+  }
   // Binary comparisons cannot go through the utf-8 content path below.
   // Binary patch bodies parse to zero hunks, so the patched-content
   // computation returned HEAD content unchanged and the comparison
   // reported `patch-owned-drift` forever. Settle by blob hash,
   // or classify explicitly as `binary-unsupported` when no hash exists.
-  const binaryResult = await classifyBinaryOwnedFile({
-    entry,
-    engineDir,
-    patchesDir,
-    matchClassification,
-    owner,
-    fileMissing: getPrimaryStatusCode(entry.status) === 'D',
-    lookup: ctx,
-  });
+  const binaryResult =
+    linkTarget === undefined
+      ? await classifyBinaryOwnedFile({
+          entry,
+          engineDir,
+          patchesDir,
+          matchClassification,
+          owner,
+          fileMissing: getPrimaryStatusCode(entry.status) === 'D',
+          lookup: { ...ctx, lastSection: (file) => ownedLastSection(ctx, file) },
+        })
+      : null;
   if (binaryResult !== null) {
     return binaryResult;
   }
@@ -188,7 +208,7 @@ async function classifySingleOwnerFile(
   try {
     const [expected, actual] = await Promise.all([
       ctx.computePatched(entry.file),
-      readText(join(engineDir, entry.file)),
+      linkTarget ?? readText(join(engineDir, entry.file)),
     ]);
 
     return {
@@ -236,6 +256,16 @@ export async function classifyFiles(
   // when the content matches neither owner's expectation.
   const patchClaims = buildPatchClaims(ctx.manifestPatches);
 
+  prepareOwnedModes(
+    ctx,
+    engineDir,
+    files
+      .filter(
+        (entry) =>
+          patchClaims.get(entry.file)?.length === 1 && getPrimaryStatusCode(entry.status) !== 'D'
+      )
+      .map((entry) => entry.file)
+  );
   await prefetchSingleOwnerContent(files, engineDir, patchClaims, ctx);
 
   const deps: ClassifyEntryDeps = {
@@ -272,11 +302,13 @@ async function prefetchSingleOwnerContent(
   await ctx.prefetchBase(singleOwner.map((entry) => entry.file));
 
   const present = singleOwner.filter((entry) => getPrimaryStatusCode(entry.status) !== 'D');
+  const recorded = await ownedBinaryPaths(ctx);
   const binary = await mapWithConcurrency(present, CLASSIFY_CONCURRENCY, async (entry) => {
     try {
-      return (await isBinaryFile(engineDir, entry.file)) ? join(engineDir, entry.file) : undefined;
+      return recorded.has(entry.file) || (await isBinaryFile(engineDir, entry.file))
+        ? join(engineDir, entry.file)
+        : undefined;
     } catch {
-      // The per-file path probes again and settles the failure itself.
       return undefined;
     }
   });

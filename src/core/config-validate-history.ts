@@ -3,6 +3,7 @@ import { ConfigError } from '../errors/config.js';
 import type { FireForgeConfig } from '../types/config.js';
 import type { ParsedRecord } from '../utils/parse.js';
 import { isContainedRelativePath } from '../utils/paths.js';
+import { assertKnownConfigKeys } from './config-validate-keys.js';
 
 /**
  * Whether a `history.path` value is usable: a non-empty, project-relative
@@ -31,6 +32,7 @@ export function parseHistoryBlock(rec: ParsedRecord, config: FireForgeConfig): v
     throw new ConfigError('Config field "history" must be an object');
   }
 
+  assertKnownConfigKeys(historyRec.keys(), ['path'], 'history');
   const out: NonNullable<FireForgeConfig['history']> = {};
   const path = historyRec.raw('path');
   if (path !== undefined) {

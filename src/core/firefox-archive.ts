@@ -34,6 +34,8 @@ export interface ArchiveMetadata {
   url: string;
   contentLength?: number | undefined;
   sha256?: string | undefined;
+  /** How the archive digest was authenticated, independent of its self-recorded hash. */
+  verification?: 'published' | 'operator-pin' | 'unverified';
   downloadedAt: string;
 }
 
@@ -81,6 +83,14 @@ export function validateArchiveMetadata(data: unknown): ArchiveMetadata {
   const downloadedAt = rec.string('downloadedAt');
   const contentLength = rec.optionalNonNegativeInteger('contentLength');
   const sha256 = rec.optionalString('sha256');
+  const verification = rec.optionalString('verification');
+  if (
+    verification !== undefined &&
+    verification !== 'published' &&
+    verification !== 'operator-pin' &&
+    verification !== 'unverified'
+  )
+    throw new ConfigError('Archive metadata verification provenance is invalid');
 
   return {
     requestedVersion,
@@ -90,6 +100,7 @@ export function validateArchiveMetadata(data: unknown): ArchiveMetadata {
     downloadedAt,
     ...(contentLength !== undefined ? { contentLength } : {}),
     ...(sha256 !== undefined ? { sha256 } : {}),
+    ...(verification !== undefined ? { verification } : {}),
   };
 }
 

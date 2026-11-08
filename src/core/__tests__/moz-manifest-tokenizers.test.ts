@@ -59,15 +59,9 @@ describe('tokenizeJarMn', () => {
       },
     },
     {
-      // The source capture stops at the first `)`, so a nested paren is
-      // truncated rather than parsed, so callers must not rely on it.
-      label: 'nested parentheses in the source path',
+      label: 'malformed nested parentheses stay unparsed',
       line: '   content/global/elements/findbar.js  (widgets/findbar/findbar(1).js)',
       type: 'entry',
-      parsed: {
-        target: 'content/global/elements/findbar.js',
-        source: 'widgets/findbar/findbar(1',
-      },
     },
     { label: 'a moz.build-style list opener', line: 'EXTRA_JS_MODULES += [', type: 'header' },
     { label: 'a plain comment', line: '# top comment', type: 'comment' },

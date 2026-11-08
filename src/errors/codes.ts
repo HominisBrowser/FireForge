@@ -66,6 +66,16 @@ export const ExitCode = {
    */
   LOCK_TIMEOUT: 15,
   /**
+   * A job's own work went red: a step failed, or its evidence would not seal.
+   * Distinct from GENERAL_ERROR, which here means the coordinator could not be
+   * asked, so a script can tell a red job from a broken client.
+   */
+  JOB_FAILED: 16,
+  /** A job ended without a verdict, because it was cancelled or its supervisor was interrupted. */
+  JOB_STOPPED: 17,
+  /** `job wait` ran out of time. The job itself keeps running, and may yet pass. */
+  JOB_WAIT_TIMEOUT: 18,
+  /**
    * The user cancelled an interactive prompt. 130 = 128 + SIGINT, the
    * conventional "interrupted by the user" code, so scripts and CI can tell
    * a deliberate cancellation apart from a real failure (GENERAL_ERROR).

@@ -42,6 +42,7 @@ import {
   savePerPatchLintCache,
   setCachedPerPatchLintIssues,
 } from '../core/patch-lint-cache.js';
+import { withPatchLintCandidate } from '../core/patch-lint-candidate.js';
 import { invalidateNewFileCreatorsCache } from '../core/patch-lint-cross.js';
 import { lintIgnoreCacheTokens, type LintIgnoreChecks } from '../core/patch-lint-ignore.js';
 import { resolvePatchOwnedSysMjs } from '../core/patch-lint-ownership.js';
@@ -146,6 +147,7 @@ function checkJsFilesInDiff(diffContent: string, checkJs: PerRunCheckJs): Set<st
 
 /** Fresh lint payload carried to the post-write cache store. */
 export interface ReExportLintResult {
+  diffContent: string;
   issues: PatchLintIssue[];
   suppressed: PatchLintIssue[];
   lineCount: number;
@@ -178,6 +180,7 @@ export async function lintReExportedPatch(args: {
   skipLint?: boolean;
   ignoreChecks?: LintIgnoreChecks;
   patchTier?: 'branding';
+  syntheticInput?: boolean;
 }): Promise<ReExportLintResult | null> {
   const { lintCtx, patch, projectedMetadata, existingFiles, diffContent } = args;
   const { paths, config, patchQueueCtx, checkJs, cache } = lintCtx;
@@ -208,6 +211,7 @@ export async function lintReExportedPatch(args: {
       engineDir: paths.engine,
       patchesDir: paths.patches,
       patch: projectedMetadata,
+      diffContent,
       existingFiles,
       config,
       queueContext: patchQueueCtx,
@@ -242,7 +246,7 @@ export async function lintReExportedPatch(args: {
     const allKnown = [...created].every(
       (f) => checkJs.resolutionSet.has(f) && (checkJs.rootScope?.has(f) ?? true)
     );
-    if (allKnown) {
+    if (allKnown && args.syntheticInput !== true) {
       // Slice this patch's findings out of the one queue-wide program.
       lintOptions.precomputedCheckJs = await checkJs.sliceFor(created);
     } else {
@@ -255,22 +259,32 @@ export async function lintReExportedPatch(args: {
     lintOptions.checkJsReportScope = resolvePatchOwnedSysMjs(detectNewFilesInDiff(diffContent));
   }
 
-  const patchSize = await measurePatchSize(paths.engine, diffContent, existingFiles, config);
-  const issues = await lintExportedPatch(paths.engine, existingFiles, diffContent, config, {
-    ...lintOptions,
-    patchSizeMeasurement: patchSize,
-    ...(patchQueueCtx ? { patchQueueCtx } : {}),
-    ...(args.ignoreChecks ? { ignoreChecks: args.ignoreChecks } : {}),
-    ...(args.patchTier ? { patchTier: args.patchTier } : {}),
-  });
+  const lintCandidate = async (engine: string): Promise<ReExportLintResult> => {
+    const patchSize = await measurePatchSize(engine, diffContent, existingFiles, config);
+    const issues = await lintExportedPatch(engine, existingFiles, diffContent, config, {
+      ...lintOptions,
+      projectRoot: lintCtx.projectRoot,
+      patchSizeMeasurement: patchSize,
+      ...(patchQueueCtx ? { patchQueueCtx } : {}),
+      ...(args.ignoreChecks ? { ignoreChecks: args.ignoreChecks } : {}),
+      ...(args.patchTier ? { patchTier: args.patchTier } : {}),
+    });
+    return {
+      diffContent,
+      issues,
+      suppressed: suppressedIssues,
+      lineCount: patchSize.lines,
+      lintIgnore: lintIgnoreCacheTokens(args.ignoreChecks),
+    };
+  };
+  const result =
+    args.syntheticInput === true
+      ? await withPatchLintCandidate(paths.engine, diffContent, lintCandidate)
+      : await lintCandidate(paths.engine);
+  const { issues } = result;
 
   reportPatchLintOutcome([...globalIssues, ...issues], args.skipLint);
-  return {
-    issues,
-    suppressed: suppressedIssues,
-    lineCount: patchSize.lines,
-    lintIgnore: lintIgnoreCacheTokens(args.ignoreChecks),
-  };
+  return result;
 }
 
 /**
@@ -293,6 +307,7 @@ export async function storeReExportLintResult(
     engineDir: paths.engine,
     patchesDir: paths.patches,
     patch: projectedMetadata,
+    diffContent: result.diffContent,
     existingFiles,
     config,
     queueContext: patchQueueCtx,

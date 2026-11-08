@@ -3,10 +3,7 @@
  * Accumulated-CPU-time probe for a single PID.
  *
  * Exists to answer the one question `kill(pid, 0)` cannot: a lock holder
- * that exists may still be wedged. A downstream fork running five concurrent
- * sessions on one checkout diagnosed exactly this by hand ("a holder at
- * near-zero CPU is hung, not working") after a queue stalled behind a
- * command that had consumed 0.3 s of CPU in eleven minutes.
+ * that exists may still be wedged.
  *
  * It is reported as evidence, never as a verdict. A legitimately slow holder
  * can also sit at low CPU while blocked on I/O or on a child process, so

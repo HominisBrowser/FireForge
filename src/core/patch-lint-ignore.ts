@@ -352,9 +352,18 @@ function ceilingFor(
 
 function describeExceededCeiling(ceiling: LintIgnoreCeiling): string {
   const share = ceiling.share === undefined ? '' : ` (${ceiling.share} share)`;
+  // A share exists only under the added-code metric, which counts added lines
+  // that carry code in the post-image, so say what stays out of the count.
+  const counted =
+    ceiling.share === undefined
+      ? ''
+      : ` The ${ceiling.share} share counts added code lines in ${
+          ceiling.share === 'test' ? 'test' : 'non-test'
+        } files; comment-only and blank lines, lines inside expanded CSS fragments, ` +
+        'registration files and binary files are not counted.';
   return (
     `This exceeds the patch's lintIgnore ceiling for ${ceiling.rule}${share} ` +
-    `(max ${String(ceiling.max)}: ${ceiling.reason}).`
+    `(max ${String(ceiling.max)}: ${ceiling.reason}).${counted}`
   );
 }
 

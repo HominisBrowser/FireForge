@@ -144,16 +144,18 @@ export function parseDiffGitHeader(line: string): DiffGitHeader | null {
   const body = stripped.slice('diff --git '.length);
 
   // Quoted form (either or both sides may be quoted).
-  const quoted = /^(?:"a\/((?:[^"\\]|\\.)*)"|a\/(\S+)) (?:"b\/((?:[^"\\]|\\.)*)"|b\/(.+))$/.exec(
-    body
-  );
+  const quoted =
+    /^(?:"[ab]\/((?:[^"\\]|\\.)*)"|[ab]\/(\S+)) (?:"[ab]\/((?:[^"\\]|\\.)*)"|[ab]\/(.+))$/.exec(
+      body
+    );
   if (quoted && (quoted[1] !== undefined || quoted[3] !== undefined)) {
     const sourcePath = quoted[1] !== undefined ? unquoteGitPath(quoted[1]) : (quoted[2] ?? '');
     const targetPath = quoted[3] !== undefined ? unquoteGitPath(quoted[3]) : (quoted[4] ?? '');
     return { sourcePath, targetPath };
   }
 
-  if (!body.startsWith('a/')) return null;
+  if (!body.startsWith('a/') && !body.startsWith('b/')) return null;
+  const targetPrefix = body.startsWith('a/') ? 'b/' : 'a/';
   const rest = body.slice(2);
 
   // Symmetric split: body === `a/<p> b/<p>`. Correct even when <p>
@@ -161,7 +163,7 @@ export function parseDiffGitHeader(line: string): DiffGitHeader | null {
   if ((rest.length - 3) % 2 === 0) {
     const pathLength = (rest.length - 3) / 2;
     const candidate = rest.slice(0, pathLength);
-    if (rest === `${candidate} b/${candidate}`) {
+    if (rest === `${candidate} ${targetPrefix}${candidate}`) {
       return { sourcePath: candidate, targetPath: candidate };
     }
   }
@@ -169,7 +171,7 @@ export function parseDiffGitHeader(line: string): DiffGitHeader | null {
   // Rename/copy (differing paths): split at the first ` b/` with a path on
   // each side. indexOf keeps this linear where a lazy regex backtracks.
   if (/[\n\r\u2028\u2029]/.test(rest)) return null;
-  const split = rest.indexOf(' b/', 1);
+  const split = rest.indexOf(` ${targetPrefix}`, 1);
   if (split === -1 || split + 3 >= rest.length) return null;
   return { sourcePath: rest.slice(0, split), targetPath: rest.slice(split + 3) };
 }
@@ -213,6 +215,10 @@ export interface DiffSection {
   indexOldHash?: string;
   /** New-side blob hash from the `index` line. See {@link indexOldHash}. */
   indexNewHash?: string;
+  /** Explicit old mode from a mode-change header, independent of content hunks. */
+  oldMode?: string;
+  /** Explicit new mode from a mode-change header, independent of content hunks. */
+  newMode?: string;
   /** Parsed hunks, in file order. Empty for binary or metadata-only sections. */
   hunks: ParsedHunk[];
 }
@@ -238,6 +244,26 @@ function splitDiffLines(diffContent: string): string[] {
   );
   if (!isCrlfPatchFile) return lines;
   return lines.map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line));
+}
+
+function parseModeMetadata(line: string, section: DiffSection): boolean {
+  const match = /^(old|new) mode (\d{6})$/.exec(line);
+  if (!match?.[1] || !match[2]) return false;
+  if (match[1] === 'old') section.oldMode = match[2];
+  else section.newMode = match[2];
+  return true;
+}
+
+function parseIndexMetadata(line: string, section: DiffSection): boolean {
+  const match = /^index ([0-9a-f]{7,64})\.\.([0-9a-f]{7,64})(?: (\d{6}))?$/.exec(line);
+  if (!match?.[1] || !match[2]) return false;
+  section.indexOldHash = match[1];
+  section.indexNewHash = match[2];
+  if (match[3]) {
+    section.oldMode ??= match[3];
+    section.newMode ??= match[3];
+  }
+  return true;
 }
 
 /**
@@ -280,10 +306,12 @@ export function parseDiffSections(diffContent: string): DiffSection[] {
       // File metadata zone (between the header and the first hunk).
       if (line.startsWith('new file mode')) {
         current.isNewFile = true;
+        current.newMode = line.slice(14).trim();
         continue;
       }
       if (line.startsWith('deleted file mode')) {
         current.isDeletedFile = true;
+        current.oldMode = line.slice(18).trim();
         continue;
       }
       if (line === 'GIT binary patch') {
@@ -296,16 +324,12 @@ export function parseDiffSections(diffContent: string): DiffSection[] {
         current.isBinary = true;
         continue;
       }
+      if (parseModeMetadata(line, current)) continue;
       // `git diff --binary` always records full blob hashes here (git
       // apply requires them). Text sections carry abbreviated ones. The
       // hashes let binary sections be compared by identity when their
       // payload cannot be applied as text.
-      const indexMatch = /^index ([0-9a-f]{7,64})\.\.([0-9a-f]{7,64})(?: \d{6})?$/.exec(line);
-      if (indexMatch?.[1] !== undefined && indexMatch[2] !== undefined) {
-        current.indexOldHash = indexMatch[1];
-        current.indexNewHash = indexMatch[2];
-        continue;
-      }
+      if (parseIndexMetadata(line, current)) continue;
     }
 
     if (current.isBinary) continue;
@@ -398,10 +422,10 @@ function gitHeaderFor(oldPath: string, newPath: string): string[] {
  */
 export function withGitHeaders(content: string): string {
   const lines = content.split('\n');
-  if (lines.some((line) => line.startsWith('diff --git '))) return content;
   const out: string[] = [];
   let oldLeft = 0;
   let newLeft = 0;
+  let declared = false;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
     if (oldLeft > 0 || newLeft > 0) {
@@ -418,9 +442,15 @@ export function withGitHeaders(content: string): string {
       out.push(line);
       continue;
     }
+    if (line.startsWith('diff --git ')) declared = true;
     const next = lines[index + 1] ?? '';
     if (line.startsWith('--- ') && next.startsWith('+++ ')) {
-      out.push(...gitHeaderFor(plainDiffPath(line.slice(4)), plainDiffPath(next.slice(4))));
+      out.push(
+        ...(declared
+          ? [line, next]
+          : gitHeaderFor(plainDiffPath(line.slice(4)), plainDiffPath(next.slice(4))))
+      );
+      declared = false;
       index += 1;
       continue;
     }

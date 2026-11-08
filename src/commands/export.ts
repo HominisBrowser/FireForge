@@ -62,6 +62,7 @@ async function collectExportFiles(
 ): Promise<CollectedExportFiles> {
   const collectedFiles = new Set<string>();
   const fromDirectory = new Set<string>();
+  const explicitFiles = new Set<string>();
 
   let fileStatuses: { status: string; file: string }[] | undefined;
   let untrackedFiles: string[] | undefined;
@@ -120,11 +121,12 @@ async function collectExportFiles(
       }
 
       collectedFiles.add(inputPath);
-      // A file named explicitly always stays in the export set, even if a
-      // directory argument also swept it up.
-      fromDirectory.delete(inputPath);
+      explicitFiles.add(inputPath);
     }
   }
+
+  // Explicit intent wins after all directory expansions, regardless of order.
+  for (const file of explicitFiles) fromDirectory.delete(file);
 
   return { files: [...collectedFiles].sort(), fromDirectory };
 }

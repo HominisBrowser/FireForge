@@ -409,6 +409,7 @@ describe('assertMarionettePortAvailable', () => {
       await expect(
         ensureMarionettePortAvailable(DEFAULT_MARIONETTE_PORT, {
           killStaleBrowser: true,
+          checkout: ['/usr/bin'],
         })
       ).resolves.toBeUndefined();
       expect(killSpy).toHaveBeenCalledWith(4242, 'SIGTERM');
@@ -624,7 +625,10 @@ it.each([true, false])(
       })
     );
     try {
-      const result = ensureMarionettePortAvailable(undefined, { killStaleBrowser: true }).then(
+      const result = ensureMarionettePortAvailable(undefined, {
+        killStaleBrowser: true,
+        checkout: ['/usr/bin'],
+      }).then(
         () => 'released',
         (error: unknown) => error
       );
@@ -648,8 +652,35 @@ it('does not signal a Marionette PID whose identity changed since its port probe
     .mockResolvedValueOnce({ exitCode: 0, stdout: '1 /usr/bin/node unrelated.js', stderr: '' });
   try {
     await expect(
-      ensureMarionettePortAvailable(undefined, { killStaleBrowser: true })
+      ensureMarionettePortAvailable(undefined, { killStaleBrowser: true, checkout: ['/usr/bin'] })
     ).rejects.toThrow(/changed identity/);
+    expect(kill).not.toHaveBeenCalled();
+  } finally {
+    kill.mockRestore();
+  }
+});
+
+it('does not signal an orphaned browser from another checkout', async () => {
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+  mockExec.mockImplementation((command, args) =>
+    Promise.resolve({
+      exitCode: 0,
+      stderr: '',
+      stdout:
+        command === 'lsof'
+          ? lsofOutput(4242, 'firefox')
+          : args.includes('ppid=')
+            ? '1\n'
+            : '/other/engine/obj/dist/firefox -marionette\n',
+    })
+  );
+  try {
+    await expect(
+      ensureMarionettePortAvailable(undefined, {
+        killStaleBrowser: true,
+        checkout: ['/this/engine', '/this/obj'],
+      })
+    ).rejects.toThrow(/already in use/);
     expect(kill).not.toHaveBeenCalled();
   } finally {
     kill.mockRestore();

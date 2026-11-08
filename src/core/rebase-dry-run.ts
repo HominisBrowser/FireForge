@@ -16,8 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { GitError } from '../errors/git.js';
-import { exec } from '../utils/process.js';
-import { ensureGit } from './git-base.js';
+import { ensureGit, gitResult } from './git-base.js';
 import { assertValidMaxFuzz, contextReductionSteps } from './patch-apply-fuzz.js';
 
 /** A patch to replay, in queue order. */
@@ -92,7 +91,7 @@ export async function replayQueueIndexOnly(
   const scratch = await mkdtemp(join(tmpdir(), 'fireforge-rebase-dry-run-'));
   const env = { GIT_INDEX_FILE: join(scratch, 'index') };
   try {
-    const seeded = await exec('git', ['read-tree', 'HEAD'], { cwd: engineDir, env });
+    const seeded = await gitResult(['read-tree', 'HEAD'], engineDir, { env });
     if (seeded.exitCode !== 0) {
       throw new GitError(
         seeded.stderr.trim() || 'Could not seed a private index from HEAD',
@@ -108,19 +107,20 @@ export async function replayQueueIndexOnly(
       let verdict: DryRunVerdict | undefined;
       let exactFailure = '';
       for (const [step, contextArgs] of ladder.entries()) {
-        const check = await exec(
-          'git',
+        const check = await gitResult(
           ['apply', '--cached', '--check', ...contextArgs, '--', patch.path],
-          { cwd: engineDir, env }
+          engineDir,
+          { env }
         );
         if (check.exitCode !== 0) {
           if (step === 0) exactFailure = check.stderr;
           continue;
         }
-        const apply = await exec('git', ['apply', '--cached', ...contextArgs, '--', patch.path], {
-          cwd: engineDir,
-          env,
-        });
+        const apply = await gitResult(
+          ['apply', '--cached', ...contextArgs, '--', patch.path],
+          engineDir,
+          { env }
+        );
         if (apply.exitCode !== 0) continue;
         verdict =
           step === 0

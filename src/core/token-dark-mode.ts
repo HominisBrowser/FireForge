@@ -108,8 +108,12 @@ export function findDarkRootInsertionIndex(lines: string[]): number | null {
   // the first `:root {` opener inside the block. The opening brace of
   // the selector may live on the same line as the selector name or on
   // the following line. Either shape is tolerated.
+  // The search stays inside the media block: a later top-level `:root`
+  // block is not the dark block's nested one.
+  const mediaClose = findBlockCloseIndex(stripped, darkMediaLine);
+  const lastLine = mediaClose === -1 ? stripped.length - 1 : mediaClose;
   let rootOpenLine = -1;
-  for (let i = darkMediaLine; i < stripped.length; i++) {
+  for (let i = darkMediaLine; i <= lastLine; i++) {
     const line = stripped[i] ?? '';
     if (/(?:^|[\s,{]):root\b/.test(line)) {
       // Brace on the same line?
@@ -120,7 +124,7 @@ export function findDarkRootInsertionIndex(lines: string[]): number | null {
       // Otherwise scan forward for the opening brace, stopping at the
       // first `}` or second selector that would mean the `:root`
       // declaration never opened a block.
-      for (let j = i + 1; j < stripped.length; j++) {
+      for (let j = i + 1; j <= lastLine; j++) {
         const next = stripped[j] ?? '';
         if (/\{/.test(next)) {
           rootOpenLine = j;
@@ -183,4 +187,38 @@ export function findDarkMediaCloseIndex(lines: string[]): number {
   if (darkMediaLine === -1) return -1;
 
   return findBlockCloseIndex(stripped, darkMediaLine);
+}
+
+/**
+ * Gives the closing `}` of a block its own line, so a declaration can be
+ * spliced in before it. A block written on one line (`:root { --a: 1; }`)
+ * or closed after a declaration (`  --a: 1; }`) would otherwise take an
+ * inserted declaration outside the block. Mutates `lines` in place.
+ *
+ * @param lines - Source lines (original, with comments)
+ * @param closeIndex - Index of the line carrying the block's closing brace
+ * @returns Index of the line that now holds the closing brace
+ */
+export function isolateBlockClose(lines: string[], closeIndex: number): number {
+  const line = lines[closeIndex] ?? '';
+  const stripped = stripBlockCommentsInLines(lines)[closeIndex] ?? line;
+  const close = stripped.indexOf('}');
+  if (close === -1) return closeIndex;
+  const indent = /^\s*/.exec(line)?.[0] ?? '';
+  const open = stripped.lastIndexOf('{', close);
+  const post = line.slice(close + 1);
+  if (open !== -1) {
+    const body = line.slice(open + 1, close).trim();
+    lines.splice(
+      closeIndex,
+      1,
+      line.slice(0, open + 1),
+      ...(body === '' ? [] : [`${indent}  ${body}`]),
+      `${indent}}${post}`
+    );
+    return closeIndex + (body === '' ? 1 : 2);
+  }
+  if (line.slice(0, close).trim() === '') return closeIndex;
+  lines.splice(closeIndex, 1, line.slice(0, close).trimEnd(), `${indent}}${post}`);
+  return closeIndex + 1;
 }

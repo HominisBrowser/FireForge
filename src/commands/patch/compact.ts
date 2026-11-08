@@ -42,7 +42,7 @@ function isReservedOrder(policyCfg: PatchPolicyConfig, order: number): boolean {
  * Computes a rename map that closes ordinal gaps.
  *
  * Without a patch policy, all patches are renumbered to 1, 2, 3, … in
- * current sort order (historical behaviour). With `patchPolicy.ranges`
+ * current sort order. With `patchPolicy.ranges`
  * configured, compaction happens within each category range instead:
  * each range's members are renumbered consecutively starting at the
  * range's first occupied ordinal, skipping reserved orders, mirroring

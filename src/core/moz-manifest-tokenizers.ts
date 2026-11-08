@@ -43,7 +43,7 @@ export function tokenizeJarMn(lines: string[]): JarMnToken[] {
     }
 
     // Entries with source paths: "  target/path  (source/path)" or "target/path  (source/path)"
-    const entryMatch = /^(\s*)(\S+)\s+\(([^)]+)\)/.exec(raw);
+    const entryMatch = /^(\s*)(?:\*\+?|\+)?\s*([^\s#]+)\s+\(([^)]+)\)\s*(?:#.*)?$/.exec(raw);
     if (entryMatch) {
       tokens.push({
         type: 'entry',
@@ -68,6 +68,16 @@ export function tokenizeJarMn(lines: string[]): JarMnToken[] {
 }
 
 /**
+ * A moz.build variable on the left of `+=`: `NAME`, `NAME.attribute` (the
+ * `EXTRA_JS_MODULES.<namespace>` form the module scaffold writes and Firefox
+ * uses) or `NAME[subscript]`.
+ */
+const LIST_TARGET = String.raw`[A-Z_][A-Z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)?(?:\[[^\]]+\])?`;
+const LIST_OPEN = new RegExp(String.raw`^${LIST_TARGET}\s*\+=\s*\[`);
+const LIST_OPEN_BARE = new RegExp(String.raw`^${LIST_TARGET}\s*\+=\s*\[\s*$`);
+const LIST_ONE_LINE = new RegExp(String.raw`^(${LIST_TARGET}\s*\+=\s*\[)(.*)\]\s*(#.*)?$`);
+
+/**
  * Tokenizes a moz.build Python list block, returning the tokens and their
  * line range within the file.
  *
@@ -77,17 +87,18 @@ export function tokenizeJarMn(lines: string[]): JarMnToken[] {
  */
 export function tokenizeMozBuildList(
   lines: string[],
-  listPattern: RegExp
+  listPattern: RegExp,
+  startAt = 0
 ): { tokens: MozBuildToken[]; startLine: number; endLine: number } | null {
   const tokens: MozBuildToken[] = [];
   let startLine = -1;
   let endLine = -1;
 
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = startAt; i < lines.length; i++) {
     const raw = lines[i] ?? '';
 
     if (startLine === -1) {
-      if (listPattern.test(raw)) {
+      if (LIST_OPEN.test(raw) && listPattern.test(raw)) {
         // Single-line empty-list handling: a fresh scaffold sometimes
         // writes `EXTRA_JS_MODULES += []` on one line, which a tokenizer
         // looking for a line starting with `]` never closes, leaving
@@ -98,17 +109,31 @@ export function tokenizeMozBuildList(
         // canonical multi-line shape so the caller's
         // `lines.splice(insertIndex, 0, entry)` lands inside the list body.
         // The tokens are emitted to mirror the new structure.
-        const singleLineMatch = /^([^[]*\[)\s*\]\s*$/.exec(raw);
-        if (singleLineMatch) {
-          const openPart = singleLineMatch[1] ?? '';
-          lines[i] = openPart;
-          lines.splice(i + 1, 0, ']');
+        const singleLine = LIST_ONE_LINE.exec(raw);
+        if (singleLine) {
+          const openPart = singleLine[1] ?? '';
+          const body = singleLine[2] ?? '';
+          const values = [...body.matchAll(/(?:"([^"\\]*)"|'([^'\\]*)')\s*,?/g)];
+          if (body.replace(/(?:"([^"\\]*)"|'([^'\\]*)')\s*,?/g, '').trim() !== '') return null;
+          const itemLines = values.map((match) => `    "${match[1] ?? match[2] ?? ''}",`);
+          const close = `]${singleLine[3] ? ` ${singleLine[3]}` : ''}`;
+          lines.splice(i, 1, openPart, ...itemLines, close);
           startLine = i;
-          endLine = i + 1;
+          endLine = i + itemLines.length + 1;
           tokens.push({ type: 'list-open', raw: openPart, lineIndex: i });
-          tokens.push({ type: 'list-close', raw: ']', lineIndex: i + 1 });
+          for (const [index, item] of itemLines.entries()) {
+            const value = values[index];
+            tokens.push({
+              type: 'list-item',
+              raw: item,
+              lineIndex: i + index + 1,
+              parsed: { value: value?.[1] ?? value?.[2] ?? '' },
+            });
+          }
+          tokens.push({ type: 'list-close', raw: close, lineIndex: endLine });
           break;
         }
+        if (raw.includes(']') && !LIST_OPEN_BARE.test(raw)) return null;
         startLine = i;
         tokens.push({ type: 'list-open', raw, lineIndex: i });
       }
@@ -122,7 +147,7 @@ export function tokenizeMozBuildList(
       break;
     }
 
-    const itemMatch = /^\s+["']([^"']+)["']/.exec(raw);
+    const itemMatch = /^\s+["']([^"']+)["']\s*,?\s*(?:#.*)?$/.exec(raw);
     if (itemMatch) {
       tokens.push({
         type: 'list-item',

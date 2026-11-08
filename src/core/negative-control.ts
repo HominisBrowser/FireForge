@@ -73,6 +73,8 @@ export interface NegativeControlTarget {
 export interface NegativeControlPlan {
   /** The diff file, as the operator passed it. */
   diffFile: string;
+  /** Digest of the parsed mutation, captured before any peer can edit the diff file. */
+  diffDigest: string;
   targets: NegativeControlTarget[];
   /**
    * Engine-relative targets only a build delivers (compiled sources). A
@@ -116,12 +118,38 @@ interface Journal {
 export interface ActiveNegativeControl {
   paths: NegativeControlPaths;
   journal: Journal;
+  diffDigest: string;
   /**
    * The one restore in flight, set synchronously by whichever path (the
    * run's own `finally`, or the signal handler) gets there first, so the
    * other awaits the same restore instead of racing or skipping it.
    */
   restoring?: Promise<NegativeControlRestoreResult>;
+  /** Mutated hashes and modes were read back immediately before a harness dispatch. */
+  verifiedForDispatch?: boolean;
+}
+
+/** Prove generation did not overwrite a prepared control before the harness could observe it. */
+export async function verifyNegativeControlForDispatch(
+  control: ActiveNegativeControl
+): Promise<void> {
+  control.verifiedForDispatch = false;
+  for (const entry of control.journal.entries) {
+    const path = join(control.paths.engineDir, entry.enginePath);
+    const [bytes, metadata] = await Promise.all([readFile(path), lstat(path)]);
+    if (
+      sha256Hex(bytes) !== entry.mutatedSha256 ||
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      (metadata.mode & 0o7777) !== (entry.mode & 0o7777)
+    ) {
+      throw new PreflightRefusalError(
+        `Negative control was replaced before dispatch: engine/${entry.enginePath}. No test result can prove this mutation.`,
+        'negative-control-overwritten'
+      );
+    }
+  }
+  control.verifiedForDispatch = true;
 }
 
 const active = new Set<ActiveNegativeControl>();
@@ -281,7 +309,12 @@ export async function planNegativeControl(
     engineDir,
     targets.filter((target) => !target.fromComponents).map((target) => target.enginePath)
   );
-  return { diffFile, targets, ...(compiled.length > 0 ? { compiled } : {}) };
+  return {
+    diffFile,
+    diffDigest: sha256Hex(content),
+    targets,
+    ...(compiled.length > 0 ? { compiled } : {}),
+  };
 }
 
 /**
@@ -367,7 +400,7 @@ export async function applyNegativeControl(
       entries,
     };
     await writeJournal(paths, journal);
-    const control: ActiveNegativeControl = { paths, journal };
+    const control: ActiveNegativeControl = { paths, journal, diffDigest: plan.diffDigest };
     active.add(control);
     try {
       for (const item of prepared) await writeFileAtomic(item.absolutePath, item.mutated);
@@ -401,6 +434,11 @@ async function restoreEntry(
     if (getNodeErrorCode(error) !== 'ENOENT') throw error;
   }
   const currentSha = current === undefined ? undefined : sha256Hex(current);
+  if (
+    current !== undefined &&
+    ((await lstat(absolutePath)).mode & 0o7777) !== (entry.mode & 0o7777)
+  )
+    return 'conflict';
   if (currentSha === entry.originalSha256) return 'restored';
   if (currentSha !== entry.mutatedSha256) return 'conflict';
   const original = await readFile(join(journalDir(paths), entry.backup));

@@ -13,6 +13,10 @@ import type { CheckStepPlan } from './check-steps.js';
 
 /** What a step's table row and JSON entry report. */
 export interface CheckStepResult {
+  startedAt?: string;
+  finishedAt?: string;
+  artifact?: string;
+  artifactDigest?: string;
   name: string;
   kind: 'builtin' | 'extra';
   /** The command line, as the table prints it. */
@@ -41,6 +45,15 @@ export interface CheckStepResult {
   load1End?: number;
 }
 
+/** An owned recorder wraps actual child execution and captures both output streams. */
+export interface CheckOutputObserver {
+  append(stream: 'stdout' | 'stderr', chunk: string): void;
+}
+export type CheckStepRecorder = (
+  plan: CheckStepPlan,
+  run: (output: CheckOutputObserver) => Promise<CheckStepResult>
+) => Promise<CheckStepResult>;
+
 /** Samples the host's 1-minute load average; undefined where there is none. */
 type LoadSampler = () => number | undefined;
 
@@ -68,10 +81,11 @@ function tailLines(text: string): string {
 }
 
 /** Runs one planned step to completion. Never throws. */
-async function runStep(
+async function executeStep(
   plan: CheckStepPlan,
   now: () => number,
-  load: LoadSampler
+  load: LoadSampler,
+  observation?: CheckOutputObserver
 ): Promise<CheckStepResult> {
   const base = { name: plan.name, kind: plan.kind, command: plan.display };
   if (plan.skipReason !== undefined) {
@@ -100,9 +114,13 @@ async function runStep(
       ...(plan.env !== undefined ? { env: plan.env } : {}),
       onStdout: (chunk) => {
         stdout += chunk;
+        observation?.append('stdout', chunk);
         append(chunk);
       },
-      onStderr: append,
+      onStderr: (chunk) => {
+        observation?.append('stderr', chunk);
+        append(chunk);
+      },
     });
     const status = exitCode === 0 ? 'pass' : 'fail';
     return {
@@ -131,6 +149,29 @@ async function runStep(
   }
 }
 
+/** A capture failure is a failed step, never an empty successful result or a lost running child. */
+async function runStep(
+  plan: CheckStepPlan,
+  now: () => number,
+  load: LoadSampler,
+  recorder?: CheckStepRecorder
+): Promise<CheckStepResult> {
+  if (!recorder || plan.skipReason !== undefined) return executeStep(plan, now, load);
+  try {
+    return await recorder(plan, (output) => executeStep(plan, now, load, output));
+  } catch (error) {
+    return {
+      name: plan.name,
+      kind: plan.kind,
+      command: plan.display,
+      status: 'fail',
+      exitCode: null,
+      durationMs: 0,
+      detail: `could not record complete execution: ${toError(error).message}`,
+    };
+  }
+}
+
 /**
  * Runs every step and returns the results in plan order. A step starts
  * once a slot is free and every step it runs `after` has finished
@@ -145,7 +186,8 @@ export async function runCheckSteps(
   plans: readonly CheckStepPlan[],
   jobs: number,
   now: () => number = Date.now,
-  load: LoadSampler = sampleLoad1
+  load: LoadSampler = sampleLoad1,
+  recorder?: CheckStepRecorder
 ): Promise<CheckStepResult[]> {
   const names = new Set(plans.map((plan) => plan.name));
   const results = new Map<string, CheckStepResult>();
@@ -165,7 +207,7 @@ export async function runCheckSteps(
       pending.splice(index, 1);
       running.set(
         plan.name,
-        runStep(plan, now, load).then((result) => {
+        runStep(plan, now, load, recorder).then((result) => {
           results.set(plan.name, result);
           running.delete(plan.name);
         })

@@ -144,6 +144,24 @@ describe('applyPatchWithFuzz (real git)', () => {
     expect(await readFile(join(repo, 'f.txt.rej'), 'utf-8')).toContain('target');
   });
 
+  it("ignores the operator's global Git configuration", async () => {
+    // A global `apply.whitespace = error` would refuse a patch that adds a
+    // trailing-whitespace line; the hermetic environment never reads it.
+    const { repo, patchPath } = await makeDriftedRepo((lines) => lines);
+    const trailing = (await readFile(patchPath, 'utf-8')).replace('+changed', '+changed  ');
+    await writeFile(patchPath, trailing, 'utf-8');
+    const globalConfig = join(repo, 'global.gitconfig');
+    await writeFile(globalConfig, '[apply]\n\twhitespace = error\n', 'utf-8');
+    vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig);
+    try {
+      const result = await applyPatchWithFuzz(patchPath, repo, 3);
+
+      expect(result.success).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each([Number.NaN, -1, 1.5])(
     'rejects invalid maxFuzz %s before touching git — NaN/negative would skip every apply attempt',
     async (maxFuzz) => {

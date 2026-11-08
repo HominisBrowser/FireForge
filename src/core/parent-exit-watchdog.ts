@@ -2,13 +2,11 @@
 /**
  * Detects the death of FireForge's own parent while a harness runs.
  *
- * A supervisor that SIGKILLs the process above `fireforge test` (the
- * 2026-09-13 incident: a gate killed its `npm` step at the 15-minute bound)
- * signals nothing below it. FireForge is not told; its stdout pipe merely
- * breaks, and the broken-pipe handler swallows EPIPE on purpose so `| head`
- * works. The mach tree it spawned as a separate process group keeps running
- * under nobody's supervision, and the httpd in that tree spun at 100% CPU
- * for hours.
+ * A supervisor that SIGKILLs the process above `fireforge test` signals
+ * nothing below it. FireForge is not told; its stdout pipe merely breaks, and
+ * the broken-pipe handler swallows EPIPE on purpose so `| head` works. The mach
+ * tree it spawned as a separate process group keeps running under nobody's
+ * supervision.
  *
  * SIGKILL cannot be caught, but reparenting can be observed: once the parent
  * is gone, `process.ppid` changes (to launchd/init, or to a subreaper). This

@@ -42,9 +42,9 @@ vi.mock('../../core/file-lock.js', () => ({
 // `/project/engine` has no git checkout, so the probe is stubbed to a
 // stable measurable token. The fail-closed behavior itself is pinned in
 // re-export.integration.test.ts against a real repository.
-vi.mock('../../core/engine-session-lock.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../core/engine-session-lock.js')>()),
-  snapshotEngineGeneration: vi.fn(() => Promise.resolve('test-head\0')),
+vi.mock('../../core/engine-state.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/engine-state.js')>()),
+  refreshEngineGeneration: vi.fn(() => Promise.resolve('test-head\0')),
 }));
 
 // The scoped guard a real re-export uses reads git directly; the same fake

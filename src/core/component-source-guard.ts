@@ -43,6 +43,9 @@ export async function changedComponentSources(
 
 interface ComponentSourceSnapshot {
   roots: string[];
+  /** Source directory per captured component, to attribute a change to its owner. */
+  componentRoots: Array<{ name: string; root: string }>;
+  sharedRoot: string;
   files: Map<string, string>;
 }
 
@@ -56,30 +59,71 @@ export async function captureComponentSources(
   if (dryRun) return undefined;
   const componentName = options?.componentName;
   const selected = (name: string): boolean => componentName === undefined || name === componentName;
-  const roots = [
+  const componentRoots = [
     ...Object.keys(config.custom)
       .filter(selected)
-      .map((name) => join(paths.customDir, name)),
+      .map((name) => ({ name, root: join(paths.customDir, name) })),
     ...Object.keys(config.overrides)
       .filter(selected)
-      .map((name) => join(paths.overridesDir, name)),
-    paths.sharedDir,
+      .map((name) => ({ name, root: join(paths.overridesDir, name) })),
   ];
-  return { roots, files: await snapshotComponentSources(roots) };
+  const roots = [...componentRoots.map((entry) => entry.root), paths.sharedDir];
+  return {
+    roots,
+    componentRoots,
+    sharedRoot: paths.sharedDir,
+    files: await snapshotComponentSources(roots),
+  };
 }
 
-/** Produces a blocking apply error before the journal or ownership state is committed. */
-export async function componentSourceErrors(
-  snapshot: ComponentSourceSnapshot | undefined
-): Promise<Array<{ name: string; error: string }>> {
-  if (!snapshot) return [];
+/** What changed under a run's captured sources, split by whether the run deployed it. */
+export interface ComponentSourceChanges {
+  /** Blocking: a component this run applied changed while it was being copied. */
+  errors: Array<{ name: string; error: string }>;
+  /** Components this run did not apply whose sources changed (typically a peer's edit). */
+  foreign: string[];
+}
+
+/**
+ * Judges source changes since the snapshot. A change under a component the
+ * run applied is a blocking error, because the engine copy may be torn
+ * between versions. A change under a component the run left alone (skipped
+ * as current, or not selected) cannot reach the build through this run, so
+ * it is reported in `foreign` instead of failing a peer's work. A shared
+ * fragment change is blocking only when the run applied something that can
+ * include it.
+ *
+ * @param snapshot - Capture from {@link captureComponentSources}
+ * @param appliedNames - Names of the components the run applied
+ */
+export async function componentSourceChanges(
+  snapshot: ComponentSourceSnapshot | undefined,
+  appliedNames: ReadonlySet<string>
+): Promise<ComponentSourceChanges> {
+  if (!snapshot) return { errors: [], foreign: [] };
   const changed = await changedComponentSources(snapshot.roots, snapshot.files);
-  return changed.length === 0
-    ? []
-    : [
-        {
-          name: 'component-sources',
-          error: `Component sources changed during deployment: ${changed.join(', ')}. Refusing this build/proof; inspect the source edits before retrying.`,
-        },
-      ];
+  const blocking: string[] = [];
+  const foreign = new Set<string>();
+  for (const path of changed) {
+    const owner = snapshot.componentRoots.find((entry) => path.startsWith(`${entry.root}/`));
+    if (owner === undefined) {
+      if (appliedNames.size > 0) blocking.push(path);
+    } else if (appliedNames.has(owner.name)) {
+      blocking.push(path);
+    } else {
+      foreign.add(owner.name);
+    }
+  }
+  return {
+    errors:
+      blocking.length === 0
+        ? []
+        : [
+            {
+              name: 'component-sources',
+              error: `Component sources changed during deployment: ${blocking.join(', ')}. Refusing this build/proof; inspect the source edits before retrying.`,
+            },
+          ],
+    foreign: [...foreign].sort(),
+  };
 }

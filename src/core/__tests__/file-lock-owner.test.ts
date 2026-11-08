@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -34,9 +34,12 @@ passThroughReadFile();
 import { verbose } from '../../utils/logger.js';
 import { withFileLock } from '../file-lock.js';
 import {
+  forgetChildGroup,
   isLockOwnerAlive,
+  LockOwnerDisplacedError,
   readLockOwner,
   readProcessStartTick,
+  recordChildGroup,
   writeLockOwner,
 } from '../file-lock-owner.js';
 
@@ -133,6 +136,8 @@ describe('writeLockOwner', () => {
     await writeLockOwner(lockPath, 'token-1', [
       'acquired-at-ms=1',
       'start-tick=1',
+      'birth=1',
+      'child-group=1234',
       'command=build',
       '  ',
       'a\nb',
@@ -145,6 +150,8 @@ describe('writeLockOwner', () => {
       metadata: ['command=build', 'a b'],
     });
     expect(owner.present && owner.acquiredAtMs).toBeGreaterThan(1);
+    expect(owner.present && owner.childGroups).toBeUndefined();
+    expect(owner.present && owner.birth).not.toBe('1');
     if (process.platform === 'linux') {
       expect(owner.present && owner.startTick).toBe(readProcessStartTick(process.pid));
     } else {
@@ -152,13 +159,36 @@ describe('writeLockOwner', () => {
     }
   });
 
-  it('removes the lock directory and throws when the record cannot be written', async () => {
-    const parent = await makeTempDir('fireforge-owner-nodir-');
-    // The lock directory does not exist, so the write fails with ENOENT.
-    const lockPath = join(parent, 'missing.lock');
-    await expect(writeLockOwner(lockPath, 'token-1', undefined)).rejects.toThrow(
-      'Could not record ownership of lock'
+  it.skipIf(process.platform === 'win32')(
+    'removes the lock directory and throws when the record cannot be written',
+    async () => {
+      const parent = await makeTempDir('fireforge-owner-denied-');
+      const lockPath = join(parent, 'denied.lock');
+      await mkdir(lockPath, { mode: 0o500 });
+      await expect(writeLockOwner(lockPath, 'token-1', undefined)).rejects.toThrow(
+        'Could not record ownership of lock'
+      );
+      await expect(stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+  );
+
+  // A reaper had the directory aside and did not put it back: the path may be
+  // someone else's by now, so nothing is removed and the caller goes back to
+  // waiting.
+  it('reports displacement when the directory stays gone', async () => {
+    const parent = await makeTempDir('fireforge-owner-gone-');
+    await expect(writeLockOwner(join(parent, 'gone.lock'), 'token-1', undefined)).rejects.toThrow(
+      LockOwnerDisplacedError
     );
+  });
+
+  it('reports displacement, and leaves the record alone, when the directory has one', async () => {
+    const lockPath = await makeTempDir('fireforge-owner-taken-');
+    await writeFile(join(lockPath, 'pid'), '99999\nsomeone-else\n', 'utf-8');
+    await expect(writeLockOwner(lockPath, 'token-1', undefined)).rejects.toThrow(
+      LockOwnerDisplacedError
+    );
+    expect(readFileSync(join(lockPath, 'pid'), 'utf-8')).toContain('someone-else');
   });
 
   it('retries a transient read-back error instead of treating it as a missing record', async () => {
@@ -182,13 +212,57 @@ describe('writeLockOwner', () => {
     );
   });
 
-  it('still fails when the record reads back as a different owner', async () => {
+  it('reports displacement when the record reads back as a different owner', async () => {
     const lockPath = await makeTempDir('fireforge-owner-mismatch-');
     mockReadFile.mockResolvedValueOnce('99999\nsomeone-else\n');
 
     await expect(writeLockOwner(lockPath, 'token-4', undefined)).rejects.toThrow(
-      'did not read back as written'
+      LockOwnerDisplacedError
     );
+    expect(existsSync(lockPath)).toBe(true);
+  });
+});
+
+describe('recorded process groups', () => {
+  it('lifts child groups out of the metadata, and forgets a finished one', async () => {
+    const lockPath = await makeTempDir('fireforge-owner-groups-');
+    await writeLockOwner(lockPath, 'token-1', ['command=build']);
+    recordChildGroup(lockPath, 4001);
+    recordChildGroup(lockPath, 4002);
+    expect(await readLockOwner(lockPath)).toMatchObject({
+      childGroups: [4001, 4002],
+      metadata: ['command=build'],
+    });
+
+    forgetChildGroup(lockPath, 4001);
+
+    expect(await readLockOwner(lockPath)).toMatchObject({
+      token: 'token-1',
+      childGroups: [4002],
+      metadata: ['command=build'],
+    });
+  });
+
+  it('ignores a group id that would address a broadcast', async () => {
+    const lockPath = await makeTempDir('fireforge-owner-broadcast-');
+    await writeFile(join(lockPath, 'pid'), '4242\ntoken\nchild-group=1\nchild-group=0\n', 'utf-8');
+    const owner = await readLockOwner(lockPath);
+    expect(owner.present && owner.childGroups).toBeUndefined();
+  });
+
+  it('treats a dead holder as alive only while a recorded group has members', () => {
+    const dead = 2 ** 30;
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === -4001) return true;
+      throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+    });
+    try {
+      expect(isLockOwnerAlive({ pid: dead, childGroups: [4001] })).toBe(true);
+      expect(isLockOwnerAlive({ pid: dead, childGroups: [4002] })).toBe(false);
+      expect(isLockOwnerAlive({ pid: dead })).toBe(false);
+    } finally {
+      kill.mockRestore();
+    }
   });
 });
 

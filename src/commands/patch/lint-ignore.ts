@@ -211,7 +211,7 @@ export async function patchLintIgnoreCommand(
     values = batch.entries;
   }
 
-  // Destructive-operation contract (docs/lifecycle-invariants.md): manifest
+  // Destructive-operation contract (contributing/lifecycle-invariants.md): manifest
   // metadata mutations get summary + dry-run + confirmation/--yes + history
   // uniformly. Accepting --yes without ever prompting makes the flag appear
   // only in the history record, and suppressing lint findings is the kind

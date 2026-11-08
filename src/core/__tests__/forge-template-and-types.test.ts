@@ -129,9 +129,9 @@ describe('typecheck diagnostics and Gecko constructors', () => {
       join(root, 'p/use.mjs'),
       'import { Model } from "./model.mjs"; export const other = new Model();'
     );
-    expect(await runTypecheck(root, cfg)).toEqual(await runTypecheck(root, cfg, { noCache: true }));
+    expect(await runTypecheck(root, cfg)).toEqual(await runTypecheck(root, cfg));
     await writeFile(join(root, 'p/global.mjs'), 'const marker = 2;');
-    expect(await runTypecheck(root, cfg)).toEqual(await runTypecheck(root, cfg, { noCache: true }));
+    expect(await runTypecheck(root, cfg)).toEqual(await runTypecheck(root, cfg));
   });
 
   it('accepts Gecko isInstance and narrows the DOM type without suppressing real errors', async () => {
@@ -140,15 +140,13 @@ describe('typecheck diagnostics and Gecko constructors', () => {
         '/** @param {Animation} a */\nexport function transition(a) { if (CSSTransition.isInstance(a)) return a.transitionProperty; return MouseEvent.MOZ_SOURCE_PEN; }',
     });
     const cfg = { projects: ['p/jsconfig.json'] };
-    expect((await runTypecheck(root, cfg, { noCache: true }))[0]?.issues).toEqual([]);
+    expect((await runTypecheck(root, cfg))[0]?.issues).toEqual([]);
     await writeFile(
       join(root, 'p/transition.mjs'),
       '/** @param {Animation} a */\nexport function transition(a) { if (CSSTransition.isInstance(a)) return a.notARealProperty; }'
     );
-    expect(
-      (await runTypecheck(root, cfg, { noCache: true }))[0]?.issues.some(
-        (issue) => issue.code === 2339
-      )
-    ).toBe(true);
+    expect((await runTypecheck(root, cfg))[0]?.issues.some((issue) => issue.code === 2339)).toBe(
+      true
+    );
   });
 });

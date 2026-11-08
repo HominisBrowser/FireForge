@@ -7,8 +7,9 @@
  * the per-file line budget.
  */
 
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 
+import { ensureDir, pathExists, readText, writeText } from '../../core/authored/fs.js';
 import {
   BROWSER_TEST_SCAFFOLD_ROOT,
   resolveBrowserChromeTestDir,
@@ -24,7 +25,6 @@ import { InvalidArgumentError } from '../../errors/base.js';
 import type { ProjectLicense } from '../../types/config.js';
 import type { ResolvedTestStyle } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
-import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { info, success, warn } from '../../utils/logger.js';
 import { stripEnginePrefix } from '../../utils/paths.js';
 import { browserTestFileName, deriveTestStem } from './test-file-name.js';
@@ -66,9 +66,13 @@ export function resolveValidatedTestDir(
  * working). Returns the normalized engine-relative directory.
  */
 export function resolveTestDirOverride(raw: string): string {
-  const normalized = stripEnginePrefix(raw).replace(/\/+$/, '');
+  const stripped = stripEnginePrefix(raw);
+  // A `..` segment or a backslash could climb out of the engine while still
+  // passing the prefix test, so the path is normalized and then re-checked.
+  const normalized = stripped.includes('\\') ? '' : posix.normalize(stripped).replace(/\/+$/, '');
   if (
     !normalized.startsWith(BROWSER_TEST_SCAFFOLD_ROOT) ||
+    normalized.split('/').includes('..') ||
     normalized === BROWSER_TEST_SCAFFOLD_ROOT.slice(0, -1)
   ) {
     throw new InvalidArgumentError(

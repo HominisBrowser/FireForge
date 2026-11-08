@@ -234,6 +234,8 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
   EXTERNAL_TOOLCHAIN_DOCTOR_CHECK,
   {
     name: 'Engine directory exists',
+    // A source-mode checkout keeps no engine/ on purpose; its slots do.
+    skipIf: (ctx) => !ctx.engineExists && ctx.config?.sources !== undefined,
     run: (ctx) => {
       if (!ctx.engineExists) {
         throw new Error('engine/ directory not found');
@@ -257,7 +259,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
           );
         }
 
-        await clearPendingResolution(ctx.projectRoot);
+        await clearPendingResolution(ctx.projectRoot, ctx.state.pendingResolution);
         return ok('Pending Resolution');
       }
 
@@ -483,6 +485,14 @@ export interface DoctorResult {
  * changes".
  */
 function assertRepairOptions(options: DoctorOptions): void {
+  if (
+    options.dryRun === true &&
+    (options.repairFurnace === true || options.clearResolution === true)
+  )
+    throw new InvalidArgumentError(
+      '--dry-run cannot combine with --repair-furnace or --clear-resolution; those repairs do not support previews.',
+      '--dry-run'
+    );
   if (options.repairPatchesManifest === true && options.repairFilesAffected === true) {
     throw new InvalidArgumentError(
       '--repair-patches-manifest and --repair-files-affected are mutually exclusive. ' +

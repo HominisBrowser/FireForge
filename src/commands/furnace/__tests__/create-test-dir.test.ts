@@ -41,6 +41,22 @@ describe('resolveTestDirOverride', () => {
     expect(() => resolveTestDirOverride('browser/components/foo')).toThrow(/--test-dir/);
     expect(() => resolveTestDirOverride('browser/base/content/test')).toThrow(/--test-dir/);
   });
+
+  it('rejects a path that climbs out of the engine behind the allowed prefix', () => {
+    expect(() =>
+      resolveTestDirOverride('browser/base/content/test/../../../../../../tmp/x')
+    ).toThrow(/--test-dir/);
+    expect(() => resolveTestDirOverride('browser/base/content/test/..\\..\\x')).toThrow(
+      /--test-dir/
+    );
+    expect(() => resolveTestDirOverride('browser/base/content/test/a/../..')).toThrow(/--test-dir/);
+  });
+
+  it('keeps a path that only dips down and back inside the scaffold root', () => {
+    expect(resolveTestDirOverride('browser/base/content/test/a/../b')).toBe(
+      'browser/base/content/test/b'
+    );
+  });
 });
 
 describe('scaffoldTestFiles (browser-chrome)', () => {

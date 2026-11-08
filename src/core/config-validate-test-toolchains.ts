@@ -4,6 +4,7 @@ import type { FireForgeConfig } from '../types/config.js';
 import type { ParsedRecord } from '../utils/parse.js';
 import { isContainedRelativePath } from '../utils/paths.js';
 import { isObject } from '../utils/validation.js';
+import { assertKnownConfigKeys } from './config-validate-keys.js';
 
 type ConfigRecord = ParsedRecord;
 
@@ -31,6 +32,18 @@ export function parseTestBlock(rec: ConfigRecord, config: FireForgeConfig): void
   const testRec = optionalConfigObject(rec, 'test');
   if (!testRec) return;
 
+  assertKnownConfigKeys(
+    testRec.keys(),
+    [
+      'canaryPath',
+      'canaryTimeoutSeconds',
+      'reapOrphans',
+      'mochitestPorts',
+      'lockMode',
+      'furnaceApply',
+    ],
+    'test'
+  );
   const out: NonNullable<FireForgeConfig['test']> = {};
   const canaryPath = optionalConfigString(testRec, 'canaryPath', 'test.canaryPath');
   if (canaryPath !== undefined) {
@@ -57,8 +70,8 @@ export function parseTestBlock(rec: ConfigRecord, config: FireForgeConfig): void
 
   const reapOrphans = testRec.raw('reapOrphans');
   if (reapOrphans !== undefined) {
-    if (reapOrphans !== 'report' && reapOrphans !== 'reap') {
-      throw new ConfigError('Config field "test.reapOrphans" must be "report" or "reap"');
+    if (reapOrphans !== 'report' && reapOrphans !== 'reap' && reapOrphans !== 'owned') {
+      throw new ConfigError('Config field "test.reapOrphans" must be "report", "reap" or "owned"');
     }
     out.reapOrphans = reapOrphans;
   }
@@ -103,6 +116,7 @@ export function parseExternalToolchainsBlock(rec: ConfigRecord, config: FireForg
       throw new ConfigError(`Config field "externalToolchains[${index}]" must be an object`);
     }
     const item = entry;
+    assertKnownConfigKeys(Object.keys(item), ['name', 'tools'], `externalToolchains[${index}]`);
     const name = item['name'];
     if (typeof name !== 'string' || name.trim() === '') {
       throw new ConfigError(
@@ -135,6 +149,7 @@ function parseExternalToolRequirement(
     throw new ConfigError(`Config field "${label}" must be an object`);
   }
   const toolRec = tool;
+  assertKnownConfigKeys(Object.keys(toolRec), ['name', 'path', 'xcrun', 'required'], label);
   const toolName = toolRec['name'];
   if (typeof toolName !== 'string' || toolName.trim() === '') {
     throw new ConfigError(`Config field "${label}.name" must be a non-empty string`);

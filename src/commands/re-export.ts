@@ -251,7 +251,8 @@ export async function reExportCommand(
   const adjacentCtx = buildAdjacentUnmanagedContext(
     options,
     config.binaryName,
-    await collectFurnaceManagedPrefixes(paths.root)
+    await collectFurnaceManagedPrefixes(paths.root),
+    [...(scanAssignments?.values() ?? [])].flat()
   );
 
   const driftCtx = buildForeignDriftContext(options);

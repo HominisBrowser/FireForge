@@ -8,6 +8,7 @@ import { loadFurnaceConfig } from '../furnace-config.js';
 import { lintPatchedCss } from '../patch-lint-css.js';
 import {
   findOffScaleAtom,
+  lintStaleTokenScaleExcludes,
   lintTokenScaleFloors,
   lintTokenScales,
 } from '../patch-lint-token-scale.js';
@@ -21,6 +22,22 @@ const spacing: PatchLintTokenScale = {
   allowLiterals: ['0', 'auto', '*%', '1px'],
   allow: ['--tb-page-padding', '--moz-*'],
 };
+
+describe('stale token scale exclusions', () => {
+  it('reports retired paths while preserving live exact and glob exclusions', () => {
+    const scale = { ...spacing, exclude: ['live.css', 'widgets/*.css', 'retired.css'] };
+    expect(lintStaleTokenScaleExcludes(['live.css', 'widgets/button.css'], [scale])).toMatchObject([
+      {
+        check: 'stale-token-scale-exclude',
+        severity: 'warning',
+        message: expect.stringContaining('retired.css') as string,
+      },
+    ]);
+    expect(
+      lintStaleTokenScaleExcludes(['retired.css'], [{ ...spacing, exclude: ['retired.css'] }])
+    ).toEqual([]);
+  });
+});
 
 describe('findOffScaleAtom', () => {
   it.each([

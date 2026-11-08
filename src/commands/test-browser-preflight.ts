@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
+import { wantsOrphanReap } from '../core/harness-helper-pids.js';
 import { reportOrphanedHarnessProcesses } from '../core/harness-orphans.js';
 import { deferBusyPortToHarness, resolveAutoPorts } from '../core/harness-port-fallback.js';
 import {
@@ -27,7 +28,7 @@ import type { TestOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { info, outro, verbose } from '../utils/logger.js';
 import { resolveWaitLockSeconds } from '../utils/options.js';
-import { addVerdictRunCount, emitFailVerdict, emitPassVerdict } from './test-verdict.js';
+import { emitFailVerdict, emitPassVerdict } from './test-verdict.js';
 
 /**
  * Runs the `--doctor` marionette handshake probe. With no test paths the
@@ -159,7 +160,8 @@ async function ensureTestMarionettePortAvailable(
   port: number | undefined,
   binaryName: string,
   options: TestOptions,
-  skip: { xpcshellOnly: boolean; doctor: boolean }
+  skip: { xpcshellOnly: boolean; doctor: boolean },
+  checkout: readonly (string | undefined)[]
 ): Promise<void> {
   // Refuse a stale listener before mach surfaces a generic bind failure.
   // This also recognizes a fork-branded browser via binaryName.
@@ -179,7 +181,7 @@ async function ensureTestMarionettePortAvailable(
     return;
   }
   if (options.killStaleMarionette === true) {
-    await ensureMarionettePortAvailable(port, { binaryName, killStaleBrowser: true });
+    await ensureMarionettePortAvailable(port, { binaryName, killStaleBrowser: true, checkout });
     return;
   }
   await assertMarionettePortAvailable(port, { binaryName });
@@ -194,6 +196,7 @@ export async function ensureTestBrowserEnvironment(
   options: TestOptions,
   objDir: string | undefined
 ): Promise<{ forwardedPort: number | undefined; effectivePort: number | undefined }> {
+  const absoluteObjDir = objDir === undefined ? undefined : resolve(engineDir, objDir);
   // A timed-out mochitest can leave the built app alive after its Marionette
   // listener has disappeared. The port probe cannot see that case, but the
   // survivor can still steal focus and wedge every later headed run.
@@ -223,13 +226,19 @@ export async function ensureTestBrowserEnvironment(
     !xpcshellOnly &&
     !(
       autoPorts?.serverPorts === true &&
-      (await deferBusyPortToHarness(DEFAULT_MOCHITEST_SERVER_PORT, 'Mochitest server', engineDir))
+      (await deferBusyPortToHarness(
+        DEFAULT_MOCHITEST_SERVER_PORT,
+        'Mochitest server',
+        engineDir,
+        absoluteObjDir
+      ))
     )
   ) {
     await waitForPreflight(
       () =>
         ensureMochitestServerPortAvailable(undefined, {
           engineDir,
+          ...(absoluteObjDir === undefined ? {} : { objDir: absoluteObjDir }),
           killStaleServer: options.killStaleMarionette === true,
         }),
       options.waitPort === undefined ? undefined : resolveWaitLockSeconds(options.waitPort)
@@ -237,14 +246,10 @@ export async function ensureTestBrowserEnvironment(
   }
   // Helpers that outlived an earlier run (httpd, pywebsocket, ssltunnel,
   // moz-http2) slow every later run without appearing in its output. Both
-  // harnesses are affected, so this census is not gated on xpcshellOnly.
-  // Reaping is opt-in per invocation (--reap-orphans) or per repo
-  // (test.reapOrphans: "reap"); a reap is stamped on the verdict line so a
-  // green after one is not mistaken for a green on a quiet machine.
-  const census = await reportOrphanedHarnessProcesses(objDir, {
-    reap: options.reapOrphans === true || projectConfig.test?.reapOrphans === 'reap',
-  });
-  addVerdictRunCount('orphans-reaped', census.reaped);
+  // harnesses are affected, so this census is not gated on xpcshellOnly. It
+  // signals nothing: what a dead run recorded was settled before the lock, and
+  // what is left has no record to establish ownership.
+  await reportOrphanedHarnessProcesses(objDir, { reap: wantsOrphanReap(options, projectConfig) });
   const forwardedPort = options.machArg
     ? extractForwardedMarionettePort(options.machArg)
     : undefined;
@@ -257,17 +262,21 @@ export async function ensureTestBrowserEnvironment(
     (await deferBusyPortToHarness(
       effectivePort ?? DEFAULT_MARIONETTE_PORT,
       'Marionette',
-      engineDir
+      engineDir,
+      absoluteObjDir
     ))
   ) {
     return { forwardedPort, effectivePort };
   }
   await waitForPreflight(
     () =>
-      ensureTestMarionettePortAvailable(effectivePort, projectConfig.binaryName, options, {
-        xpcshellOnly,
-        doctor: options.doctor === true,
-      }),
+      ensureTestMarionettePortAvailable(
+        effectivePort,
+        projectConfig.binaryName,
+        options,
+        { xpcshellOnly, doctor: options.doctor === true },
+        [engineDir, absoluteObjDir]
+      ),
     options.waitPort === undefined ? undefined : resolveWaitLockSeconds(options.waitPort)
   );
   return { forwardedPort, effectivePort };

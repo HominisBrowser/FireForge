@@ -281,6 +281,10 @@ describe('downloadCommand integration', () => {
           archiveVersion: '140.9.0esr',
           url: downloadUrl('140.9.0esr', 'firefox-esr'),
           contentLength: 'not a real tarball'.length,
+          // A cache entry already verified against the published checksums
+          // is trusted as-is, so this reaches extraction, which then fails.
+          sha256: createHash('sha256').update('not a real tarball').digest('hex'),
+          verification: 'published',
           downloadedAt: new Date().toISOString(),
         },
         null,

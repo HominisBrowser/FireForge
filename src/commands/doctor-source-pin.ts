@@ -23,9 +23,9 @@
  */
 
 import { getFirefoxVersion } from '../core/firefox.js';
+import { gitResult } from '../core/git-base.js';
 import type { DoctorCheck } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
-import { exec } from '../utils/process.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
 import { ok, warning } from './doctor-check-core.js';
 
@@ -49,9 +49,10 @@ async function runSourcePinCheck(ctx: DoctorCheckContext): Promise<DoctorCheck> 
     // A blank or whitespace-only version.txt (a truncated write, a partial
     // extraction) carries no version to compare, so treat it as absent
     // rather than reporting the engine as being at version "".
-    const pristine = await exec('git', ['show', 'HEAD:browser/config/version.txt'], {
-      cwd: ctx.paths.engine,
-    }).catch(() => undefined);
+    const pristine = await gitResult(
+      ['show', 'HEAD:browser/config/version.txt'],
+      ctx.paths.engine
+    ).catch(() => undefined);
     actual =
       (pristine?.exitCode === 0
         ? pristine.stdout

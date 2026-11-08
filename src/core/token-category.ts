@@ -13,8 +13,8 @@
 import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
-import { pathExists, readText } from '../utils/fs.js';
 import { escapeRegex } from '../utils/regex.js';
+import { pathExists, readText } from './authored/fs.js';
 
 /**
  * Body of the first `/* … *\/` comment on `line`, or `undefined` when the

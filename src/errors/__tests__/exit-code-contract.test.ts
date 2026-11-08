@@ -3,10 +3,10 @@
  * The exit-code contract, checked from both ends.
  *
  * Every concrete `FireForgeError` subclass is instantiated and its `code`
- * asserted against the table below. The table is then reconciled against
- * the class -> code rows in `docs/exit-codes.md`, so a class that changes
- * code, a doc row that drifts, or a new class nobody documented all fail
- * here rather than surfacing as a CI script branching on the wrong number.
+ * asserted against the table below, and the `ExitCode` table is reconciled
+ * with the code -> name rows in `docs/exit-codes.md`. A class that changes
+ * code, a doc row that drifts, or a new code nobody documented all fail here
+ * rather than surfacing as a CI script branching on the wrong number.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -53,6 +53,7 @@ import {
   GitNotFoundError,
   PatchApplyError,
 } from '../git.js';
+import { JobError } from '../job.js';
 import { PatchError, PatchManifestCorruptError } from '../patch.js';
 import {
   CorruptRebaseSessionError,
@@ -63,25 +64,19 @@ import {
 import { SmokeRunError } from '../run.js';
 
 interface ContractRow {
-  /** Class name, as it appears in `docs/exit-codes.md`. */
   readonly name: string;
   readonly make: () => FireForgeError;
   readonly code: ExitCode;
-  /**
-   * Name the doc lists this class under when it is covered by a base class
-   * row ("`GitError` and subclasses") rather than named outright.
-   */
-  readonly listedAs?: string;
 }
 
 /** Every concrete FireForgeError subclass, with the code it must carry. */
 const CONTRACT: readonly ContractRow[] = [
   { name: 'GeneralError', make: () => new GeneralError('x'), code: ExitCode.GENERAL_ERROR },
+  { name: 'JobError', make: () => new JobError('x'), code: ExitCode.GENERAL_ERROR },
   {
     name: 'PreflightRefusalError',
     make: () => new PreflightRefusalError('x', 'stale-browser'),
     code: ExitCode.GENERAL_ERROR,
-    listedAs: 'GeneralError',
   },
   {
     name: 'ParserFallbackError',
@@ -98,57 +93,48 @@ const CONTRACT: readonly ContractRow[] = [
     name: 'ConfigNotFoundError',
     make: () => new ConfigNotFoundError('fireforge.json'),
     code: ExitCode.CONFIG_ERROR,
-    listedAs: 'ConfigError',
   },
   { name: 'DownloadError', make: () => new DownloadError('x'), code: ExitCode.DOWNLOAD_ERROR },
   {
     name: 'ChecksumMismatchError',
     make: () => new ChecksumMismatchError('firefox', 'a', 'b', 'https://x'),
     code: ExitCode.DOWNLOAD_ERROR,
-    listedAs: 'DownloadError',
   },
   {
     name: 'ExtractionError',
     make: () => new ExtractionError('/a.tar'),
     code: ExitCode.DOWNLOAD_ERROR,
-    listedAs: 'DownloadError',
   },
   {
     name: 'VersionNotFoundError',
     make: () => new VersionNotFoundError('1'),
     code: ExitCode.DOWNLOAD_ERROR,
-    listedAs: 'DownloadError',
   },
   {
     name: 'EngineExistsError',
     make: () => new EngineExistsError('/engine'),
     code: ExitCode.DOWNLOAD_ERROR,
-    listedAs: 'DownloadError',
   },
   {
     name: 'PartialEngineExistsError',
     make: () => new PartialEngineExistsError('/engine'),
     code: ExitCode.DOWNLOAD_ERROR,
-    listedAs: 'DownloadError',
   },
   { name: 'GitError', make: () => new GitError('x'), code: ExitCode.GIT_ERROR },
   {
     name: 'PatchApplyError',
     make: () => new PatchApplyError('/p.patch'),
     code: ExitCode.GIT_ERROR,
-    listedAs: 'GitError',
   },
   {
     name: 'GitIndexLockError',
     make: () => new GitIndexLockError('/index.lock'),
     code: ExitCode.GIT_ERROR,
-    listedAs: 'GitError',
   },
   {
     name: 'GitIndexingTimeoutError',
     make: () => new GitIndexingTimeoutError('monolithic', 1000, 'X'),
     code: ExitCode.GIT_ERROR,
-    listedAs: 'GitError',
   },
   { name: 'BuildError', make: () => new BuildError('x'), code: ExitCode.BUILD_ERROR },
   { name: 'TestFailureError', make: () => new TestFailureError('x'), code: ExitCode.BUILD_ERROR },
@@ -156,19 +142,16 @@ const CONTRACT: readonly ContractRow[] = [
     name: 'BootstrapError',
     make: () => new BootstrapError(),
     code: ExitCode.BUILD_ERROR,
-    listedAs: 'BuildError',
   },
   {
     name: 'MozconfigError',
     make: () => new MozconfigError('x'),
     code: ExitCode.BUILD_ERROR,
-    listedAs: 'BuildError',
   },
   {
     name: 'AmbiguousBuildArtifactsError',
     make: () => new AmbiguousBuildArtifactsError(['a', 'b']),
     code: ExitCode.BUILD_ERROR,
-    listedAs: 'BuildError',
   },
   { name: 'PatchError', make: () => new PatchError('x'), code: ExitCode.PATCH_ERROR },
   {
@@ -181,19 +164,16 @@ const CONTRACT: readonly ContractRow[] = [
     name: 'RebaseSessionExistsError',
     make: () => new RebaseSessionExistsError(),
     code: ExitCode.PATCH_ERROR,
-    listedAs: 'RebaseError',
   },
   {
     name: 'NoRebaseSessionError',
     make: () => new NoRebaseSessionError(),
     code: ExitCode.PATCH_ERROR,
-    listedAs: 'RebaseError',
   },
   {
     name: 'CorruptRebaseSessionError',
     make: () => new CorruptRebaseSessionError('/s.json', 'bad'),
     code: ExitCode.PATCH_ERROR,
-    listedAs: 'RebaseError',
   },
   {
     name: 'PythonNotFoundError',
@@ -254,19 +234,13 @@ const CONTRACT: readonly ContractRow[] = [
  * docs/exit-codes.md into a class-name -> codes map. A class may appear in
  * more than one row (SmokeRunError spans 12 and 13).
  */
-function readDocumentedCodes(): Map<string, Set<number>> {
+function readDocumentedCodes(): Map<string, number> {
   const doc = readFileSync(join(process.cwd(), 'docs', 'exit-codes.md'), 'utf-8');
-  const documented = new Map<string, Set<number>>();
+  const documented = new Map<string, number>();
   for (const line of doc.split('\n')) {
-    const match = /^\|\s*(\d+)\s*\|(?:[^|]*\|){2}([^|]*)\|/.exec(line);
-    if (!match) continue;
-    const code = Number(match[1]);
-    const producedBy = match[2] ?? '';
-    for (const [, name] of producedBy.matchAll(/`([A-Za-z]+)`/g)) {
-      if (name === undefined) continue;
-      const codes = documented.get(name) ?? new Set<number>();
-      codes.add(code);
-      documented.set(name, codes);
+    const match = /^\|\s*(\d+)\s*\|\s*`([A-Z_]+)`\s*\|/.exec(line);
+    if (match?.[1] !== undefined && match[2] !== undefined) {
+      documented.set(match[2], Number(match[1]));
     }
   }
   return documented;
@@ -282,31 +256,7 @@ describe('exit-code contract', () => {
     }
   );
 
-  it('matches the class -> code rows in docs/exit-codes.md', () => {
-    const documented = readDocumentedCodes();
-    expect(documented.size).toBeGreaterThan(0);
-
-    for (const row of CONTRACT) {
-      const listedAs = row.listedAs ?? row.name;
-      const codes = documented.get(listedAs);
-      expect(
-        codes,
-        `${row.name} (listed as ${listedAs}) is missing from docs/exit-codes.md`
-      ).toBeDefined();
-      expect(
-        codes?.has(row.code),
-        `docs/exit-codes.md lists ${listedAs} under ${[...(codes ?? [])].join(',')}, code says ${row.code}`
-      ).toBe(true);
-    }
-  });
-
-  it('documents no class the contract table does not know', () => {
-    const documented = readDocumentedCodes();
-    const known = new Set(CONTRACT.map((row) => row.name));
-    for (const name of documented.keys()) {
-      expect(known.has(name), `docs/exit-codes.md names ${name}, which is not in CONTRACT`).toBe(
-        true
-      );
-    }
+  it('documents exactly the ExitCode table in docs/exit-codes.md', () => {
+    expect(Object.fromEntries(readDocumentedCodes())).toEqual({ ...ExitCode });
   });
 });

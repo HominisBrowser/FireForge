@@ -9,6 +9,7 @@ import { FurnaceError } from '../../errors/furnace.js';
 import {
   createRollbackJournal,
   recordCreatedDir,
+  removeEmptyDirectory,
   restoreRollbackJournal,
   restoreRollbackJournalOrThrow,
   snapshotDir,
@@ -209,5 +210,26 @@ describe('snapshotDir', () => {
     await snapshotDir(journal, '/nonexistent/path/that/does/not/exist');
 
     expect(journal.files.size).toBe(0);
+  });
+});
+
+describe('removed empty directory rollback', () => {
+  it('restores the exact mode and preserves a later replacement directory', async () => {
+    const root = await makeTempDir('ff-empty-rollback-'),
+      path = join(root, 'empty');
+    await mkdir(path);
+    await chmod(path, 0o777);
+    const journal = createRollbackJournal();
+    await removeEmptyDirectory(journal, path);
+    await restoreRollbackJournal(journal);
+    expect((await stat(path)).mode & 0o777).toBe(0o777);
+    const second = createRollbackJournal();
+    await removeEmptyDirectory(second, path);
+    await mkdir(path);
+    await writeFile(join(path, 'peer.txt'), 'peer bytes');
+    await expect(restoreRollbackJournal(second)).rejects.toThrow(
+      'Cannot restore removed empty directory'
+    );
+    expect(await readFile(join(path, 'peer.txt'), 'utf8')).toBe('peer bytes');
   });
 });

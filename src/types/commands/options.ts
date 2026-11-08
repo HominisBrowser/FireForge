@@ -617,8 +617,7 @@ export interface RunOptions {
    * build keeps the build id the cache is keyed on, so a kept profile would
    * otherwise run the chrome scripts an earlier build cached. Default
    * `true`; `--no-purge-caches` sets `false`. Fresh temporary profiles and
-   * mach's own profile-default (cleaned before every run) have no cache to
-   * purge.
+   * mach's own profile-default have no cache to purge.
    */
   purgeCaches?: boolean;
   /**
@@ -669,6 +668,8 @@ export interface RunOptions {
  * Options for the test command.
  */
 export interface TestOptions extends EngineLockWaitable {
+  /** Collect per-process JavaScript LCOV with acknowledged shutdown flushes. */
+  coverage?: string;
   /** Queue behind a browser using this objdir; bare flag means 60 seconds. */
   waitBrowser?: number | boolean;
   /** Queue behind the mochitest/Marionette port holder. */
@@ -758,13 +759,9 @@ export interface TestOptions extends EngineLockWaitable {
   /** Kill a recognized stale browser process holding the Marionette port, then continue. */
   killStaleMarionette?: boolean;
   /**
-   * Terminate harness helper processes (`xpcshell` httpd, `pywebsocket`,
-   * `ssltunnel`, `moz-http2`) that survived an earlier run in this
-   * project's objdir. The census itself runs on every test dispatch and is
-   * report-only. This flag opts into the kill. Survivors slow later runs
-   * without appearing in their output, so the visibility is the default and
-   * the termination is the choice. `test.reapOrphans: "reap"` in
-   * `fireforge.json` makes it the repo's default.
+   * Terminate the helpers a dead FireForge run on this objdir recorded. Unknown
+   * census candidates remain report-only: a recorded PID/start identity permits
+   * termination, and a flag or a matching objdir path never does.
    */
   reapOrphans?: boolean;
   /**
@@ -907,7 +904,7 @@ export interface FurnaceDeployOptions extends DryRunnable {
    * The patch being exported (`--owner`). A deployed file the deploy would
    * overwrite that another patch owns refuses the whole deploy.
    */
-  owner?: string;
+  owner?: string | string[];
   /**
    * Resolved `--wait-lock` budget in seconds, or undefined for the default.
    * Threaded to the furnace lock `runFurnaceMutation` takes INSIDE the

@@ -9,7 +9,6 @@ import {
   getTokensCssPath,
   isTokenMode,
   TOKEN_MODES,
-  validateTokenAdd,
 } from '../core/token-manager.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import { FurnaceError } from '../errors/furnace.js';
@@ -46,7 +45,7 @@ async function normalizeTokenNameForProject(
         );
         return normalizeTokenName(strippedName);
       }
-      return `--${strippedPrefix}-${strippedName}`;
+      return normalizeTokenName(`--${strippedPrefix}-${strippedName}`);
     }
   } catch (error: unknown) {
     warn(
@@ -118,8 +117,7 @@ export async function tokenAddCommand(
   // user supplied a bare token name like "canvas-gap".
   tokenName = await normalizeTokenNameForProject(projectRoot, tokenName);
 
-  // Validate mode. The guard IS the runtime proof, so the three `as
-  // TokenMode` casts this replaced are gone with it.
+  // Validate mode. The guard is the runtime proof that narrows the type.
   if (!isTokenMode(options.mode)) {
     throw new InvalidArgumentError(
       `Invalid mode "${options.mode}". Must be one of: ${TOKEN_MODES.join(', ')}`,
@@ -128,7 +126,7 @@ export async function tokenAddCommand(
   }
 
   if (options.dryRun) {
-    await validateTokenAdd(projectRoot, {
+    const preview = await addToken(projectRoot, {
       tokenName,
       value,
       mode: options.mode,
@@ -139,6 +137,12 @@ export async function tokenAddCommand(
       ...(options.variant !== undefined ? { variant: options.variant } : {}),
       dryRun: true,
     });
+
+    if (preview.skipped) {
+      reportSkippedToken(tokenName, preview, options);
+      outro('Dry run complete');
+      return;
+    }
 
     info('[dry-run] Would add token:');
     info(`  Name: ${tokenName}`);

@@ -5,12 +5,11 @@
  * its baseline write, and the `--build-only` union-build shape.
  */
 
-import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
-import type {
-  BuildBaseline,
-  ControlBuildStamp,
-  TestPackagingCoverage,
-} from '../core/build-baseline-types.js';
+import { join } from 'node:path';
+
+import { writeBuildBaseline } from '../core/build-baseline.js';
+import type { ControlBuildStamp, TestPackagingCoverage } from '../core/build-baseline-types.js';
+import { readUsableBuildBaseline } from '../core/build-baseline-usable.js';
 import { prepareBuildEnvironment } from '../core/build-prepare.js';
 import {
   applyMozconfigAnchor,
@@ -22,6 +21,7 @@ import {
   recordScopedCoverage,
 } from '../core/coverage-extend.js';
 import { normalizeRequestPath } from '../core/coverage-records.js';
+import { captureEngineGeneration, invalidateEngineState } from '../core/engine-state.js';
 import { hasBuildArtifacts } from '../core/mach.js';
 import { runProtectedMachBuild, withBuildLock } from '../core/mach.js';
 import { assertHealthyPartialConfig, pruneDanglingTestLinks } from '../core/objdir-maintenance.js';
@@ -30,12 +30,13 @@ import {
   findCompiledSourcesNewerThanBinary,
   formatStaleCompiledBuildNotice,
 } from '../core/test-stale-check.js';
-import { GeneralError, InvalidArgumentError } from '../errors/base.js';
+import { GeneralError, InvalidArgumentError, PreflightRefusalError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
 import type { FireForgeConfig, ProjectPaths } from '../types/config.js';
 import { toError } from '../utils/errors.js';
-import { info, notice, spinner, verbose } from '../utils/logger.js';
+import { pathExists } from '../utils/fs.js';
+import { info, notice, spinner } from '../utils/logger.js';
 import { reportPreTestFurnace } from './test-build-furnace.js';
 import { partitionReachedComponents, resolveFurnaceApplyMode } from './test-furnace-reach.js';
 import type { HarnessClassification } from './test-modes.js';
@@ -104,7 +105,7 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
     // pre-test build must never invalidate more of the objdir than a plain
     // `mach build faster` would: a failed pre-test build followed by a full
     // rebuild is an hour where an incremental one would have sufficed.
-    const previousBaseline = await readBuildBaseline(projectRoot);
+    const { baseline: previousBaseline } = await readUsableBuildBaseline(projectRoot, paths.engine);
     const artifacts = await hasBuildArtifacts(paths.engine);
     if (artifacts.objDir) {
       await assertHealthyPartialConfig(paths.engine, artifacts.objDir);
@@ -167,17 +168,20 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
         );
       },
     });
+    // mach generates files in the tree too; whatever this process read before
+    // the build no longer describes it.
+    invalidateEngineState(paths.engine);
     if (result.exitCode === 0) {
       s.stop('Build complete');
-      // Same record, same failure tolerance as `fireforge build` /
-      // `build --ui` (build.ts): a green pre-test build refreshes the
-      // stale-build baseline so a later plain `fireforge test` over the same
-      // files is not refused. A failed write never fails the run. The
-      // coverage claim is scoped to the requested test paths, since a
-      // file-scoped `test --build` only guarantees packaging for those
-      // manifests. The previous baseline is passed through so a scoped write
-      // carries the static-components anchor forward, since `mach build
-      // faster` does not rebake components.conf into the compiled table.
+      // A green pre-test build refreshes the stale-build baseline so a later
+      // plain `fireforge test` over the same files is not refused. A failed
+      // write fails the run: without the record, every later gate has nothing
+      // to judge this packaging by. The coverage claim is scoped to the
+      // requested test paths, since a file-scoped `test --build` only
+      // guarantees packaging for those manifests. The previous baseline is
+      // passed through so a scoped write carries the static-components anchor
+      // forward, since `mach build faster` does not rebake components.conf
+      // into the compiled table.
       try {
         // A scoped claim records this build's paths plus every earlier path
         // the plan kept, each with its own staging-input anchor. When it
@@ -204,7 +208,12 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
           controlBuild,
         });
       } catch (baselineError: unknown) {
-        verbose(`Could not persist build baseline: ${toError(baselineError).message}`);
+        throw new PreflightRefusalError(
+          `The pre-test build succeeded but its baseline could not be recorded: ${toError(baselineError).message}\n\n` +
+            'Nothing can judge this packaging without that record, so the run stops here. Fix the ' +
+            'cause (disk space, permissions under .fireforge/), then rerun with --build.',
+          'baseline-write-failed'
+        );
       }
       return;
     }
@@ -223,46 +232,38 @@ async function runPreTestBuild(options: RunPreTestBuildOptions): Promise<void> {
 }
 
 /**
- * `--extend-coverage` only means something for a scoped build: it refuses
- * a build that would drop an earlier claim. Without `--build`/
- * `--build-only` there is no build to extend from, and a path-less build
- * records `'full'`, which already covers everything. Refusing both is more
- * honest than silently ignoring the flag.
+ * Refuses the flags that only shape a pre-test build on a run that has none,
+ * before the lock or any wait: accepting them would arm a belt over work that
+ * never happens. `--extend-coverage` also needs explicit paths, since a
+ * path-less build records `'full'`, which already covers everything.
+ *
+ * @param testPaths - Requested paths
+ * @param options - Parsed options
  */
-function assertExtendCoverageUsage(options: TestOptions, normalizedPaths: string[]): void {
-  if (options.build !== true && options.buildOnly !== true) {
+export function assertBuildFlagUsage(testPaths: readonly string[], options: TestOptions): void {
+  const building = options.build === true || options.buildOnly === true;
+  if (options.extendCoverage === true) {
+    if (!building) {
+      throw new InvalidArgumentError(
+        '--extend-coverage requires --build or --build-only: it guards the coverage claim a build records.',
+        '--extend-coverage'
+      );
+    }
+    if (testPaths.length === 0 && options.canary === undefined) {
+      throw new InvalidArgumentError(
+        '--extend-coverage requires explicit test paths: a path-less build records full coverage, which already covers every path.',
+        '--extend-coverage'
+      );
+    }
+  }
+  if (building) return;
+  if (options.refuseUnexportedDrift === true) {
     throw new InvalidArgumentError(
-      '--extend-coverage requires --build or --build-only: it guards the coverage claim a build records.',
-      '--extend-coverage'
+      '--refuse-unexported-drift requires --build or --build-only: it guards the pre-test build, and this run dispatches none.',
+      '--refuse-unexported-drift'
     );
   }
-  if (normalizedPaths.length === 0) {
-    throw new InvalidArgumentError(
-      '--extend-coverage requires explicit test paths: a path-less build records full coverage, which already covers every path.',
-      '--extend-coverage'
-    );
-  }
-}
-
-/**
- * Refuses `--refuse-unexported-drift` on a run that dispatches no build.
- * The flag governs the pre-test build only, so accepting it without
- * `--build`/`--build-only` would arm a belt over work that never happens,
- * the same silent no-op this release fixes elsewhere.
- */
-function assertRefuseUnexportedDriftUsage(options: TestOptions): void {
-  if (options.refuseUnexportedDrift !== true) return;
-  if (options.build === true || options.buildOnly === true) return;
-  throw new InvalidArgumentError(
-    '--refuse-unexported-drift requires --build or --build-only: it guards the pre-test build, and this run dispatches none.',
-    '--refuse-unexported-drift'
-  );
-}
-
-/** Refuses `--no-furnace-apply`/`--furnace-apply` on a run that dispatches no build, for the same reason. */
-function assertNoFurnaceApplyUsage(options: TestOptions): void {
   if (options.furnaceApply === undefined || options.furnaceApply === true) return;
-  if (options.build === true || options.buildOnly === true) return;
   const flag = options.furnaceApply === false ? '--no-furnace-apply' : '--furnace-apply';
   throw new InvalidArgumentError(
     `${flag} requires --build or --build-only: it shapes the pre-test build's Furnace apply, and this run dispatches no build.`,
@@ -331,15 +332,12 @@ export async function runTestBuildPhase(
      * which refuses a build-less run and escalates a `--build` one.
      */
     launchablePath?: string | undefined;
+    /** A negative control with no `--build` anywhere in its invocation. */
+    controlWithoutBuild?: boolean;
   }
 ): Promise<boolean> {
   const { classification, normalizedPaths, controlBuild, launchablePath } = request;
   const extending = options.extendCoverage === true;
-  if (extending) {
-    assertExtendCoverageUsage(options, normalizedPaths);
-  }
-  assertRefuseUnexportedDriftUsage(options);
-  assertNoFurnaceApplyUsage(options);
   if (options.build || options.buildOnly) {
     // A path-less `test --build` runs (and packages for) the full suite.
     // A scoped invocation only vouches for the requested paths. A scoped
@@ -356,7 +354,10 @@ export async function runTestBuildPhase(
         ? 'full'
         : [...new Set(coveragePaths)];
     if (coverage !== 'full') {
-      const previousBaseline = await readBuildBaseline(projectRoot);
+      const { baseline: previousBaseline } = await readUsableBuildBaseline(
+        projectRoot,
+        paths.engine
+      );
       await enforceStaticComponentsGate(paths.engine, previousBaseline, options);
       if (extending) {
         // Staging-input half of the plan, before the build lock: a refusal
@@ -389,6 +390,9 @@ export async function runTestBuildPhase(
       ),
     });
     info('');
+    // Measured right after the baseline, so whatever lands between here and the
+    // dispatch is in the guard's delta rather than in its "before".
+    if (options.buildOnly !== true) await captureEngineGeneration(paths.engine);
     if (options.buildOnly) {
       // Union build for mixed harnesses: the coverage claim
       // above lists every requested path, so each harness half can run
@@ -402,6 +406,7 @@ export async function runTestBuildPhase(
     await enforceStaleBuildGate(projectRoot, paths.engine, options, normalizedPaths, {
       launchablePath,
       ownControlBuild: request.ownControlBuild,
+      controlWithoutBuild: request.controlWithoutBuild,
     });
   }
   return false;
@@ -419,9 +424,12 @@ async function describeCompiledEscalation(
   engineDir: string,
   launchablePath: string | undefined
 ): Promise<string | undefined> {
-  const baseline: BuildBaseline | undefined = await readBuildBaseline(projectRoot);
+  const { baseline } = await readUsableBuildBaseline(projectRoot, engineDir);
   const stale = await findCompiledSourcesNewerThanBinary(engineDir, baseline, launchablePath);
   if (stale !== undefined && stale.paths.length > 0) return formatStaleCompiledBuildNotice(stale);
+  if (launchablePath !== undefined && !(await pathExists(join(engineDir, launchablePath)))) {
+    return 'The launchable binary is missing after an incomplete build; a full build repairs the bundle before tests run.';
+  }
   const stamp = baseline?.controlBuild;
   if (stamp !== undefined) {
     return (

@@ -102,7 +102,9 @@ describe('furnace registration validation helpers', () => {
         return Promise.resolve(filePath.startsWith(nativePath('/project/')) ? 'src' : 'dest');
       }
       if (filePath.endsWith('jar.mn')) {
-        return Promise.resolve('content/global/elements/moz-dock.css');
+        return Promise.resolve(
+          'content/global/elements/moz-dock.css (widgets/moz-dock/moz-dock.css)'
+        );
       }
       if (filePath.endsWith('customElements.js')) {
         return Promise.resolve(`
@@ -152,7 +154,7 @@ describe('furnace registration validation helpers', () => {
         return Promise.resolve('target');
       if (filePath.endsWith('jar.mn')) {
         return Promise.resolve(
-          'content/global/elements/moz-dock.css\ncontent/global/elements/moz-dock.mjs'
+          'content/global/elements/moz-dock.css (widgets/moz-dock/moz-dock.css)\ncontent/global/elements/moz-dock.mjs (widgets/moz-dock/moz-dock.mjs)'
         );
       }
       if (filePath.endsWith('customElements.js')) {
@@ -195,7 +197,9 @@ describe('furnace registration validation helpers', () => {
     vi.mocked(readText).mockImplementation((filePath: string) => {
       if (filePath.endsWith('moz-dock.mjs')) return Promise.resolve('same');
       if (filePath.endsWith('jar.mn')) {
-        return Promise.resolve('content/global/elements/moz-dock.mjs');
+        return Promise.resolve(
+          'content/global/elements/moz-dock.mjs (widgets/moz-dock/moz-dock.mjs)'
+        );
       }
       if (filePath.endsWith('customElements.js')) {
         return Promise.resolve(
@@ -494,7 +498,9 @@ describe('furnace registration validation helpers', () => {
         if (filePath === nativePath('/engine/toolkit/content/jar.mn')) return Promise.resolve(true);
         return Promise.resolve(false);
       });
-      vi.mocked(readText).mockResolvedValue('content/global/elements/moz-dock.mjs');
+      vi.mocked(readText).mockResolvedValue(
+        'content/global/elements/moz-dock.mjs (widgets/moz-dock/moz-dock.mjs)'
+      );
 
       const issues = await validateJarMnEntries('/project', baseConfig);
 
@@ -510,7 +516,9 @@ describe('furnace registration validation helpers', () => {
         }
         return Promise.resolve(false);
       });
-      vi.mocked(readText).mockResolvedValue('content/global/elements/moz-dock.mjs');
+      vi.mocked(readText).mockResolvedValue(
+        'content/global/elements/moz-dock.mjs (widgets/moz-dock/moz-dock.mjs)'
+      );
 
       const issues = await validateJarMnEntries('/project', baseConfig);
 
@@ -558,7 +566,7 @@ describe('furnace registration validation helpers', () => {
       expect(stale[0]?.message).toContain('old-helper.mjs');
     });
 
-    it('skips components with register=false', async () => {
+    it('requires packaging for components with register=false', async () => {
       vi.mocked(pathExists).mockResolvedValue(true);
       vi.mocked(readText).mockResolvedValue('');
 
@@ -567,13 +575,18 @@ describe('furnace registration validation helpers', () => {
         custom: { 'moz-dock': { ...COMPONENT_CONFIG, register: false } },
       });
 
-      expect(issues).toHaveLength(0);
+      expect(issues.map((issue) => issue.check)).toEqual([
+        'missing-jar-mn-mjs',
+        'missing-jar-mn-css',
+      ]);
     });
 
-    it('handles a missing jar.mn file gracefully', async () => {
+    it('reports a missing jar.mn as missing packaging', async () => {
       vi.mocked(pathExists).mockResolvedValue(false);
 
-      await expect(validateJarMnEntries('/project', baseConfig)).resolves.toHaveLength(0);
+      expect(
+        (await validateJarMnEntries('/project', baseConfig)).map((issue) => issue.check)
+      ).toContain('missing-jar-mn-mjs');
     });
 
     it('does not flag live registrations as stale', async () => {
@@ -626,11 +639,11 @@ describe('furnace registration validation helpers', () => {
       },
     };
 
-    it('returns empty when customElements.js does not exist', async () => {
+    it('reports missing registration when customElements.js does not exist', async () => {
       vi.mocked(pathExists).mockResolvedValue(false);
 
       const issues = await validateRegistrationPatterns('/project', baseConfig);
-      expect(issues).toEqual([]);
+      expect(issues.map((issue) => issue.check)).toEqual(['missing-custom-element-registration']);
     });
 
     it('reports a registered component that the file never mentions', async () => {
@@ -819,7 +832,9 @@ document.addEventListener("DOMContentLoaded", () => {});
       vi.mocked(readdir).mockResolvedValue([] as never);
       vi.mocked(readText).mockImplementation((filePath: string) => {
         if (filePath.endsWith('jar.mn')) {
-          return Promise.resolve('content/global/elements/moz-dock.mjs');
+          return Promise.resolve(
+            'content/global/elements/moz-dock.mjs (widgets/moz-dock/moz-dock.mjs)'
+          );
         }
         return Promise.resolve('');
       });

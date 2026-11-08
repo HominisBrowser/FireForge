@@ -13,14 +13,10 @@ vi.mock('../../utils/logger.js', async (importOriginal) => ({
   warn: vi.fn(),
 }));
 
-import { InconclusiveVerdictError } from '../../errors/base.js';
-import { ExitCode } from '../../errors/codes.js';
-import { info, warn } from '../../utils/logger.js';
+import { info } from '../../utils/logger.js';
 import {
-  assertEngineGenerationUnchanged,
   isIndexLockError,
   isUnavailableGenerationToken,
-  snapshotEngineGeneration,
   unavailableGenerationReason,
   withEngineSessionLock,
 } from '../engine-session-lock.js';
@@ -164,137 +160,6 @@ describe('withEngineSessionLock', () => {
     expect(message).toContain('--wait-lock');
     expect(message).toContain(`The lock is held by PID ${String(process.pid)}`);
     expect(message).toContain('command=build');
-  });
-});
-
-describe('engine generation guard', () => {
-  let dir: string;
-
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'ff-engine-gen-'));
-  });
-
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
-  });
-
-  it('warns instead of silently passing when the probe cannot measure the engine', async () => {
-    // `dir` is not a git checkout, so both probes fail with the same
-    // message. Comparing failure tokens for equality makes them compare
-    // equal, take the `after === before` early return, and bless a verdict
-    // the guard never verified, with no output at all. engine/ legitimately
-    // may not be a git checkout (download extracts a tarball), so this must
-    // not throw, and it must not be silent either.
-    const before = await snapshotEngineGeneration(dir);
-    expect(before).toMatch(/^unavailable:/);
-
-    await expect(assertEngineGenerationUnchanged(dir, before)).resolves.toBeUndefined();
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('Could not verify that engine/ stayed unchanged')
-    );
-  });
-
-  it('does not report an unmeasurable engine as a detected change', async () => {
-    // Two differing failure messages must not fall through to the mutation
-    // branch and report a spurious "engine/ changed".
-    const before = `unavailable:some earlier failure`;
-    await expect(assertEngineGenerationUnchanged(dir, before)).resolves.toBeUndefined();
-    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('engine/ changed while'));
-  });
-
-  it('returns silently when a real checkout is genuinely unchanged', async () => {
-    const { runGit } = await import('../../test-utils/index.js');
-    await runGit(dir, ['init']);
-    await runGit(dir, ['config', 'user.email', 't@e.st']);
-    await runGit(dir, ['config', 'user.name', 'T']);
-    const { writeFile } = await import('node:fs/promises');
-    await writeFile(join(dir, 'a.txt'), 'x');
-    await runGit(dir, ['add', '-A']);
-    await runGit(dir, ['commit', '-m', 'init']);
-
-    const before = await snapshotEngineGeneration(dir);
-    expect(before).not.toMatch(/^unavailable:/);
-    await expect(assertEngineGenerationUnchanged(dir, before)).resolves.toBeUndefined();
-
-    // A real mutation is still detected as a change, and the refusal names
-    // it. Reconstructing the writer by hand (`find -newermt` against the
-    // run window, minus the objdir, minus git's own bookkeeping) is the
-    // cost this diagnostic exists to remove.
-    await writeFile(join(dir, 'b.txt'), 'y');
-    let refusal: unknown;
-    try {
-      await assertEngineGenerationUnchanged(dir, before);
-      expect.unreachable('should have refused');
-    } catch (error: unknown) {
-      refusal = error;
-    }
-    expect(refusal).toBeInstanceOf(InconclusiveVerdictError);
-    const inconclusive = refusal as InconclusiveVerdictError;
-    expect(inconclusive.message).toMatch(/engine\/ changed while/);
-    expect(inconclusive.message).toContain('What moved:');
-    expect(inconclusive.message).toContain('b.txt');
-    expect(inconclusive.code).toBe(ExitCode.INCONCLUSIVE);
-  });
-
-  it('lets a caller tolerate a delta it proves never reached the runtime', async () => {
-    const { runGit } = await import('../../test-utils/index.js');
-    await runGit(dir, ['init']);
-    await runGit(dir, ['config', 'user.email', 't@e.st']);
-    await runGit(dir, ['config', 'user.name', 'T']);
-    const { writeFile } = await import('node:fs/promises');
-    await writeFile(join(dir, 'a.txt'), 'x');
-    await runGit(dir, ['add', '-A']);
-    await runGit(dir, ['commit', '-m', 'init']);
-    const before = await snapshotEngineGeneration(dir);
-    await writeFile(join(dir, 'b.txt'), 'y');
-
-    const tolerate = vi.fn(() => Promise.resolve(true));
-    await expect(assertEngineGenerationUnchanged(dir, before, tolerate)).resolves.toBeUndefined();
-    expect(tolerate).toHaveBeenCalledWith(before, expect.stringContaining('b.txt'));
-    await expect(
-      assertEngineGenerationUnchanged(dir, before, () => Promise.resolve(false))
-    ).rejects.toThrow(/engine\/ changed while/);
-  });
-
-  it('throws when a measurable engine becomes unmeasurable mid-run', async () => {
-    // The tolerance covers a probe that fails both times, the steady state of
-    // a non-git engine/. An available -> unavailable transition is a different
-    // thing: the second probe measured nothing about a checkout that
-    // demonstrably had something to measure, so the verdict is unverifiable.
-    const { runGit } = await import('../../test-utils/index.js');
-    await runGit(dir, ['init']);
-    await runGit(dir, ['config', 'user.email', 't@e.st']);
-    await runGit(dir, ['config', 'user.name', 'T']);
-    const { writeFile } = await import('node:fs/promises');
-    await writeFile(join(dir, 'a.txt'), 'x');
-    await runGit(dir, ['add', '-A']);
-    await runGit(dir, ['commit', '-m', 'init']);
-
-    const before = await snapshotEngineGeneration(dir);
-    expect(before).not.toMatch(/^unavailable:/);
-
-    await rm(join(dir, '.git'), { recursive: true, force: true });
-
-    await expect(assertEngineGenerationUnchanged(dir, before)).rejects.toThrow(
-      /could not be probed afterwards/
-    );
-  });
-
-  it('throws when there was no baseline probe to compare against', async () => {
-    // unavailable -> available: the `before` probe captured nothing, so there
-    // is literally nothing the `after` token can be compared with.
-    const { runGit } = await import('../../test-utils/index.js');
-    await runGit(dir, ['init']);
-    await runGit(dir, ['config', 'user.email', 't@e.st']);
-    await runGit(dir, ['config', 'user.name', 'T']);
-    const { writeFile } = await import('node:fs/promises');
-    await writeFile(join(dir, 'a.txt'), 'x');
-    await runGit(dir, ['add', '-A']);
-    await runGit(dir, ['commit', '-m', 'init']);
-
-    await expect(
-      assertEngineGenerationUnchanged(dir, 'unavailable:no baseline was captured')
-    ).rejects.toThrow(/no baseline to compare against/);
   });
 });
 

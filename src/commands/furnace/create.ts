@@ -3,7 +3,9 @@ import { join } from 'node:path';
 
 import { text } from '@clack/prompts';
 
-import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { ensureDir, pathExists, writeText } from '../../core/authored/fs.js';
+import { authoringProjectPaths } from '../../core/authored/writer.js';
+import { loadConfig } from '../../core/config.js';
 import { stdioIsInteractive } from '../../core/destructive.js';
 import { getFurnacePaths, writeFurnaceConfig } from '../../core/furnace-config.js';
 import {
@@ -36,7 +38,6 @@ import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceCreateOptions } from '../../types/commands/index.js';
 import type { ProjectLicense } from '../../types/config.js';
 import type { FurnaceConfig, ResolvedTestStyle } from '../../types/furnace.js';
-import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
 import { cancel, intro, isCancel, note, outro } from '../../utils/logger.js';
 import { loadAuthoringFurnaceConfig } from './authoring-config.js';
 import { resolveValidatedTestDir, scaffoldTestFiles } from './create-browser-test.js';
@@ -399,7 +400,7 @@ export async function furnaceCreateCommand(
     );
   }
 
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
   const forgeConfig = await loadConfig(projectRoot);
   const license = forgeConfig.license ?? DEFAULT_LICENSE;
   const furnacePaths = getFurnacePaths(projectRoot);
@@ -525,6 +526,7 @@ export async function furnaceCreateCommand(
       testStyle,
       description,
       binaryName: forgeConfig.binaryName,
+      ...(forgeConfig.sources ? { sourceRoot: forgeConfig.sources.root } : {}),
       // The plan must name the directory the scaffolder will actually use:
       // an omitted override here is how the printed path came to disagree
       // with the files a real run wrote.
@@ -573,6 +575,7 @@ export async function furnaceCreateCommand(
       testFiles,
       testStyle,
       binaryName: forgeConfig.binaryName,
+      ...(forgeConfig.sources ? { sourceRoot: forgeConfig.sources.root } : {}),
       ...(testDir !== undefined ? { testDir } : {}),
     }),
     componentName

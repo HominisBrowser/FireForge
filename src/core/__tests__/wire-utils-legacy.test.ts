@@ -13,6 +13,7 @@ import {
   findMethodBraceIndex,
   findNearestTryLine,
   tokenizeXhtml,
+  validateWireExpression,
   validateWireName,
   walkToTryBlockEnd,
 } from '../wire-utils.js';
@@ -65,6 +66,39 @@ describe('validateWireName', () => {
     expect(() => {
       validateWireName('Services.constructor.name', 'initializer');
     }).toThrow('must not contain "constructor" as a property segment');
+  });
+});
+
+describe('extractNameFromExpression', () => {
+  it.each([
+    ['Foo.init()', 'Foo'],
+    ['$Hook.run()', '$Hook'],
+    ['a$b.c', 'a$b'],
+  ])('names the root object of %s', (expression, expected) => {
+    expect(extractNameFromExpression(expression)).toBe(expected);
+  });
+});
+
+describe('validateWireExpression', () => {
+  it.each(['my-obj.init', '1abc.init', 'Foo..bar', 'Foo.', '.Foo', 'Foo.bar()()', 'a b'])(
+    'rejects %s, which is not a dotted identifier chain',
+    (value) => {
+      expect(() => {
+        validateWireExpression(value, 'initializer');
+      }).toThrow('dotted identifier segments');
+    }
+  );
+
+  it.each(['Services.focus.init()', 'Startup.init', '$Hook._run', 'a'])('accepts %s', (value) => {
+    expect(() => {
+      validateWireExpression(value, 'initializer');
+    }).not.toThrow();
+  });
+
+  it('still rejects dangerous property segments', () => {
+    expect(() => {
+      validateWireExpression('Services.constructor.name', 'initializer');
+    }).toThrow('must not contain "constructor"');
   });
 });
 

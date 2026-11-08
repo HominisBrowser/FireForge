@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { describeEngineGenerationDelta } from '../engine-session-lock.js';
 
-/** Builds a generation token the way `snapshotEngineGeneration` does. */
+/** Builds a generation token the way `captureEngineGeneration` does. */
 function token(head: string, records: string[]): string {
   return `${head}\0${records.map((record) => `${record}\0`).join('')}`;
 }

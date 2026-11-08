@@ -21,6 +21,7 @@ import type * as acorn from 'acorn';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
 import type { PatchLintSeverityGate } from '../types/config.js';
+import { toError } from '../utils/errors.js';
 import type { AcornESTreeNode } from './ast-utils.js';
 import { parseScript } from './ast-utils.js';
 import type { JsDocIssue, ValidateExportJsDocOptions } from './patch-lint-jsdoc.js';
@@ -101,6 +102,20 @@ export function lintChromeScriptJsDocForFile(
   mode: PatchLintSeverityGate | undefined
 ): PatchLintIssue[] {
   if (!isChromeOwned || !mode || mode === 'off') return [];
+  try {
+    parseScript(content);
+  } catch (error) {
+    // The JSDoc walk cannot run, so say so rather than pass silently: a real
+    // syntax error in an owned chrome script would otherwise clear the rule.
+    return [
+      {
+        file,
+        check: 'chrome-jsdoc-unparseable',
+        message: `${file} did not parse as a script (${toError(error).message}); its JSDoc was not checked.`,
+        severity: 'notice',
+      },
+    ];
+  }
   const jsdocIssues = validateChromeScriptJsDoc(content, { classMethodMode: mode });
   return jsdocIssues.map((issue) => ({
     file,

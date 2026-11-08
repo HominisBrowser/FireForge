@@ -52,6 +52,8 @@ export interface CheckPlanInput {
   furnaceConfigured: boolean;
   /** Resolved `--patches` filenames, forwarded to status, verify and lint. */
   patches?: string[] | undefined;
+  /** Deterministic planning callers do not inherit the current process argv. */
+  invocation?: { command: string; prefix: string[] };
 }
 
 /**
@@ -106,6 +108,7 @@ export function summarizeStatus(output: {
 }): string {
   const doc = parseJsonDocument(output.stdout) as
     | {
+        authority?: string;
         summary?: { total?: number };
         check?: { offenders?: { classification: string; count: number }[] };
       }
@@ -114,6 +117,10 @@ export function summarizeStatus(output: {
   const offenders = doc.check?.offenders ?? [];
   if (offenders.length > 0) {
     return offenders.map((entry) => `${entry.count} ${entry.classification}`).join(', ');
+  }
+  // A source-mode document counts the captured paths, not changes.
+  if (doc.authority === 'authored') {
+    return `${doc.summary.total ?? 0} captured path(s), none failing`;
   }
   return `${doc.summary.total ?? 0} changed file(s), none failing`;
 }
@@ -215,7 +222,7 @@ function shellInvocation(commandLine: string): { command: string; args: string[]
  */
 export function buildCheckPlan(input: CheckPlanInput): CheckStepPlan[] {
   const { projectRoot, config } = input;
-  const invocation = fireforgeInvocation();
+  const invocation = input.invocation ?? fireforgeInvocation();
   const check = config.check ?? {};
   const patchArgs = input.patches !== undefined ? ['--patches', input.patches.join(',')] : [];
   const lintWarnings =
@@ -246,15 +253,18 @@ export function buildCheckPlan(input: CheckPlanInput): CheckStepPlan[] {
       invocation,
       projectRoot,
       'lint',
-      [
-        'lint',
-        '--per-patch',
-        '--notices',
-        'summary',
-        ...lintWarnings,
-        ...lintReportArgs,
-        ...patchArgs,
-      ],
+      // Source mode lints the tree as a whole: it has no patches to report per patch.
+      config.sources === undefined
+        ? [
+            'lint',
+            '--per-patch',
+            '--notices',
+            'summary',
+            ...lintWarnings,
+            ...lintReportArgs,
+            ...patchArgs,
+          ]
+        : ['lint', ...lintWarnings],
       generic,
       { timeoutMs: timeoutMs('lint') }
     ),
@@ -284,6 +294,13 @@ export function buildCheckPlan(input: CheckPlanInput): CheckStepPlan[] {
       { timeoutMs: timeoutMs('token-coverage') }
     ),
   ];
+
+  if (config.sources) {
+    // The generated jsconfigs/tag map are inputs to the source-native checks.
+    for (const step of plan) {
+      if (step.name === 'lint' || step.name === 'verify') step.after = ['typecheck'];
+    }
+  }
 
   for (const step of check.extraSteps ?? []) {
     const shell = shellInvocation(step.command);

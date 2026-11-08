@@ -10,7 +10,6 @@ import MagicString from 'magic-string';
 
 import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import {
   type AcornESTreeNode,
   asEstree,
@@ -19,6 +18,7 @@ import {
   parseScript,
   walkAST,
 } from './ast-utils.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
 import { isInternalInvariantFailure, withParserFallback } from './parser-fallback.js';
 import {
   assertBraceBalancePreserved,

@@ -10,7 +10,6 @@ export interface ParserFallbackEvent {
 
 const parserFallbackEvents: ParserFallbackEvent[] = [];
 
-/** Returns recorded parser fallback events without clearing the event buffer. */
 /** Returns and clears the recorded parser fallback events. */
 export function consumeParserFallbackEvents(): ParserFallbackEvent[] {
   const events = [...parserFallbackEvents];
@@ -18,10 +17,6 @@ export function consumeParserFallbackEvents(): ParserFallbackEvent[] {
   return events;
 }
 
-/**
- * Result of a parser-with-fallback invocation, carrying both the computed
- * value and metadata about which code path produced it.
- */
 /**
  * The `rethrowIf` predicate every AST-primary caller wants.
  *
@@ -40,6 +35,10 @@ export function isInternalInvariantFailure(error: unknown): boolean {
   return error instanceof GeneralError;
 }
 
+/**
+ * Result of a parser-with-fallback invocation, carrying both the computed
+ * value and metadata about which code path produced it.
+ */
 export interface ParserResult<T> {
   /** The computed value (from either the primary or fallback path). */
   value: T;

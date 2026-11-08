@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { Command } from 'commander';
 
-import { getProjectPaths } from '../core/config.js';
+import { authoringProjectPaths } from '../core/authored/writer.js';
 import { registerFile } from '../core/moz-manifest-rules.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
@@ -53,7 +53,7 @@ export async function registerCommand(
 
   // Verify the file exists in engine/ (skip for dry-run)
   if (!options.dryRun) {
-    const paths = getProjectPaths(projectRoot);
+    const paths = await authoringProjectPaths(projectRoot);
     const fullPath = join(paths.engine, engineRelativePath);
     if (!(await pathExists(fullPath))) {
       throw new InvalidArgumentError(`File not found in engine: ${engineRelativePath}`, 'path');

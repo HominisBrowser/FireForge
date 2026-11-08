@@ -101,8 +101,7 @@ function validateFireForgeState(data: unknown): FireForgeState {
 
 async function recoverInvalidProjectState(
   statePath: string,
-  result: StateValidationResult,
-  alreadyLocked = false
+  result: StateValidationResult
 ): Promise<FireForgeState> {
   const recover = async (): Promise<FireForgeState> => {
     const quarantinedFile = await quarantineStateFile(statePath);
@@ -126,7 +125,7 @@ async function recoverInvalidProjectState(
     return result.state;
   };
 
-  return alreadyLocked ? recover() : withStateFileLock(statePath, recover);
+  return recover();
 }
 
 async function loadStateFromPath(
@@ -137,25 +136,22 @@ async function loadStateFromPath(
     return {};
   }
 
+  let result: StateValidationResult;
   try {
     const data = await readJson<unknown>(statePath);
-    const result = sanitizeProjectState(data);
-    if (result.issues.length === 0) {
-      return result.state;
-    }
-
-    return await recoverInvalidProjectState(statePath, result, alreadyLocked);
+    result = sanitizeProjectState(data);
   } catch (error: unknown) {
-    return await recoverInvalidProjectState(
-      statePath,
-      {
-        state: {},
-        issues: [`the file could not be parsed: ${toError(error).message}`],
-        recoveredFields: [],
-      },
-      alreadyLocked
-    );
+    result = {
+      state: {},
+      issues: [`the file could not be parsed: ${toError(error).message}`],
+      recoveredFields: [],
+    };
   }
+  if (result.issues.length === 0) return result.state;
+  // A writer may have repaired this file since the optimistic read. Recovery
+  // must inspect the current bytes under the same lock as transactional updates.
+  if (!alreadyLocked) return withStateFileLock(statePath, () => loadStateFromPath(statePath, true));
+  return recoverInvalidProjectState(statePath, result);
 }
 
 /**

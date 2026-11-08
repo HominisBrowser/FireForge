@@ -16,6 +16,7 @@ import type {
 import { toError } from '../utils/errors.js';
 import { type ParsedRecord, parseObject } from '../utils/parse.js';
 import { isContainedRelativePath } from '../utils/paths.js';
+import { assertKnownConfigKeys } from './config-validate-keys.js';
 
 const PATCH_POLICY_MUTATION_MODES: readonly PatchPolicyMutationMode[] = ['error', 'warn', 'force'];
 
@@ -284,6 +285,22 @@ function parsePatchPolicyContentRules(rec: ParsedRecord, out: PatchPolicyConfig)
 
 /** Parses and validates the optional patch policy config block. */
 export function parsePatchPolicyBlock(rec: ParsedRecord): PatchPolicyConfig {
+  assertKnownConfigKeys(
+    rec.keys(),
+    [
+      'filenamePattern',
+      'requireDescription',
+      'allowGaps',
+      'mutationMode',
+      'ranges',
+      'reservedRanges',
+      'upstreamAllowlist',
+      'addOnlyMarker',
+      'scopeRules',
+      'verifyDocumentPaths',
+    ],
+    'patchPolicy'
+  );
   const out: PatchPolicyConfig = { ranges: [] };
 
   const filenamePattern = optionalConfigString(

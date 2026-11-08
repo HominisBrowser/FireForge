@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
@@ -14,6 +15,7 @@ import {
   restoreRollbackJournal,
   restoreRollbackJournalOrThrow,
   type RollbackJournal,
+  trackRollbackMutations,
 } from './furnace-rollback.js';
 
 /** Sidecar lock filename used to serialize concurrent furnace mutations. */
@@ -35,12 +37,20 @@ export type FurnaceShutdownSignal = 'SIGINT' | 'SIGTERM';
  */
 export interface FurnaceOperationContext {
   /**
-   * Registers the rollback journal for the current operation. Must be called
-   * once the body has constructed its journal so the signal handler can find
-   * it. Calling more than once replaces the prior reference (this is fine for
-   * commands that build the journal lazily).
+   * Registers the rollback journal for the current unit of work. Must be
+   * called once the body has constructed its journal so the signal handler
+   * can find it. Calling again starts a new unit: it replaces the prior
+   * journal and re-arms the rollback latch, so a mutation made of several
+   * independent units (a named deploy of several components) restores each
+   * unit's journal once.
    */
   registerJournal(journal: RollbackJournal): void;
+  /**
+   * Declares that the registered unit committed, so a later failure or signal
+   * in the same mutation does not restore its files. Callers invoke it right
+   * after the unit's state is durably persisted.
+   */
+  commitJournal(): void;
   /**
    * Registers an extra cleanup callback to run during signal-driven teardown
    * in addition to the journal restore. Used by `furnace preview` to make
@@ -53,14 +63,14 @@ export interface FurnaceOperationContext {
    * Declares that the body has already restored its own journal, so the
    * wrapper's throw-path rollback must not restore it a second time.
    *
-   * Bodies that catch-and-restore on their own (the `furnace/*` command
-   * bodies, `furnace-apply`) call this from their catch block after the
-   * restore, then re-throw. Without it the wrapper would restore the same
-   * journal again on the way out. That is harmless for the file writes,
-   * which are rename-based and converge, but it would race a second
-   * `pendingRepair` write against the state-file lock.
+   * Bodies that catch-and-restore on their own call this from their catch
+   * block after the restore, then re-throw, so the wrapper does not restore
+   * the same journal a second time and race a second `pendingRepair` write
+   * against the state-file lock.
    */
   markRolledBack(): void;
+  /** Registers and joins the actual restore, including signal-driven shutdown. */
+  runRollback?(restore: () => Promise<void>): Promise<void>;
 }
 
 /** Options for `runFurnaceMutation`. */
@@ -80,13 +90,10 @@ export interface RunFurnaceMutationOptions {
    * Override the default 30 s furnace-lock timeout.
    *
    * Set from the caller's resolved `--wait-lock` budget, so one flag governs
-   * both locks a furnace mutation takes. Before that it was declared and
-   * never passed: `furnace deploy --wait-lock 1800` waited 1800 s for the
-   * engine session lock and then met `.fireforge/furnace.lock` with a fixed
-   * 30 s, which is the worst shape a budget can have: it pays the whole
-   * wait and still refuses. Every furnace leaf that takes this lock threads
-   * its `--wait-lock` here. When absent, {@link sessionWaitLockMs} supplies
-   * the session-wide budget (`FIREFORGE_WAIT_LOCK`).
+   * both locks a furnace mutation takes (the engine session lock and this
+   * one). Every furnace leaf that takes this lock threads its `--wait-lock`
+   * here. When absent, {@link sessionWaitLockMs} supplies the session-wide
+   * budget (`FIREFORGE_WAIT_LOCK`).
    */
   lockTimeoutMs?: number;
   /**
@@ -104,9 +111,7 @@ export interface RunFurnaceMutationOptions {
  * unconditionally without assigning `undefined` under
  * `exactOptionalPropertyTypes`.
  *
- * A helper rather than three inline spreads: the seconds-to-milliseconds
- * conversion is exactly the kind of thing that gets copied once correctly
- * and once with the factor dropped.
+ * One helper owns the seconds-to-milliseconds conversion.
  *
  * @param waitLockSeconds - Resolved budget in seconds, or undefined
  * @returns `{ lockTimeoutMs }`, or `{}` when no budget applies
@@ -133,37 +138,41 @@ interface ActiveFurnaceOperation {
    *  a signal arrives during the finally-block cleanup window. */
   completed?: boolean;
   /**
-   * Which path, if any, has claimed this operation's rollback.
-   *
-   * Both the throw path (`runFurnaceMutation`'s catch) and the signal path
-   * (`rollbackActiveOperationsForSignal`) can reach the same journal: a
-   * SIGINT landing mid-throw-path-restore finds the operation still in
-   * `activeOperations` with `completed !== true`, because `completed` is
-   * only set in the finally that runs after the catch. This field is the
-   * interlock: whichever path gets there first claims it synchronously,
-   * before its first await, and the other skips. It is per-operation
-   * rather than module-scoped because the registry is keyed to allow
-   * concurrent operations.
+   * Rollback latch for the registered journal. The throw path and the signal
+   * path can reach the same journal (a SIGINT landing mid-restore finds the
+   * operation still active), so whichever starts the restore first records
+   * its promise and the other joins it. `registerJournal`/`commitJournal`
+   * clear a settled latch so the next unit restores independently.
    */
   rollbackState?: 'in-flight' | 'done';
+  rollbackPromise?: Promise<void>;
+  /** True while this operation's in-flight sidecar exists. */
+  inflightRecorded?: boolean;
 }
 
 /**
- * Claims the rollback for one operation, or reports that another path
- * already has it.
- *
- * Must stay synchronous and must be called before the caller's first
- * await. That is what makes the claim atomic against the signal handler.
- *
- * @param operation - The in-flight operation to claim
- * @returns True when the caller now owns the rollback
+ * Runs `restore` as the registered journal's rollback unless one already
+ * ran or is running, in which case the existing one is returned. Stays
+ * synchronous up to the latch update, which is what makes the claim atomic
+ * against the signal handler.
  */
-function claimRollback(operation: ActiveFurnaceOperation): boolean {
-  if (operation.rollbackState !== undefined) {
-    return false;
-  }
-  operation.rollbackState = 'in-flight';
-  return true;
+function rollbackOnce(op: ActiveFurnaceOperation, restore: () => Promise<void>): Promise<void> {
+  if (op.rollbackPromise) return op.rollbackPromise;
+  if (op.rollbackState === 'done') return Promise.resolve();
+  op.rollbackState = 'in-flight';
+  op.rollbackPromise = Promise.resolve()
+    .then(restore)
+    .finally(() => {
+      op.rollbackState = 'done';
+    });
+  return op.rollbackPromise;
+}
+
+/** Re-arms the latch for a new unit; an in-flight restore keeps its claim. */
+function rearmRollback(op: ActiveFurnaceOperation): void {
+  if (op.rollbackState === 'in-flight') return;
+  delete op.rollbackState;
+  delete op.rollbackPromise;
 }
 
 const activeOperations = new Map<number, ActiveFurnaceOperation>();
@@ -238,99 +247,49 @@ export async function rollbackActiveOperationsForSignal(
   warn(`Received ${signal}; rolling back in-flight furnace mutations…`);
 
   for (const op of snapshot) {
-    // The body may already be rolling back on its own throw path. Claim the
-    // operation (or skip it) before the first await so the two paths cannot
-    // both restore the same journal.
-    if (!claimRollback(op)) {
-      verbose(`Rollback for ${op.kind} already in progress; leaving it to the throw path.`);
-      continue;
-    }
-
-    const cleanupErrors: string[] = [];
-
-    // Run extra cleanup callbacks first (e.g. preview's cleanStories), so the
-    // engine is in its tidiest possible shape before the journal restore
-    // writes the original file contents back over the top.
-    for (const cleanup of op.cleanups) {
-      try {
-        await withTimeout(cleanup(), SIGNAL_ROLLBACK_TIMEOUT_MS, 'Cleanup callback');
-      } catch (error: unknown) {
-        cleanupErrors.push(toError(error).message);
-      }
-    }
-
-    if (!op.journal) {
-      // The body had not yet handed us a journal, so there is nothing to
-      // roll back. We still write a marker because the body may have started
-      // mutating the engine before reaching the registerJournal call.
-      const cleanupSuffix =
-        cleanupErrors.length > 0 ? `; cleanup errors: ${cleanupErrors.join('; ')}` : '';
-      await persistPendingRepair(
-        op.root,
-        op.kind,
-        `interrupted by ${signal} before any state was captured${cleanupSuffix}`
-      ).catch((error: unknown) => {
-        warn(`Could not persist pending-repair marker: ${toError(error).message}`);
-      });
-      continue;
-    }
-
-    let rollbackError: string | undefined;
-    try {
-      await withTimeout(
-        restoreRollbackJournal(op.journal),
-        SIGNAL_ROLLBACK_TIMEOUT_MS,
-        'Rollback journal restore'
-      );
-    } catch (error: unknown) {
-      rollbackError = toError(error).message;
-    }
-    op.rollbackState = 'done';
-
-    // A clean signal-driven rollback is not itself a repairable problem:
-    // preview/apply/deploy/remove were interrupted, but the engine was restored
-    // successfully and the next `doctor` run should remain green. Persist a
-    // pending-repair marker only when rollback was incomplete or uncertain.
-    if (rollbackError || cleanupErrors.length > 0) {
-      const reasonParts: string[] = [`interrupted by ${signal}`];
-      if (rollbackError) {
-        reasonParts.push(`automatic rollback failed: ${rollbackError}`);
-      } else {
-        reasonParts.push('automatic rollback succeeded');
-      }
-      if (cleanupErrors.length > 0) {
-        reasonParts.push(`cleanup errors: ${cleanupErrors.join('; ')}`);
-      }
-      await persistPendingRepair(op.root, op.kind, reasonParts.join('; ')).catch(
-        (error: unknown) => {
-          warn(`Could not persist pending-repair marker: ${toError(error).message}`);
-        }
-      );
-    }
+    await rollbackOperation(op, { kind: 'signal', signal });
   }
 }
 
+type RollbackCause = { kind: 'signal'; signal: FurnaceShutdownSignal } | { kind: 'throw' };
+
 /**
- * Rolls back one operation whose body threw, mirroring the signal path.
- *
- * Never throws: the body's own error is what the operator needs to see, so
- * a rollback failure becomes a `pendingRepair` marker plus a warning
- * rather than replacing it. Skips entirely when the body already restored
- * its own journal and said so via `ctx.markRolledBack()`.
- *
- * @param operation - The in-flight operation whose body threw
+ * Rolls back one operation for either cause, joining a restore a body-owned
+ * path already started. The signal cause bounds the join and records a marker
+ * when it fails; the throw cause never throws, because the body's own error is
+ * what the operator needs to see.
  */
-async function rollbackOperationForThrow(operation: ActiveFurnaceOperation): Promise<void> {
-  if (!claimRollback(operation)) {
-    return;
+async function rollbackOperation(op: ActiveFurnaceOperation, cause: RollbackCause): Promise<void> {
+  const joined = op.rollbackPromise !== undefined;
+  const promise = rollbackOnce(op, () => restoreOperation(op, cause));
+  if (!joined) {
+    await promise;
+  } else {
+    try {
+      await withTimeout(promise, SIGNAL_ROLLBACK_TIMEOUT_MS, 'In-flight rollback');
+    } catch (error) {
+      if (cause.kind === 'signal') {
+        await persistPendingRepair(
+          op.root,
+          op.kind,
+          `interrupted by ${cause.signal}; rollback incomplete: ${toError(error).message}`
+        );
+      }
+    }
   }
+  // An uncertain outcome has already written its own marker; the sidecar only
+  // distinguishes a clean exit from a killed process.
+  await clearInflightRecord(op);
+}
 
+/** Runs the cleanups, then restores the journal, recording a marker when the result is uncertain. */
+async function restoreOperation(op: ActiveFurnaceOperation, cause: RollbackCause): Promise<void> {
   const cleanupErrors: string[] = [];
+  const subject = cause.kind === 'signal' ? `interrupted by ${cause.signal}` : `${op.kind} failed`;
 
-  // Cleanups before the journal restore, for the same reason the signal path
-  // does it in that order: the restore writes original contents back, and it
-  // should do so over the tidiest possible tree.
-  for (const cleanup of operation.cleanups) {
+  // Cleanups run before the journal restore so the restore writes original
+  // contents back over the tidiest possible tree.
+  for (const cleanup of op.cleanups) {
     try {
       await withTimeout(cleanup(), SIGNAL_ROLLBACK_TIMEOUT_MS, 'Cleanup callback');
     } catch (error: unknown) {
@@ -338,58 +297,155 @@ async function rollbackOperationForThrow(operation: ActiveFurnaceOperation): Pro
     }
   }
 
-  if (!operation.journal) {
-    // Nothing was captured, so there is nothing to restore. Unlike the signal
-    // path we do not write a pendingRepair marker here: a body that threw
-    // before registering a journal is overwhelmingly a refusal raised during
-    // pre-flight (a validation failure, a missing file), and marking the root
-    // as needing repair would block every later furnace mutation behind a
-    // `doctor --repair-furnace` that has nothing to reconcile. Bodies that
-    // genuinely mutate before registering a journal are the ones the
-    // journal-before-mutation assertions catch.
-    operation.rollbackState = 'done';
-    if (cleanupErrors.length > 0) {
-      warn(`Cleanup after a failed ${operation.kind} reported: ${cleanupErrors.join('; ')}`);
+  const recordMarker = (reason: string): Promise<void> =>
+    persistPendingRepair(op.root, op.kind, reason).catch((error: unknown) => {
+      warn(`Could not persist pending-repair marker: ${toError(error).message}`);
+    });
+
+  if (!op.journal) {
+    if (cause.kind === 'throw') {
+      // A body that threw before registering a journal is overwhelmingly a
+      // refusal raised during pre-flight, and marking the root as needing
+      // repair would block every later furnace mutation behind a `doctor
+      // --repair-furnace` that has nothing to reconcile.
+      if (cleanupErrors.length > 0) {
+        warn(`Cleanup after a failed ${op.kind} reported: ${cleanupErrors.join('; ')}`);
+      }
+      return;
     }
+    // A signal can land after the body started mutating but before it
+    // registered a journal, so the marker is written regardless.
+    const suffix = cleanupErrors.length > 0 ? `; cleanup errors: ${cleanupErrors.join('; ')}` : '';
+    await recordMarker(`${subject} before any state was captured${suffix}`);
     return;
   }
 
   let rollbackError: string | undefined;
   try {
     await withTimeout(
-      restoreRollbackJournal(operation.journal),
+      restoreRollbackJournal(op.journal),
       SIGNAL_ROLLBACK_TIMEOUT_MS,
       'Rollback journal restore'
     );
   } catch (error: unknown) {
     rollbackError = toError(error).message;
   }
-  operation.rollbackState = 'done';
 
+  // A clean rollback is not itself a repairable problem: the engine was
+  // restored and the next `doctor` run stays green.
   if (!rollbackError && cleanupErrors.length === 0) {
-    verbose(`Rolled back ${operation.kind} after a failure; engine restored.`);
+    if (cause.kind === 'throw') verbose(`Rolled back ${op.kind} after a failure; engine restored.`);
     return;
   }
 
-  const reasonParts: string[] = [`${operation.kind} failed`];
+  const reasonParts: string[] = [subject];
   if (rollbackError) {
     reasonParts.push(`automatic rollback failed: ${rollbackError}`);
-    warn(
-      `Automatic rollback after a failed ${operation.kind} did not complete: ${rollbackError}. ` +
-        'Run "fireforge doctor --repair-furnace" to reconcile.'
-    );
+    if (cause.kind === 'throw') {
+      warn(
+        `Automatic rollback after a failed ${op.kind} did not complete: ${rollbackError}. ` +
+          'Run "fireforge doctor --repair-furnace" to reconcile.'
+      );
+    }
   } else {
     reasonParts.push('automatic rollback succeeded');
   }
   if (cleanupErrors.length > 0) {
     reasonParts.push(`cleanup errors: ${cleanupErrors.join('; ')}`);
   }
+  await recordMarker(reasonParts.join('; '));
+}
 
-  await persistPendingRepair(operation.root, operation.kind, reasonParts.join('; ')).catch(
-    (error: unknown) => {
-      warn(`Could not persist pending-repair marker: ${toError(error).message}`);
-    }
+/**
+ * Operations whose partial effects a rerun does not repair: authoring and
+ * removal edit `furnace.json`, `components/` and registrations together, so
+ * they keep an in-flight sidecar for the duration. Apply, deploy and preview
+ * are idempotent and self-heal when rerun.
+ */
+/** Sidecar filename for {@link adoptCrashedFurnaceMutation}. */
+const FURNACE_INFLIGHT_FILENAME = 'furnace-inflight.json';
+
+interface InflightRecord {
+  operation: FurnacePendingRepairOperation;
+  pid: number;
+  startedAt: string;
+}
+
+const CRASH_MARKED_OPERATIONS: ReadonlySet<FurnacePendingRepairOperation> = new Set([
+  'remove-rollback',
+  'create-rollback',
+  'override-rollback',
+  'scan-rollback',
+  'rename-rollback',
+  'refresh-rollback',
+  'chrome-doc-rollback',
+]);
+
+/** Sidecar recording the crash-marked operation that holds the furnace lock. */
+function getInflightPath(root: string): string {
+  return join(root, FIREFORGE_DIR, FURNACE_INFLIGHT_FILENAME);
+}
+
+/**
+ * Records the operation in a sidecar before its first mutation. The sidecar
+ * is not part of `furnace-state.json`, so readers that never take the lock
+ * (`status`, `doctor`, a peer's build) cannot mistake a live mutation for a
+ * failed one.
+ */
+async function writeInflightRecord(op: ActiveFurnaceOperation): Promise<void> {
+  if (!CRASH_MARKED_OPERATIONS.has(op.kind)) return;
+  const record: InflightRecord = {
+    operation: op.kind,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+  };
+  await mkdir(join(op.root, FIREFORGE_DIR), { recursive: true });
+  await writeFile(getInflightPath(op.root), JSON.stringify(record));
+  op.inflightRecorded = true;
+}
+
+/** Removes this operation's sidecar once its outcome is known and recorded. */
+async function clearInflightRecord(op: ActiveFurnaceOperation): Promise<void> {
+  if (!op.inflightRecorded) return;
+  op.inflightRecorded = false;
+  try {
+    await rm(getInflightPath(op.root), { force: true });
+  } catch (error: unknown) {
+    warn(`Could not remove the in-flight furnace record: ${toError(error).message}`);
+  }
+}
+
+/**
+ * Converts the sidecar a killed process left behind into a real
+ * `pendingRepair` marker, so a torn authoring or removal operation is
+ * visible to `doctor` and refused by the next mutation. A hard kill (SIGKILL,
+ * OOM, power loss) cannot roll back, and these operations are not repaired by
+ * a rerun.
+ *
+ * @param root - Project root
+ * @param holdsLock - True when the caller holds the furnace lock, so no live
+ *   process can own the sidecar; otherwise the lock must be free
+ * @returns True when a marker was written
+ */
+export async function adoptCrashedFurnaceMutation(
+  root: string,
+  holdsLock: boolean
+): Promise<boolean> {
+  let record: InflightRecord;
+  try {
+    record = JSON.parse(await readFile(getInflightPath(root), 'utf8')) as InflightRecord;
+  } catch {
+    return false;
+  }
+  if (!holdsLock && (await readLockStatus(getFurnaceLockPath(root))).held) return false;
+  await persistPendingRepair(
+    root,
+    record.operation,
+    `the process (pid ${record.pid}) that started it at ${record.startedAt} ended before it finished or rolled back, ` +
+      'so furnace.json, components/ and the engine may be partially modified'
   );
+  await rm(getInflightPath(root), { force: true });
+  return true;
 }
 
 async function persistPendingRepair(
@@ -407,6 +463,18 @@ async function persistPendingRepair(
   }));
 }
 
+/** Refuses a mutation while a previous operation's repair marker is set. */
+async function assertNoPendingRepair(root: string): Promise<void> {
+  const { pendingRepair } = await loadFurnaceState(root);
+  if (pendingRepair) {
+    throw new FurnaceError(
+      `A previous "${pendingRepair.operation}" left the engine in an inconsistent state ` +
+        `(${pendingRepair.reason}). Run "fireforge doctor --repair-furnace" to reconcile ` +
+        'before running further furnace mutations.'
+    );
+  }
+}
+
 /**
  * Resolves the path of the lock directory used to serialize furnace mutations
  * for a given project root. Exposed for tests. Production callers should not
@@ -420,18 +488,13 @@ export function getFurnaceLockPath(root: string): string {
  * Completes the rollback for a mutation body that owns its journal end to
  * end, then rethrows. Never returns normally.
  *
- * Shaped as a catch-body handler rather than a `withJournalRollback(body)`
- * wrapper on purpose: the eight calling bodies differ in early returns and
- * in what they close over, and converting them to callbacks would
- * restructure control flow through the engine's rollback path for a
- * cosmetic gain.
+ * Shaped as a catch-body handler because the calling bodies differ in early
+ * returns and in what they close over.
  *
- * The ordering is the part worth centralising: `markRolledBack()` must run
- * before the restore, so a restore that itself fails does not leave the
- * lifecycle wrapper replaying the same journal on the way out. The
- * original error is rethrown unless the rollback is what failed: the
- * operator needs to know what went wrong, and separately whether the engine
- * could be put back.
+ * The restore promise is registered before its work starts, so shutdown can
+ * join it rather than skipping an in-flight journal. Completion is recorded
+ * only when restoration settles. The original error is rethrown unless the
+ * rollback itself failed; incomplete restoration records pending repair.
  *
  * @param ctx - The furnace operation context from `runFurnaceMutation`
  * @param journal - Rollback journal this body populated
@@ -452,20 +515,32 @@ export async function completeJournalRollback(
     subject: string;
   }
 ): Promise<never> {
-  // This body owns its rollback end to end, so tell the lifecycle wrapper
-  // not to restore the same journal again on the way out.
-  ctx.markRolledBack();
-  try {
-    await restoreRollbackJournalOrThrow(journal, options.failureMessage);
-  } catch (rollbackError: unknown) {
-    await recordFurnaceRollbackFailure(
-      options.projectRoot,
-      options.operation,
-      `${options.subject}: ${toError(rollbackError).message}`
-    );
-    throw rollbackError;
-  }
+  await runFurnaceRollback(ctx, async () => {
+    try {
+      await restoreRollbackJournalOrThrow(journal, options.failureMessage);
+    } catch (rollbackError: unknown) {
+      await recordFurnaceRollbackFailure(
+        options.projectRoot,
+        options.operation,
+        `${options.subject}: ${toError(rollbackError).message}`
+      );
+      throw rollbackError;
+    }
+  });
   throw error;
+}
+
+/** Keep every body-owned restore visible to bounded shutdown until it actually settles. */
+export async function runFurnaceRollback(
+  ctx: FurnaceOperationContext | undefined,
+  restore: () => Promise<void>
+): Promise<void> {
+  if (ctx?.runRollback) return ctx.runRollback(restore);
+  try {
+    await restore();
+  } finally {
+    ctx?.markRolledBack();
+  }
 }
 
 /**
@@ -529,6 +604,7 @@ export async function runFurnaceMutation<T>(
     // is still given a no-op context so callers can use the same shape.
     return body({
       registerJournal: () => undefined,
+      commitJournal: () => undefined,
       registerCleanup: () => undefined,
       markRolledBack: () => undefined,
     });
@@ -537,15 +613,9 @@ export async function runFurnaceMutation<T>(
   // Pre-flight: refuse to mutate when a previous operation left the engine in
   // a partially-rolled-back state. The user must run `fireforge doctor
   // --repair-furnace` to reconcile before any new mutations can proceed.
+  // Checked again under the lock, where it is authoritative.
   if (!options.skipPendingRepairCheck) {
-    const state = await loadFurnaceState(root);
-    if (state.pendingRepair) {
-      throw new FurnaceError(
-        `A previous "${state.pendingRepair.operation}" left the engine in an inconsistent state ` +
-          `(${state.pendingRepair.reason}). Run "fireforge doctor --repair-furnace" to reconcile ` +
-          'before running further furnace mutations.'
-      );
-    }
+    await assertNoPendingRepair(root);
   }
 
   const token = nextOperationToken++;
@@ -588,19 +658,37 @@ export async function runFurnaceMutation<T>(
           `(held by PID ${lockStatus.holder?.pid}, we are ${process.pid})`
       );
 
+      await adoptCrashedFurnaceMutation(root, true);
+      if (!options.skipPendingRepairCheck) {
+        await assertNoPendingRepair(root);
+      }
+
       activeOperations.set(token, operation);
       try {
-        return await body({
-          registerJournal: (journal) => {
-            operation.journal = journal;
-          },
-          registerCleanup: (cleanup) => {
-            operation.cleanups.push(cleanup);
-          },
-          markRolledBack: () => {
-            operation.rollbackState = 'done';
-          },
-        });
+        await writeInflightRecord(operation);
+        const outcome = await trackRollbackMutations(
+          () => operation.journal,
+          () =>
+            body({
+              registerJournal: (journal) => {
+                operation.journal = journal;
+                rearmRollback(operation);
+              },
+              commitJournal: () => {
+                delete operation.journal;
+                rearmRollback(operation);
+              },
+              registerCleanup: (cleanup) => {
+                operation.cleanups.push(cleanup);
+              },
+              markRolledBack: () => {
+                operation.rollbackState = 'done';
+              },
+              runRollback: (restore) => rollbackOnce(operation, restore),
+            })
+        );
+        await clearInflightRecord(operation);
+        return outcome;
       } catch (error: unknown) {
         // A thrown error leaves the engine mutated exactly as a signal does,
         // so it gets the same treatment. A bare finally here would
@@ -613,9 +701,10 @@ export async function runFurnaceMutation<T>(
         // This runs inside the withFileLock callback, so the furnace lock is
         // still held for the duration of the restore: a competing process
         // cannot start mutating half-way through it.
-        await rollbackOperationForThrow(operation);
+        await rollbackOperation(operation, { kind: 'throw' });
         throw error;
       } finally {
+        if (operation.rollbackPromise) await operation.rollbackPromise.catch(() => undefined);
         operation.completed = true;
         activeOperations.delete(token);
       }

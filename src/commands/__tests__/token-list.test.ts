@@ -23,6 +23,7 @@ vi.mock('../../core/token-manager.js', () => ({
 }));
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
+import { loadConfig } from '../../core/config.js';
 import { info, setMachineOutputMode, setStdoutSealed } from '../../utils/logger.js';
 import { tokenListCommand, tokenShowCommand } from '../token-list.js';
 
@@ -47,6 +48,9 @@ let restoreStdout: () => void;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  vi.mocked(loadConfig).mockResolvedValue({ binaryName: 'mybrowser' } as Awaited<
+    ReturnType<typeof loadConfig>
+  >);
   projectRoot = await mkdtemp(join(tmpdir(), 'ff-token-list-'));
   stdout = [];
   const original = process.stdout.write.bind(process.stdout);
@@ -150,4 +154,33 @@ describe('tokenShowCommand', () => {
       /is not declared .*fireforge token list/s
     );
   });
+});
+
+describe('authored source inventory', () => {
+  it.each([false, true])(
+    'reads authored values when stale engine exists: %s',
+    async (staleEngine) => {
+      if (staleEngine)
+        await seedTokens(TOKENS_CSS.replace('--mybrowser-gap: 8px', '--mybrowser-gap: 99px'));
+      await writeFile(join(projectRoot, 'fireforge.json'), '{}');
+      await mkdir(join(projectRoot, 'source'), { recursive: true });
+      await writeFile(join(projectRoot, 'source', 'tokens.css'), TOKENS_CSS);
+      vi.mocked(loadConfig).mockResolvedValue({
+        binaryName: 'mybrowser',
+        sources: {
+          schemaVersion: 1,
+          mode: 'authored',
+          root: 'source',
+          metadataRoot: '.fireforge-sources',
+          pristineCommit: 'a'.repeat(40),
+        },
+      } as unknown as Awaited<ReturnType<typeof loadConfig>>);
+      await tokenShowCommand(projectRoot, '--mybrowser-gap', { json: true });
+      expect(stdout.join('')).toContain('8px');
+      expect(stdout.join('')).not.toContain('99px');
+      stdout.length = 0;
+      await tokenListCommand(projectRoot, { json: true });
+      expect(stdout.join('')).toContain('8px');
+    }
+  );
 });

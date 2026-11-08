@@ -36,12 +36,12 @@ export type RebasePatchStatus =
  * `rebase --continue` will write it, flipping the status without clearing
  * the failure payload, then persisting that to the session file.
  *
- * The on-disk validator (`isValidPatchEntry`) is not tightened to
- * match, on purpose. The session file carries no schema version, so a stricter
- * validator would reject an older file mid-rebase, where the only remedies
- * discard the operator's in-progress conflict resolution. Instead
- * {@link normalizeEntry} drops payload that does not belong to the status on
- * read, so an older file loads and is corrected rather than refused.
+ * The on-disk validator (`isValidPatchEntry`) is deliberately looser than the
+ * type. The session file carries no schema version, and a stricter validator
+ * would refuse a session mid-rebase, where the only remedies discard the
+ * operator's in-progress conflict resolution. {@link normalizeEntry} instead
+ * drops payload that does not belong to the status on read, so such a file
+ * loads and is corrected rather than refused.
  */
 export type RebasePatchEntry = { filename: string } & (
   | { status: 'pending' | 'applied-clean' | 'skipped' | 'resolved' }

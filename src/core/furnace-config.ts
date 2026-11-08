@@ -232,10 +232,7 @@ function validateFurnaceState(data: unknown): FurnaceState {
   return result.state;
 }
 
-// Single source of truth: the list the union is derived from. The copy
-// this replaced was annotated rather than linked, so it caught a member
-// removed from the union but never one added to it, and listed them in a
-// different order.
+// Single source of truth: the list the union is derived from.
 const PENDING_REPAIR_OPERATIONS = FURNACE_PENDING_REPAIR_OPERATIONS;
 
 function parsePendingRepair(data: unknown): FurnacePendingRepair | { error: string } {

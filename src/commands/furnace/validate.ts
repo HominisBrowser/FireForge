@@ -5,12 +5,15 @@ import { join } from 'node:path';
 import { getProjectPaths } from '../../core/config.js';
 import type { FurnacePaths } from '../../core/furnace-config.js';
 import { getFurnacePaths, loadFurnaceConfig } from '../../core/furnace-config.js';
+import { CUSTOM_ELEMENTS_JS, JAR_MN } from '../../core/furnace-constants.js';
+import { runFurnaceMutation } from '../../core/furnace-operation.js';
 import { assertFurnaceReady } from '../../core/furnace-precondition.js';
 import {
   addCustomElementRegistration,
   addJarMnEntries,
   pruneStaleJarMnEntries,
 } from '../../core/furnace-registration.js';
+import { createRollbackJournal, snapshotFile } from '../../core/furnace-rollback.js';
 import { validateAllComponents, validateComponent } from '../../core/furnace-validate.js';
 import {
   applyValidationExceptions,
@@ -87,6 +90,7 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
       }
     } catch (err: unknown) {
       warn(`Could not prune stale jar.mn lines: ${toError(err).message}`);
+      throw toError(err);
     }
   }
 
@@ -105,6 +109,7 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
       }
     } catch (err: unknown) {
       warn(`Could not fix jar.mn for ${componentName}: ${toError(err).message}`);
+      throw toError(err);
     }
   }
 
@@ -137,9 +142,8 @@ async function autoFixIssues(projectRoot: string, issues: ValidationIssue[]): Pr
       // Idempotent: returns without error when already registered, so this
       // stays a no-op for components whose registration is already correct.
       await addCustomElementRegistration(engineDir, componentName, modulePath);
-    } catch {
-      // Best-effort repair. The re-validation pass at the call site reports
-      // whatever is still outstanding.
+    } catch (error) {
+      throw toError(error);
     }
   }
 
@@ -317,10 +321,30 @@ async function runFurnaceValidate(
   // Gains the engine rung here: this was the one site in the family that
   // checked furnace.json alone, so a validate against a missing engine
   // produced downstream noise instead of the shared precondition refusal.
-  const { config } = await assertFurnaceReady(projectRoot);
+  let { config } = await assertFurnaceReady(projectRoot);
   const furnacePaths = getFurnacePaths(projectRoot);
 
-  const run = await runValidationPass(projectRoot, name, config, furnacePaths);
+  const run = options.fix
+    ? await runFurnaceMutation(projectRoot, 'apply-rollback', async (ctx) => {
+        config = await loadFurnaceConfig(projectRoot);
+        const freshRun = await runValidationPass(projectRoot, name, config, furnacePaths);
+        if (!freshRun) return undefined;
+        const journal = createRollbackJournal();
+        ctx.registerJournal(journal);
+        const { engine } = getProjectPaths(projectRoot);
+        await snapshotFile(journal, join(engine, JAR_MN));
+        await snapshotFile(journal, join(engine, CUSTOM_ELEMENTS_JS));
+        if (exceptRun(freshRun, config).issues.length > 0)
+          await applyAutoFix(
+            projectRoot,
+            config,
+            furnacePaths,
+            freshRun,
+            exceptRun(freshRun, config).issues
+          );
+        return freshRun;
+      })
+    : await runValidationPass(projectRoot, name, config, furnacePaths);
   if (run === undefined) {
     const floor = componentFloorIssue(config, name, 0);
     if (options.json === true) {
@@ -338,20 +362,18 @@ async function runFurnaceValidate(
     return;
   }
 
-  const floor = componentFloorIssue(config, name, run.results.size);
+  const componentNames = [...run.results.keys()].filter(
+    (key) => key in config.custom || key in config.overrides
+  );
+  const floor = componentFloorIssue(config, name, componentNames.length);
   const firstPass = exceptRun(run, config);
   if (floor !== undefined) firstPass.issues.push(floor);
-  renderValidateHuman([...run.results.keys()], firstPass.issues);
+  renderValidateHuman(componentNames, firstPass.issues);
 
-  let outcome = firstPass;
-  if (options.fix && firstPass.issues.length > 0) {
-    await applyAutoFix(projectRoot, config, furnacePaths, run, firstPass.issues);
-    outcome = exceptRun(run, config);
-    if (floor !== undefined) outcome.issues.push(floor);
-  }
+  const outcome = firstPass;
 
   const report = {
-    components: [...run.results.keys()],
+    components: componentNames,
     outcome,
     maxWarnings: options.maxWarnings,
   };

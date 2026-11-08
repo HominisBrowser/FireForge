@@ -20,9 +20,10 @@
 import { dirname, join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { normalizePathSlashes } from '../utils/paths.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
 import { getLicenseHeader } from './license-headers.js';
+import { mozBuildListContains } from './moz-manifest-entries.js';
 import { findAlphabeticalMozBuildPosition } from './moz-manifest-helpers.js';
 import { tokenizeMozBuildList } from './moz-manifest-tokenizers.js';
 
@@ -54,7 +55,7 @@ export function upsertMozBuildListEntry(
   directive: string,
   value: string
 ): string | null {
-  if (content.includes(`"${value}"`)) return null;
+  if (mozBuildListContains(content, directive, value)) return null;
 
   const lines = content.split('\n');
   const listResult = tokenizeMozBuildList(lines, new RegExp(`^${directive}\\b`));

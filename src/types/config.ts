@@ -4,6 +4,15 @@
  */
 export type FirefoxProduct = 'firefox' | 'firefox-esr' | 'firefox-beta' | 'firefox-devedition';
 
+/** Explicit tracked-source authority, fenced from legacy queue-only executables. */
+export interface AuthoredSourceConfig {
+  schemaVersion: 1;
+  mode: 'authored';
+  root: string;
+  metadataRoot: string;
+  pristineCommit: string;
+}
+
 /**
  * Firefox version configuration.
  */
@@ -41,6 +50,43 @@ export type ProjectLicense = 'EUPL-1.2' | 'MPL-2.0' | '0BSD' | 'GPL-2.0-or-later
 export interface BuildConfig {
   /** Number of parallel jobs for mach build */
   jobs?: number;
+  /** How `package --recipe release` differs from a development build. */
+  release?: BuildReleaseConfig;
+}
+
+/** A release build: the generated mozconfig plus a captured overlay, in an object directory of its own. */
+export interface BuildReleaseConfig {
+  /** A captured mozconfig fragment, appended last. */
+  overlay: string;
+  /** Files the overlay reads that are never captured; `host init --release-secrets` names where. */
+  secrets?: {
+    /** The variable the overlay reads the directory from. */
+    variable: string;
+    /** File names that have to be there. A release missing one refuses. */
+    files: string[];
+  };
+  /**
+   * What the job hands back, as paths in the release object directory, such as
+   * `dist/*.app`. A last segment may hold `*`. Each is copied to the step's
+   * output directory at the same relative path.
+   */
+  outputs?: string[];
+}
+
+/** A dependency tree slots hold beside captured source, which no capture carries. */
+export interface DependencyCacheConfig {
+  /** Where the tree is in a checkout, or under `engine/` in the engine a host is set up from. */
+  source: string;
+  /** Where a slot holds it, relative to the slot's root. */
+  target: string;
+  /** The file that states what it should be. Defaults to `package-lock.json` beside the target. */
+  lockfile?: string;
+}
+
+/** What every slot of a project holds. */
+export interface SlotsConfig {
+  /** The root `node_modules` is included without being named. */
+  dependencyCaches?: DependencyCacheConfig[];
 }
 
 /** Test command defaults stored in fireforge.json. */
@@ -53,12 +99,12 @@ export interface TestConfig {
   /** Short no-output ceiling for `fireforge test --canary`, in seconds. */
   canaryTimeoutSeconds?: number;
   /**
-   * What the preflight orphan census does with a harness helper that
-   * survived an earlier run in this objdir: `report` (default) names it and
-   * proceeds; `reap` terminates it and stamps `orphans-reaped=<n>` on the
-   * verdict line. `--reap-orphans` is the per-invocation equivalent.
+   * The preflight census reports unknown helper candidates and proceeds.
+   * `owned` and legacy `reap`/`--reap-orphans` requests never grant ownership:
+   * termination requires this run's recorded PID/start identity, rechecked
+   * at each signal boundary. Path matches and parent death are insufficient.
    */
-  reapOrphans?: 'report' | 'reap';
+  reapOrphans?: 'report' | 'reap' | 'owned';
   /**
    * `fixed` (the default) refuses a browser run while the mochitest server
    * or Marionette port is held. `auto` lets a run proceed when the holder is
@@ -233,10 +279,18 @@ export interface FireForgeConfig {
   binaryName: string;
   /** Firefox version settings */
   firefox: FirefoxConfig;
+  /** Tracked authored postimages and authenticated upstream override metadata. */
+  sources?: AuthoredSourceConfig;
+  /** What `fireforge prove` requires beyond what it derives from a change. */
+  proof?: ProofConfig;
   /** Build settings */
   build?: BuildConfig;
+  /** What a project's slots hold beyond captured source. */
+  slots?: SlotsConfig;
   /** Post-build packaging audit configuration */
   buildAudit?: BuildAuditConfig;
+  /** How `authored export-queue` groups the files the project created. */
+  exportQueue?: ExportQueueConfig;
   /** Test command defaults */
   test?: TestConfig;
   /** Patch history log settings */
@@ -295,6 +349,142 @@ export interface CheckExtraStep {
    * whatever their outcome: an ordering, not a success dependency.
    */
   after?: string[];
+  /**
+   * What the step needs from the host when it runs in a coordinated job. Declared
+   * `static`, it runs no build, browser or Mach, so a check can run beside other
+   * work. Without it the check needs a quiet host and the native toolchain.
+   */
+  footprint?: CheckStepFootprint;
+}
+
+/** How a set of test files is dispatched and what it needs from the host. */
+export interface ProofLaneConfig {
+  id: string;
+  /** Engine paths or globs. A glob matches captured test files; a literal path can name an upstream test. */
+  files: string[];
+  exclude?: string[];
+  /** When set, the lane applies only to a candidate changing one of these globs or one of its files. */
+  owns?: string[];
+  /**
+   * `shards` (default) gives each file its own browser. `one-browser` keeps one
+   * browser across the files, so state accumulates. `standalone` restarts between
+   * files and sets the manifest's `standalone` condition.
+   */
+  dispatch?: 'shards' | 'one-browser' | 'standalone';
+  /** Runs with a visible window, which holds the host's display. */
+  headed?: boolean;
+  /** Runs alone on a drained host. Only a lane that is timing sensitive declares this. */
+  quiet?: boolean;
+  /** Further closed `fireforge test` options. */
+  args?: string[];
+  /**
+   * Environment the harness runs with. A value starting `{artifacts}` names a path in
+   * the step's private output directory. Names the executor owns are refused.
+   */
+  env?: Record<string, string>;
+  /** Gives the harness a private `MOZ_UPLOAD_DIR`, named by `job status`. */
+  uploadDir?: boolean;
+  /** Mach arguments, each of the form `--setpref=<name>=<value>`. */
+  machArgs?: string[];
+  /** Holds a display and idle assertion for the phase, on darwin. Defaults to `headed`. */
+  keepAwake?: boolean;
+  /** Keeps a `headed` lane's own browser frontmost, on darwin, and reads red if it could not. */
+  holdFront?: boolean;
+  /** Runs the browser under a fixed `taskpolicy` clamp. */
+  throttle?: 'background' | 'utility';
+  /**
+   * Runs after the harness exits clean, in the same phase, and reddens the lane on a
+   * nonzero exit: what a harness cannot judge, such as a census or a capture count.
+   */
+  validate?: ProofLaneValidator;
+}
+
+/** An argument vector, never a shell line: `node <script>` or a captured script by its path. */
+export interface ProofLaneValidator {
+  /** `{artifacts}` expands to the step's output directory, in any argument. */
+  command: string[];
+  /** The host resources it uses at its peak, when more than the lane's own. */
+  footprint?: { cpu?: number; memory?: number };
+}
+
+/** A lane repeated, with the files that have to run before it in the same browser. */
+export interface ProofStressConfig extends ProofLaneConfig {
+  repeat: number;
+  /** Runs first in each repeat, in this order, and is part of the required roster. */
+  context?: string[];
+}
+
+/** An expected-red proof: this mutation has to redden exactly these assertions in this test. */
+export interface ProofControlConfig {
+  id: string;
+  /** A captured project file holding the mutation. */
+  diff: string;
+  test: string;
+  assertions: string[];
+  /** The mutation is in compiled source, so the control builds and restores a binary. */
+  compiled?: boolean;
+  /** Runs on every gate, whether or not this candidate changed what it mutates. */
+  always?: boolean;
+}
+
+/** A browser run that has to exit clean, such as a smoke start. */
+export interface ProofRunConfig {
+  id: string;
+  /** Closed `fireforge run` options. */
+  args: string[];
+  quiet?: boolean;
+  /** As on a lane. */
+  env?: Record<string, string>;
+  /** As on a lane. */
+  uploadDir?: boolean;
+  /** As on a lane. Defaults on for a run without `--headless`. */
+  keepAwake?: boolean;
+  /** As on a lane: judges what the run wrote, such as its `--capture-console` file. */
+  validate?: ProofLaneConfig['validate'];
+}
+
+/** Something only a person can decide, such as a visual scene. Only `prove accept` satisfies it. */
+export interface ProofAcceptanceConfig {
+  id: string;
+  reason: string;
+  owns?: string[];
+  /** Obligations whose outputs the person looks at: `prove accept` refuses until they pass on this source. */
+  evidence?: string[];
+}
+
+/** What `prove --tier gate` requires of an integrated candidate, besides `fireforge check`. */
+export interface ProofGateConfig {
+  /** The build the gate runs at least; a change's routes can still require a full one. */
+  build?: 'ui' | 'full';
+  /** The build recipe the gate's evidence has to be of. Defaults to `dev`. */
+  mode?: 'dev' | 'debug' | 'release';
+  check?: { quiet?: boolean };
+  lanes?: ProofLaneConfig[];
+  stress?: ProofStressConfig[];
+  controls?: ProofControlConfig[];
+  runs?: ProofRunConfig[];
+  acceptance?: ProofAcceptanceConfig[];
+}
+
+/** Configuration for `fireforge prove`. Every field is optional. */
+export interface ProofConfig {
+  /** The branch a default base is the merge-base with. Defaults to `main`, then `master`. */
+  mainBranch?: string;
+  /** How many direct consumer tests a task may select before it has to name them. */
+  consumerLimit?: number;
+  /** Project-root globs with no runtime effect. */
+  noneRoutes?: string[];
+  gate?: ProofGateConfig;
+}
+
+/** The host resources one `check.extraSteps[]` entry uses. */
+export interface CheckStepFootprint {
+  /** Runs no build, browser or Mach and only reads captured source. */
+  static: boolean;
+  /** CPUs it keeps busy. Defaults to one. */
+  cpu?: number;
+  /** GiB it uses at its peak. */
+  memory?: number;
 }
 
 /** Configuration for `fireforge check`. Every field is optional. */
@@ -408,6 +598,26 @@ export interface BuildAuditUnpackagedDeclaration {
   path: string;
   /** Why this file is never packaged. Required, non-empty. */
   reason: string;
+}
+
+/** One named patch of project-created files in an exported queue. */
+export interface ExportQueueGroup {
+  /** The patch name, lowercase words joined by hyphens. */
+  name: string;
+  /** Engine-relative globs; a created file joins the first group one of whose globs it matches. */
+  paths: string[];
+}
+
+/** How `authored export-queue` groups the files the project created. */
+export interface ExportQueueConfig {
+  /** Named groups, matched in order; the first match wins. */
+  groups?: ExportQueueGroup[];
+  /**
+   * Byte budget of a directory group for created files no group matches: a
+   * directory whose patch would be larger is split into its own files and
+   * one group per subdirectory. Default 1 MiB.
+   */
+  maxGroupBytes?: number;
 }
 
 /** Post-build packaging audit configuration. */

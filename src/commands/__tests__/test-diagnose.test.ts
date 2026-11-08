@@ -14,6 +14,7 @@ vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { createPostRebuildFailureContext } from '../../core/test-harness-output.js';
 import { info } from '../../utils/logger.js';
+import { reportPreTestFurnace } from '../test-build-furnace.js';
 import { diagnoseShardOutcome, finalizeSingleRunOutcome } from '../test-diagnose.js';
 import type { TestRunOutcome } from '../test-run.js';
 import { resetVerdictEmission } from '../test-verdict.js';
@@ -334,13 +335,95 @@ describe('incomplete exit-0 runs', () => {
   });
 
   it('diagnoseShardOutcome returns the same explanation for a shard', () => {
-    expect(
-      diagnoseShardOutcome(
-        makeOutcome({ exitCode: 0, verdict: { kind: 'test-failures', incomplete } }),
-        PATHS[0] ?? '',
-        'firefox',
-        undefined
-      )
-    ).toContain('mach exited 0, but FireForge did NOT treat the run as passed');
+    const diagnosis = diagnoseShardOutcome(
+      makeOutcome({ exitCode: 0, verdict: { kind: 'test-failures', incomplete } }),
+      PATHS[0] ?? '',
+      'firefox',
+      undefined
+    );
+    expect(diagnosis).toContain('FireForge did NOT treat this incomplete harness run as passed');
+    expect(diagnosis).toContain('only 1 of 2 requested test files started');
+    expect(diagnosis).toContain(incomplete.firstUnstarted);
+  });
+});
+
+describe('failure-adjacent skipped Furnace diagnostics', () => {
+  it('repeats actual skipped undeployed components beside a failure and keeps the verdict last', async () => {
+    await reportPreTestFurnace('/project', { furnaceApplied: 0, reconfigured: false }, false, [
+      'moz-trust-panel',
+      'moz-window-bar',
+    ]);
+    vi.mocked(info).mockClear();
+    const writes: string[] = [];
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      expect(() => {
+        finalizeSingleRunOutcome(
+          makeOutcome({ exitCode: 1, verdict: { kind: 'test-failures' } }),
+          PATHS,
+          'mybrowser',
+          undefined
+        );
+      }).toThrow();
+      expect(info).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'skipped Furnace components with undeployed edits: moz-trust-panel, moz-window-bar'
+        )
+      );
+      expect(info).toHaveBeenCalledWith(
+        expect.stringContaining('fireforge furnace deploy <names>')
+      );
+      expect(writes.at(-1)).toMatch(
+        /^FIREFORGE-VERDICT: FAIL.*furnace-skipped=moz-trust-panel,moz-window-bar/
+      );
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it('includes the hint in an incomplete shard diagnosis without replacing the real failure', async () => {
+    await reportPreTestFurnace('/project', { furnaceApplied: 0, reconfigured: false }, false, [
+      'moz-trust-panel',
+    ]);
+    const message = diagnoseShardOutcome(
+      makeOutcome({
+        exitCode: 1,
+        verdict: {
+          kind: 'test-failures',
+          incomplete: { started: 1, requested: 2, firstUnstarted: 'never-started.js' },
+        },
+      }),
+      PATHS[0] ?? '',
+      'mybrowser',
+      undefined
+    );
+    expect(message).toContain('never-started.js');
+    expect(message).toContain('moz-trust-panel');
+    expect(message).toContain('does not establish the cause');
+  });
+
+  it('does not attach skipped-component advice to a green run or leak it into the next invocation', async () => {
+    await reportPreTestFurnace('/project', { furnaceApplied: 0, reconfigured: false }, false, [
+      'moz-trust-panel',
+    ]);
+    vi.mocked(info).mockClear();
+    finalizeSingleRunOutcome(
+      makeOutcome({ exitCode: 0, verdict: { kind: 'tests-ran-ok' } }),
+      PATHS,
+      'mybrowser',
+      undefined
+    );
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('This failed run skipped'));
+    resetVerdictEmission();
+    const message = diagnoseShardOutcome(
+      makeOutcome({ exitCode: 1, verdict: { kind: 'test-failures' } }),
+      PATHS[0] ?? '',
+      'mybrowser',
+      undefined
+    );
+    expect(message).not.toContain('moz-trust-panel');
   });
 });

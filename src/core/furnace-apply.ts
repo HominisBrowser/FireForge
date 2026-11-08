@@ -12,8 +12,8 @@ import type {
 import { assert } from '../utils/assert.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import { info } from '../utils/logger.js';
-import { captureComponentSources, componentSourceErrors } from './component-source-guard.js';
+import { info, warn } from '../utils/logger.js';
+import { captureComponentSources, componentSourceChanges } from './component-source-guard.js';
 import { getProjectPaths, loadConfig } from './config.js';
 import { assertComponentWriteBoundaries } from './engine-write-boundary.js';
 import {
@@ -34,21 +34,21 @@ import {
   loadPatchClaimsForApply,
   recordOverwriteWarnings,
 } from './furnace-apply-overwrite-warn.js';
+import { persistAppliedComponentChecksums } from './furnace-apply-state.js';
 import {
   buildCustomUndeployActions,
   buildOverrideUndeployActions,
 } from './furnace-apply-undeploy-actions.js';
 import type { FurnacePaths } from './furnace-config.js';
-import {
-  getFurnacePaths,
-  loadFurnaceConfig,
-  loadFurnaceState,
-  updateFurnaceState,
-} from './furnace-config.js';
+import { getFurnacePaths, loadFurnaceConfig, loadFurnaceState } from './furnace-config.js';
 import { CUSTOM_ELEMENTS_JS, JAR_MN, resolveFtlDir } from './furnace-constants.js';
 import { topologicalSortCustom } from './furnace-graph-utils.js';
 import { resolveFurnaceMarkerComment } from './furnace-marker.js';
-import { type FurnaceOperationContext, recordFurnaceRollbackFailure } from './furnace-operation.js';
+import {
+  type FurnaceOperationContext,
+  recordFurnaceRollbackFailure,
+  runFurnaceRollback,
+} from './furnace-operation.js';
 import { assertFurnaceEngineDirReady } from './furnace-precondition.js';
 import { addJarMnEntries, removeCustomElementRegistration } from './furnace-registration.js';
 import { removeJarMnFileEntries } from './furnace-registration-jar-inplace.js';
@@ -61,13 +61,11 @@ import {
 import { blockingStepErrors, hasBlockingStepErrors } from './furnace-step-errors.js';
 import { runPostApplyConsistencyChecks } from './furnace-validate-registration.js';
 
-export { computeComponentChecksums, prefixChecksums } from './furnace-apply-helpers.js';
+export { computeComponentChecksums } from './furnace-apply-helpers.js';
 
 /**
  * Records one component's checksums into the run-wide accumulator, under the
- * flattened `type/name/file` keys the state file stores. A Map keeps the
- * accumulation explicit. The previous `Object.assign` merges read as if
- * they replaced the accumulator rather than adding to it.
+ * flattened `type/name/file` keys the state file stores.
  */
 function recordComponentChecksums(
   accumulator: Map<string, string>,
@@ -245,7 +243,7 @@ async function reconcileCustomRegistrationAfterUndeploy(args: {
     rollbackJournal,
     filesAffected,
   } = args;
-  if (!config.register || deletedFiles.length === 0) return;
+  if (deletedFiles.length === 0) return;
 
   const deletedRegistrationFiles = deletedFiles.filter(
     (f) => f.endsWith('.mjs') || f.endsWith('.css')
@@ -272,7 +270,7 @@ async function reconcileCustomRegistrationAfterUndeploy(args: {
   // If the .mjs file itself was deleted, the customElements registration
   // must go too. Otherwise we leave a dangling import in the Pattern B
   // block that fails at runtime.
-  if (deletedFiles.includes(`${name}.mjs`)) {
+  if (config.register && deletedFiles.includes(`${name}.mjs`)) {
     if (rollbackJournal) {
       await snapshotFile(rollbackJournal, join(engineDir, CUSTOM_ELEMENTS_JS));
     }
@@ -398,8 +396,7 @@ async function applyCustomBatch(
 
       if (!dryRun) {
         // Runs unconditionally, including on the `changed === true` path:
-        // that is when a deployed engine-only fix gets silently replaced
-        // (J6).
+        // that is when a deployed engine-only fix gets silently replaced.
         recordOverwriteWarnings(
           result,
           await findPatchOwnedOverwrites({
@@ -588,7 +585,17 @@ export async function applyAllComponents(
   await applyOverrideBatch(batchContext);
   await applyCustomBatch(batchContext, root, markerComment);
 
-  result.errors.push(...(await componentSourceErrors(sourceSnapshot)));
+  const sourceChanges = await componentSourceChanges(
+    sourceSnapshot,
+    new Set(result.applied.map((entry) => entry.name))
+  );
+  result.errors.push(...sourceChanges.errors);
+  if (sourceChanges.foreign.length > 0) {
+    warn(
+      `Component sources changed during this apply for component(s) it did not deploy: ${sourceChanges.foreign.join(', ')}. ` +
+        'Another session is probably editing them; they are not in this build and stay undeployed.'
+    );
+  }
 
   // Check for any partial failures (blocking step errors on applied
   // components). Advisory step errors (e.g. FTL degradation) are warnings
@@ -597,7 +604,7 @@ export async function applyAllComponents(
 
   // Orphaned components are implicitly cleaned up: newChecksums only
   // contains entries for components that still exist in furnace.json,
-  // and it fully replaces state.appliedChecksums below.
+  // and a run over every component replaces state.appliedChecksums below.
 
   if (!dryRun && !hasApplyStepErrors && result.errors.length === 0) {
     await runPostApplyConsistencyChecks(root, config, result, ftlDir);
@@ -618,9 +625,10 @@ export async function applyAllComponents(
         // This branch owns the rollback for the collected-errors case, so the
         // lifecycle wrapper must not restore the same journal again if the
         // restore below throws on its way out.
-        operationContext?.markRolledBack();
         try {
-          await restoreRollbackJournalOrThrow(rollbackJournal, 'Furnace apply failed');
+          await runFurnaceRollback(operationContext, () =>
+            restoreRollbackJournalOrThrow(rollbackJournal, 'Furnace apply failed')
+          );
           result.rolledBack = true;
         } catch (rollbackError) {
           // Rollback itself failed: the engine is in a partially restored
@@ -640,11 +648,10 @@ export async function applyAllComponents(
       // (we just copied workspace → engine). Store them as engineChecksums so
       // drift detection can compare engine files against the cached hash
       // instead of byte-comparing against workspace sources.
-      await updateFurnaceState(root, {
-        lastApply: new Date().toISOString(),
-        appliedChecksums: Object.fromEntries(newChecksums),
-        engineChecksums: Object.fromEntries(newChecksums),
-      });
+      await persistAppliedComponentChecksums(root, newChecksums, componentName);
+      // The unit is durable: a later failure or signal in the same mutation
+      // must not restore its engine files.
+      operationContext?.commitJournal();
     } else if (rollbackJournal) {
       // Caller owns the journal and will restore on teardown.
       result.rollbackJournal = rollbackJournal;
@@ -656,11 +663,12 @@ export async function applyAllComponents(
   }
 
   return result;
-} /**
+}
+
+/**
  * Shared context threaded through the batch apply loops. Bundles the state
  * both loops mutate (result/actions/checksums) with the immutable run
- * parameters. The 12-13 positional parameters this replaced let call sites
- * drift and made every new parameter a two-signature change.
+ * parameters.
  */
 interface ApplyBatchContext {
   config: FurnaceConfig;

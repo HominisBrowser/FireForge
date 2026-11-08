@@ -87,6 +87,87 @@ describe('discardCommand and resetCommand integration', () => {
     await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
   });
 
+  it('prunes the directories a discard empties, up to the first non-empty parent', async () => {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'keep/sibling.txt': 'tracked later\n',
+      'keep/widget/inner/only.txt': 'untracked\n',
+    });
+    await runGit(join(projectRoot, 'engine'), ['add', 'keep/sibling.txt']);
+    await runGit(join(projectRoot, 'engine'), ['commit', '-m', 'sibling']);
+
+    await discardCommand(projectRoot, 'keep/widget/inner/only.txt', { yes: true });
+
+    await expect(access(join(projectRoot, 'engine', 'keep', 'widget'))).rejects.toThrow();
+    await expect(
+      access(join(projectRoot, 'engine', 'keep', 'sibling.txt'))
+    ).resolves.toBeUndefined();
+    await expect(access(join(projectRoot, 'engine'))).resolves.toBeUndefined();
+  });
+
+  it('discards several paths in one call and prunes what they empty', async () => {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'tracked.txt': 'changed\n',
+      'gone-a/one.txt': '1\n',
+      'gone-b/two.txt': '2\n',
+    });
+
+    await discardCommand(projectRoot, ['tracked.txt', 'gone-a/one.txt', 'gone-b/two.txt'], {
+      yes: true,
+    });
+
+    await expect(readProjectText(join(projectRoot, 'engine'), 'tracked.txt')).resolves.toBe(
+      'original\n'
+    );
+    await expect(access(join(projectRoot, 'engine', 'gone-a'))).rejects.toThrow();
+    await expect(access(join(projectRoot, 'engine', 'gone-b'))).rejects.toThrow();
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
+  });
+
+  it('saves a recovery snapshot holding the discarded untracked file', async () => {
+    await writeFiles(join(projectRoot, 'engine'), { 'precious.txt': 'only copy\n' });
+
+    await discardCommand(projectRoot, 'precious.txt', { yes: true });
+
+    const refs = (
+      await runGit(join(projectRoot, 'engine'), [
+        'for-each-ref',
+        '--format=%(refname)',
+        'refs/fireforge/recovery/',
+      ])
+    )
+      .trim()
+      .split('\n');
+    expect(refs).toHaveLength(1);
+    await expect(
+      runGit(join(projectRoot, 'engine'), ['show', `${refs[0]}:precious.txt`])
+    ).resolves.toBe('only copy\n');
+    // The snapshot never touches the checkout's own index or branch.
+    await expect(runGit(join(projectRoot, 'engine'), ['status', '--short'])).resolves.toBe('');
+  });
+
+  it('saves a recovery snapshot of tracked edits and untracked files before reset', async () => {
+    await writeFiles(join(projectRoot, 'engine'), {
+      'tracked.txt': 'edited\n',
+      'scratch.txt': 'temp\n',
+    });
+
+    await resetCommand(projectRoot, { yes: true });
+
+    const ref = (
+      await runGit(join(projectRoot, 'engine'), [
+        'for-each-ref',
+        '--format=%(refname)',
+        'refs/fireforge/recovery/',
+      ])
+    ).trim();
+    await expect(runGit(join(projectRoot, 'engine'), ['show', `${ref}:scratch.txt`])).resolves.toBe(
+      'temp\n'
+    );
+    await expect(runGit(join(projectRoot, 'engine'), ['show', `${ref}:tracked.txt`])).resolves.toBe(
+      'edited\n'
+    );
+  });
+
   it('handles staged renames using the original path', async () => {
     await runGit(join(projectRoot, 'engine'), ['mv', 'rename-me.txt', 'renamed.txt']);
 

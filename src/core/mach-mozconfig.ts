@@ -25,12 +25,13 @@ export interface MozconfigVariables {
  * @param variables - Variables to substitute
  * @returns Content with variables replaced
  */
-function replaceVariables(content: string, variables: MozconfigVariables): string {
+export function replaceMozconfigVariables(content: string, variables: MozconfigVariables): string {
+  // Function replacers: a string replacement would expand `$&` and `$1` sequences in the value.
   return content
-    .replace(/\$\{name\}/g, variables.name)
-    .replace(/\$\{vendor\}/g, variables.vendor)
-    .replace(/\$\{appId\}/g, variables.appId)
-    .replace(/\$\{binaryName\}/g, variables.binaryName);
+    .replace(/\$\{name\}/g, () => variables.name)
+    .replace(/\$\{vendor\}/g, () => variables.vendor)
+    .replace(/\$\{appId\}/g, () => variables.appId)
+    .replace(/\$\{binaryName\}/g, () => variables.binaryName);
 }
 
 /**
@@ -69,15 +70,12 @@ const MOZ_OBJDIR_PATTERN =
   /^\s*(?:mk_add_options\s+|export\s+)?MOZ_OBJDIR\s*=\s*["']?([^"'\s#]+)/gm;
 
 /**
- * Extracts the objdir name a mozconfig declares: the single trailing path
- * segment, which is what the `obj-*` scan enumerates.
+ * Extracts the complete declared path, normalizing source-root spellings.
  *
  * `@TOPSRCDIR@` and a leading `./` are both spellings of "beside the
  * source", which is the only arrangement FireForge's scan can see anyway.
- * An absolute path outside the engine directory reduces to its basename and
- * simply will not match a candidate, which is the correct outcome. A
- * declaration that names something the scan cannot see must not select
- * anything.
+ * External/nested declarations remain complete: discarding their prefix
+ * would falsely select an unrelated local objdir with the same basename.
  *
  * Returns undefined when nothing is declared. Exported for testing.
  */
@@ -85,9 +83,11 @@ export function extractMozObjdirName(mozconfigContent: string): string | undefin
   const matches = [...mozconfigContent.matchAll(MOZ_OBJDIR_PATTERN)];
   const raw = matches.at(-1)?.[1];
   if (raw === undefined) return undefined;
-  const trimmed = raw.replace(/\/+$/, '');
-  const segment = trimmed.split('/').at(-1);
-  return segment !== undefined && segment.length > 0 ? segment : undefined;
+  const normalized = raw
+    .replace(/^@TOPSRCDIR@\//, '')
+    .replace(/^\.\//, '')
+    .replace(/\/+$/, '');
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 /**
@@ -139,6 +139,23 @@ export async function assertBrandingMozconfigAgreement(
   }
 }
 
+/** The variable a job names its frozen ONNX Runtime directory in. */
+export const ONNX_RUNTIME_DIR_VARIABLE = 'FIREFORGE_ONNX_RUNTIME_DIR';
+
+/**
+ * `--with-onnx-runtime` has no environment name and, with bootstrap off, no
+ * default, so a source-mode build states it. The bytes hold a variable rather than
+ * the host's path, so the generated file is the same on every host and slot; a
+ * host whose configure never selected one sets nothing, and the option stays out.
+ */
+const FROZEN_ONNX_RUNTIME = `
+
+# Frozen ONNX Runtime, named by the job's toolchain
+if test -n "$${ONNX_RUNTIME_DIR_VARIABLE}"; then
+  ac_add_options "--with-onnx-runtime=$${ONNX_RUNTIME_DIR_VARIABLE}"
+fi
+`;
+
 /**
  * Generates a mozconfig file from templates.
  * @param configsDir - Path to the configs directory
@@ -177,7 +194,7 @@ export async function generateMozconfig(
   // Read common config if it exists
   if (await pathExists(commonPath)) {
     const commonContent = await readText(commonPath);
-    content += `# Common configuration\n${replaceVariables(commonContent, variables)}\n\n`;
+    content += `# Common configuration\n${replaceMozconfigVariables(commonContent, variables)}\n\n`;
   }
 
   // Read platform-specific config
@@ -186,7 +203,8 @@ export async function generateMozconfig(
   }
 
   const platformContent = await readText(platformPath);
-  content += `# Platform configuration (${platform})\n${replaceVariables(platformContent, variables)}`;
+  content += `# Platform configuration (${platform})\n${replaceMozconfigVariables(platformContent, variables)}`;
+  if (config.sources !== undefined) content += FROZEN_ONNX_RUNTIME;
 
   // Write-if-changed: `mozconfig` is a mach configure input, so its mtime,
   // not its content, is what `config.status` compares against.

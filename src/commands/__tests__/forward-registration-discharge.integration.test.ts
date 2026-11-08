@@ -291,7 +291,7 @@ describe('forward-registration discharge', () => {
   });
 
   it('the fork-shaped declarations already on disk stay valid', async () => {
-    // The shapes HominisFable's 44 declarations were rewritten into by hand:
+    // The shapes declarations were rewritten into by hand:
     // a multi-line array element, and a whole two-entry one-liner. A fix that
     // stranded these would make the downstream queue red again.
     const raw = await readFile(join(patchesDir, 'patches.json'), 'utf-8');

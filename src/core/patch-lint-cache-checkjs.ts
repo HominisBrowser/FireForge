@@ -34,15 +34,14 @@ import { join, relative, resolve } from 'node:path';
 import type { PatchLintConfig } from '../types/config.js';
 import { sha256Hex } from '../utils/hash.js';
 import { normalizePathSlashes } from '../utils/paths.js';
+import { loadedNodeToolIdentity } from './node-tool-identity.js';
 import type { PatchQueueContext } from './patch-lint-cross.js';
 import { collectNewFileCreatorsByPath } from './patch-lint-cross.js';
-import { isTestScriptFile } from './patch-lint-ownership.js';
+import { isHeadScript, isTestScriptFile } from './patch-lint-ownership.js';
 import { collectUnmanagedCompanions } from './patch-lint-unmanaged-companion.js';
 
 /** Files visited under one wildcard `paths` target before giving up on it. */
 const PATHS_TARGET_WALK_LIMIT = 10_000;
-
-const HEAD_SCRIPT = /^head(?:_.*)?\.js$/;
 
 /** Content hashes per run, keyed by absolute path. Survives entry updates. */
 const fileHashMemo = new WeakMap<PatchQueueContext, Map<string, Promise<string | null>>>();
@@ -65,7 +64,7 @@ export function isCheckJsCacheRelevant(file: string, patchLint: PatchLintConfig)
 
 async function readTypescriptVersion(): Promise<string | null> {
   try {
-    return (await import('typescript')).version;
+    return `${(await import('typescript')).version}:${await loadedNodeToolIdentity('typescript', import.meta.url)}`;
   } catch {
     return null;
   }
@@ -155,7 +154,7 @@ async function computeDigest(
   const tests = created.filter(isTestScriptFile);
   if (patchLint.checkJsTestFiles === true) {
     for (const file of tests) {
-      if (HEAD_SCRIPT.test(file.slice(file.lastIndexOf('/') + 1))) universe.add(file);
+      if (isHeadScript(file)) universe.add(file);
     }
     const companions = await collectUnmanagedCompanions(engineDir, tests, new Set(tests));
     for (const companion of companions) universe.add(companion.file);

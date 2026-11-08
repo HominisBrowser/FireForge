@@ -316,4 +316,38 @@ describe('re-export registration', () => {
     ).rejects.toThrow('--expect names no changed file in engine/: browser/base/content/typo.js');
     expect(withEngineSessionLock).not.toHaveBeenCalled();
   });
+
+  it('reads --adjacent-ignore-from entries and queues once they check out', async () => {
+    await writeFiles(projectRoot, { 'ignore.txt': '# peers\ncomp/peer-*.js\n' });
+    withEngineSessionLock.mockResolvedValue(undefined);
+
+    await program().parseAsync([
+      'node',
+      'fireforge',
+      're-export',
+      '001',
+      '--refuse-adjacent-unmanaged',
+      '--adjacent-ignore-from',
+      join(projectRoot, 'ignore.txt'),
+    ]);
+
+    expect(withEngineSessionLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a ** entry read from --adjacent-ignore-from before the lock', async () => {
+    await writeFiles(projectRoot, { 'ignore.txt': 'comp/**\n' });
+
+    await expect(
+      program().parseAsync([
+        'node',
+        'fireforge',
+        're-export',
+        '001',
+        '--refuse-adjacent-unmanaged',
+        '--adjacent-ignore-from',
+        join(projectRoot, 'ignore.txt'),
+      ])
+    ).rejects.toThrow(/\*\* is refused/);
+    expect(withEngineSessionLock).not.toHaveBeenCalled();
+  });
 });

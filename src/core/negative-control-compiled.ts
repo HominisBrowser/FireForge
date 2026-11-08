@@ -13,7 +13,7 @@
  * faster`, which compiles nothing, so the control would still miss.
  */
 
-import { extname } from 'node:path';
+import { basename, extname } from 'node:path';
 
 import { classifyRuntimeDelivery } from './objdir-install-manifests.js';
 import { loadEngineInstallIndex } from './test-stale-exempt.js';
@@ -36,6 +36,19 @@ const COMPILED_EXTENSIONS: ReadonlySet<string> = new Set([
   '.ipdlh',
   '.yaml',
   '.yml',
+  '.s',
+  '.S',
+  '.asm',
+  '.inc',
+  '.tbl',
+  '.def',
+]);
+
+/** Inputs the build generates compiled code from, named by basename. */
+const COMPILED_BASENAMES: ReadonlySet<string> = new Set([
+  'Bindings.conf',
+  'Cargo.toml',
+  'Cargo.lock',
 ]);
 
 /**
@@ -47,15 +60,14 @@ const COMPILED_EXTENSIONS: ReadonlySet<string> = new Set([
 const HEADER_EXTENSIONS: ReadonlySet<string> = new Set(['.h', '.hh', '.hpp', '.ipdlh']);
 
 /**
- * Whether an engine-relative path has a compiled-source extension: a file
- * the build compiles or code-generates into the binary. This is the
- * extension test only. {@link findCompiledControlTargets} additionally
+ * Whether an engine-relative path looks like a file the build compiles or
+ * code-generates into the binary. This is the name test only. {@link findCompiledControlTargets} additionally
  * drops non-header files an install manifest ships as-is.
  *
  * @param path - Engine-relative path
  */
 export function isCompiledSourcePath(path: string): boolean {
-  return COMPILED_EXTENSIONS.has(extname(path));
+  return COMPILED_EXTENSIONS.has(extname(path)) || COMPILED_BASENAMES.has(basename(path));
 }
 
 /**

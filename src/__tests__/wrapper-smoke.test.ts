@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { installedAuthoredSmokeSource } from '../test-utils/installed-authored-smoke.js';
 import { PUBLIC_API_EXPORTS } from '../test-utils/public-api.js';
 import { escapeRegex } from '../utils/regex.js';
 
@@ -56,10 +57,23 @@ const installedPackagePathSegments = packageName.split('/');
 const packageTarballPrefix = packageName.replace(/^@/, '').replace('/', '-');
 
 const cleanupPaths: string[] = [];
+const ownedSourceJobs = new Map<string, Promise<unknown>>();
 
 afterAll(async () => {
+  await Promise.allSettled(ownedSourceJobs.values());
   await Promise.all(
-    cleanupPaths.splice(0).map((path) => rm(path, { recursive: true, force: true }))
+    cleanupPaths.splice(0).map(async (path) => {
+      if (
+        ownedSourceJobs.has(path) &&
+        !existsSync(join(path, 'packaged-source-job/owned-processes-settled'))
+      ) {
+        console.error(
+          `Preserving failed packaged-job fixture until its owned processes are resolved: ${path}`
+        );
+        return;
+      }
+      await rm(path, { recursive: true, force: true });
+    })
   );
 });
 
@@ -93,6 +107,13 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
     // package without the tree dead-ends every one of those links exactly
     // where the self-serve doctrine says to look: the installed package.
     expect(packedFiles.some((path) => path.startsWith('docs/'))).toBe(true);
+    // Working records never ship, and every shipped doc is reachable from the index.
+    expect(packedFiles.filter((path) => path.startsWith('docs/implementation/'))).toEqual([]);
+    const docsIndex = readFileSync(join(repoRoot, 'docs', 'README.md'), 'utf-8');
+    const unlinked = packedFiles
+      .filter((path) => /^docs\/[^/]+\.md$/.test(path) && path !== 'docs/README.md')
+      .filter((path) => !docsIndex.includes(`](${path.slice('docs/'.length)})`));
+    expect(unlinked).toEqual([]);
     expect(packedFiles.some((path) => path.startsWith('configs/'))).toBe(false);
     expect(packedFiles.some((path) => path.startsWith('src/'))).toBe(false);
     expect(packedFiles.some((path) => path.includes('__tests__'))).toBe(false);
@@ -170,6 +191,8 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
     expect(shippedFiles.some((path) => path.includes('/__tests__/'))).toBe(false);
     expect(shippedFiles.some((path) => path.includes('/test-utils/'))).toBe(false);
     expect(shippedFiles.some((path) => path.endsWith('.test.ts'))).toBe(false);
+    expect(shippedFiles.includes('package-lock.json')).toBe(false);
+    expect(existsSync(join(tempDir, 'node_modules', 'tsx'))).toBe(false);
 
     // ---- Assert the CLI works ----
     const { stdout } = await execFileAsync(process.execPath, [binPath, '--help']);
@@ -275,7 +298,34 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
       process.execPath,
       [join(repoRoot, 'node_modules', 'typescript', 'lib', 'tsc.js'), '-p', consumerTsconfig],
       { cwd: tempDir }
-    );
+    ).catch((error: unknown) => {
+      const diagnostics = error as { stdout?: string; stderr?: string };
+      throw new Error(
+        `Installed public types failed:\n${diagnostics.stdout ?? ''}${diagnostics.stderr ?? ''}`,
+        { cause: error }
+      );
+    });
+
+    // The local coordinator requires POSIX process groups; CLI/package checks above remain portable.
+    if (process.platform !== 'win32') {
+      const sourceSmoke = join(tempDir, 'installed-authored-smoke.mjs');
+      await writeFile(sourceSmoke, installedAuthoredSmokeSource(packageName));
+      const environment = Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([key]) => !/^(?:FIREFORGE_|GIT_|NODE_OPTIONS$|NODE_PATH$)/.test(key)
+        )
+      );
+      const execution = execFileAsync(process.execPath, [sourceSmoke], {
+        cwd: tempDir,
+        env: environment,
+      });
+      ownedSourceJobs.set(tempDir, execution);
+      const result = await execution;
+      expect(result.stdout).toMatch(
+        /FIREFORGE-PACKAGED-SOURCE-JOB: .*"state":"passed".*"sealed":true.*"logged":true/
+      );
+      expect(existsSync(join(tempDir, 'packaged-source-job/owned-processes-settled'))).toBe(true);
+    }
 
     // ---- Assert setup can find templates ----
     const { stdout: setupHelp } = await execFileAsync(process.execPath, [
@@ -284,7 +334,7 @@ describe.skipIf(!npmAvailable)('installed package smoke test', () => {
       '--help',
     ]);
     expect(setupHelp).toContain('--firefox-version');
-  }, 120_000);
+  }, 180_000);
 
   it('can pack from a publication staging directory without a git checkout', async () => {
     await execNpm(['run', 'build'], { cwd: repoRoot });

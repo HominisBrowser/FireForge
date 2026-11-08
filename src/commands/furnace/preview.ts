@@ -6,6 +6,7 @@ import { updateFurnaceState } from '../../core/furnace-config.js';
 import {
   type FurnaceOperationContext,
   runFurnaceMutation,
+  runFurnaceRollback,
   waitLockMutationOptions,
 } from '../../core/furnace-operation.js';
 import { assertFurnaceReady } from '../../core/furnace-precondition.js';
@@ -385,37 +386,38 @@ export async function furnacePreviewCommand(
     //
     // Teardown restores the journal itself, so the lifecycle wrapper must
     // not restore it again when the throw below propagates out of this body.
-    ctx.markRolledBack();
-    const teardownErrors = await runPreviewTeardown(
-      paths.engine,
-      storiesCleanupRequired,
-      previewJournal
-    );
+    await runFurnaceRollback(ctx, async () => {
+      const teardownErrors = await runPreviewTeardown(
+        paths.engine,
+        storiesCleanupRequired,
+        previewJournal
+      );
 
-    if (teardownErrors.length > 0) {
-      const teardownSummary = teardownErrors.map((err) => err.message).join('; ');
-      try {
-        await updateFurnaceState(projectRoot, (state) => ({
-          ...state,
-          pendingRepair: {
-            operation: 'preview-teardown',
-            timestamp: new Date().toISOString(),
-            reason: teardownSummary,
-          },
-        }));
-      } catch (markError: unknown) {
-        warn(
-          `Could not record pending-repair marker in .fireforge/furnace-state.json — ${toError(markError).message}. Engine may still be in a staged state; run "fireforge furnace apply" manually to reconcile.`
+      if (teardownErrors.length > 0) {
+        const teardownSummary = teardownErrors.map((err) => err.message).join('; ');
+        try {
+          await updateFurnaceState(projectRoot, (state) => ({
+            ...state,
+            pendingRepair: {
+              operation: 'preview-teardown',
+              timestamp: new Date().toISOString(),
+              reason: teardownSummary,
+            },
+          }));
+        } catch (markError: unknown) {
+          warn(
+            `Could not record pending-repair marker in .fireforge/furnace-state.json — ${toError(markError).message}. Engine may still be in a staged state; run "fireforge furnace apply" manually to reconcile.`
+          );
+        }
+
+        const primarySuffix = primaryError
+          ? ` (original error: ${toError(primaryError).message})`
+          : '';
+        throw new FurnaceError(
+          `Preview teardown could not restore the engine cleanly: ${teardownSummary}. The engine may contain staged workspace files. Run "fireforge doctor --repair-furnace" to reconcile, or run "fireforge furnace apply" manually.${primarySuffix}`
         );
       }
-
-      const primarySuffix = primaryError
-        ? ` (original error: ${toError(primaryError).message})`
-        : '';
-      throw new FurnaceError(
-        `Preview teardown could not restore the engine cleanly: ${teardownSummary}. The engine may contain staged workspace files. Run "fireforge doctor --repair-furnace" to reconcile, or run "fireforge furnace apply" manually.${primarySuffix}`
-      );
-    }
+    });
 
     if (primaryError) {
       // Re-throwing the captured error preserves its original shape. The

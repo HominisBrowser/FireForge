@@ -1,56 +1,46 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * The exit-0 completeness veto for `fireforge test`.
+ * The completeness veto for `fireforge test`.
  *
- * `classifyHarnessRun` trusts a mach exit code of 0 once any test started.
- * That is wrong for one shape a downstream fork hit: the browser shut down
+ * The classifier rejects hard failures even when mach exits 0. This adds
+ * requested-roster accounting for a downstream shape: the browser shut down
  * cleanly inside the 105th of 314 files ("Application shut down (without
  * crashing) in the middle of a test!"), nothing after it ran, mach still
- * exited 0, and the verdict read `PASS checks=7919 unexpected=1`. The
- * truncation checks the classifier already applies to a non-zero exit with
- * a green-looking summary never ran, because the exit code short-circuited
- * them.
+ * exited 0, and the verdict read `PASS checks=7919 unexpected=1`.
  *
- * So a would-be pass is re-examined here against three facts the captured
- * output carries: a non-zero `Unexpected results:` count, the harness's
- * mid-test shutdown line, and requested test files that never produced a
- * start marker. Any one of them turns the run into
- * `FAIL reason=test-failures`, and a short start count is stamped on the
+ * So a would-be pass is re-examined here against what the run recorded: a
+ * non-zero unexpected count, the harness's mid-test shutdown line, and requested
+ * test files that never produced a start marker. Any one of them turns the run
+ * into `FAIL reason=test-failures`, and a short start count is stamped on the
  * verdict line as `started=<n>/<m> first-unstarted=<path>`.
  *
- * From streamed or captured text, the start-count check only runs when at
- * least one start marker names a requested file. The suite-specific xpcshell
- * dispatch can prove execution with a result-summary block alone and print
- * no `TEST_START` line, and a run that never names its files cannot be
- * counted against them. The structured raw log names every test by its
- * manifest id, so a raw log whose starts name none of the requested files
- * ran something else: a `--jobs` instance that read another instance's test
- * list once passed on that instance's file.
+ * A raw log, when the run wrote one, decides: every requested file ended, no
+ * test is unfinished, none reported an unexpected result, and each requested
+ * directory ran something. It names every test by its manifest id, so a raw log
+ * whose starts name none of the requested files ran something else.
+ *
+ * From streamed or captured text, a run whose start lines name other files
+ * fails too. A run that prints no start line at all is not counted, since the
+ * suite-specific xpcshell dispatch can prove execution with a result-summary
+ * block alone and a run that never names its files cannot be counted against
+ * them. Neither is one whose start lines share a basename with a request
+ * without matching its path.
  */
 
+import { type HarnessRunVerdict, SHUTDOWN_REENTRY_PATTERN } from './test-harness-crash.js';
 import {
-  type HarnessRunVerdict,
-  SHUTDOWN_REENTRY_PATTERN,
-  START_MARKER_PATTERN,
+  parseSkipMarker,
+  parseStartMarker,
   TEST_FILE_BASENAME_PATTERN,
-} from './test-harness-crash.js';
-import type { IncompleteRunEvidence } from './test-harness-signature.js';
+} from './test-harness-markers.js';
+import type { IncompleteRunEvidence, StartMarkers } from './test-harness-signature.js';
+import type { RawTestLog } from './test-raw-log.js';
 
-/**
- * A skip marker naming a test (`TEST-SKIP | path`, `TEST_SKIP: path`). A
- * manifest-skipped file is accounted for, not missing.
- */
-const SKIP_MARKER_PATTERN = /\bTEST[-_]SKIP(?:PED)?\b[:| ]*\s*(\S+)?/;
+export type { StartMarkers } from './test-harness-signature.js';
 
 /** Basename of a `/`-separated path. */
 function basenameOf(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1);
-}
-
-/** Start and skip marker names seen in a run's output. */
-export interface StartMarkers {
-  started: string[];
-  skipped: string[];
 }
 
 /** Collects the start and skip marker names in `output`, line by line. */
@@ -61,12 +51,12 @@ function scanStartMarkers(output: string): StartMarkers {
 }
 
 function recordMarkerLine(line: string, markers: StartMarkers): void {
-  const start = START_MARKER_PATTERN.exec(line)?.[1];
+  const start = parseStartMarker(line)?.name;
   if (start !== undefined) {
     markers.started.push(start);
     return;
   }
-  const skip = SKIP_MARKER_PATTERN.exec(line)?.[1];
+  const skip = parseSkipMarker(line);
   if (skip !== undefined) markers.skipped.push(skip);
 }
 
@@ -117,6 +107,40 @@ export function createStartMarkerTracker(): StartMarkerTracker {
   };
 }
 
+const normalizedTestPath = (path: string): string =>
+  path.replace(/\\/g, '/').replace(/^engine\//, '');
+
+/** A normalized marker or roster id and a normalized requested path name the same file. */
+function namesSameFile(name: string, request: string): boolean {
+  return name === request || name.endsWith(`/${request}`) || request.endsWith(`/${name}`);
+}
+
+/** A request with no countable test file in its own name: a directory or a manifest. */
+function namesNoTestFile(path: string): boolean {
+  return !TEST_FILE_BASENAME_PATTERN.test(basenameOf(normalizedTestPath(path)));
+}
+
+/**
+ * The indexes of `requested` that some name in `list` names unambiguously: a
+ * name that could be either of two requested files counts for neither.
+ */
+function namedIndexes(list: readonly string[], requested: readonly string[]): Set<number> {
+  const named = new Set<number>();
+  for (const name of list) {
+    const normalized = normalizedTestPath(name);
+    let only = -1;
+    let count = 0;
+    requested.forEach((request, index) => {
+      if (namesSameFile(normalized, request)) {
+        count += 1;
+        only = index;
+      }
+    });
+    if (count === 1) named.add(only);
+  }
+  return named;
+}
+
 /**
  * Counts the requested test files that produced a start or skip marker.
  * Returns undefined when nothing can be counted: no test-file-shaped
@@ -128,26 +152,42 @@ export function createStartMarkerTracker(): StartMarkerTracker {
  * @param authoritative - The markers come from the raw log, so a run whose
  *   starts name no requested file is counted (as none started) instead of
  *   being left uncounted
+ * @param roster - The test ids the raw log's `suite_start` announced. When
+ *   a request names a directory or manifest, its test files are counted
+ *   from this, after the files requested by name
  */
 export function countStartedFiles(
   evidence: string | StartMarkers,
   requestedPaths: readonly string[],
-  authoritative = false
+  authoritative = false,
+  roster: readonly string[] = []
 ): { started: number; requested: number; firstUnstarted?: string } | undefined {
-  const requested = requestedPaths.filter((path) =>
-    TEST_FILE_BASENAME_PATTERN.test(basenameOf(path))
-  );
+  const named = requestedPaths.filter((path) => !namesNoTestFile(path));
+  const namedForms = named.map(normalizedTestPath);
+  const requested = requestedPaths.some(namesNoTestFile)
+    ? [
+        ...named,
+        ...roster.filter((id) => {
+          const normalized = normalizedTestPath(id);
+          return (
+            TEST_FILE_BASENAME_PATTERN.test(basenameOf(normalized)) &&
+            !namedForms.some((request) => namesSameFile(normalized, request))
+          );
+        }),
+      ]
+    : named;
   if (requested.length === 0) return undefined;
   const { started, skipped } = typeof evidence === 'string' ? scanStartMarkers(evidence) : evidence;
-  const names = (path: string, list: readonly string[]): boolean => {
-    const base = basenameOf(path);
-    return list.some((name) => name.includes(base));
-  };
+  const forms = requested.map(normalizedTestPath);
+  const startedIndexes = namedIndexes(started, forms);
   // Counting needs a dialect that names the requested files on its start
   // lines. When no start line names any of them, the output cannot be
   // counted against the request at all, unless it is the raw log.
-  if (!authoritative && !requested.some((path) => names(path, started))) return undefined;
-  const unstarted = requested.filter((path) => !names(path, started) && !names(path, skipped));
+  if (!authoritative && startedIndexes.size === 0) return undefined;
+  const skippedIndexes = namedIndexes(skipped, forms);
+  const unstarted = requested.filter(
+    (_path, index) => !startedIndexes.has(index) && !skippedIndexes.has(index)
+  );
   const firstUnstarted = unstarted[0];
   return {
     started: requested.length - unstarted.length,
@@ -157,63 +197,141 @@ export function countStartedFiles(
 }
 
 /**
- * Re-examines a passing verdict for a mach exit-0 run and fails it when
- * the run is incomplete or reported unexpected results. Any other verdict
- * is returned unchanged.
+ * Text whose start lines are about other files altogether: test files, none sharing
+ * a basename with any request. A path that differs only in its prefix stays uncounted.
+ */
+function namesOnlyOtherFiles(markers: StartMarkers, requestedPaths: readonly string[]): boolean {
+  const requested = new Set(requestedPaths.map(basenameOf));
+  const files = markers.started.filter((name) => TEST_FILE_BASENAME_PATTERN.test(basenameOf(name)));
+  return files.length > 0 && !files.some((name) => requested.has(basenameOf(name)));
+}
+
+/** Requested directories and manifests a raw log ran nothing under, in request order. */
+function directoriesWithoutResults(
+  requestedPaths: readonly string[],
+  tests: readonly string[]
+): string[] {
+  return requestedPaths.filter((path) => {
+    const normalized = path.replace(/\\/g, '/').replace(/^engine\//, '');
+    if (!normalized.includes('/') || TEST_FILE_BASENAME_PATTERN.test(basenameOf(normalized)))
+      return false;
+    const dir = /\.(?:toml|ini|list)$/.test(normalized)
+      ? normalized.slice(0, normalized.lastIndexOf('/'))
+      : normalized.replace(/\/+$/, '');
+    return !tests.some((test) => {
+      const id = test.replace(/\\/g, '/');
+      return id.startsWith(`${dir}/`) || id.includes(`/${dir}/`);
+    });
+  });
+}
+
+/**
+ * Re-examines a passing verdict and fails it when the run is incomplete or
+ * reported unexpected results. Any other verdict is returned unchanged, apart
+ * from the evidence it can carry.
  *
  * @param verdict - The classifier's verdict
  * @param output - Captured mach stdout and stderr
  * @param requestedPaths - Dispatched paths, in dispatch order
  * @param tracked - Start markers collected from the complete stream (or
  *   the structured raw log); without them the capped capture is scanned
+ * @param raw - The dispatch's raw log, when it wrote one
  */
 export function vetoIncompletePass(
   verdict: HarnessRunVerdict,
   output: string,
   requestedPaths: readonly string[],
-  tracked?: TrackedStartMarkers
+  tracked?: TrackedStartMarkers,
+  raw?: RawTestLog
 ): HarnessRunVerdict {
-  if (verdict.kind !== 'tests-ran-ok') return verdict;
-  const shutdownLine = output
-    .split(/\r?\n/)
-    .find((line) => SHUTDOWN_REENTRY_PATTERN.test(line))
-    ?.trim();
-  // Tracked markers win whenever they saw a start line at all. An empty
-  // tracker means nothing was streamed through it, and the capture is then
-  // the only evidence there is.
-  const useTracked = tracked !== undefined && tracked.markers.started.length > 0;
-  const counted = countStartedFiles(
-    useTracked ? tracked.markers : output,
-    requestedPaths,
-    useTracked && tracked.source === 'raw'
-  );
-  const unexpected = verdict.unexpected ?? 0;
-  const truncated = counted?.firstUnstarted !== undefined;
-  if (unexpected === 0 && shutdownLine === undefined && !truncated) return verdict;
-
-  const evidence: IncompleteRunEvidence = {
-    started: counted?.started ?? 0,
-    requested: counted?.requested ?? 0,
-    ...(counted?.firstUnstarted !== undefined
-      ? {
-          firstUnstarted: counted.firstUnstarted,
-          startedSource: useTracked ? tracked.source : 'capture',
-        }
-      : {}),
-    ...(shutdownLine !== undefined ? { shutdownLine } : {}),
-    ...(unexpected > 0 ? { unexpected } : {}),
-  };
+  const passed = verdict.kind === 'tests-ran-ok';
+  const evidence = gatherEvidence(verdict, output, requestedPaths, tracked, raw);
+  const stopped =
+    evidence.firstUnstarted !== undefined ||
+    evidence.shutdownLine !== undefined ||
+    evidence.appExit !== undefined;
+  if (!stopped && (!passed || (evidence.unexpected === undefined && !evidence.unfinished))) {
+    // A raw log that recorded no test at all is a run that did nothing.
+    return passed && raw?.results.length === 0
+      ? { kind: 'no-tests', ...countsOf(verdict) }
+      : verdict;
+  }
   // The pass-only annotations would misdescribe a failed run: "harness
   // teardown noise ignored" and the green-summary override both say the
   // run was trusted.
   const rest: HarnessRunVerdict = { ...verdict };
+  if (!passed) return { ...rest, incomplete: evidence };
   delete rest.greenSummaryOverride;
   delete rest.note;
+  const unexpected = evidence.unexpected ?? 0;
   return {
     ...rest,
     kind: 'test-failures',
     incomplete: evidence,
-    ...(shutdownLine !== undefined ? { realFailureLine: shutdownLine } : {}),
+    ...(unexpected > (rest.unexpected ?? 0) ? { unexpected } : {}),
+    ...(evidence.shutdownLine !== undefined ? { realFailureLine: evidence.shutdownLine } : {}),
+  };
+}
+
+/** What the output and the raw log say about a run's completeness. */
+function gatherEvidence(
+  verdict: HarnessRunVerdict,
+  output: string,
+  requestedPaths: readonly string[],
+  tracked: TrackedStartMarkers | undefined,
+  raw: RawTestLog | undefined
+): IncompleteRunEvidence {
+  const appExit = /Main app process: killed by (SIG[A-Z0-9]+)/.exec(output)?.[1];
+  const shutdownLine = output
+    .split(/\r?\n/)
+    .find((line) => SHUTDOWN_REENTRY_PATTERN.test(line))
+    ?.trim();
+  // A raw log is complete whatever the capture kept. Otherwise tracked markers
+  // win whenever they saw a start line at all: an empty tracker means nothing
+  // was streamed through it, and the capture is then the only evidence there is.
+  const chosen: TrackedStartMarkers | undefined =
+    raw !== undefined
+      ? { markers: raw.markers, source: 'raw' }
+      : tracked !== undefined && tracked.markers.started.length > 0
+        ? tracked
+        : undefined;
+  const counted = countStartedFiles(
+    chosen?.markers ?? output,
+    requestedPaths,
+    chosen !== undefined &&
+      (chosen.source === 'raw' ||
+        (verdict.kind === 'tests-ran-ok' && namesOnlyOtherFiles(chosen.markers, requestedPaths))),
+    raw?.roster
+  );
+  const firstUnstarted =
+    counted?.firstUnstarted ??
+    (raw === undefined
+      ? undefined
+      : directoriesWithoutResults(
+          requestedPaths,
+          raw.results.map((result) => result.test)
+        )[0]);
+  const unexpected = Math.max(
+    verdict.unexpected ?? 0,
+    raw?.results.filter((result) => result.unexpected).length ?? 0
+  );
+  return {
+    started: counted?.started ?? 0,
+    requested: counted?.requested ?? 0,
+    ...(firstUnstarted !== undefined
+      ? { firstUnstarted, startedSource: chosen?.source ?? 'capture' }
+      : {}),
+    ...(shutdownLine !== undefined ? { shutdownLine } : {}),
+    ...(unexpected > 0 ? { unexpected } : {}),
+    ...(raw !== undefined && raw.unfinished.length > 0 ? { unfinished: raw.unfinished } : {}),
+    ...(appExit === undefined ? {} : { appExit }),
+  };
+}
+
+function countsOf(verdict: HarnessRunVerdict): Pick<HarnessRunVerdict, 'checks' | 'unexpected'> {
+  return {
+    ...(verdict.checks === undefined ? {} : { checks: verdict.checks }),
+    ...(verdict.unexpected === undefined ? {} : { unexpected: verdict.unexpected }),
   };
 }
 
@@ -228,8 +346,15 @@ export function buildIncompleteRunMessage(evidence: IncompleteRunEvidence): stri
   const lines: string[] = [];
   if (evidence.firstUnstarted !== undefined) {
     lines.push(
-      `  - only ${evidence.started} of ${evidence.requested} requested test files started; ` +
-        `the first that never started is ${evidence.firstUnstarted}`
+      evidence.requested > 0 && evidence.started < evidence.requested
+        ? `  - only ${evidence.started} of ${evidence.requested} requested test files started; ` +
+            `the first that never started is ${evidence.firstUnstarted}`
+        : `  - the raw log has no test under the requested ${evidence.firstUnstarted}`
+    );
+  }
+  if (evidence.unfinished !== undefined) {
+    lines.push(
+      `  - ${evidence.unfinished.length} test file(s) started and never finished: ${evidence.unfinished.join(', ')}`
     );
   }
   if (evidence.shutdownLine !== undefined) {
@@ -243,9 +368,9 @@ export function buildIncompleteRunMessage(evidence: IncompleteRunEvidence): stri
       ? `Re-run from ${evidence.firstUnstarted} onward, or the whole selection once the engine is quiet.`
       : 'Read the unexpected results in the output above.';
   return (
-    'mach exited 0, but FireForge did NOT treat the run as passed:\n\n' +
+    'FireForge did NOT treat this incomplete harness run as passed:\n\n' +
     `${lines.join('\n')}\n\n` +
-    'A browser that quits cleanly mid-suite exits 0, and its summary then covers only the ' +
+    'A browser that quits mid-suite can leave a summary that covers only the ' +
     `files that ran. ${rerun}`
   );
 }

@@ -85,7 +85,7 @@ export async function patchTierCommand(
         ? `set tier to "${after}"`
         : `change tier from "${before}" to "${after}"`;
 
-  // Destructive-operation contract (docs/lifecycle-invariants.md): manifest
+  // Destructive-operation contract (contributing/lifecycle-invariants.md): manifest
   // metadata mutations get summary + dry-run + confirmation/--yes + history
   // uniformly, so --yes skips a real prompt rather than only appearing in
   // the history record.

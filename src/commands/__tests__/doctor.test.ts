@@ -120,9 +120,15 @@ vi.mock('../../core/furnace-config.js', () => ({
 vi.mock('node:fs/promises', () => ({
   readdir: vi.fn(() => Promise.resolve([])),
   stat: vi.fn(() => Promise.reject(new Error('not found'))),
-  readFile: vi.fn(() => Promise.reject(new Error('not found'))),
+  // Authoring readers distinguish missing ancestors from access failures.
+  readFile: vi.fn(() => Promise.reject(Object.assign(new Error('not found'), { code: 'ENOENT' }))),
   rm: vi.fn(() => Promise.resolve()),
   rmdir: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock('../../core/furnace-rollback.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/furnace-rollback.js')>()),
+  snapshotFile: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../../core/furnace-apply.js', () => ({
@@ -823,6 +829,26 @@ describe('doctorCommand', () => {
     expect(result.exitCode).toBe(1);
   });
 
+  it('does not fail a source-mode checkout for keeping no engine directory', async () => {
+    const originalPathExists = vi.mocked(pathExists).getMockImplementation();
+    const original = await loadConfig('/project');
+    vi.mocked(pathExists).mockImplementation((p: string) => Promise.resolve(!p.includes('engine')));
+    vi.mocked(loadConfig).mockResolvedValue({
+      ...original,
+      sources: {
+        schemaVersion: 1,
+        mode: 'authored',
+        root: 'src',
+        metadataRoot: '.fireforge-sources',
+        pristineCommit: 'a'.repeat(40),
+      },
+    });
+    const result = await doctorCommand('/project');
+    vi.mocked(loadConfig).mockResolvedValue(original);
+    if (originalPathExists) vi.mocked(pathExists).mockImplementation(originalPathExists);
+    expect(result.checks.map((check) => check.name)).not.toContain('Engine directory exists');
+  });
+
   it('reports pending resolution state as a failure', async () => {
     vi.mocked(loadState).mockResolvedValue({
       pendingResolution: {
@@ -861,7 +887,7 @@ describe('doctorCommand', () => {
     ) => Record<string, unknown>;
     expect(
       updater({
-        pendingResolution: { patchFilename: 'x', originalError: 'y' },
+        pendingResolution: { patchFilename: '007-ui.patch', originalError: 'patch failed' },
         baseCommit: 'base-commit',
       })
     ).toEqual({ baseCommit: 'base-commit' });
@@ -1371,6 +1397,11 @@ describe('doctorCommand', () => {
     await expect(doctorCommand('/project', { dryRun: true })).rejects.toThrow(
       'needs a manifest repair to project'
     );
+    for (const extra of [{ repairFurnace: true }, { clearResolution: true }]) {
+      await expect(
+        doctorCommand('/project', { dryRun: true, repairPatchesManifest: true, ...extra })
+      ).rejects.toThrow('--dry-run cannot combine');
+    }
     await expect(doctorCommand('/project', { allowMetadataLoss: true })).rejects.toThrow(
       '--allow-metadata-loss only applies'
     );
@@ -1421,7 +1452,7 @@ describe('doctorCommand', () => {
     it('reports all furnace checks as passing on a clean project', async () => {
       const result = await doctorCommand('/project');
 
-      expect(result.exitCode).toBe(0);
+      expect(result.exitCode, JSON.stringify(result.checks)).toBe(0);
       const successMessages = vi.mocked(success).mock.calls.map(([msg]) => msg);
       expect(successMessages.some((m) => m.includes('Furnace configuration'))).toBe(true);
       expect(successMessages.some((m) => m.includes('Furnace state consistency'))).toBe(true);
@@ -1751,7 +1782,7 @@ describe('doctorCommand', () => {
           .mocked(error)
           .mock.calls.some(
             ([message]) =>
-              message.includes('Furnace engine state') && message.includes('Repair attempted')
+              message.includes('Furnace engine state') && message.includes('Repair apply reported')
           )
       ).toBe(true);
     });
@@ -1769,7 +1800,7 @@ describe('doctorCommand', () => {
       const result = await doctorCommand('/project', { repairFurnace: true });
 
       expect(validateAllComponents).toHaveBeenCalledWith('/project');
-      expect(runFurnaceMutation).not.toHaveBeenCalled();
+      expect(runFurnaceMutation).toHaveBeenCalled();
       expect(applyAllComponents).not.toHaveBeenCalled();
       expect(updateFurnaceState).toHaveBeenCalled();
       const updater = vi.mocked(updateFurnaceState).mock.calls.at(-1)?.[1];
@@ -1863,7 +1894,7 @@ describe('doctorCommand', () => {
       const result = await doctorCommand('/project', { repairFurnace: true });
 
       expect(validateAllComponents).toHaveBeenCalledWith('/project');
-      expect(runFurnaceMutation).not.toHaveBeenCalled();
+      expect(runFurnaceMutation).toHaveBeenCalled();
       expect(applyAllComponents).not.toHaveBeenCalled();
       expect(updateFurnaceState).not.toHaveBeenCalled();
       expect(result.exitCode).toBe(1);

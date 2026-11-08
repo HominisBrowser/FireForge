@@ -268,6 +268,11 @@ declare function run_test(): any;
  * build system: the resolver can't follow `resource://`/`chrome://`
  * URLs and the global shim is intentionally narrow.
  *
+ * TS2305 and TS2306 are suppressed only for specifiers that did not resolve
+ * to a real file; for a specifier that resolved to a patch-owned or
+ * `paths`-mapped source both flows report them (see
+ * `resolved-module-diagnostics.ts`).
+ *
  * Widening this set should be deliberate and per-code: silently
  * suppressing more codes hides real type errors. The same set is used
  * by both flows so a patch can't pass one and fail the other for a
@@ -355,7 +360,7 @@ declare module 'chrome://global/content/vendor/lit.all.mjs' {
     static properties: Record<string, LitPropertyDeclarationShim>;
     static styles: any;
     static shadowRootOptions: ShadowRootInit;
-    static readonly observedAttributes: string[];
+    static get observedAttributes(): string[];
     static createProperty(name: PropertyKey, options?: LitPropertyDeclarationShim): void;
     static addInitializer(initializer: (element: ReactiveElement) => void): void;
   }

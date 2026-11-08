@@ -6,7 +6,7 @@ import { createFsMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('../component-source-guard.js', () => ({
   captureComponentSources: vi.fn(() => Promise.resolve({ roots: [], files: new Map() })),
-  componentSourceErrors: vi.fn(() => Promise.resolve([])),
+  componentSourceChanges: vi.fn(() => Promise.resolve({ errors: [], foreign: [] })),
 }));
 
 vi.mock('../engine-write-boundary.js', async (importOriginal) => {

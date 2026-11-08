@@ -20,6 +20,9 @@
 /** Unresolved URL import specifiers, keyed by the importing file's TS path. */
 export type AnyTypedImports = Map<string, Set<string>>;
 
+/** Specifiers that resolved to a real file, keyed by the importing file's TS path. */
+export type ResolvedImports = Map<string, Set<string>>;
+
 /** TypeScript's implicit-`any` diagnostic codes (noImplicitAny). */
 const IMPLICIT_ANY_CODES: ReadonlySet<number> = new Set([
   7005, 7006, 7008, 7010, 7011, 7019, 7031, 7034,
@@ -98,21 +101,26 @@ export function anyTypedImportHint(
  * @param resolveOwned - Patch-owned specifier resolver
  * @param resolveViaPaths - Optional `paths` resolver
  * @param into - Map that collects the unresolved URL imports
+ * @param resolvedInto - Map that collects every specifier that did resolve
  */
 export function createModuleLiteralResolver<Resolved>(
   resolveOwned: (specifier: string) => Resolved | undefined,
   resolveViaPaths: ((specifier: string) => Resolved | undefined) | undefined,
-  into: AnyTypedImports
+  into: AnyTypedImports,
+  resolvedInto: ResolvedImports = new Map()
 ): (
   moduleLiterals: readonly { text: string }[],
   containingFile: string
 ) => Array<{ resolvedModule: Resolved | undefined }> {
   return (moduleLiterals, containingFile) =>
     moduleLiterals.map((literal) => {
-      const owned = resolveOwned(literal.text);
-      if (owned) return { resolvedModule: owned };
-      const viaPaths = resolveViaPaths?.(literal.text);
-      if (viaPaths === undefined) recordAnyTypedImport(into, containingFile, literal.text);
-      return { resolvedModule: viaPaths };
+      const resolved = resolveOwned(literal.text) ?? resolveViaPaths?.(literal.text);
+      if (resolved === undefined) recordAnyTypedImport(into, containingFile, literal.text);
+      else {
+        const list = resolvedInto.get(containingFile) ?? new Set<string>();
+        list.add(literal.text);
+        resolvedInto.set(containingFile, list);
+      }
+      return { resolvedModule: resolved };
     });
 }

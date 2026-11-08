@@ -109,8 +109,8 @@ describe('parseTestBlock', () => {
   });
 
   describe('reapOrphans', () => {
-    it('accepts the two postures and leaves the field unset when absent', () => {
-      for (const posture of ['report', 'reap'] as const) {
+    it('accepts report, legacy reap and owned-only postures, leaving absence unset', () => {
+      for (const posture of ['report', 'reap', 'owned'] as const) {
         const config = makeConfig();
         parseTestBlock(rec({ test: { reapOrphans: posture } }), config);
         expect(config.test?.reapOrphans).toBe(posture);
@@ -124,7 +124,7 @@ describe('parseTestBlock', () => {
       for (const bad of [true, 'kill', 'Reap', 1, null]) {
         expect(() => {
           parseTestBlock(rec({ test: { reapOrphans: bad } }), makeConfig());
-        }).toThrow(/"test\.reapOrphans" must be "report" or "reap"/);
+        }).toThrow(/"test\.reapOrphans" must be "report", "reap" or "owned"/);
       }
     });
   });

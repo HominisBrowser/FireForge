@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { formatFireforgeVerdictLine } from '../test-harness-crash.js';
+import { parseRawTestLog } from '../test-raw-log.js';
 import {
   buildIncompleteRunMessage,
   countStartedFiles,
@@ -55,10 +56,17 @@ describe('createStartMarkerTracker', () => {
       firstUnstarted: own,
       startedSource: 'raw',
     });
-    // Streamed text keeps the dialect escape: it cannot be counted.
+    // Streamed text that names other files fails the same way.
     expect(
       vetoIncompletePass({ kind: 'tests-ran-ok', unexpected: 0 }, '', [own], {
         markers: { started: [`${DIR}/browser_a.js`], skipped: [] },
+        source: 'stream',
+      }).kind
+    ).toBe('test-failures');
+    // A start line that shares the basename but not the path cannot be counted.
+    expect(
+      vetoIncompletePass({ kind: 'tests-ran-ok', unexpected: 0 }, '', [own], {
+        markers: { started: [`elsewhere/browser_b.js`], skipped: [] },
         source: 'stream',
       }).kind
     ).toBe('tests-ran-ok');
@@ -75,6 +83,22 @@ describe('createStartMarkerTracker', () => {
 });
 
 describe('countStartedFiles', () => {
+  it('never counts another directory or an ambiguous basename as the requested file', () => {
+    const requested = ['one/browser_same.js', 'two/browser_same.js'];
+    expect(
+      countStartedFiles({ started: ['wrong/browser_same.js'], skipped: [] }, requested, true)
+    ).toMatchObject({ started: 0, requested: 2 });
+    expect(
+      countStartedFiles({ started: ['browser_same.js'], skipped: [] }, requested, true)
+    ).toMatchObject({ started: 0, requested: 2 });
+    expect(
+      countStartedFiles(
+        { started: ['file:///build/one/browser_same.js'], skipped: [] },
+        requested,
+        true
+      )
+    ).toMatchObject({ started: 1, firstUnstarted: requested[1] });
+  });
   it('counts requested files with a start marker and names the first that never started', () => {
     const output = [`TEST-START | ${FILES[0]}`, 'TEST-OK', `TEST-START | ${FILES[1]}`].join('\n');
     expect(countStartedFiles(output, FILES)).toEqual({
@@ -172,7 +196,121 @@ describe('vetoIncompletePass', () => {
     expect(vetoIncompletePass(pass, complete, FILES)).toBe(pass);
     expect(vetoIncompletePass(pass, 'Ran 3 checks', FILES)).toBe(pass);
     const failed = { kind: 'test-failures' as const, unexpected: 1 };
-    expect(vetoIncompletePass(failed, SHUTDOWN, FILES)).toBe(failed);
+    expect(vetoIncompletePass(failed, 'TEST-UNEXPECTED-FAIL | assertion', FILES)).toBe(failed);
+  });
+
+  it('annotates an already red suite with its missing files without replacing its failure', () => {
+    const failed = {
+      kind: 'test-failures' as const,
+      unexpected: 11,
+      realFailureLine: 'original assertion',
+    };
+    const verdict = vetoIncompletePass(
+      failed,
+      `TEST-START | ${FILES[0]}\nMain app process: killed by SIGSEGV`,
+      FILES
+    );
+    expect(verdict).toMatchObject({
+      ...failed,
+      incomplete: { started: 1, requested: 3, firstUnstarted: FILES[1] },
+    });
+    expect(formatFireforgeVerdictLine(verdict)).toContain(
+      `started=1/3 first-unstarted=${FILES[1]}`
+    );
+    expect(formatFireforgeVerdictLine(verdict)).toContain('app-exit=SIGSEGV');
+  });
+});
+
+describe('a directory request counted from the raw log roster', () => {
+  const line = (record: Record<string, unknown>): string => JSON.stringify(record);
+  const ROSTER = [...FILES, `${DIR}/browser_d.js`, `${DIR}/browser_e.js`];
+  /** A mochitest raw log: the roster, the preamble's skip-if records, then each file that ran. */
+  const rawLog = (ran: readonly string[], skipped: readonly string[] = [], end = true): string =>
+    [
+      line({
+        action: 'suite_start',
+        name: 'mochitest-browser',
+        tests: { [`${DIR}/browser.toml`]: ROSTER },
+      }),
+      ...skipped.flatMap((test) => [
+        line({ action: 'test_start', test }),
+        line({ action: 'test_end', test, status: 'SKIP', message: 'skip-if' }),
+      ]),
+      ...ran.flatMap((test) => [
+        line({ action: 'test_start', test }),
+        line({ action: 'test_end', test, status: 'OK' }),
+      ]),
+      ...(end ? [line({ action: 'suite_end' })] : []),
+    ].join('\n');
+
+  it('names the files a harness timeout left unjudged (no started= count before)', () => {
+    const raw = parseRawTestLog(
+      [
+        rawLog(FILES.slice(0, 2), [], false),
+        line({ action: 'test_start', test: FILES[2] }),
+        line({ action: 'test_end', test: FILES[2], status: 'TIMEOUT', expected: 'OK' }),
+      ].join('\n')
+    );
+    const failed = { kind: 'test-failures' as const, unexpected: 1 };
+    const verdict = vetoIncompletePass(failed, '', [DIR], undefined, raw);
+    expect(verdict.incomplete).toMatchObject({
+      started: 3,
+      requested: 5,
+      firstUnstarted: `${DIR}/browser_d.js`,
+      startedSource: 'raw',
+    });
+    expect(formatFireforgeVerdictLine(verdict)).toBe(
+      `FIREFORGE-VERDICT: FAIL reason=test-failures unexpected=1 started=3/5 first-unstarted=${DIR}/browser_d.js started-source=raw`
+    );
+  });
+
+  it('fails an exit-0 run that stopped before the roster ran', () => {
+    const raw = parseRawTestLog(rawLog(FILES));
+    const verdict = vetoIncompletePass(
+      { kind: 'tests-ran-ok', unexpected: 0 },
+      '',
+      [DIR],
+      undefined,
+      raw
+    );
+    expect(verdict.kind).toBe('test-failures');
+    expect(verdict.incomplete).toMatchObject({ started: 3, requested: 5 });
+  });
+
+  it('keeps a complete directory pass, its skip-if files counted as accounted for', () => {
+    const pass = { kind: 'tests-ran-ok' as const, unexpected: 0 };
+    const skippedTwo = parseRawTestLog(rawLog(ROSTER.slice(0, 3), ROSTER.slice(3)));
+    expect(vetoIncompletePass(pass, '', [DIR], undefined, skippedTwo)).toBe(pass);
+    expect(vetoIncompletePass(pass, '', [`${DIR}/browser.toml`], undefined, skippedTwo)).toBe(pass);
+    // A file requested by name and announced again is one file.
+    expect(vetoIncompletePass(pass, '', [`engine/${FILES[0]}`, DIR], undefined, skippedTwo)).toBe(
+      pass
+    );
+    // A trimmed run's empty roster leaves the count to the requested files.
+    const trimmed = { ...parseRawTestLog(rawLog(FILES)), roster: [] };
+    expect(vetoIncompletePass(pass, '', [DIR], undefined, trimmed)).toBe(pass);
+  });
+
+  it('joins the rosters of several suite_start records', () => {
+    const raw = parseRawTestLog(
+      [
+        rawLog(ROSTER),
+        line({ action: 'suite_start', tests: { 'other/browser.toml': ['other/browser_o.js'] } }),
+        line({ action: 'suite_end' }),
+      ].join('\n')
+    );
+    const verdict = vetoIncompletePass(
+      { kind: 'tests-ran-ok' },
+      '',
+      [DIR, 'other'],
+      undefined,
+      raw
+    );
+    expect(verdict.incomplete).toMatchObject({
+      started: 5,
+      requested: 6,
+      firstUnstarted: 'other/browser_o.js',
+    });
   });
 });
 

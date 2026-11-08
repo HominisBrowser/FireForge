@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import * as prompts from '@clack/prompts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadState, updateState } from '../../core/config.js';
-import { loadPatchesManifest } from '../../core/patch-manifest.js';
+import { loadPatchesManifest, savePatchesManifest } from '../../core/patch-manifest.js';
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
   createTempProject,
@@ -175,6 +176,46 @@ describe('resolve integration', () => {
     const manifestAfter = await loadPatchesManifest(join(projectRoot, 'patches'));
     const updatedPatch = manifestAfter?.patches.find((p) => p.filename === patchFilename);
     expect(updatedPatch?.filesAffected).toEqual(['browser/base/content/browser.js']);
+  });
+
+  it('refuses to rewrite a patch whose file another patch also lists', async () => {
+    restoreTTY = setInteractiveMode(true);
+    vi.mocked(prompts.confirm).mockResolvedValue(true);
+    const engineDir = join(projectRoot, 'engine');
+    const shared = 'browser/base/content/browser.js';
+    await initCommittedRepo(engineDir, { [shared]: 'export const title = "old";\n' });
+    await writeFiles(engineDir, { [shared]: 'export const title = "first";\n' });
+    await exportCommand(projectRoot, [shared], {
+      name: 'first',
+      category: 'ui',
+      description: 'First',
+    });
+    // A second patch claiming the same file, as an `--allow-overlap` queue has.
+    const patchesDir = join(projectRoot, 'patches');
+    const manifest = await loadPatchesManifest(patchesDir);
+    const first = manifest?.patches[0];
+    if (!manifest || !first) throw new Error('expected an exported patch');
+    await writeFile(
+      join(patchesDir, '002-ui-second.patch'),
+      await readFile(join(patchesDir, first.filename))
+    );
+    await savePatchesManifest(patchesDir, {
+      ...manifest,
+      patches: [...manifest.patches, { ...first, filename: '002-ui-second.patch', order: 2 }],
+    });
+    const bodyBefore = await readProjectText(projectRoot, `patches/${first.filename}`);
+    await updateState(projectRoot, {
+      pendingResolution: { patchFilename: first.filename, originalError: 'Simulated conflict' },
+    });
+
+    await expect(resolveCommand(projectRoot)).rejects.toThrow(
+      /shares file\(s\) with other patches/
+    );
+
+    await expect(readProjectText(projectRoot, `patches/${first.filename}`)).resolves.toBe(
+      bodyBefore
+    );
+    expect((await loadState(projectRoot)).pendingResolution?.patchFilename).toBe(first.filename);
   });
 
   it('exits cleanly when no pending resolution exists', async () => {

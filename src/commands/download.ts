@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { randomUUID } from 'node:crypto';
-import { rename } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { Command } from 'commander';
@@ -21,9 +20,10 @@ import {
   resumeRepository,
 } from '../core/git.js';
 import { restoreTrackedPath } from '../core/git-file-ops.js';
-import { getDirtyFiles, getWorkingTreeStatus } from '../core/git-status.js';
+import { getDirtyFiles } from '../core/git-status.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { formatMajorVersionHopNotice } from '../core/toolchain-preflight.js';
+import { GeneralError } from '../errors/base.js';
 import { EngineExistsError, PartialEngineExistsError } from '../errors/download.js';
 import type { CommandContext } from '../types/cli.js';
 import type { DownloadOptions } from '../types/commands/index.js';
@@ -31,78 +31,17 @@ import type { FirefoxProduct } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { checkDiskSpace, ensureDir, pathExists, pathExistsStrict, removeDir } from '../utils/fs.js';
 import type { SpinnerHandle } from '../utils/logger.js';
-import { info, intro, outro, spinner, verbose, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { info, intro, outro, spinner, warn } from '../utils/logger.js';
+import { addWaitLockOption, pickDefined } from '../utils/options.js';
+import {
+  activateReplacementEngine,
+  describeForcedReplacementLoss,
+  forcedReplacementFingerprint,
+  getPatchTouchedFiles,
+  restorePreviousEngine,
+} from './download-replace.js';
 import { confirmDirtyEngineReset } from './rebase/confirm.js';
-
-/**
- * Collects the set of patch-touched files from the manifest.
- * Returns an empty set when the patches directory or manifest is absent.
- */
-async function getPatchTouchedFiles(patchesDir: string): Promise<Set<string>> {
-  if (!(await pathExists(patchesDir))) return new Set();
-
-  const manifest = await loadPatchesManifest(patchesDir);
-  if (!manifest || manifest.patches.length === 0) return new Set();
-
-  const files = new Set<string>();
-  for (const patch of manifest.patches) {
-    for (const file of patch.filesAffected) {
-      files.add(file);
-    }
-  }
-  return files;
-}
-
-/**
- * Describes what a forced replacement would discard from an existing
- * engine: changed paths against HEAD (tracked edits, applied patches, new
- * untracked files; ignored paths such as the objdir are not work), and a
- * HEAD that moved off the recorded base commit. Returns `undefined` when
- * nothing would be lost, including an engine that is not a git repository
- * or has no commit yet: that is the broken tree `--force` exists to replace.
- */
-async function describeForcedReplacementLoss(
-  engineDir: string,
-  patchesDir: string,
-  baseCommit: string | undefined
-): Promise<string | undefined> {
-  if (!(await isGitRepository(engineDir))) return undefined;
-  let head: string;
-  try {
-    head = await getHead(engineDir);
-  } catch (error: unknown) {
-    if (isMissingHeadError(error)) return undefined;
-    throw error;
-  }
-
-  const entries = await getWorkingTreeStatus(engineDir);
-  const headMoved = baseCommit !== undefined && head !== baseCommit;
-  if (entries.length === 0 && !headMoved) return undefined;
-
-  const parts: string[] = [];
-  if (entries.length > 0) {
-    const patchFiles = [...(await getPatchTouchedFiles(patchesDir))];
-    const claimed = entries.filter((entry) =>
-      entry.file.endsWith('/')
-        ? patchFiles.some((file) => file.startsWith(entry.file))
-        : patchFiles.includes(entry.file)
-    ).length;
-    const unclaimed = entries.length - claimed;
-    parts.push(
-      `engine/ has ${entries.length} changed path(s) against HEAD: ` +
-        `${claimed} match the patch queue, ${unclaimed} do not` +
-        (unclaimed > 0 ? ' (unexported work that exists nowhere else).' : '.')
-    );
-  }
-  if (headMoved) {
-    parts.push(
-      `engine/ HEAD ${head.slice(0, 12)} is not the recorded base commit ${baseCommit.slice(0, 12)}, so commits made in engine/ are discarded too.`
-    );
-  }
-  parts.push('--force replaces the whole directory.');
-  return parts.join(' ');
-}
+import { runUnderEngineLock } from './with-engine-lock.js';
 
 /**
  * Outcome of {@link cleanPatchTouchedFiles}. `restored` is the number of
@@ -205,56 +144,6 @@ function closeRestoreSpinner(restoreSpinner: SpinnerHandle, result: CleanPatchRe
   restoreSpinner.stop('Patch-touched files restored');
 }
 
-async function activateReplacementEngine(args: {
-  engineDir: string;
-  replacementDir: string;
-  backupDir: string;
-}): Promise<void> {
-  const { engineDir, replacementDir, backupDir } = args;
-  await rename(engineDir, backupDir);
-  try {
-    await rename(replacementDir, engineDir);
-  } catch (error: unknown) {
-    try {
-      await rename(backupDir, engineDir);
-    } catch (restoreError: unknown) {
-      const cause = toError(restoreError);
-      warn(
-        `Could not restore previous engine after replacement activation failed. Previous engine backup remains at ${backupDir}. Remove ${engineDir} if it exists, then move the backup back to engine/.`
-      );
-      verbose(`Engine restore failure detail: ${cause.message}`);
-      if (cause.stack) {
-        verbose(cause.stack);
-      }
-    }
-    throw error;
-  }
-}
-
-async function restorePreviousEngine(args: {
-  engineDir: string;
-  backupDir: string;
-  reason: unknown;
-}): Promise<void> {
-  const { engineDir, backupDir, reason } = args;
-  const cause = toError(reason);
-  verbose(`Restoring previous engine after failed forced download: ${cause.message}`);
-  try {
-    await removeDir(engineDir);
-    await rename(backupDir, engineDir);
-    warn('Restored the previous engine/ after the forced replacement failed.');
-  } catch (restoreError: unknown) {
-    const restoreCause = toError(restoreError);
-    warn(
-      `Could not restore the previous engine automatically. Previous engine backup remains at ${backupDir}. Remove the failed engine/ and move that backup back to engine/ before retrying.`
-    );
-    verbose(`Engine restore failure detail: ${restoreCause.message}`);
-    if (restoreCause.stack) {
-      verbose(restoreCause.stack);
-    }
-  }
-}
-
 async function downloadAndExtractFirefox(args: {
   version: string;
   product: FirefoxProduct;
@@ -328,93 +217,253 @@ function noteMajorVersionHop(previousVersion: string | undefined, version: strin
   }
 }
 
-async function initializeDownloadedEngine(args: {
-  projectRoot: string;
-  patchesDir: string;
-  version: string;
-  previousVersion: string | undefined;
+/**
+ * Indexes a freshly extracted tree into git and restores patch-touched files
+ * to baseline. Returns the baseline commit. `engineDir` is either engine/
+ * itself (a first download) or the private replacement directory of a forced
+ * one, which nothing else reads until it is activated.
+ */
+async function indexDownloadedEngine(args: {
   engineDir: string;
-  replacementActivated: boolean;
-  backupEngineDir?: string;
-}): Promise<void> {
-  const {
-    projectRoot,
-    patchesDir,
-    version,
-    previousVersion,
-    engineDir,
-    replacementActivated,
-    backupEngineDir,
-  } = args;
-
+  patchesDir: string;
+  replacement: boolean;
+}): Promise<string> {
+  const { engineDir, patchesDir, replacement } = args;
   // The git indexing phase of `download` can block for minutes on a ~600 MB
   // Firefox tree. Emit a one-line heads-up banner before the spinner starts
   // so CI logs show the expected duration.
+  info(
+    'Indexing downloaded source into git (one-time; typically 3–5 minutes on a ~600 MB Firefox tree)...'
+  );
+
+  info('Git phase: initializing/resetting source repository metadata.');
+  const gitSpinner = spinner('Initializing git repository (this may take a few minutes)...');
+  let baseCommit: string;
+
   try {
-    info(
-      'Indexing downloaded source into git (one-time; typically 3–5 minutes on a ~600 MB Firefox tree)...'
+    await initRepository(engineDir, 'firefox', {
+      onProgress: (message) => {
+        gitSpinner.message(message);
+      },
+    });
+    baseCommit = await getHead(engineDir);
+    gitSpinner.stop('Git repository initialized');
+  } catch (error: unknown) {
+    gitSpinner.error('Failed to initialize git repository');
+    warn(
+      replacement
+        ? 'Replacement engine failed during baseline git initialization; the existing engine/ was left untouched.'
+        : 'engine/ may now contain a partially initialized git repository. Re-run "fireforge download --force" to recreate the baseline cleanly.'
     );
+    throw error;
+  }
 
-    info('Git phase: initializing/resetting source repository metadata.');
-    const gitSpinner = spinner('Initializing git repository (this may take a few minutes)...');
-    let baseCommit: string | undefined;
+  const restoreSpinner = spinner('Restoring patch-touched files to baseline...');
+  try {
+    const restoreResult = await cleanPatchTouchedFiles(engineDir, patchesDir);
+    closeRestoreSpinner(restoreSpinner, restoreResult);
+  } catch (error: unknown) {
+    restoreSpinner.error('Failed to restore patch-touched files');
+    throw error;
+  }
+  return baseCommit;
+}
 
-    try {
-      await initRepository(engineDir, 'firefox', {
-        onProgress: (message) => {
-          gitSpinner.message(message);
-        },
-      });
-      baseCommit = await getHead(engineDir);
-      gitSpinner.stop('Git repository initialized');
-    } catch (error: unknown) {
-      gitSpinner.error('Failed to initialize git repository');
-      warn(
-        replacementActivated
-          ? 'Replacement engine/ failed during baseline git initialization. FireForge will try to restore the previous engine.'
-          : 'engine/ may now contain a partially initialized git repository. Re-run "fireforge download --force" to recreate the baseline cleanly.'
-      );
-      throw error;
-    }
+/** Records the downloaded baseline; runs under the engine-session lock. */
+async function recordDownloadedEngine(args: {
+  projectRoot: string;
+  version: string;
+  baseCommit: string;
+  replaced: boolean;
+}): Promise<void> {
+  const { projectRoot, version, baseCommit, replaced } = args;
+  if (replaced) {
+    // --force installs a new baseCommit, which invalidates every applied
+    // checksum in furnace-state.json.
+    await clearAppliedFurnaceState(projectRoot);
+  }
+  await updateState(projectRoot, {
+    downloadedVersion: version,
+    baseCommit,
+  });
+}
 
-    const restoreSpinner = spinner('Restoring patch-touched files to baseline...');
-    try {
-      const restoreResult = await cleanPatchTouchedFiles(engineDir, patchesDir);
-      closeRestoreSpinner(restoreSpinner, restoreResult);
-    } catch (error: unknown) {
-      restoreSpinner.error('Failed to restore patch-touched files');
-      throw error;
-    }
+/** Prints the post-download notes once the engine and state are in place. */
+async function finishDownload(args: {
+  patchesDir: string;
+  version: string;
+  previousVersion: string | undefined;
+  suffix?: string;
+}): Promise<void> {
+  await noteUnappliedPatches(args.patchesDir);
+  noteMajorVersionHop(args.previousVersion, args.version);
+  outro(`Firefox ${args.version} is ready!${args.suffix ?? ''}`);
+}
 
-    if (replacementActivated) {
-      // --force installs a new baseCommit, which invalidates every applied
-      // checksum in furnace-state.json.
-      await clearAppliedFurnaceState(projectRoot);
-    }
+/**
+ * Resumes an engine whose baseline git initialization was interrupted. Runs
+ * under the engine-session lock: it commits into engine/.
+ */
+async function resumePartialEngine(args: {
+  projectRoot: string;
+  engineDir: string;
+  patchesDir: string;
+  version: string;
+  previousVersion: string | undefined;
+}): Promise<void> {
+  const { projectRoot, engineDir, patchesDir, version, previousVersion } = args;
+  info('Detected partially initialized engine. Attempting to resume...');
+
+  // Snapshot patch-touched files that are already dirty so we
+  // can preserve them after the resume commit.
+  const patchFiles = await getPatchTouchedFiles(patchesDir);
+  const preExistingDirty =
+    patchFiles.size > 0
+      ? new Set(await getDirtyFiles(engineDir, [...patchFiles]))
+      : new Set<string>();
+
+  const resumeSpinner = spinner('Resuming git repository initialization...');
+  try {
+    await resumeRepository(engineDir, {
+      // The non-TTY spinner fallback in `src/utils/logger.ts` already calls
+      // `p.log.step(msg)` from `message()`, so forwarding the progress
+      // message is the single authority in both TTY and non-TTY modes.
+      // Calling `step(message)` explicitly here as well prints the same line
+      // twice in CI logs.
+      onProgress: (message) => {
+        resumeSpinner.message(message);
+      },
+    });
+    const baseCommit = await getHead(engineDir);
+    resumeSpinner.stop('Git repository resumed successfully');
+
+    // Restore patch-touched files before stamping state. If this step fails
+    // (disk full, permission denied, git object issue), state.json keeps the
+    // previous downloadedVersion so the invariant "state.downloadedVersion
+    // matches a clean engine" holds. A retry of `fireforge download` then
+    // re-enters the resume path instead of declaring success against a dirty
+    // engine.
+    await cleanPatchTouchedFiles(engineDir, patchesDir, preExistingDirty);
 
     await updateState(projectRoot, {
       downloadedVersion: version,
       baseCommit,
     });
-
-    await noteUnappliedPatches(patchesDir);
-    noteMajorVersionHop(previousVersion, version);
-
-    if (backupEngineDir) {
-      await removeDir(backupEngineDir);
-    }
-
-    outro(`Firefox ${version} is ready!`);
   } catch (error: unknown) {
-    if (replacementActivated && backupEngineDir) {
-      await restorePreviousEngine({
-        engineDir,
-        backupDir: backupEngineDir,
-        reason: error,
-      });
-    }
-    throw error;
+    resumeSpinner.error('Resume failed');
+    // Preserve the underlying cause so the operator sees why the resume
+    // failed (timeout, permission denied, corrupted object, disk full)
+    // instead of only the generic "partial engine exists" story. The cause
+    // reaches them through the CLI boundary's chain walk under --verbose
+    // (src/cli.ts), which is what makes PartialEngineExistsError's "re-run
+    // with --verbose" promise true.
+    throw new PartialEngineExistsError(engineDir, toError(error));
   }
+  await finishDownload({
+    patchesDir,
+    version,
+    previousVersion,
+    suffix: ' (resumed from partial init)',
+  });
+}
+
+/**
+ * Refuses an existing engine/ without --force, resuming a partial git
+ * initialization instead when that is what is there.
+ */
+async function handleExistingEngineWithoutForce(args: {
+  projectRoot: string;
+  engineDir: string;
+  patchesDir: string;
+  version: string;
+  previousVersion: string | undefined;
+  options: DownloadOptions;
+}): Promise<void> {
+  const { engineDir } = args;
+  if (await isGitRepository(engineDir)) {
+    try {
+      await getHead(engineDir);
+    } catch (error: unknown) {
+      if (isMissingHeadError(error)) {
+        // Partial init detected. Resume instead of requiring --force.
+        await runUnderEngineLock(args.projectRoot, 'download', args.options, async () => {
+          // Re-read under the lock: a peer may have finished or replaced it.
+          if (!(await pathExistsStrict(engineDir))) throw new EngineExistsError(engineDir);
+          await resumePartialEngine(args);
+        });
+        return;
+      }
+      // Re-throw unexpected git errors (corrupted objects, permission
+      // denied, …) wrapped in PartialEngineExistsError so the user sees
+      // both narratives: "we detected a partial engine and attempted
+      // resume" and the underlying git failure. Without the wrap the
+      // raw git error loses the context that resume was in flight.
+      throw new PartialEngineExistsError(engineDir, toError(error));
+    }
+  }
+  throw new EngineExistsError(engineDir);
+}
+
+/** The download-and-extract inputs every path shares. */
+type ExtractInputs = Omit<Parameters<typeof downloadAndExtractFirefox>[0], 'engineDir'>;
+
+/**
+ * `download --force`: fetches, extracts and indexes the new tree into a
+ * private replacement directory without holding the engine-session lock,
+ * then takes the lock only to check that engine/ is still what the operator
+ * confirmed discarding, swap the directories, and record the new baseline.
+ */
+async function replaceEngine(args: {
+  projectRoot: string;
+  engineDir: string;
+  patchesDir: string;
+  version: string;
+  previousVersion: string | undefined;
+  options: DownloadOptions;
+  extract: ExtractInputs;
+  confirmedFingerprint: string;
+}): Promise<void> {
+  const { projectRoot, engineDir, patchesDir, version, previousVersion, options } = args;
+  const replacementDir = `${engineDir}.replacement-${randomUUID()}`;
+  const backupDir = `${engineDir}.backup-${randomUUID()}`;
+  warn(
+    'Preparing replacement engine directory; existing engine/ will remain in place until the new archive downloads, validates, extracts, and is indexed.'
+  );
+
+  const swap = { activated: false };
+  try {
+    await downloadAndExtractFirefox({ ...args.extract, engineDir: replacementDir });
+    const baseCommit = await indexDownloadedEngine({
+      engineDir: replacementDir,
+      patchesDir,
+      replacement: true,
+    });
+
+    await runUnderEngineLock(projectRoot, 'download --force', options, async () => {
+      if (
+        (await forcedReplacementFingerprint(engineDir, projectRoot)) !== args.confirmedFingerprint
+      ) {
+        throw new GeneralError(
+          'engine/ changed while the replacement downloaded, so it was not replaced: the ' +
+            'confirmation covered the engine/ as it was then. Re-run "fireforge download --force" ' +
+            'to review what would be discarded now.'
+        );
+      }
+      warn('Activating replacement engine directory...');
+      await activateReplacementEngine({ engineDir, replacementDir, backupDir });
+      swap.activated = true;
+      try {
+        await recordDownloadedEngine({ projectRoot, version, baseCommit, replaced: true });
+      } catch (error: unknown) {
+        await restorePreviousEngine({ engineDir, backupDir, reason: error });
+        throw error;
+      }
+      await removeDir(backupDir);
+    });
+  } finally {
+    if (!swap.activated) await removeDir(replacementDir);
+  }
+  await finishDownload({ patchesDir, version, previousVersion });
 }
 
 /**
@@ -471,92 +520,34 @@ export async function downloadCommand(
         );
       }
 
-      let installEngineDir = paths.engine;
-      let replacementEngineDir: string | undefined;
-      let backupEngineDir: string | undefined;
-      let replacementActivated = false;
+      const cacheDir = join(paths.fireforgeDir, 'cache');
+      const extract: ExtractInputs = {
+        version,
+        product: config.firefox.product,
+        cacheDir,
+        ...(config.firefox.sha256 !== undefined ? { sha256: config.firefox.sha256 } : {}),
+        ...(config.firefox.candidate !== undefined ? { candidate: config.firefox.candidate } : {}),
+        ...(config.firefox.allowUnverifiedDownload !== undefined
+          ? { allowUnverifiedDownload: config.firefox.allowUnverifiedDownload }
+          : {}),
+      };
 
-      // Check if engine already exists
       if (await pathExistsStrict(paths.engine)) {
         if (!options.force) {
-          if (await isGitRepository(paths.engine)) {
-            try {
-              await getHead(paths.engine);
-            } catch (error: unknown) {
-              if (isMissingHeadError(error)) {
-                // Partial init detected. Attempt to resume instead of
-                // requiring --force.
-                info('Detected partially initialized engine. Attempting to resume...');
-
-                // Snapshot patch-touched files that are already dirty so we
-                // can preserve them after the resume commit.
-                const patchFiles = await getPatchTouchedFiles(paths.patches);
-                const preExistingDirty =
-                  patchFiles.size > 0
-                    ? new Set(await getDirtyFiles(paths.engine, [...patchFiles]))
-                    : new Set<string>();
-
-                const resumeSpinner = spinner('Resuming git repository initialization...');
-                try {
-                  await resumeRepository(paths.engine, {
-                    // The non-TTY spinner fallback in `src/utils/logger.ts`
-                    // already calls `p.log.step(msg)` from `message()`, so
-                    // forwarding the progress message is the single authority
-                    // in both TTY and non-TTY modes. Calling `step(message)`
-                    // explicitly here as well prints the same line twice in
-                    // CI logs.
-                    onProgress: (message) => {
-                      resumeSpinner.message(message);
-                    },
-                  });
-                  const baseCommit = await getHead(paths.engine);
-                  resumeSpinner.stop('Git repository resumed successfully');
-
-                  // Restore patch-touched files before stamping state. If this
-                  // step fails (disk full, permission denied, git object issue),
-                  // state.json keeps the previous downloadedVersion so the
-                  // invariant "state.downloadedVersion matches a clean engine"
-                  // holds. A retry of `fireforge download` then re-enters the
-                  // resume path instead of declaring success against a dirty
-                  // engine.
-                  await cleanPatchTouchedFiles(paths.engine, paths.patches, preExistingDirty);
-
-                  await updateState(projectRoot, {
-                    downloadedVersion: version,
-                    baseCommit,
-                  });
-
-                  await noteUnappliedPatches(paths.patches);
-                  noteMajorVersionHop(previousVersion, version);
-
-                  outro(`Firefox ${version} is ready! (resumed from partial init)`);
-                  return;
-                } catch (error: unknown) {
-                  resumeSpinner.error('Resume failed');
-                  // Preserve the underlying cause so the operator sees why
-                  // the resume failed (timeout, permission denied, corrupted
-                  // object, disk full) instead of only the generic "partial
-                  // engine exists" story. The cause reaches them through the
-                  // CLI boundary's chain walk under --verbose (src/cli.ts),
-                  // which is what makes PartialEngineExistsError's "re-run
-                  // with --verbose" promise true.
-                  throw new PartialEngineExistsError(paths.engine, toError(error));
-                }
-              }
-              // Re-throw unexpected git errors (corrupted objects, permission
-              // denied, …) wrapped in PartialEngineExistsError so the user sees
-              // both narratives: "we detected a partial engine and attempted
-              // resume" and the underlying git failure. Without the wrap the
-              // raw git error loses the context that resume was in flight.
-              throw new PartialEngineExistsError(paths.engine, toError(error));
-            }
-          }
-
-          throw new EngineExistsError(paths.engine);
+          await handleExistingEngineWithoutForce({
+            projectRoot,
+            engineDir: paths.engine,
+            patchesDir: paths.patches,
+            version,
+            previousVersion,
+            options,
+          });
+          return;
         }
 
         // The replacement deletes the old tree once the new one is active,
         // so anything not in patches/ is gone for good. Ask before fetching.
+        const confirmedFingerprint = await forcedReplacementFingerprint(paths.engine, projectRoot);
         const loss = await describeForcedReplacementLoss(
           paths.engine,
           paths.patches,
@@ -579,59 +570,35 @@ export async function downloadCommand(
           return;
         }
 
-        replacementEngineDir = `${paths.engine}.replacement-${randomUUID()}`;
-        backupEngineDir = `${paths.engine}.backup-${randomUUID()}`;
-        installEngineDir = replacementEngineDir;
-        warn(
-          'Preparing replacement engine directory; existing engine/ will remain in place until the new archive downloads, validates, and extracts.'
-        );
-      }
-
-      // Ensure cache directory exists
-      const cacheDir = join(paths.fireforgeDir, 'cache');
-      await ensureDir(cacheDir);
-
-      try {
-        await downloadAndExtractFirefox({
+        await ensureDir(cacheDir);
+        await replaceEngine({
+          projectRoot,
+          engineDir: paths.engine,
+          patchesDir: paths.patches,
           version,
-          product: config.firefox.product,
-          engineDir: installEngineDir,
-          cacheDir,
-          ...(config.firefox.sha256 !== undefined ? { sha256: config.firefox.sha256 } : {}),
-          ...(config.firefox.candidate !== undefined
-            ? { candidate: config.firefox.candidate }
-            : {}),
-          ...(config.firefox.allowUnverifiedDownload !== undefined
-            ? { allowUnverifiedDownload: config.firefox.allowUnverifiedDownload }
-            : {}),
+          previousVersion,
+          options,
+          extract,
+          confirmedFingerprint,
         });
-
-        if (replacementEngineDir && backupEngineDir) {
-          warn('Activating replacement engine directory...');
-          await activateReplacementEngine({
-            engineDir: paths.engine,
-            replacementDir: replacementEngineDir,
-            backupDir: backupEngineDir,
-          });
-          replacementActivated = true;
-          installEngineDir = paths.engine;
-        }
-      } catch (error: unknown) {
-        if (replacementEngineDir) {
-          await removeDir(replacementEngineDir);
-        }
-        throw error;
+        return;
       }
 
-      await initializeDownloadedEngine({
-        projectRoot,
-        patchesDir: paths.patches,
-        version,
-        previousVersion,
-        engineDir: installEngineDir,
-        replacementActivated,
-        ...(backupEngineDir !== undefined ? { backupEngineDir } : {}),
+      // A first download creates engine/ and indexes it in place, so a
+      // partial git initialization can be resumed. It holds the
+      // engine-session lock throughout: no peer may see engine/ half-made.
+      await ensureDir(cacheDir);
+      await runUnderEngineLock(projectRoot, 'download', options, async () => {
+        if (await pathExistsStrict(paths.engine)) throw new EngineExistsError(paths.engine);
+        await downloadAndExtractFirefox({ ...extract, engineDir: paths.engine });
+        const baseCommit = await indexDownloadedEngine({
+          engineDir: paths.engine,
+          patchesDir: paths.patches,
+          replacement: false,
+        });
+        await recordDownloadedEngine({ projectRoot, version, baseCommit, replaced: false });
       });
+      await finishDownload({ patchesDir: paths.patches, version, previousVersion });
     },
     downloadLockOptions
   );
@@ -642,17 +609,19 @@ export function registerDownload(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const command = program
     .command('download')
     .description('Download Firefox source')
     .option(
       '-f, --force',
       'Force re-download; discards engine/ including applied patches and unexported edits'
     )
-    .option('-y, --yes', 'With --force: replace a dirty engine/ without the confirmation prompt')
-    .action(
-      withErrorHandling(async (options: { force?: boolean; yes?: boolean }) => {
+    .option('-y, --yes', 'With --force: replace a dirty engine/ without the confirmation prompt');
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (options: { force?: boolean; yes?: boolean; waitLock?: boolean | number }) => {
         await downloadCommand(getProjectRoot(), pickDefined(options));
-      })
-    );
+      }
+    )
+  );
 }

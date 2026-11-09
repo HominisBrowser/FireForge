@@ -420,6 +420,7 @@ describe('reExportCommand integration', () => {
       )
     ).toBe(true);
     expect(warned.join('\n')).not.toContain('features/gone-b.txt');
+    expect(warned.join('\n')).not.toContain('--expect-new');
   });
 
   it('broad --scan only offers candidates from the patch directory footprint', async () => {

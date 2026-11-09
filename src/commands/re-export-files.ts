@@ -103,6 +103,7 @@ async function runProjectedCrossPatchLint(
 function buildFilesModeMetadataUpdates(
   actualProjectedFiles: string[],
   options: ReExportOptions,
+  config: FireForgeConfig,
   effectiveLintIgnore: LintIgnoreEntry[] | undefined,
   flagIgnoreSet: Set<string>
 ): Partial<PatchMetadata> {
@@ -114,6 +115,11 @@ function buildFilesModeMetadataUpdates(
   }
   if (effectiveLintIgnore !== undefined && flagIgnoreSet.size > 0) {
     updates.lintIgnore = effectiveLintIgnore;
+  }
+  if (options.stamp === true) {
+    updates.sourceEsrVersion = config.firefox.version;
+    updates.sourceVersion = config.firefox.version;
+    updates.sourceProduct = config.firefox.product;
   }
   return updates;
 }
@@ -357,6 +363,7 @@ export async function reExportFilesInPlace(
   const filesUpdates = buildFilesModeMetadataUpdates(
     actualProjectedFiles,
     options,
+    config,
     effectiveLintIgnore,
     flagIgnoreSet
   );
@@ -393,6 +400,10 @@ export async function reExportFilesInPlace(
   }
   if (decision === 'dry-run') {
     info(`[dry-run] ${target.filename}: ${actualProjectedFiles.length} file(s) in projected scope`);
+    if (options.stamp === true)
+      info(
+        `[dry-run] Would stamp sourceVersion=${config.firefox.version} (${config.firefox.product}) on ${target.filename}`
+      );
     outro('Dry run complete — no changes made');
     return;
   }

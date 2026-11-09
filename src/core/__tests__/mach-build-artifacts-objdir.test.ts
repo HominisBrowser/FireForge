@@ -35,11 +35,30 @@ async function makeEngine(objDirs: string[], mozconfig?: string): Promise<string
 }
 
 describe('objdir resolution', () => {
-  it('selects the only candidate without consulting the mozconfig', async () => {
+  it('selects the only candidate when no conflicting mozconfig declaration exists', async () => {
     const engineDir = await makeEngine(['obj-dev']);
     await expect(hasBuildArtifacts(engineDir)).resolves.toMatchObject({
       exists: true,
       objDir: 'obj-dev',
+    });
+  });
+
+  it.each(['/other/workspace/obj-dev', '@TOPSRCDIR@/nested/obj-dev', '@TOPSRCDIR@/obj-new'])(
+    'never selects a stale sole candidate for declared %s',
+    async (declaration) => {
+      const engineDir = await makeEngine(['obj-dev'], `mk_add_options MOZ_OBJDIR=${declaration}\n`);
+      const result = await hasBuildArtifacts(engineDir);
+      expect(result.ambiguous).toBe(true);
+      expect(result.objDir).toBeUndefined();
+    }
+  );
+
+  it('accepts an exact absolute declaration inside this engine without basename matching', async () => {
+    const engineDir = await makeEngine(['obj-dev', 'obj-release']);
+    await writeFile(join(engineDir, 'mozconfig'), `MOZ_OBJDIR=${join(engineDir, 'obj-release')}\n`);
+    expect(await hasBuildArtifacts(engineDir)).toMatchObject({
+      exists: true,
+      objDir: 'obj-release',
     });
   });
 

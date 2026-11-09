@@ -95,6 +95,9 @@ function describePerPatch(perPatch: PerPatchExplanation): string[] {
     'A global no shim declares is an undefined identifier here even when a chrome script the ' +
       'project pass loads declares it.'
   );
+  lines.push(
+    'Per-patch programs start from the standard DOM and their named shims. Gecko-specific DOM members are available only when those shims declare them; compare the project extra shim before interpreting a per-patch member difference.'
+  );
   return lines;
 }
 

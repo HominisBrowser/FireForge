@@ -15,9 +15,9 @@ import { join } from 'node:path';
 
 import MagicString from 'magic-string';
 
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { escapeRegex } from '../utils/regex.js';
 import { parseScript } from './ast-utils.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
 import { CUSTOM_ELEMENTS_JS } from './furnace-constants.js';
 import { isTagAlreadyRegistered } from './furnace-registration-ast.js';
 import { findRegistrationRanges } from './furnace-registration-remove.js';

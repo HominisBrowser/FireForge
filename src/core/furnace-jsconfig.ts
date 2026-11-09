@@ -32,9 +32,15 @@ import { toError } from '../utils/errors.js';
 import { pathExists, readText, writeTextIfChanged } from '../utils/fs.js';
 import { info } from '../utils/logger.js';
 import { isPathInsideRoot, normalizePathSlashes } from '../utils/paths.js';
-import { getFurnacePaths } from './furnace-config.js';
+import { getFurnacePaths, loadFurnaceConfig } from './furnace-config.js';
 import { CHROME_ELEMENTS_URL_PREFIX } from './furnace-constants.js';
-import { syncFurnaceTagMap } from './furnace-tag-map.js';
+import { formatGeneratedJsconfig } from './furnace-json-format.js';
+import { runFurnaceMutation, waitLockMutationOptions } from './furnace-operation.js';
+import {
+  generatedTypesFile,
+  type GeneratedTypesOptions,
+  syncFurnaceTagMap,
+} from './furnace-tag-map.js';
 
 /**
  * The configured `typecheckJsconfig` files, as a list: none when unset,
@@ -153,7 +159,7 @@ function isManagedEntry(
 export async function syncFurnaceJsconfigPaths(
   root: string,
   config: FurnaceConfig,
-  options?: { dryRun?: boolean }
+  options?: GeneratedTypesOptions
 ): Promise<JsconfigSyncResult[]> {
   const results: JsconfigSyncResult[] = [];
   for (const jsconfig of typecheckJsconfigList(config)) {
@@ -178,7 +184,7 @@ export async function syncJsconfigPaths(
   root: string,
   config: FurnaceConfig,
   jsconfigRel: string,
-  options?: { dryRun?: boolean }
+  options?: GeneratedTypesOptions
 ): Promise<JsconfigSyncResult> {
   const result: JsconfigSyncResult = {
     jsconfig: jsconfigRel,
@@ -188,8 +194,11 @@ export async function syncJsconfigPaths(
     changed: false,
   };
 
+  // Paths are computed for the configured location; the bytes live where the
+  // file is tracked.
   const jsconfigAbs = resolve(root, jsconfigRel);
-  if (!(await pathExists(jsconfigAbs))) {
+  const trackedFile = generatedTypesFile(root, jsconfigRel, options?.sourceRoot);
+  if (!(await pathExists(trackedFile))) {
     throw new FurnaceError(
       `furnace.json "typecheckJsconfig" names ${jsconfigRel}, but the file does not exist. ` +
         'Create the jsconfig (it stays consumer-owned; Furnace only maintains the ' +
@@ -198,7 +207,7 @@ export async function syncJsconfigPaths(
     );
   }
 
-  const jsconfigText = await readText(jsconfigAbs);
+  const jsconfigText = await readText(trackedFile);
   const parseErrors: ParseError[] = [];
   let jsconfig: unknown;
   try {
@@ -273,7 +282,10 @@ export async function syncJsconfigPaths(
   const edits = modify(jsconfigText, ['compilerOptions', 'paths'], nextPaths, {
     formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' },
   });
-  await writeTextIfChanged(jsconfigAbs, applyEdits(jsconfigText, edits));
+  await writeTextIfChanged(
+    trackedFile,
+    await formatGeneratedJsconfig(root, jsconfigAbs, applyEdits(jsconfigText, edits))
+  );
   return result;
 }
 
@@ -286,38 +298,116 @@ export async function syncJsconfigPaths(
  * @param root - Project root directory
  * @param config - Loaded Furnace configuration
  * @param jsconfigRel - Project-relative jsconfig path
+ * @param sourceRoot - `sources.root` in source mode, where an `engine/` path is tracked
  */
 export async function findJsconfigPathsDrift(
   root: string,
   config: FurnaceConfig,
-  jsconfigRel: string
+  jsconfigRel: string,
+  sourceRoot?: string
 ): Promise<JsconfigSyncResult> {
-  return syncJsconfigPaths(root, config, jsconfigRel, { dryRun: true });
+  return syncJsconfigPaths(root, config, jsconfigRel, { dryRun: true, sourceRoot });
 }
 
 /**
  * Runs the jsconfig paths sync and the tag-map write after a successful
  * deploy/sync and reports what changed, one line per file. No-op when
  * neither `typecheckJsconfig` nor `typecheckTagMap` is set. Shared by
- * `furnace deploy` and `furnace sync` so both report identically.
+ * `furnace types`, `furnace deploy` and `furnace sync` so all report
+ * identically.
  */
 export async function reportJsconfigPathsSync(
   root: string,
   config: FurnaceConfig,
-  dryRun: boolean
+  dryRun: boolean,
+  waitLockSeconds?: number,
+  sourceRoot?: string
 ): Promise<void> {
-  for (const sync of await syncFurnaceJsconfigPaths(root, config, { dryRun })) {
+  if (dryRun) {
+    await reportSync(root, config, { dryRun: true, sourceRoot });
+    return;
+  }
+  if (typecheckJsconfigList(config).length === 0 && config.typecheckTagMap === undefined) return;
+  // Both files are derived from the shared workspace. Written outside the
+  // furnace lock, two deploys can each derive from their own earlier view and
+  // the older view lands last, so the derivation is recomputed from a fresh
+  // config under the lock.
+  await runFurnaceMutation(
+    root,
+    'deploy-rollback',
+    async () => reportSync(root, await loadFurnaceConfig(root), { dryRun: false, sourceRoot }),
+    waitLockMutationOptions(waitLockSeconds)
+  );
+}
+
+async function reportSync(
+  root: string,
+  config: FurnaceConfig,
+  options: GeneratedTypesOptions
+): Promise<void> {
+  const dryRun = options.dryRun === true;
+  for (const sync of await syncFurnaceJsconfigPaths(root, config, options)) {
     if (!sync.changed) continue;
     info(
       `${dryRun ? '[dry-run] Would update' : 'Updated'} ${sync.jsconfig} chrome-module paths: ` +
         `+${sync.added.length} added, ~${sync.updated.length} updated, -${sync.pruned.length} pruned`
     );
   }
-  const tagMap = await syncFurnaceTagMap(root, config, { dryRun });
+  const tagMap = await syncFurnaceTagMap(root, config, options);
   if (tagMap?.changed === true) {
     info(
       `${dryRun ? '[dry-run] Would write' : 'Wrote'} ${tagMap.file}: ` +
         `${tagMap.entries.length} HTMLElementTagNameMap entr${tagMap.entries.length === 1 ? 'y' : 'ies'}`
     );
   }
+}
+
+/** What to run when a generated typecheck file is out of date. */
+export const GENERATED_TYPES_REMEDY = 'Run "fireforge furnace types" and commit the result.';
+
+/** One out-of-date Furnace-generated typecheck file. */
+export interface GeneratedTypesDrift {
+  /** The configured project-relative path. */
+  file: string;
+  check: 'jsconfig-paths-drift' | 'tag-map-drift';
+  /** What differs, for the report. */
+  detail: string;
+}
+
+/**
+ * The configured `typecheckJsconfig` and `typecheckTagMap` files whose
+ * committed content differs from what the workspace generates. Read-only.
+ * A missing or unparsable jsconfig throws, as a write would.
+ *
+ * @param root - Project root directory
+ * @param config - Loaded Furnace configuration
+ * @param sourceRoot - `sources.root` in source mode, where an `engine/` path is tracked
+ */
+export async function findGeneratedTypesDrift(
+  root: string,
+  config: FurnaceConfig,
+  sourceRoot?: string
+): Promise<GeneratedTypesDrift[]> {
+  const drift: GeneratedTypesDrift[] = [];
+  for (const jsconfig of typecheckJsconfigList(config)) {
+    const result = await findJsconfigPathsDrift(root, config, jsconfig, sourceRoot);
+    if (!result.changed) continue;
+    drift.push({
+      file: jsconfig,
+      check: 'jsconfig-paths-drift',
+      detail: [
+        ...result.added.map((key) => `missing: ${key}`),
+        ...result.updated.map((key) => `stale: ${key}`),
+        ...result.pruned.map((key) => `orphaned: ${key}`),
+      ].join('; '),
+    });
+  }
+  const tagMap = await syncFurnaceTagMap(root, config, { dryRun: true, sourceRoot });
+  if (tagMap?.changed === true)
+    drift.push({
+      file: tagMap.file,
+      check: 'tag-map-drift',
+      detail: tagMap.missing ? 'the file does not exist' : 'custom element definitions changed',
+    });
+  return drift;
 }

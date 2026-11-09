@@ -3,13 +3,10 @@
  * Cross-patch lint rule: a test manifest that registers a file a
  * later-ordered patch creates, without declaring the staged dependency.
  *
- * The import kind has had this arm since forward-import shipped. The
- * registration kind never did. `--kind registration` metadata was only ever
- * checked for staleness once declared, so a patch whose `xpcshell.toml`
- * carried `support-files = ["fixtures/*.sqlite"]` for a fixture the next
- * patch creates passed lint in both arms. Declaring the dependency and
- * removing the declaration produced identical silence, so the gap was
- * invisible rather than merely absent.
+ * Covers `--kind registration` metadata: a patch whose `xpcshell.toml`
+ * carries `support-files = ["fixtures/*.sqlite"]` for a fixture the next
+ * patch creates must declare the staged dependency, and the declaration is
+ * also checked for staleness.
  *
  * Scope is narrow by default: test-manifest `support-files` only. The
  * carriers whose target resolves without the build system (jar.mn pair
@@ -58,12 +55,13 @@ const TEST_MANIFEST_BASENAMES = new Set([
 ]);
 
 /** True for a path whose basename is a recognised test manifest. */
-function isTestManifestPath(path: string): boolean {
+export function isTestManifestPath(path: string): boolean {
   return TEST_MANIFEST_BASENAMES.has(basename(normalizePathSlashes(path)));
 }
 
-/** Matches the start of a `support-files` assignment. */
-const SUPPORT_FILES_PATTERN = /^\s*support-files\s*=\s*(.*)$/;
+/** Matches the start of a `<key>` assignment (`support-files` by default). */
+const assignmentPattern = (key: string): RegExp =>
+  new RegExp(`^\\s*${escapeRegex(key)}\\s*=\\s*(.*)$`);
 
 /**
  * One `support-files` entry, with the line the patch actually adds it on.
@@ -89,7 +87,8 @@ export interface SupportFileEntry {
 
 /**
  * Extracts the `support-files` entries declared in `content`, each paired
- * with the manifest line it is written on.
+ * with the manifest line it is written on. `key` reads another list-valued
+ * key of the same shape instead (`head`, `tail`).
  *
  * Handles the TOML array on one line and spread over several, and the
  * whitespace-separated `.ini` spelling. Anything else (a computed value, a
@@ -101,7 +100,11 @@ export interface SupportFileEntry {
  * its own line. Entries are deduplicated: a manifest that lists the same
  * file under two per-test sections needs one declaration, not two.
  */
-export function extractSupportFileEntries(content: string): SupportFileEntry[] {
+export function extractSupportFileEntries(
+  content: string,
+  key = 'support-files'
+): SupportFileEntry[] {
+  const pattern = assignmentPattern(key);
   const lines = content.split('\n');
   const order: string[] = [];
   const sourceLines = new Map<string, string[]>();
@@ -118,7 +121,7 @@ export function extractSupportFileEntries(content: string): SupportFileEntry[] {
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i] ?? '';
-    const match = SUPPORT_FILES_PATTERN.exec(raw);
+    const match = pattern.exec(raw);
     if (!match) continue;
     const head = match[1] ?? '';
     if (!head.trimStart().startsWith('[')) {

@@ -71,7 +71,7 @@ describe('fireforge check across the process boundary', () => {
     const result = await runFireforgeCli(projectRoot, ['check', '--only', 'status,audit-ok']);
     expect(result.exitCode).toBe(0);
     const lines = result.stdout.trimEnd().split('\n');
-    expect(lines.at(-1)).toBe('FIREFORGE-VERDICT: PASS steps=2 skipped=0');
+    expect(lines.at(-1)).toBe('FIREFORGE-VERDICT: PASS steps=2 skipped=0 selection=narrowed');
     expect(result.stdout).toContain('0 changed file(s), none failing');
   }, 60_000);
 
@@ -79,7 +79,7 @@ describe('fireforge check across the process boundary', () => {
     const result = await runFireforgeCli(projectRoot, ['check', '--only', 'audit-ok,audit-red']);
     expect(result.exitCode).toBe(1);
     expect(result.stdout.trimEnd().split('\n').at(-1)).toBe(
-      'FIREFORGE-VERDICT: FAIL reason=step-failures failed=audit-red steps=2 skipped=0'
+      'FIREFORGE-VERDICT: FAIL reason=step-failures failed=audit-red steps=2 skipped=0 selection=narrowed'
     );
     expect(result.stdout).toContain('policy: 2 findings');
     expect(result.stderr).toContain('fireforge check failed: audit-red');

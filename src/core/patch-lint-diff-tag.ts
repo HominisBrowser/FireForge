@@ -10,55 +10,74 @@
  * drift), without changing what the underlying rules emit.
  */
 
+import { InvalidArgumentError } from '../errors/base.js';
+import { GitError } from '../errors/git.js';
 import type { PatchLintIssue } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
-import { verbose } from '../utils/logger.js';
-import { isMissingHeadError } from './git.js';
 import { git } from './git-base.js';
-import { getUntrackedFiles } from './git-status.js';
+
+/**
+ * Resolves `--since` to a commit in the engine repository. A revision git
+ * cannot resolve is a usage error: tagging against it would measure nothing,
+ * and an empty measurement would call every issue cumulative.
+ * @param engineDir Path to the engine git repository.
+ * @param rev Git revision as the operator typed it.
+ */
+export async function resolveSinceRevision(engineDir: string, rev: string): Promise<string> {
+  try {
+    const resolved = await git(
+      ['rev-parse', '--verify', '--quiet', '--end-of-options', `${rev}^{commit}`],
+      engineDir
+    );
+    const commit = resolved.trim();
+    if (commit) return commit;
+  } catch {
+    // Reported below: `--verify --quiet` fails without a message.
+  }
+  throw new InvalidArgumentError(
+    `--since ${JSON.stringify(rev)} does not name a commit in engine/. Pass a branch, tag or SHA that exists there (e.g. HEAD).`,
+    '--since'
+  );
+}
+
+/** NUL-separated path output, as `-z` prints it. */
+function pathList(output: string): string[] {
+  return output.split('\0').filter((path) => path.length > 0);
+}
 
 /**
  * Collects engine-relative paths that changed between `rev` and `HEAD`,
- * plus any workdir modifications and untracked files. An empty set means
- * "no diff we can prove". Downstream treats every issue as `cumulative`
- * in that case (operator ran `lint --since HEAD` with no pending work).
+ * plus any workdir modifications and untracked files. An empty set is a
+ * measured empty diff (`lint --since HEAD` with no pending work), never a
+ * failed one: a revision that does not resolve is an
+ * {@link InvalidArgumentError}, and a git failure while measuring is a
+ * {@link GitError}, because a missing diff would tag every issue cumulative
+ * and let `--only-introduced` pass new errors.
  * @param engineDir Path to the engine git repository.
  * @param rev Git revision to diff against (e.g. `HEAD`, a branch, a SHA).
  */
 export async function collectDiffFilePaths(engineDir: string, rev: string): Promise<Set<string>> {
-  const files = new Set<string>();
-
-  try {
-    const commitDiff = await git(['diff', '--name-only', `${rev}...HEAD`], engineDir);
-    for (const line of commitDiff.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed) files.add(trimmed);
+  const since = await resolveSinceRevision(engineDir, rev);
+  const measure = async (what: string, args: string[]): Promise<string[]> => {
+    try {
+      return pathList(await git(args, engineDir));
+    } catch (error: unknown) {
+      throw new GitError(
+        `lint --since ${rev}: could not list ${what}, so introduced and cumulative issues cannot be told apart: ${toError(error).message}`,
+        args.join(' ')
+      );
     }
-  } catch (error: unknown) {
-    if (!isMissingHeadError(error)) {
-      verbose(`lint --since: could not diff against ${rev} — ${toError(error).message}`);
-    }
-  }
-
-  try {
-    const worktreeDiff = await git(['diff', '--name-only', 'HEAD'], engineDir);
-    for (const line of worktreeDiff.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed) files.add(trimmed);
-    }
-  } catch (error: unknown) {
-    verbose(`lint --since: could not enumerate workdir diff — ${toError(error).message}`);
-  }
-
-  try {
-    for (const file of await getUntrackedFiles(engineDir)) {
-      files.add(file);
-    }
-  } catch (error: unknown) {
-    verbose(`lint --since: could not list untracked files — ${toError(error).message}`);
-  }
-
-  return files;
+  };
+  return new Set([
+    ...(await measure('the files changed since it', [
+      'diff',
+      '--name-only',
+      '-z',
+      `${since}...HEAD`,
+    ])),
+    ...(await measure('working-tree changes', ['diff', '--name-only', '-z', 'HEAD'])),
+    ...(await measure('untracked files', ['ls-files', '--others', '--exclude-standard', '-z'])),
+  ]);
 }
 
 /**

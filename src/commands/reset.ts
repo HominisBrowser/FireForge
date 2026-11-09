@@ -8,12 +8,14 @@ import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { clearAppliedFurnaceState } from '../core/furnace-config.js';
 import { hasChanges, resetChanges } from '../core/git.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
+import { takeRecoverySnapshot } from '../core/recovery-snapshot.js';
 import { warnIfStaticComponentsStale } from '../core/test-stale-check.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { ResetOptions } from '../types/commands/index.js';
 import { cancel, info, intro, isCancel, outro, spinner, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { addWaitLockOption, pickDefined } from '../utils/options.js';
+import { runUnderEngineLock } from './with-engine-lock.js';
 
 /**
  * Runs the reset command to restore clean Firefox state.
@@ -78,6 +80,8 @@ export async function resetCommand(projectRoot: string, options: ResetOptions): 
     }
   }
 
+  await takeRecoverySnapshot(paths.engine, 'reset');
+
   const s = spinner('Resetting changes...');
 
   try {
@@ -113,14 +117,19 @@ export function registerReset(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const command = program
     .command('reset')
     .description('Reset engine/ to clean state')
     .option('-y, --yes', 'Skip confirmation prompt (required for scripts/CI)')
-    .option('--dry-run', 'Show what would be reset without doing it')
-    .action(
-      withErrorHandling(async (options: { yes?: boolean; dryRun?: boolean }) => {
-        await resetCommand(getProjectRoot(), pickDefined(options));
-      })
-    );
+    .option('--dry-run', 'Show what would be reset without doing it');
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (options: { yes?: boolean; dryRun?: boolean; waitLock?: boolean | number }) => {
+        const projectRoot = getProjectRoot();
+        await runUnderEngineLock(projectRoot, 'reset', options, () =>
+          resetCommand(projectRoot, pickDefined(options))
+        );
+      }
+    )
+  );
 }

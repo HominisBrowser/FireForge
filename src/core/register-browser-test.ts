@@ -6,8 +6,9 @@
 import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { normalizePathSlashes } from '../utils/paths.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
+import { mozBuildListContains } from './moz-manifest-entries.js';
 import { insertMozBuildListEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 
@@ -20,7 +21,7 @@ function registerTestManifestTokenized(
   entry: string
 ): { result: string; previousEntry: string | undefined } {
   return insertMozBuildListEntry(content, entry, {
-    listPattern: /BROWSER_CHROME_MANIFESTS/,
+    listPattern: /^BROWSER_CHROME_MANIFESTS\b/,
     sortKey: `content/test/${testDir}/browser.toml`,
     missingListMessage: 'Could not find BROWSER_CHROME_MANIFESTS in browser/base/moz.build',
   });
@@ -49,7 +50,13 @@ export async function registerTestManifest(
   const content = await readText(manifestPath);
 
   // Idempotency check
-  if (content.includes(`content/test/${testDir}/browser.toml`)) {
+  if (
+    mozBuildListContains(
+      content,
+      'BROWSER_CHROME_MANIFESTS',
+      `content/test/${testDir}/browser.toml`
+    )
+  ) {
     return { manifest, entry, skipped: true };
   }
 

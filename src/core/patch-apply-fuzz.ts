@@ -20,8 +20,7 @@
 
 import { InvalidArgumentError } from '../errors/base.js';
 import { verbose } from '../utils/logger.js';
-import { exec } from '../utils/process.js';
-import { ensureGit } from './git-base.js';
+import { ensureGit, gitResult } from './git-base.js';
 
 // ── Types ──
 
@@ -98,15 +97,11 @@ export async function applyPatchWithFuzz(
   const ladder = contextReductionSteps(maxFuzz);
   const maxSteps = ladder.length - 1;
   for (const [step, contextArgs] of ladder.entries()) {
-    const check = await exec('git', ['apply', '--check', ...contextArgs, '--', patchPath], {
-      cwd: engineDir,
-    });
+    const check = await gitResult(['apply', '--check', ...contextArgs, '--', patchPath], engineDir);
 
     if (check.exitCode === 0) {
       // --check passed: apply for real
-      const apply = await exec('git', ['apply', ...contextArgs, '--', patchPath], {
-        cwd: engineDir,
-      });
+      const apply = await gitResult(['apply', ...contextArgs, '--', patchPath], engineDir);
 
       if (apply.exitCode === 0) {
         if (step > 0) {
@@ -125,9 +120,7 @@ export async function applyPatchWithFuzz(
   }
 
   // All context-reduction levels failed → generate .rej files for manual resolution
-  const rejectResult = await exec('git', ['apply', '--reject', '--', patchPath], {
-    cwd: engineDir,
-  });
+  const rejectResult = await gitResult(['apply', '--reject', '--', patchPath], engineDir);
 
   const errorMessage = rejectResult.stderr.trim() || 'All context-reduction levels failed';
 

@@ -14,13 +14,9 @@
  *
  * This preflight diffs engine HEAD (or workdir) against the last-build
  * baseline (`.fireforge/last-build.json`), filters to paths that imply
- * packaging, and returns a compact summary. `fireforge test` prints a
- * warning up-front so the operator sees "you edited X, Y, Z since the last
- * build, rerun with `--build` to refresh" before mach test launches.
- * Detection stays advisory (warn-only) because a fork that rebuilds
- * out-of-band (a separate `./mach build` invocation, an IDE plugin) can
- * legitimately have a fresh `dist/` with no FireForge-recorded baseline
- * update.
+ * packaging, and returns a compact summary the `fireforge test` gate turns into
+ * a refusal. `--allow-stale-build` downgrades it to a warning for a fork that
+ * rebuilds out-of-band (a separate `./mach build` invocation, an IDE plugin).
  */
 
 import { stat } from 'node:fs/promises';
@@ -34,11 +30,16 @@ import { readBuildBaseline } from './build-baseline.js';
 import type {
   BaselineRecorder,
   BuildBaseline,
+  ControlBuildStamp,
   TestPackagingCoverage,
 } from './build-baseline-types.js';
 import { hashEngineFile } from './coverage-extend.js';
 import { isTestManifestPath } from './coverage-records.js';
-import { collectChangedEnginePaths, dropPathsMatchingFingerprints } from './engine-changes.js';
+import {
+  BaselineAnchorMissingError,
+  collectChangedEnginePaths,
+  dropPathsMatchingFingerprints,
+} from './engine-changes.js';
 import { readLinkedAt } from './launchable-build.js';
 import { isCompiledSourcePath } from './negative-control-compiled.js';
 import {
@@ -66,8 +67,8 @@ export interface StaleBuildResult {
   truncated: number;
   /**
    * The baseline that anchored the diff, or undefined when no previous
-   * successful build exists. A missing baseline is treated as "not stale":
-   * we have nothing to compare against and a warning would mislead.
+   * successful build exists. There is then nothing to compare against, so
+   * `stale` is false and the caller decides what a missing record means.
    */
   baseline: BuildBaseline | undefined;
   /**
@@ -77,6 +78,11 @@ export interface StaleBuildResult {
    * notice so the exemption is visible.
    */
   exempt?: StaleExemption[];
+  /**
+   * The refusal to give when a record exists but its anchor commit is not in
+   * this repository, which leaves `baseline` undefined.
+   */
+  unusableBaseline?: string;
 }
 
 /** Cap on the number of changed paths rendered inline. */
@@ -85,9 +91,10 @@ const STALE_PATHS_LIMIT = 10;
 /**
  * Probes the engine tree for packageable changes since the last successful
  * `fireforge build`. Returns a summary the `fireforge test` handler renders
- * as an up-front warning when `--build` was not passed. The probe never
- * refuses a malformed persisted baseline. Git failures and a missing baseline
- * degrade to `stale: false` because they provide no comparison anchor.
+ * as an up-front refusal when `--build` was not passed. An invalid baseline and
+ * a git failure reject; a missing baseline, or one anchored to a commit this
+ * repository lacks, returns `stale: false` with `baseline: undefined`, which the
+ * gate refuses on its own terms.
  *
  * @param projectRoot Root directory of the project.
  * @param engineDir Path to the engine directory.
@@ -101,7 +108,19 @@ export async function checkStaleBuildForTest(
     return { stale: false, changedPaths: [], truncated: 0, baseline: undefined };
   }
 
-  const changed = await collectChangedEnginePaths(engineDir, baseline, 'Stale-build preflight');
+  let changed: string[];
+  try {
+    changed = await collectChangedEnginePaths(engineDir, baseline, 'Stale-build preflight');
+  } catch (error: unknown) {
+    if (!(error instanceof BaselineAnchorMissingError)) throw error;
+    return {
+      stale: false,
+      changedPaths: [],
+      truncated: 0,
+      baseline: undefined,
+      unusableBaseline: error.message,
+    };
+  }
   let packageable = changed.filter((path) => isPackageablePath(path)).sort();
 
   // Content-hash comparison: when the baseline carries a fingerprint set,
@@ -132,6 +151,21 @@ export async function checkStaleBuildForTest(
   const head = stale.slice(0, STALE_PATHS_LIMIT);
   const truncated = Math.max(0, stale.length - head.length);
   return { stale: true, changedPaths: head, truncated, baseline, exempt };
+}
+
+/**
+ * The `control-built` refusal: the recorded binary still carries a negative
+ * control. Shared by every command that would run or ship that binary.
+ *
+ * @param stamp - The control-built stamp on the baseline
+ */
+export function formatControlBuiltRefusal(stamp: ControlBuildStamp): string {
+  return (
+    `The binary under test was built with the negative control ${stamp.diffFile} applied ` +
+    `(${stamp.targets.map((target) => `engine/${target}`).join(', ')}, applied ${stamp.appliedAt}), ` +
+    'and no build has recompiled the restored source since. Run "fireforge build" to ' +
+    'rebuild the binary without the control, then rerun.'
+  );
 }
 
 /**
@@ -459,9 +493,9 @@ export interface StaticComponentsStaleResult {
  * full build's engine HEAD SHA), not the baseline's own `engineHeadSha`,
  * which a scoped `test --build` advances. Dirty candidates are hash-checked
  * against the anchor's fingerprints so only genuine content divergence
- * counts. No baseline or no anchor means fresh. Never throws: the probes it
- * composes degrade to verbose lines and empty results on git failure,
- * matching {@link checkStaleBuildForTest}.
+ * counts. No baseline or no anchor means fresh. A full-build commit this
+ * repository no longer holds proves nothing about the compiled table, so it
+ * reads as stale, and a full build records a new anchor.
  */
 export async function checkStaticComponentsStale(
   engineDir: string,
@@ -472,11 +506,20 @@ export async function checkStaticComponentsStale(
     return { stale: false, changedManifests: [] };
   }
 
-  const changed = await collectChangedEnginePaths(
-    engineDir,
-    { ...baseline, engineHeadSha: anchor.engineHeadSha },
-    'Static-components preflight'
-  );
+  let changed: string[];
+  try {
+    changed = await collectChangedEnginePaths(
+      engineDir,
+      { ...baseline, engineHeadSha: anchor.engineHeadSha },
+      'Static-components preflight'
+    );
+  } catch (error: unknown) {
+    if (!(error instanceof BaselineAnchorMissingError)) throw error;
+    return {
+      stale: true,
+      changedManifests: [`components.conf (full-build commit ${error.commit} no longer exists)`],
+    };
+  }
   const changedManifests: string[] = [];
   for (const path of changed.filter((p) => isXpcomManifestPath(p))) {
     const recorded = anchor.fingerprints[path];

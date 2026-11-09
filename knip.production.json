@@ -1,7 +1,13 @@
 {
   "$schema": "https://unpkg.com/knip@latest/schema.json",
-  "entry": ["src/index.ts!", "bin/fireforge.ts!"],
-  "project": ["src/**/*.ts!", "bin/**/*.ts!"],
+  "entry": [
+    "src/index.ts!",
+    "bin/fireforge.ts!",
+    "src/core/jobs/supervisor-main.ts!",
+    "src/core/jobs/runner-main.ts!",
+    "runtime/qualified-node-bootstrap.cjs!"
+  ],
+  "project": ["src/**/*.ts!", "bin/**/*.ts!", "runtime/**/*.cjs!"],
   "ignore": ["src/test-utils/**", "**/__tests__/**", "**/*.test.ts", "src/utils/logger.ts"],
   "ignoreBinaries": ["pgrep"],
   "ignoreDependencies": ["husky"],

@@ -4,8 +4,17 @@ import { join } from 'node:path';
 
 import { confirm } from '@clack/prompts';
 
-import { getProjectPaths, loadConfig } from '../../core/config.js';
+import { pathExists, readText, writeText } from '../../core/authored/fs.js';
+import { authoringProjectPaths } from '../../core/authored/writer.js';
+import { loadConfig } from '../../core/config.js';
 import { stdioIsInteractive } from '../../core/destructive.js';
+import {
+  refusePartialAuthoredMutation,
+  removeAuthoringDir,
+  removeAuthoringFile,
+  retireGeneratedDeclarations,
+} from '../../core/furnace-authored-lifecycle.js';
+import { mapDeployedComponentSources } from '../../core/furnace-composed-source.js';
 import {
   getFurnacePaths,
   loadFurnaceConfig,
@@ -34,7 +43,6 @@ import type { FurnaceState } from '../../types/furnace.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
 import type { ComponentType } from '../../types/furnace.js';
 import { toError } from '../../utils/errors.js';
-import { pathExists, readText, removeDir, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, outro, warn } from '../../utils/logger.js';
 import {
   performCustomRemovalMutations,
@@ -121,13 +129,14 @@ async function cleanupCustomTestFiles(
   try {
     forgeConfig = await loadConfig(projectRoot);
   } catch (error: unknown) {
+    await refusePartialAuthoredMutation(projectRoot, error);
     const msg = `Could not load config for test cleanup — ${toError(error).message}. Remove test files manually if needed.`;
     warn(msg);
     partialFailures.push(msg);
     return { partialFailures };
   }
 
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
   const binaryName = forgeConfig.binaryName;
   const testFileName = browserTestFileName(name, binaryName);
   const testDir = join(paths.engine, 'browser/base/content/test', binaryName);
@@ -139,10 +148,11 @@ async function cleanupCustomTestFiles(
     const testFilePath = join(testDir, testFileName);
     if (await pathExists(testFilePath)) {
       await snapshotFile(journal, testFilePath);
-      await unlink(testFilePath);
+      await removeAuthoringFile(testFilePath, journal, unlink);
       info(`Deleted test file: ${testFileName}`);
     }
   } catch (error: unknown) {
+    await refusePartialAuthoredMutation(projectRoot, error);
     const msg = `Could not delete test file ${testFileName} — ${toError(error).message}. Remove it manually if needed.`;
     warn(msg);
     partialFailures.push(msg);
@@ -161,6 +171,7 @@ async function cleanupCustomTestFiles(
       }
     }
   } catch (error: unknown) {
+    await refusePartialAuthoredMutation(projectRoot, error);
     const msg = `Could not update browser.toml — ${toError(error).message}. Remove the test entry manually if needed.`;
     warn(msg);
     partialFailures.push(msg);
@@ -169,10 +180,10 @@ async function cleanupCustomTestFiles(
   // Step 3: Clean up empty test directory and deregister from moz.build
   try {
     const remaining = await readdir(testDir);
-    const hasTests = remaining.some((f) => f.startsWith('browser_') && f.endsWith('.js'));
-    if (!hasTests) {
+    // Shared manifests, assets and nested suites have independent owners.
+    if (remaining.length === 0) {
       await snapshotDir(journal, testDir);
-      await removeDir(testDir);
+      await removeAuthoringDir(testDir, journal);
       info(`Deleted empty test directory: browser/base/content/test/${binaryName}/`);
       const mozBuildPath = join(paths.engine, 'browser/base/moz.build');
       await snapshotFile(journal, mozBuildPath);
@@ -181,6 +192,7 @@ async function cleanupCustomTestFiles(
       }
     }
   } catch (error: unknown) {
+    await refusePartialAuthoredMutation(projectRoot, error);
     const msg = `Could not clean up test directory — ${toError(error).message}. Remove it manually if needed.`;
     warn(msg);
     partialFailures.push(msg);
@@ -215,7 +227,7 @@ async function cleanupCustomMochikitTestFiles(
 ): Promise<{ partialFailures: string[] }> {
   const partialFailures: string[] = [];
 
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
   const widgetsTestDir = join(paths.engine, 'toolkit/content/tests/widgets');
   if (!(await pathExists(widgetsTestDir))) {
     return { partialFailures };
@@ -226,10 +238,11 @@ async function cleanupCustomMochikitTestFiles(
   try {
     if (await pathExists(testFilePath)) {
       await snapshotFile(journal, testFilePath);
-      await unlink(testFilePath);
+      await removeAuthoringFile(testFilePath, journal, unlink);
       info(`Deleted mochikit test file: toolkit/content/tests/widgets/${testFileName}`);
     }
   } catch (error: unknown) {
+    await refusePartialAuthoredMutation(projectRoot, error);
     const msg = `Could not delete mochikit test file ${testFileName} — ${toError(error).message}. Remove it manually if needed.`;
     warn(msg);
     partialFailures.push(msg);
@@ -246,6 +259,7 @@ async function cleanupCustomMochikitTestFiles(
       }
     }
   } catch (error: unknown) {
+    await refusePartialAuthoredMutation(projectRoot, error);
     const msg = `Could not update widgets chrome.toml — ${toError(error).message}. Remove the test entry manually if needed.`;
     warn(msg);
     partialFailures.push(msg);
@@ -275,13 +289,14 @@ async function cleanupCustomXpcshellTestFiles(
   try {
     forgeConfig = await loadConfig(projectRoot);
   } catch (error: unknown) {
+    await refusePartialAuthoredMutation(projectRoot, error);
     const msg = `Could not load config for xpcshell test cleanup — ${toError(error).message}. Remove xpcshell test files manually if needed.`;
     warn(msg);
     partialFailures.push(msg);
     return { partialFailures };
   }
 
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
   const xpcshellRoot = join(paths.engine, xpcshellTestParentDir(forgeConfig.binaryName));
   const componentXpcshellDir = join(xpcshellRoot, name);
 
@@ -289,11 +304,12 @@ async function cleanupCustomXpcshellTestFiles(
 
   try {
     await snapshotDir(journal, componentXpcshellDir);
-    await removeDir(componentXpcshellDir);
+    await removeAuthoringDir(componentXpcshellDir, journal);
     info(
       `Deleted xpcshell test scaffold directory: ${componentXpcshellDir.replace(paths.engine + '/', 'engine/')}`
     );
   } catch (error: unknown) {
+    await refusePartialAuthoredMutation(projectRoot, error);
     const msg = `Could not delete xpcshell test scaffold — ${toError(error).message}. Remove it manually if needed.`;
     warn(msg);
     partialFailures.push(msg);
@@ -307,13 +323,14 @@ async function cleanupCustomXpcshellTestFiles(
       const remaining = await readdir(xpcshellRoot);
       if (remaining.length === 0) {
         await snapshotDir(journal, xpcshellRoot);
-        await removeDir(xpcshellRoot);
+        await removeAuthoringDir(xpcshellRoot, journal);
         info(
           `Deleted empty xpcshell parent directory: ${xpcshellRoot.replace(paths.engine + '/', 'engine/')}`
         );
       }
     }
   } catch (error: unknown) {
+    await refusePartialAuthoredMutation(projectRoot, error);
     const msg = `Could not clean up xpcshell parent directory — ${toError(error).message}. Remove it manually if needed.`;
     warn(msg);
     partialFailures.push(msg);
@@ -341,7 +358,8 @@ async function loadFreshRemoveTarget(
       name
     );
   }
-  await requireGitEngineForRemove(type, name, engineDir);
+  if (!(await loadConfig(projectRoot)).sources)
+    await requireGitEngineForRemove(type, name, engineDir);
   return { config, ftlDir: resolveFtlDir(config.ftlBasePath), state, type };
 }
 
@@ -449,9 +467,10 @@ export async function furnaceRemoveCommand(
   // workspace and engine to their pre-command state. The mutation runs under
   // the furnace-wide lock and is registered with the global SIGINT/SIGTERM
   // rollback pathway.
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
 
-  await requireGitEngineForRemove(type, name, paths.engine);
+  if (!(await loadConfig(projectRoot)).sources)
+    await requireGitEngineForRemove(type, name, paths.engine);
 
   const mutate = async (ctx: FurnaceOperationContext): Promise<void> => {
     const journal = createRollbackJournal();
@@ -464,9 +483,13 @@ export async function furnaceRemoveCommand(
         state: freshState,
         type: freshType,
       } = await loadFreshRemoveTarget(projectRoot, name, paths.engine);
+      const previousGenerated = (await loadConfig(projectRoot)).sources
+        ? new Set((await mapDeployedComponentSources(projectRoot, freshConfig)).keys())
+        : undefined;
 
       if (freshType === 'override') {
         await performOverrideRemovalMutations({
+          projectRoot,
           name,
           paths,
           furnacePaths,
@@ -508,6 +531,8 @@ export async function furnaceRemoveCommand(
 
       await snapshotFile(journal, furnacePaths.furnaceConfig);
       await writeFurnaceConfig(projectRoot, freshConfig);
+      if (previousGenerated !== undefined)
+        await retireGeneratedDeclarations(projectRoot, freshConfig, journal, previousGenerated);
 
       // Drop stale per-file checksums inside the same transactional block.
       // Snapshotting the state file into the rollback journal means the

@@ -103,6 +103,15 @@ export interface DoctorCheckDefinition {
 }
 
 /**
+ * True in a source-mode project, where `engine/` is at most a read-only
+ * pristine donor: the live-engine state a check would judge (branch, baseline,
+ * deployed components, build dependencies) belongs to a slot and is judged there.
+ */
+export function inSourceMode(ctx: DoctorCheckContext): boolean {
+  return ctx.config?.sources !== undefined;
+}
+
+/**
  * Builds a DoctorCheck object representing a successful "OK" check.
  */
 export function ok(name: string, message = 'OK'): DoctorCheck {

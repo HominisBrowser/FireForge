@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
 import {
   createTempProject,
+  initCommittedRepo,
   removeTempProject,
   writeFiles,
   writeFireForgeConfig,
@@ -24,6 +25,20 @@ afterEach(async () => {
 });
 
 describe('early engine and test type preconditions', () => {
+  it('does not impose created-test typing on untyped upstream tests, and retains explicit upstream opt-in', async () => {
+    const file = 'browser/base/content/test/widgets/browser_upstream.js';
+    await initCommittedRepo(join(root, 'engine'), { [file]: 'unknownUpstreamGlobal();\n' });
+    await writeFiles(root, { 'patches/patches.json': JSON.stringify({ version: 1, patches: [] }) });
+    const config = await loadConfig(root);
+    config.patchLint = { checkJs: true, checkJsTestFiles: true, undefinedIdentifiers: 'error' };
+    await expect(
+      checkRequestedTestTypes(getProjectPaths(root), config, [file])
+    ).resolves.toBeUndefined();
+    await writeFiles(root, { [`engine/${file}`]: '// @ts-check\nunknownUpstreamGlobal();\n' });
+    await expect(checkRequestedTestTypes(getProjectPaths(root), config, [file])).rejects.toThrow(
+      /before build/
+    );
+  });
   it('reports missing engine ESLint before the gate and names source-refresh setup', async () => {
     const context = { paths: getProjectPaths(root), engineExists: true } as DoctorCheckContext;
     const missing = await ENGINE_ESLINT_DOCTOR_CHECK.run(context);

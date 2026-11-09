@@ -81,6 +81,17 @@ describe('run-log', () => {
     expect(names).toContain(second?.path.split(/[/\\]/).pop());
   });
 
+  it('gives two runs started in the same millisecond separate files', async () => {
+    const now = new Date('2026-01-01T00:00:00.000Z');
+    const first = await openRunLog(root, 'test', now);
+    const second = await openRunLog(root, 'test', now);
+    await first?.close();
+    await second?.close();
+    expect(first?.path).toBeDefined();
+    expect(second?.path).toBeDefined();
+    expect(second?.path).not.toBe(first?.path);
+  });
+
   it('degrades to no log rather than failing the run when the path is unusable', async () => {
     // A file where the logs directory should be: mkdir fails, and the run
     // must proceed with no log rather than dying over a diagnostic.

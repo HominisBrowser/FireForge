@@ -2,15 +2,20 @@
 import { afterAll, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { exec } from '../../utils/process.js';
+import { sameProcess } from '../../utils/process-birth.js';
+import { PS_BINARY } from '../../utils/process-listing.js';
 import {
   createHelperPidTracker,
   isStillTrackedProcess,
   reapTrackedHarnessPids,
-  snapshotObjdirHelpers,
 } from '../harness-helper-pids.js';
 import { terminateHarnessProcesses } from '../harness-orphans.js';
 
 vi.mock('../../utils/process.js', () => ({ exec: vi.fn() }));
+vi.mock('../../utils/process-birth.js', () => ({
+  processIdentity: vi.fn(() => undefined),
+  sameProcess: vi.fn(() => true),
+}));
 vi.mock('../../utils/logger.js', () => ({ warn: vi.fn(), info: vi.fn(), verbose: vi.fn() }));
 vi.mock('../harness-orphans.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../harness-orphans.js')>()),
@@ -114,9 +119,9 @@ describe('reapTrackedHarnessPids', () => {
   });
 
   const TRACKED = [
-    { pid: 19141, kind: 'Server' as const },
-    { pid: 19143, kind: 'SSL tunnel' as const },
-    { pid: 19150, kind: 'Application' as const },
+    { pid: 19141, kind: 'Server' as const, identity: { pid: 19141, start: 'owned' } },
+    { pid: 19143, kind: 'SSL tunnel' as const, identity: { pid: 19143, start: 'owned' } },
+    { pid: 19150, kind: 'Application' as const, identity: { pid: 19150, start: 'owned' } },
   ];
 
   function stubAlive(alive: readonly number[]): MockInstance<typeof process.kill> {
@@ -153,13 +158,14 @@ describe('reapTrackedHarnessPids', () => {
     try {
       expect(await reapTrackedHarnessPids(TRACKED, OBJ)).toBe(2);
       expect(exec).toHaveBeenCalledWith(
-        'ps',
+        PS_BINARY,
         ['-o', 'pid=,command=', '-p', '19141,19143,19150'],
         expect.anything()
       );
       expect(terminateHarnessProcesses).toHaveBeenCalledWith(
         [TRACKED[0], TRACKED[2]],
-        'harness teardown'
+        'harness teardown',
+        expect.any(Function)
       );
     } finally {
       kill.mockRestore();
@@ -178,7 +184,11 @@ describe('reapTrackedHarnessPids', () => {
     vi.mocked(terminateHarnessProcesses).mockResolvedValue(1);
     try {
       expect(await reapTrackedHarnessPids(TRACKED, OBJ)).toBe(1);
-      expect(terminateHarnessProcesses).toHaveBeenCalledWith([TRACKED[1]], 'harness teardown');
+      expect(terminateHarnessProcesses).toHaveBeenCalledWith(
+        [TRACKED[1]],
+        'harness teardown',
+        expect.any(Function)
+      );
     } finally {
       kill.mockRestore();
     }
@@ -206,70 +216,49 @@ describe('reapTrackedHarnessPids', () => {
     }
   });
 
-  // mozserve starts moz-http2 in its own session and never logs its pid, so
-  // it is in neither the group nor the tracker. It was the incident's
-  // second survivor. The post-close scan finds it as a helper under THIS
-  // objdir that appeared since the baseline and has lost its parent.
-  describe('unannounced survivors', () => {
-    const OLD_SURVIVOR = `19144     1 /Users/user/.mozbuild/node/bin/node ${OBJ}/_tests/testing/mochitest/xpcshell/moz-http2/moz-http2.js`;
-    const NEW_SURVIVOR = `75376     1 /Users/user/.mozbuild/node/bin/node ${OBJ}/_tests/testing/mochitest/xpcshell/moz-http2/moz-http2.js`;
-    // A sibling checkout's live harness: same shape, different absolute objdir, parent alive.
-    const SIBLING = `80001 80000 /Users/dev/other/engine/obj-aarch64-apple-darwin/dist/bin/ssltunnel -c x`;
-    // This objdir's httpd still parented by a live runtests.py (a peer's run mid-flight).
-    const LIVE_CHILD = `80011 80010 ${OBJ}/dist/bin/xpcshell -f ${OBJ}/_tests/testing/mochitest/server.js`;
+  it('never signals a recycled PID even when it was announced by this run', async () => {
+    const kill = stubAlive([19141]);
+    vi.mocked(sameProcess).mockReturnValueOnce(false);
+    try {
+      expect(await reapTrackedHarnessPids(TRACKED.slice(0, 1), OBJ)).toBe(0);
+      expect(terminateHarnessProcesses).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
+  });
 
-    it('snapshots the same-objdir helpers alive before the dispatch', async () => {
-      vi.mocked(exec).mockResolvedValueOnce({
-        stdout: [OLD_SURVIVOR, SIBLING, LIVE_CHILD].join('\n'),
-        stderr: '',
-        exitCode: 0,
-      });
-      expect(await snapshotObjdirHelpers(OBJ)).toEqual(new Set([19144, 80011]));
-      expect(exec).toHaveBeenCalledWith('ps', ['-axo', 'pid=,ppid=,command='], expect.anything());
+  it('rechecks positive start identity at termination and refuses unknown or recycled targets', async () => {
+    const kill = stubAlive([19141]);
+    vi.mocked(exec).mockResolvedValue({
+      stdout: `19141 ${OBJ}/dist/bin/xpcshell -f ${OBJ}/_tests/testing/mochitest/server.js`,
+      stderr: '',
+      exitCode: 0,
     });
+    vi.mocked(terminateHarnessProcesses).mockImplementationOnce((_targets, _label, owns) => {
+      expect(owns(19141)).toBe(true);
+      vi.mocked(sameProcess).mockReturnValueOnce(false);
+      expect(owns(19141)).toBe(false);
+      expect(owns(99999)).toBe(false);
+      return Promise.resolve(0);
+    });
+    try {
+      expect(await reapTrackedHarnessPids(TRACKED.slice(0, 1), OBJ)).toBe(0);
+    } finally {
+      kill.mockRestore();
+    }
+  });
 
-    it('returns no baseline without an objdir or without ps', async () => {
-      expect(await snapshotObjdirHelpers(undefined)).toBeUndefined();
-      vi.mocked(exec).mockRejectedValueOnce(new Error('ENOENT'));
-      expect(await snapshotObjdirHelpers(OBJ)).toBeUndefined();
-    });
-
-    it('reaps a new reparented same-objdir helper and leaves the baseline, siblings and live children alone', async () => {
-      const kill = stubAlive([]); // nothing announced is alive
-      vi.mocked(exec).mockResolvedValueOnce({
-        stdout: [OLD_SURVIVOR, NEW_SURVIVOR, SIBLING, LIVE_CHILD].join('\n'),
-        stderr: '',
-        exitCode: 0,
-      });
-      vi.mocked(terminateHarnessProcesses).mockResolvedValueOnce(1);
-      try {
-        expect(await reapTrackedHarnessPids(TRACKED, OBJ, new Set([19144]))).toBe(1);
-        expect(terminateHarnessProcesses).toHaveBeenCalledWith(
-          [
-            {
-              pid: 75376,
-              kind: 'unannounced',
-              command: expect.stringContaining('moz-http2.js') as string,
-            },
-          ],
-          'harness teardown'
-        );
-      } finally {
-        kill.mockRestore();
-      }
-    });
-
-    // With no baseline there is no way to tell this dispatch's survivor from
-    // an earlier run's, and the earlier run's is the census's call.
-    it('reaps no unannounced process without a baseline', async () => {
-      const kill = stubAlive([]);
-      vi.mocked(exec).mockResolvedValueOnce({ stdout: NEW_SURVIVOR, stderr: '', exitCode: 0 });
-      try {
-        expect(await reapTrackedHarnessPids(TRACKED, OBJ)).toBe(0);
-        expect(terminateHarnessProcesses).not.toHaveBeenCalled();
-      } finally {
-        kill.mockRestore();
-      }
-    });
+  // mozserve starts moz-http2 in its own session and never logs its pid, so it
+  // is in neither the group nor the tracker. A path-shaped process cannot be told
+  // from a peer's, so nothing but an announcement makes it this run's to signal.
+  it('never looks beyond what the harness announced', async () => {
+    const kill = stubAlive([]);
+    try {
+      expect(await reapTrackedHarnessPids(TRACKED, OBJ)).toBe(0);
+      expect(exec).not.toHaveBeenCalled();
+      expect(terminateHarnessProcesses).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
   });
 });

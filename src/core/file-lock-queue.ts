@@ -26,7 +26,7 @@ import { join } from 'node:path';
 import { toError } from '../utils/errors.js';
 import { ensureDir } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
-import { isLockOwnerAlive, readProcessStartTick } from './file-lock-owner.js';
+import { isLockOwnerAlive, readProcessStartTick, START_TICK_PREFIX } from './file-lock-owner.js';
 
 /**
  * Live queue state around a contended lock: how many are queued and how many
@@ -54,9 +54,6 @@ const WAITER_HEARTBEAT_MS = 5_000;
  * hold the head of the queue for more than half a minute.
  */
 export const WAITER_STALE_MS = 30_000;
-
-/** Prefix of the ticket line carrying the waiter's process start tick. */
-const START_TICK_PREFIX = 'start-tick=';
 
 /** Sibling directory holding the waiter tickets of a lock. */
 export function lockWaitersDir(lockPath: string): string {
@@ -193,9 +190,8 @@ export interface WaiterRegistration {
  * Takes a ticket in the lock's waiter queue.
  *
  * Never fails the acquisition: a registry that cannot be written yields a
- * registration without a ticket, and the waiter falls back to contending
- * for the lock without queue order, which is how every waiter behaved
- * before tickets decided the grant.
+ * registration without a ticket, and the waiter contends for the lock without
+ * queue order.
  *
  * @param lockPath - The contended lock directory
  * @param startedAt - When this waiter started waiting (its arrival time)

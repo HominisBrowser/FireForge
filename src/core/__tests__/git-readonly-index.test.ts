@@ -8,7 +8,7 @@
  * `.git/index`), so nothing short of observing the real index file proves
  * the fix.
  */
-import { access, stat, utimes, writeFile } from 'node:fs/promises';
+import { access, mkdir, stat, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -51,6 +51,16 @@ describe('withPrivateGitIndex', () => {
 
   afterEach(async () => {
     await removeTempProject(projectRoot);
+  });
+
+  it('sees a same-size edit made in the second the file was staged, once that second has passed', async () => {
+    const racy = join(projectRoot, 'racy');
+    await mkdir(racy);
+    await initCommittedRepo(racy, { 'a.js': 'one\n' });
+    await writeFile(join(racy, 'a.js'), 'two\n');
+    await new Promise((settle) => setTimeout(settle, 1_200));
+    const diff = await withPrivateGitIndex(racy, () => getAllDiff(racy));
+    expect(diff).toContain('+two');
   });
 
   it('leaves the primary .git/index untouched across status and diff probes', async () => {
@@ -101,9 +111,9 @@ describe('withPrivateGitIndex', () => {
     expect(readOnlyGitIndexEnv(repoDir)).toBeUndefined();
   });
 
-  it('fails open on a directory that is not a git checkout', async () => {
+  it('permits confirmed non-Git read-only work where no index exists', async () => {
     const notARepo = join(projectRoot, 'not-a-repo');
-    await createTempProject('unused-');
+    await mkdir(notARepo);
     await writeFile(join(projectRoot, 'plain.txt'), 'x\n');
     await expect(withPrivateGitIndex(notARepo, () => Promise.resolve('ran'))).resolves.toBe('ran');
     expect(readOnlyGitIndexEnv(notARepo)).toBeUndefined();

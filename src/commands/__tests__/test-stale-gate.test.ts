@@ -12,6 +12,11 @@ vi.mock('../../core/test-stale-check.js', async (importOriginal) => ({
   findCompiledSourcesNewerThanBinary: vi.fn(() => Promise.resolve(undefined)),
 }));
 vi.mock('../../core/coverage-dispatch.js', () => ({ filterByCarriedFullCoverage: vi.fn() }));
+vi.mock('../../core/build-baseline.js', () => ({ readBuildBaseline: vi.fn() }));
+vi.mock('../../core/engine-state.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/engine-state.js')>()),
+  captureEngineGeneration: vi.fn(() => Promise.resolve('token')),
+}));
 vi.mock('../test-verdict.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../test-verdict.js')>()),
   setVerdictRunAttribute: vi.fn(),
@@ -20,8 +25,10 @@ vi.mock('../test-perf-scope.js', () => ({
   describePerfStaleImpact: vi.fn(() => Promise.resolve('Perf sample impact: fixture unaffected.')),
 }));
 
+import { readBuildBaseline } from '../../core/build-baseline.js';
 import type { BuildBaseline } from '../../core/build-baseline-types.js';
 import { filterByCarriedFullCoverage } from '../../core/coverage-dispatch.js';
+import { invalidateEngineState, withEngineStateHold } from '../../core/engine-state.js';
 import {
   checkStaleBuildForTest,
   findCompiledSourcesNewerThanBinary,
@@ -66,6 +73,78 @@ describe('enforceStaleBuildGate', () => {
     vi.mocked(filterByCarriedFullCoverage).mockImplementation((_engine, _baseline, uncovered) =>
       Promise.resolve(uncovered.map((path) => ({ path, changed: [] })))
     );
+  });
+
+  describe('no recorded build', () => {
+    const NONE = staleResult({ baseline: undefined });
+
+    it('refuses: a missing record is not a fresh one', async () => {
+      vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(NONE);
+      const error = await refusal(enforceStaleBuildGate('/p', '/p/engine', {}, [TEST]));
+      expect(error.note).toBe('no-build-baseline');
+      expect(error.message).toContain('--allow-stale-build');
+      expect(setVerdictRunAttribute).not.toHaveBeenCalledWith('baseline', 'none');
+    });
+
+    it('--allow-stale-build proceeds, and the verdict says so', async () => {
+      vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(NONE);
+      await enforceStaleBuildGate('/p', '/p/engine', { allowStaleBuild: true }, [TEST]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('No successful build'));
+      expect(setVerdictRunAttribute).toHaveBeenCalledWith('baseline', 'none');
+    });
+
+    it('does not stop a path-less --doctor, which dispatches no test', async () => {
+      vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(NONE);
+      await expect(
+        enforceStaleBuildGate('/p', '/p/engine', { doctor: true }, [])
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  it('tells a control with no --build what the refusal costs it, keeping the note', async () => {
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(
+      staleResult({ stale: true, changedPaths: ['browser/a.js'] })
+    );
+    const error = await refusal(
+      enforceStaleBuildGate('/p', '/p/engine', {}, [TEST], { controlWithoutBuild: true })
+    );
+    expect(error.note).toBe('stale-build');
+    expect(error.message).toContain('Add --build');
+  });
+
+  describe('within one engine-state hold', () => {
+    it('judges the tree once, and the recorded baseline for every sub-run', async () => {
+      vi.mocked(checkStaleBuildForTest).mockResolvedValue(staleResult());
+      vi.mocked(readBuildBaseline).mockResolvedValue({
+        ...BASELINE,
+        testPackagingCoverage: [TEST],
+      });
+      await withEngineStateHold(async () => {
+        await enforceStaleBuildGate('/p', '/p/engine', {}, [TEST]);
+        await enforceStaleBuildGate('/p', '/p/engine', {}, [TEST]);
+        expect(checkStaleBuildForTest).toHaveBeenCalledTimes(1);
+        // Coverage is per request: a later run's other paths are still judged.
+        const error = await refusal(
+          enforceStaleBuildGate('/p', '/p/engine', {}, ['browser/other/browser_b.js'])
+        );
+        expect(error.note).toBe('coverage-replaced');
+        // A write by this process ends what the hold judged.
+        invalidateEngineState('/p/engine');
+        await enforceStaleBuildGate('/p', '/p/engine', {}, [TEST]);
+        expect(checkStaleBuildForTest).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it('does not count a refused judgement as judged', async () => {
+      vi.mocked(checkStaleBuildForTest).mockResolvedValue(
+        staleResult({ stale: true, changedPaths: ['browser/a.js'] })
+      );
+      await withEngineStateHold(async () => {
+        await refusal(enforceStaleBuildGate('/p', '/p/engine', {}, [TEST]));
+        await refusal(enforceStaleBuildGate('/p', '/p/engine', {}, [TEST]));
+      });
+      expect(checkStaleBuildForTest).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('names edits the runtime already serves without refusing', async () => {

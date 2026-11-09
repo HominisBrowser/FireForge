@@ -13,6 +13,7 @@ import {
   hasAnyLicenseHeaderAnyStyle,
   hasUpstreamMplBlockHeader,
 } from './license-headers.js';
+import { hasBrowserChromeAssertion } from './patch-lint-assertion.js';
 import { invokePatchLintCheckJs, runCheckJsTestFilesGrouped } from './patch-lint-checkjs.js';
 import { lintChromeScriptJsDocForFile } from './patch-lint-chrome-jsdoc.js';
 import { countCodeLines, countRawLines } from './patch-lint-code-lines.js';
@@ -185,70 +186,7 @@ function isBrowserChromeTestFile(file: string): boolean {
   return basename.startsWith('browser_');
 }
 
-/**
- * Bare assertion-call detection for the `test-needs-assertion` floor.
- *
- * Each alternative must sit at a call boundary: preceded by something that
- * is not an identifier character, `.`, `#`, or `-`. A plain
- * `strippedContent.includes(tok)` over `Assert.`, `ok(`, `is(`, `isnot(`,
- * `isDeeply(` lets any identifier merely *ending* in one satisfy the gate:
- * `this.axis(3)` contains `is(`, `book(` contains `ok(`, and
- * `promiseIsDeeply(` contains `isDeeply(`, so an assertion-free smoke test
- * using any such call clears the floor.
- *
- * The namespaced arm must name a member and a call. Matching the namespace
- * and its dot alone re-opens the same hole from the other side:
- * `SimpleTest` is mostly *harness* API, so `SimpleTest.finish()`,
- * `SimpleTest.waitForExplicitFinish()` and `SimpleTest.requestCompleteLog()`
- * would each clear the floor on their own, which are the exact calls an
- * assertion-free smoke test contains. The enumeration below is the
- * mochitest/xpcshell assertion surface both namespaces share, and it is what
- * the user-facing message names.
- *
- * Two qualified spellings of the bare four also count: `window.ok(...)` (the
- * globals are window properties) and an optional-chained `win?.ok(...)`.
- * Blocking those flags tests whose only assertions are real as
- * assertion-free. `SpecialPowers.ok(` stays excluded: that is API surface,
- * not an assertion.
- *
- * Textual rather than AST-based, on purpose: this runs over patch bodies
- * rather than resolvable sources, and the surrounding rule is a floor, not
- * a proof.
- */
-const ASSERTION_MEMBERS = [
-  'ok',
-  'is',
-  'isnot',
-  'isDeeply',
-  'equal',
-  'notEqual',
-  'deepEqual',
-  'notDeepEqual',
-  'strictEqual',
-  'notStrictEqual',
-  'greater',
-  'greaterOrEqual',
-  'less',
-  'lessOrEqual',
-  'stringMatches',
-  'stringContains',
-  'throws',
-  'rejects',
-  // `todo`, `todo_is`, `todo_isnot`, `info`-free: todo* record an expected
-  // failure, which is still a recorded assertion outcome.
-  'todo',
-  'todo_is',
-  'todo_isnot',
-].join('|');
-
-const BROWSER_CHROME_ASSERTION = new RegExp(
-  `(?<![\\w.#$-])(?:(?:Assert|SimpleTest)\\.(?:${ASSERTION_MEMBERS})\\s*\\(|(?:window\\.|[\\w$]+\\?\\.)?(?:ok|is|isnot|isDeeply)\\s*\\()`
-);
-
-/** True when `strippedContent` contains at least one assertion call. */
-export function hasBrowserChromeAssertion(strippedContent: string): boolean {
-  return BROWSER_CHROME_ASSERTION.test(strippedContent);
-}
+export { hasBrowserChromeAssertion };
 
 /**
  * Detects comment style from file extension for license header checks.
@@ -461,7 +399,7 @@ export async function lintPatchedJs(
     // 3b. Assertion floor for browser-chrome tests touched by this patch
     // (covers both newly introduced files and modified upstream tests:
     // a patch that strips the last `Assert.equal` from an existing
-    // browser_*.js silently passed under the old `isNew` gate).
+    // browser_*.js must fail the floor).
     const assertionFloor = config.patchLint?.testAssertionFloor;
     if (assertionFloor && assertionFloor !== 'off' && isBrowserChromeTestFile(file)) {
       const hasAssertion = hasBrowserChromeAssertion(strippedContent);
@@ -618,6 +556,8 @@ export interface LintExportedPatchOptions {
    * findings surface.
    */
   checkJsReportScope?: ReadonlySet<string>;
+  /** Actual project root when checking a private candidate engine view. */
+  projectRoot?: string;
   /**
    * Pre-computed checkJs issues for this patch. When provided, the internal
    * checkJs invocation is skipped and these are appended verbatim: the
@@ -710,7 +650,7 @@ export async function lintExportedPatch(
         repoDir,
         patchOwnedFiles,
         config.patchLint,
-        dirname(repoDir),
+        options?.projectRoot ?? dirname(repoDir),
         options?.checkJsReportScope
       ))
     );
@@ -721,7 +661,7 @@ export async function lintExportedPatch(
         repoDir,
         resolvePatchOwnedTestScripts(newFiles, patchQueueCtx),
         config.patchLint,
-        dirname(repoDir),
+        options?.projectRoot ?? dirname(repoDir),
         undefined,
         patchQueueCtx ? resolvableModulesForTests(patchQueueCtx) : undefined
       );
@@ -740,11 +680,21 @@ export async function lintExportedPatch(
   // and ignore file decide (see `patch-lint-prettier.ts`).
   const prettierGate = config.patchLint?.prettier ?? 'off';
   if (prettierGate !== 'off' && patchOwnedFiles.size > 0) {
-    const scoped = [...patchOwnedFiles].filter(
-      (file) => !options?.checkJsReportScope || options.checkJsReportScope.has(file)
+    // Without an explicit report scope the patch's own touched files are the
+    // scope: `patchOwnedFiles` spans the whole queue, and formatting every
+    // module against every patch reports a module against patches that do
+    // not own it.
+    const touched = new Set(affectedFiles);
+    const scoped = [...patchOwnedFiles].filter((file) =>
+      options?.checkJsReportScope ? options.checkJsReportScope.has(file) : touched.has(file)
     );
     issues.push(
-      ...(await invokePatchLintPrettier(repoDir, dirname(repoDir), scoped.sort(), prettierGate))
+      ...(await invokePatchLintPrettier(
+        repoDir,
+        options?.projectRoot ?? dirname(repoDir),
+        scoped.sort(),
+        prettierGate
+      ))
     );
   }
 

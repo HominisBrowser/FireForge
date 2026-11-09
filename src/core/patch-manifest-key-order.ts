@@ -24,7 +24,7 @@ const PATCH_ROW_KEY_ORDER = [
 ] as const;
 
 /** Manifest keys in the order of the `PatchesManifest` interface. */
-const MANIFEST_KEY_ORDER = ['version', 'patches', 'retired', 'reserved'] as const;
+const MANIFEST_KEY_ORDER = ['version', 'source', 'patches', 'retired', 'reserved'] as const;
 
 function reorder<T extends object>(value: T, order: readonly string[]): T {
   const source = value as Record<string, unknown>;

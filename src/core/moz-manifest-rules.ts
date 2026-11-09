@@ -2,11 +2,13 @@
 import { basename, join } from 'node:path';
 
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
-import { pathExists, readText } from '../utils/fs.js';
 import { warn } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import { escapeRegex } from '../utils/regex.js';
-import { getProjectPaths, loadConfig } from './config.js';
+import { pathExists, readText } from './authored/fs.js';
+import { authoringProjectPaths } from './authored/writer.js';
+import { loadConfig } from './config.js';
+import { jarHasEntry, mozBuildListContains } from './moz-manifest-entries.js';
 import type { RegisterResult } from './moz-manifest-register.js';
 import {
   registerBrowserContent,
@@ -35,10 +37,9 @@ export interface PatternRule {
   /**
    * Whether this rule's manifest supports `--after` placement.
    *
-   * Four of the six rules ignore the flag entirely: the CLI accepts
-   * `--after`, the adapter takes it as `_after`, and the operator gets a
-   * silently alphabetical insertion with no indication their placement was
-   * dropped. Declaring it lets {@link registerFile} say so.
+   * Rules that ignore the flag would otherwise insert alphabetically with
+   * no indication the placement was dropped. Declaring it lets
+   * {@link registerFile} say so.
    */
   supportsAfter: boolean;
 }
@@ -131,57 +132,36 @@ export function getRules(binaryName: string, createManifest = false): PatternRul
   ];
 }
 
-/**
- * Reads an engine manifest and reports whether it contains any of `needles`.
- *
- * The five registration probes below share this shape: resolve the manifest
- * relative to the engine, refuse with the manifest's own path when it is
- * missing, then substring-match the entry each registrar writes.
- *
- * @param engineDir - Path to the engine directory
- * @param manifestRel - Engine-relative manifest path (forward slashes, and
- *   also the path named in the refusal message)
- * @param needles - Entry forms that count as registered
- * @returns True when the manifest contains at least one needle
- * @throws GeneralError when the manifest does not exist
- */
-async function manifestIncludes(
-  engineDir: string,
-  manifestRel: string,
-  needles: readonly string[]
-): Promise<boolean> {
+/** Read a packaging manifest, preserving missing-file refusals. */
+async function readManifest(engineDir: string, manifestRel: string): Promise<string> {
   const manifestPath = join(engineDir, manifestRel);
-  if (!(await pathExists(manifestPath))) {
+  if (!(await pathExists(manifestPath)))
     throw new GeneralError(`Manifest not found: ${manifestRel}`);
-  }
-
-  const content = await readText(manifestPath);
-  return needles.some((needle) => content.includes(needle));
+  return readText(manifestPath);
 }
 
 async function isSharedCSSRegistered(engineDir: string, fileName: string): Promise<boolean> {
-  const name = basename(fileName, '.css');
-  // `register` writes the canonical `skin/classic/browser/<name>.css` form.
-  // `furnace chrome-doc create` writes a `content/browser/<name>.css` entry
-  // because the CSS is loaded by a chrome document via a `chrome://browser/
-  // content/<name>.css` URI. Match either prefix so paths registered by the
-  // chrome-doc scaffolder are not flagged as "potentially unregistered" by
-  // `status` and so a re-run of `register` against the same file recognises
-  // the existing entry instead of proposing a duplicate.
-  return manifestIncludes(engineDir, 'browser/themes/shared/jar.inc.mn', [
-    `skin/classic/browser/${name}.css`,
-    `content/browser/${name}.css`,
-  ]);
+  return jarHasEntry(
+    await readManifest(engineDir, 'browser/themes/shared/jar.inc.mn'),
+    [`skin/classic/browser/${fileName}`, `content/browser/${fileName}`],
+    `../shared/${fileName}`
+  );
 }
 
 async function isBrowserContentRegistered(engineDir: string, fileName: string): Promise<boolean> {
-  return manifestIncludes(engineDir, 'browser/base/jar.mn', [`content/browser/${fileName}`]);
+  return jarHasEntry(
+    await readManifest(engineDir, 'browser/base/jar.mn'),
+    [`content/browser/${fileName}`],
+    `content/${fileName}`
+  );
 }
 
 async function isTestManifestRegistered(engineDir: string, testDir: string): Promise<boolean> {
-  return manifestIncludes(engineDir, 'browser/base/moz.build', [
-    `content/test/${testDir}/browser.toml`,
-  ]);
+  return mozBuildListContains(
+    await readManifest(engineDir, 'browser/base/moz.build'),
+    'BROWSER_CHROME_MANIFESTS',
+    `content/test/${testDir}/browser.toml`
+  );
 }
 
 async function isFireForgeModuleRegistered(
@@ -189,17 +169,23 @@ async function isFireForgeModuleRegistered(
   fileName: string,
   moduleDir: string
 ): Promise<boolean> {
-  return manifestIncludes(engineDir, `${moduleDir}/moz.build`, [`"${fileName}"`]);
+  return mozBuildListContains(
+    await readManifest(engineDir, `${moduleDir}/moz.build`),
+    'EXTRA_JS_MODULES',
+    fileName
+  );
 }
 
 async function isToolkitWidgetRegistered(
   engineDir: string,
-  _tagName: string,
+  tagName: string,
   fileName: string
 ): Promise<boolean> {
-  return manifestIncludes(engineDir, 'toolkit/content/jar.mn', [
-    `content/global/elements/${fileName}`,
-  ]);
+  return jarHasEntry(
+    await readManifest(engineDir, 'toolkit/content/jar.mn'),
+    [`content/global/elements/${fileName}`],
+    `widgets/${tagName}/${fileName}`
+  );
 }
 
 /**
@@ -275,7 +261,7 @@ function getUnregistrableAdvice(filePath: string): string | null {
  * @returns True if the file is already registered in its manifest
  */
 export async function isFileRegistered(root: string, filePath: string): Promise<boolean> {
-  const { engine: engineDir } = getProjectPaths(root);
+  const { engine: engineDir } = await authoringProjectPaths(root);
   const config = await loadConfig(root);
   const rules = getRules(config.binaryName);
   const normalizedPath = normalizePathSlashes(filePath);
@@ -330,7 +316,7 @@ export async function registerFile(
   after?: string,
   options: { createManifest?: boolean } = {}
 ): Promise<RegisterResult> {
-  const { engine: engineDir } = getProjectPaths(root);
+  const { engine: engineDir } = await authoringProjectPaths(root);
   const config = await loadConfig(root);
   const rules = getRules(config.binaryName, options.createManifest === true);
 

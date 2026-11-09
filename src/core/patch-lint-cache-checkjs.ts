@@ -21,6 +21,12 @@
  * extra program build: the first miss builds the queue-wide program, and
  * every later miss slices from it.
  *
+ * A wildcard `paths` target whose directory holds more than
+ * {@link PATHS_TARGET_WALK_LIMIT} entries cannot be fingerprinted within
+ * that walk, so the world has no digest: every checkJs-relevant patch then
+ * lints without the cache, neither reading nor writing it, rather than keying
+ * on the target string and replaying a verdict after a file under it changed.
+ *
  * Memoised per queue context, which is one run's snapshot: file contents
  * are hashed once per context, and the digest is recomputed only after an
  * in-place entry update (see `invalidateNewFileCreatorsCache`). Engine
@@ -33,22 +39,26 @@ import { join, relative, resolve } from 'node:path';
 
 import type { PatchLintConfig } from '../types/config.js';
 import { sha256Hex } from '../utils/hash.js';
+import { warn } from '../utils/logger.js';
 import { normalizePathSlashes } from '../utils/paths.js';
+import { loadedNodeToolIdentity } from './node-tool-identity.js';
 import type { PatchQueueContext } from './patch-lint-cross.js';
 import { collectNewFileCreatorsByPath } from './patch-lint-cross.js';
-import { isTestScriptFile } from './patch-lint-ownership.js';
+import { isHeadScript, isTestScriptFile } from './patch-lint-ownership.js';
 import { collectUnmanagedCompanions } from './patch-lint-unmanaged-companion.js';
+import { loadTypeScriptApi } from './typescript-api.js';
 
 /** Files visited under one wildcard `paths` target before giving up on it. */
 const PATHS_TARGET_WALK_LIMIT = 10_000;
-
-const HEAD_SCRIPT = /^head(?:_.*)?\.js$/;
 
 /** Content hashes per run, keyed by absolute path. Survives entry updates. */
 const fileHashMemo = new WeakMap<PatchQueueContext, Map<string, Promise<string | null>>>();
 
 /** Digests per creators map, which an in-place entry update replaces. */
-const digestMemo = new WeakMap<object, Map<string, Promise<string>>>();
+const digestMemo = new WeakMap<object, Map<string, Promise<string | undefined>>>();
+
+/** Targets already reported as too large to fingerprint, once per process. */
+const reportedUnwalked = new Set<string>();
 
 let typescriptVersion: Promise<string | null> | undefined;
 
@@ -64,8 +74,10 @@ export function isCheckJsCacheRelevant(file: string, patchLint: PatchLintConfig)
 }
 
 async function readTypescriptVersion(): Promise<string | null> {
+  const api = await loadTypeScriptApi();
+  if (api === undefined) return null;
   try {
-    return (await import('typescript')).version;
+    return `${api.ts.version}:${await loadedNodeToolIdentity(api.packageName, import.meta.url)}`;
   } catch {
     return null;
   }
@@ -92,8 +104,7 @@ function hashFile(ctx: PatchQueueContext, absolute: string): Promise<string | nu
  * Engine-relative files a wildcard `paths` target can resolve to: the files
  * under the target's static directory that match its prefix and suffix.
  * Returns undefined when the walk passes {@link PATHS_TARGET_WALK_LIMIT}
- * (a target rooted high in the tree), so the key falls back to the target
- * string alone instead of walking Firefox.
+ * (a target rooted high in the tree) rather than walking Firefox.
  */
 async function expandPathsTarget(engineDir: string, target: string): Promise<string[] | undefined> {
   const star = target.indexOf('*');
@@ -147,7 +158,7 @@ async function computeDigest(
   patchLint: PatchLintConfig,
   ctx: PatchQueueContext,
   created: readonly string[]
-): Promise<string> {
+): Promise<string | undefined> {
   const universe = new Set<string>();
   for (const file of created) {
     if (file.endsWith('.mjs')) universe.add(file);
@@ -155,17 +166,24 @@ async function computeDigest(
   const tests = created.filter(isTestScriptFile);
   if (patchLint.checkJsTestFiles === true) {
     for (const file of tests) {
-      if (HEAD_SCRIPT.test(file.slice(file.lastIndexOf('/') + 1))) universe.add(file);
+      if (isHeadScript(file)) universe.add(file);
     }
     const companions = await collectUnmanagedCompanions(engineDir, tests, new Set(tests));
     for (const companion of companions) universe.add(companion.file);
   }
-  const unwalked: string[] = [];
   for (const targets of Object.values(patchLint.checkJsCompilerOptions?.paths ?? {})) {
     for (const target of targets) {
       const expanded = await expandPathsTarget(engineDir, target);
-      if (expanded === undefined) unwalked.push(target);
-      else for (const file of expanded) universe.add(file);
+      if (expanded === undefined) {
+        if (!reportedUnwalked.has(target)) {
+          reportedUnwalked.add(target);
+          warn(
+            `checkJs paths target ${target} covers more than ${String(PATHS_TARGET_WALK_LIMIT)} entries; patches with checkJs files lint without the cache. Narrow the target to cache them.`
+          );
+        }
+        return undefined;
+      }
+      for (const file of expanded) universe.add(file);
     }
   }
 
@@ -176,7 +194,6 @@ async function computeDigest(
     JSON.stringify({
       queue: queueShape(ctx),
       files: files.map((file, index) => [file, hashes[index] ?? null]),
-      unwalkedPathsTargets: unwalked.sort(),
       typescript: await typescriptVersion,
     })
   );
@@ -184,8 +201,9 @@ async function computeDigest(
 
 /**
  * Digest of everything outside a patch's own files that its per-patch
- * checkJs verdict can depend on. See the module docs for what it covers
- * and how it is memoised.
+ * checkJs verdict can depend on, or undefined when that cannot be
+ * fingerprinted and no verdict may be reused. See the module docs for what
+ * it covers and how it is memoised.
  *
  * @param engineDir - Absolute engine directory the programs read
  * @param patchLint - The resolved `patchLint` block
@@ -195,7 +213,7 @@ export function checkJsWorldDigest(
   engineDir: string,
   patchLint: PatchLintConfig,
   ctx: PatchQueueContext
-): Promise<string> {
+): Promise<string | undefined> {
   const creators = collectNewFileCreatorsByPath(ctx);
   let perCreators = digestMemo.get(creators);
   if (!perCreators) {

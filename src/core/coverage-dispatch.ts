@@ -4,7 +4,8 @@
  * full build carries the full build's anchor forward instead of collapsing
  * the claim to its own paths. A requested path outside the scoped list is
  * then still covered while its own staging inputs are unchanged against
- * that anchor, and a refusal names the inputs that did change.
+ * that anchor, or changed only in files the runtime already serves, and a
+ * refusal names the inputs that did change.
  */
 
 import { toError } from '../utils/errors.js';
@@ -17,6 +18,7 @@ import {
   hashEngineFile,
   readEngineContentState,
 } from './coverage-records.js';
+import { createCoverageInputFilter } from './test-stale-exempt.js';
 
 /** A requested path no recorded claim covers, with the inputs that explain it. */
 export interface UncoveredRequest {
@@ -51,12 +53,17 @@ export async function filterByCarriedFullCoverage(
     verbose(`Coverage check: engine state unreadable — ${toError(error).message}`);
     return unresolved;
   }
+  const voiding = createCoverageInputFilter(engineDir);
   const remaining: UncoveredRequest[] = [];
   for (const path of uncovered) {
     const inputs = path === fullSuite ? undefined : await collectStagingInputs(engineDir, path);
     const changed = await findChangedInputs(state, anchor, inputs);
-    if (changed === undefined || changed.length > 0)
-      remaining.push({ path, changed: changed ?? [] });
+    if (changed === undefined) {
+      remaining.push({ path, changed: [] });
+      continue;
+    }
+    const left = await voiding(changed);
+    if (left.length > 0) remaining.push({ path, changed: left });
   }
   return remaining;
 }

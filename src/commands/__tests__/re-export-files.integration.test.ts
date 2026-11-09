@@ -95,6 +95,41 @@ describe('re-export --files integration', () => {
     await removeTempProject(projectRoot);
   });
 
+  it.each([false, true])(
+    '--files honors version stamping atomically and keeps dry-run pure: %s',
+    async (dryRun) => {
+      await seedManifest(patchesDir, [
+        {
+          metadata: {
+            ...makeMetadata('001-infra-a.patch', 1, ['browser/base/content/browser.js']),
+            sourceEsrVersion: '128.0esr',
+            sourceVersion: '128.0esr',
+            sourceProduct: 'firefox',
+          },
+          body: '',
+        },
+      ]);
+      await writeFile(join(engineDir, 'browser/base/content/browser.js'), 'changed;\n');
+      const before = await readFile(join(patchesDir, 'patches.json'), 'utf8');
+      await reExportCommand(projectRoot, ['001-infra-a.patch'], {
+        files: ['browser/base/content/browser.js'],
+        stamp: true,
+        dryRun,
+        yes: true,
+      });
+      const after = await readFile(join(patchesDir, 'patches.json'), 'utf8');
+      if (dryRun) expect(after).toBe(before);
+      else {
+        const manifest = JSON.parse(after) as PatchesManifest;
+        expect(manifest.patches[0]).toMatchObject({
+          sourceEsrVersion: '140.9.0esr',
+          sourceVersion: '140.9.0esr',
+          sourceProduct: 'firefox-esr',
+        });
+      }
+    }
+  );
+
   it('--files rejects mutually exclusive --scan', async () => {
     await seedManifest(patchesDir, [
       {

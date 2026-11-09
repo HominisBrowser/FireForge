@@ -27,7 +27,7 @@ function execResult(
 describe('invokePatchLintPrettier', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(pathExists).mockResolvedValue(false);
+    vi.mocked(pathExists).mockImplementation((path) => Promise.resolve(path === ENGINE_PRETTIER));
   });
 
   it('does nothing when the gate is off', async () => {
@@ -47,8 +47,8 @@ describe('invokePatchLintPrettier', () => {
     vi.mocked(exec).mockResolvedValue(execResult(0));
     await invokePatchLintPrettier('/engine', '/project', FILES, 'warning');
     expect(exec).toHaveBeenCalledWith(
-      'npx',
-      ['--no-install', 'prettier', '--check', ...FILES],
+      ENGINE_PRETTIER,
+      ['--check', ...FILES],
       expect.objectContaining({ cwd: '/engine' })
     );
   });
@@ -67,6 +67,49 @@ describe('invokePatchLintPrettier', () => {
   it('reports nothing when everything is formatted', async () => {
     vi.mocked(exec).mockResolvedValue(execResult(0));
     expect(await invokePatchLintPrettier('/engine', '/project', FILES, 'warning')).toEqual([]);
+  });
+
+  it('uses only the project formatter when the engine has none', async () => {
+    const projectPrettier = join('/project', 'node_modules', '.bin', 'prettier');
+    vi.mocked(pathExists).mockImplementation((path) => Promise.resolve(path === projectPrettier));
+    vi.mocked(exec).mockResolvedValue(execResult(0));
+    expect(await invokePatchLintPrettier('/engine', '/project', FILES, 'error')).toEqual([]);
+    expect(exec).toHaveBeenCalledWith(projectPrettier, ['--check', ...FILES], expect.anything());
+  });
+
+  it('refuses a missing formatter without invoking npx or downloading tools', async () => {
+    vi.mocked(pathExists).mockResolvedValue(false);
+    const issues = await invokePatchLintPrettier('/engine', '/project', FILES, 'error');
+    expect(issues).toEqual([expect.objectContaining({ file: '(prettier)', severity: 'error' })]);
+    expect(issues[0]?.message).toContain('No installed project or engine formatter');
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '',
+    'npm error: could not determine executable',
+    '[warn] unknown formatter warning',
+    '[warn] browser/modules/not-selected.sys.mjs',
+  ])('refuses unexplained exit 1: %s', async (output) => {
+    vi.mocked(exec).mockResolvedValue(execResult(1, output));
+    const issues = await invokePatchLintPrettier('/engine', '/project', FILES, 'error');
+    expect(issues).toEqual([
+      expect.objectContaining({
+        file: '(prettier)',
+        severity: 'error',
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest asymmetric matcher
+        message: expect.stringContaining('inconclusive'),
+      }),
+    ]);
+  });
+
+  it('retains recognized diagnostics and adds a tooling issue for mixed error output', async () => {
+    vi.mocked(exec).mockResolvedValue(
+      execResult(1, '[warn] browser/modules/a.sys.mjs\nnpm error: formatter failed\n')
+    );
+    const issues = await invokePatchLintPrettier('/engine', '/project', FILES, 'warning');
+    expect(issues.map((issue) => issue.file)).toEqual(['browser/modules/a.sys.mjs', '(prettier)']);
+    expect(issues.every((issue) => issue.severity === 'warning')).toBe(true);
   });
 
   it('reports one issue per named file and drops the summary line', async () => {

@@ -14,11 +14,7 @@
 import { applyAllComponents, type ApplyAllComponentsResult } from '../../core/furnace-apply.js';
 import type { FurnacePaths } from '../../core/furnace-config.js';
 import type { FurnaceOperationContext } from '../../core/furnace-operation.js';
-import {
-  getPersistableAppliedEntry,
-  persistSingleComponentState,
-  shouldPersistSingleComponentState,
-} from '../../core/furnace-state-persist.js';
+import { appliedCleanly } from '../../core/furnace-step-errors.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
 import {
@@ -80,7 +76,7 @@ function mergeIncluderRefreshes(
 /**
  * Applies each named override or custom component through the same
  * pipeline as deploy-all (`applyAllComponents` with a `componentName`
- * filter), persisting each one's state right after it applies cleanly.
+ * filter), which persists each one's state right after it applies cleanly.
  * Only then are the other stale includers of the fragments the cleanly
  * applied components include refreshed, so an includer that is itself
  * named is applied once, as a named component.
@@ -105,22 +101,13 @@ export async function deployNamedComponents(args: {
   for (const name of deployable) {
     const result = await applyAllComponents(projectRoot, isDryRun, {
       componentName: name,
-      persistState: false,
       operationContext,
     });
     results.push(result);
-    // Each named deploy is atomic: state is persisted only when every apply
-    // step succeeded, and any rollback has already restored the engine.
-    if (shouldPersistSingleComponentState(result, isDryRun)) {
-      await persistSingleComponentState(
-        projectRoot,
-        getPersistableAppliedEntry('Deploy', name, result.applied[0]),
-        furnacePaths
-      );
-      clean.push(name);
-    } else if (isDryRun) {
-      clean.push(name);
-    }
+    // Each named deploy is atomic: `applyAllComponents` persists its state and
+    // commits its journal only when every apply step succeeded, and any
+    // rollback has already restored the engine.
+    if (isDryRun || appliedCleanly(result)) clean.push(name);
   }
 
   // Other deployed includers of a fragment these components include would

@@ -2,6 +2,25 @@
 
 exports[`CLI help output > pins the CLI option inventory for every command > cli option inventory 1`] = `
 "fireforge: --ignore-corrupt-tree-marker | -v, --verbose
+fireforge authored: --json
+fireforge authored capture: --allow-dirty-root | --out | --path | --pristine-repository | --wait-lock
+fireforge authored delta: --pristine-repository | --snapshot | --upstream | --wait-lock
+fireforge authored export-queue: --out | --pristine-repository | --snapshot | --wait-lock
+fireforge authored lint: --allow-dirty-root | --pristine-repository | --snapshot | --wait-lock
+fireforge authored materialize: --engine | --ledger | --pristine-repository | --snapshot | --wait-lock
+fireforge authored merge-driver: --pristine-repository | --wait-lock
+fireforge authored merge-install: --wait-lock
+fireforge authored migrate: --out | --pristine-commit | --pristine-repository | --verify | --wait-lock
+fireforge authored override: --adr | --classification | --component | --delete | --discard | --pristine-repository | --wait-lock
+fireforge authored pristine:
+fireforge authored pristine fetch: --from | --out | --pin | --wait-lock
+fireforge authored prune: --keep | --wait-lock
+fireforge authored refresh: --new-pin | --new-pristine-repository | --out | --pristine-repository | --snapshot | --wait-lock
+fireforge authored restore-upstream: --discard | --wait-lock
+fireforge authored status: --allow-dirty-root | --pristine-repository | --wait-lock
+fireforge authored typecheck: --allow-dirty-root | --pristine-repository | --snapshot | --wait-lock
+fireforge authored validate: --pristine-repository | --snapshot | --wait-lock
+fireforge authored verify: --allow-dirty-root | --pristine-repository | --snapshot | --wait-lock
 fireforge bootstrap: --wait-lock
 fireforge build: --brand | --keep-log | --refuse-unexported-drift | --rewrite-mozinfo | --ui | --wait-browser | --wait-lock | -j, --jobs
 fireforge check: --jobs | --json | --only | --patches | --skip | --wait-lock
@@ -29,12 +48,28 @@ fireforge furnace rename: --dry-run | --wait-lock
 fireforge furnace scan: --deep | --track | --wait-lock
 fireforge furnace status: --wait-lock
 fireforge furnace sync: --dry-run | --wait-lock | -s, --strategy
+fireforge furnace types: --check | --wait-lock
 fireforge furnace validate: --fix | --json | --max-warnings | --wait-lock
+fireforge host: --json
+fireforge host init: --allow-dirty-root | --artifact-max-age-days | --artifact-max-gib | --browsers | --cache | --cpu | --disk-low-gib | --from-engine | --max-slots | --memory | --namespace | --pristine-repository | --python | --quiet-load | --release-secrets | --replicate-depth | --slots | --wait-lock
+fireforge host prune: --dry-run | --max-age-days | --max-gib | --namespace | --wait-lock
+fireforge host status: --namespace | --wait-lock
+fireforge host upgrade: --from | --namespace | --previous | --wait-lock
 fireforge import: --continue | --dry-run | --until | --wait-lock | -f, --force | -y, --yes
+fireforge job: --json
+fireforge job cancel: --force | --namespace | --wait-lock
+fireforge job host-clear: --forget-group | --namespace | --wait-lock
+fireforge job list: --namespace | --wait-lock
+fireforge job logs: --limit | --namespace | --offset | --step | --wait-lock
+fireforge job run: --allow-dirty-root | --build | --check | --coverage | --env | --headed | --hold-front | --keep-awake | --keep-log | --mach-arg | --namespace | --no-keep-awake | --no-shard | --owner | --path | --perf-samples | --profile | --profile-file | --release | --repeat | --run | --shuffle | --slot | --standalone | --test | --throttle | --timeout | --upload-dir | --wait-lock
+fireforge job status: --namespace | --wait-lock
+fireforge job submit: --namespace | --owner | --snapshot | --wait-lock
+fireforge job wait: --namespace | --timeout | --wait-lock
+fireforge job watch: --allow-dirty-root | --build | --check | --debounce | --headed | --namespace | --no-supersede | --owner | --path | --repeat | --shuffle | --slot | --test | --wait-lock
 fireforge lint: --max-warnings | --no-cache | --notices | --only-introduced | --patches | --per-patch | --report | --since | --wait-lock
 fireforge lint cache: --wait-lock
 fireforge lint cache clear: --wait-lock
-fireforge package: --brand | --wait-lock
+fireforge package: --allow-stale-build | --brand | --recipe | --wait-lock
 fireforge park: --drop | --dry-run | --hunks | --label | --list | --restore | --wait-lock
 fireforge patch:
 fireforge patch body: --wait-lock
@@ -50,17 +85,34 @@ fireforge patch split: --after | --before | --category | --declarations-out | --
 fireforge patch stage: --dry-run | --wait-lock
 fireforge patch staged-dependency: --add | --clear | --creates | --dry-run | --file | --from | --kind | --line | --owner | --reason | --remove | --specifier | --wait-lock | -y, --yes
 fireforge patch tier: --clear | --dry-run | --tier | --wait-lock | -y, --yes
-fireforge re-export: --adjacent-ignore | --allow-shrink | --allow-stale-furnace | --declarations-out | --dry-run | --exclude-hunks | --expect | --expect-from | --expect-new | --expect-removed | --expect-unmanaged | --files | --force-unsafe | --hunks-from | --lint-ignore | --no-cache | --refuse-adjacent-unmanaged | --refuse-foreign-drift | --scan-file | --scan-files | --skip-lint | --stamp | --tier | --wait-lock | -a, --all | -s, --scan | -y, --yes
+fireforge prove: --json
+fireforge prove accept: --allow-dirty-root | --base | --control | --control-test | --expect | --mode | --namespace | --note | --path | --sample | --test | --tier | --wait-lock
+fireforge prove measure-tools: --wait-lock
+fireforge prove plan: --allow-dirty-root | --base | --control | --control-test | --expect | --lane | --mode | --namespace | --path | --sample | --slot | --test | --tier | --wait-lock
+fireforge prove publish: --allow-rewrite | --allow-waived | --commit | --namespace | --note | --wait-lock
+fireforge prove run: --allow-dirty-root | --base | --control | --control-test | --expect | --lane | --mode | --namespace | --no-wait | --path | --sample | --slot | --test | --tier | --wait-lock
+fireforge prove status: --allow-dirty-root | --allow-waived | --base | --complete | --control | --control-test | --expect | --mode | --namespace | --path | --sample | --test | --tier | --wait-lock
+fireforge prove waive: --allow-dirty-root | --allow-machine | --base | --control | --control-test | --expect | --mode | --namespace | --note | --path | --sample | --test | --tier | --wait-lock
+fireforge re-export: --adjacent-ignore | --adjacent-ignore-from | --allow-shrink | --allow-stale-furnace | --declarations-out | --dry-run | --exclude-hunks | --expect | --expect-from | --expect-new | --expect-removed | --expect-unmanaged | --files | --force-unsafe | --hunks-from | --lint-ignore | --no-cache | --refuse-adjacent-unmanaged | --refuse-foreign-drift | --scan-file | --scan-files | --skip-lint | --stamp | --tier | --wait-lock | -a, --all | -s, --scan | -y, --yes
 fireforge rebase: --abort | --continue | --dry-run | --max-fuzz | --wait-lock | -y, --yes
 fireforge register: --after | --create-manifest | --dry-run | --wait-lock
 fireforge reset: --dry-run | --wait-lock | -y, --yes
 fireforge resolve: --wait-lock | -y, --yes
 fireforge run: --capture-console | --console-allow | --console-allow-file | --headless | --no-purge-caches | --profile | --smoke-exit | --temp-profile | --wait-lock
 fireforge setup: --app-id | --binary-name | --firefox-version | --license | --name | --product | --vendor | --wait-lock | -f, --force | -y, --yes
+fireforge slot: --json
+fireforge slot audit: --namespace | --wait-lock
+fireforge slot create: --cache | --from | --namespace | --no-qualify | --pristine-repository | --snapshot | --wait-lock
+fireforge slot list: --namespace | --wait-lock
+fireforge slot prepare: --namespace | --snapshot | --wait-lock
+fireforge slot qualify-native: --namespace | --wait-lock
+fireforge slot refresh-deps: --cache | --from-engine | --namespace | --wait-lock
+fireforge slot remove: --namespace | --wait-lock
+fireforge slot restore: --namespace | --stop-orphans | --wait-lock
 fireforge source:
 fireforge source set: --candidate | --clear-candidate | --clear-sha256 | --product | --sha256 | --version | --wait-lock
 fireforge status: --allow | --check | --fail-on | --fail-on-unknown | --include-ownership | --json | --lock | --ownership | --patches | --raw | --summary | --test-coverage | --unmanaged | --wait-lock
-fireforge test: --allow-stale-build | --allow-stale-components | --auto | --auto-ports | --build | --build-only | --canary | --doctor | --extend-coverage | --full-output | --furnace-apply | --generic-mach-test | --harness-retries | --headless | --jobs | --keep-log | --kill-stale-marionette | --mach-arg | --marionette-port | --negative-control | --no-furnace-apply | --no-shard | --perf-samples | --pgid-file | --profile-file | --reap-orphans | --refuse-unexported-drift | --repeat | --restart-between-tests | --results | --shard-size | --shared-lock | --shuffle | --wait-browser | --wait-lock | --wait-port
+fireforge test: --allow-stale-build | --allow-stale-components | --auto | --auto-ports | --build | --build-only | --canary | --coverage | --doctor | --extend-coverage | --full-output | --furnace-apply | --generic-mach-test | --harness-retries | --headless | --jobs | --keep-log | --kill-stale-marionette | --mach-arg | --marionette-port | --negative-control | --no-furnace-apply | --no-shard | --perf-samples | --pgid-file | --profile-file | --reap-orphans | --refuse-unexported-drift | --repeat | --restart-between-tests | --results | --shard-size | --shared-lock | --shuffle | --wait-browser | --wait-lock | --wait-port
 fireforge token:
 fireforge token add: --category | --create-category | --dark-value | --description | --dry-run | --mode | --variant | --wait-lock
 fireforge token coverage: --wait-lock
@@ -72,7 +124,7 @@ fireforge tree create: --force-copy | --wait-lock | --with-objdir
 fireforge tree exec: --wait-lock
 fireforge tree list: --json | --wait-lock
 fireforge tree remove: --all | --force | --wait-lock
-fireforge typecheck: --explain | --no-cache | --project | --wait-lock
+fireforge typecheck: --explain | --no-cache | --project | --source-files | --wait-lock
 fireforge verify: --patches | --wait-lock
 fireforge watch: --wait-lock
 fireforge wire: --after | --destroy | --dom | --dry-run | --init | --subscript-dir | --target | --wait-lock"

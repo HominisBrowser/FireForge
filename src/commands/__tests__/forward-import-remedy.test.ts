@@ -47,6 +47,33 @@ describe('formatForwardImportRemedy', () => {
     expect(text.split('\n').filter((line) => line.startsWith('  fireforge'))).toHaveLength(1);
   });
 
+  it('names the latest creating patch as the earliest existing patch that satisfies every importer', () => {
+    const text = formatForwardImportRemedy({
+      reRunHint: 're-running the scan',
+      issues: [
+        ISSUE,
+        {
+          ...ISSUE,
+          stagedDeclarations: [
+            {
+              patch: '001-ui-p1.patch',
+              kind: 'import',
+              file: 'a/Test.js',
+              specifier: 'resource:///modules/Y.sys.mjs',
+              creates: 'a/Y.sys.mjs',
+              owner: '001-ui-p1.patch',
+            },
+          ],
+        },
+      ],
+      manifest: MANIFEST,
+      category: 'ui',
+    });
+    expect(text).toContain(
+      'Or keep them beside what they import: 002-ui-p2.patch (order 002) is the earliest existing patch'
+    );
+  });
+
   it('renders registration declarations with --kind and --line', () => {
     const text = formatForwardImportRemedy({
       reRunHint: 'x',

@@ -29,13 +29,12 @@ import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { getProjectPaths } from './config.js';
+import { readEngineInventory } from './engine-state.js';
 import {
   type DeployedSourceMatch,
   matchDeployedComponentFiles,
 } from './furnace-composed-source.js';
 import { collectFurnaceManagedPrefixes } from './furnace-config.js';
-import type { GitStatusEntry } from './git-base.js';
-import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from './git-status.js';
 import { type ClassifiedFile, classifyFiles } from './status-classify.js';
 
 /**
@@ -70,6 +69,8 @@ export interface DeployedUnexportedFile {
 
 /** Outcome of {@link assessUnexportedDrift}. */
 export interface UnexportedDriftAssessment {
+  /** An unknown assessment is never evidence that a strict overwrite is safe. */
+  probeError?: string;
   /** Files whose content the overwrite would destroy unrecorded. */
   atRisk: UnexportedDriftAtRisk[];
   /** Files the overwrite rewrites from their own component source. */
@@ -103,60 +104,6 @@ function isOverwrittenByBuildPrepare(
     if (file === prefix || file.startsWith(prefix)) return true;
   }
   return false;
-}
-
-/**
- * Narrows the status entries to the ones build-prepare can overwrite,
- * expanding collapsed untracked directories on the way.
- *
- * Git reports a wholly untracked directory as a single `?? dir/` entry
- * rather than listing the files under it. A directory entry has no content
- * to compare, so `classifyFiles` matches it against neither a patch body nor
- * the pristine baseline and buckets it `unmanaged`, an at-risk
- * classification. Expanding here keeps this guard in agreement with
- * `status --unmanaged`, which also expands.
- *
- * Expansion is scoped to build-prepare-owned prefixes on both sides of the
- * walk: a collapsed directory that merely contains an owned prefix
- * (`components/` when `components/custom/` is Furnace-managed) is rewritten
- * to the owned prefixes beneath it, so the enumeration never walks an
- * unrelated subtree and never trips the per-directory expansion cap.
- */
-async function collectOverwrittenEntries(
-  engineDir: string,
-  status: readonly GitStatusEntry[],
-  binaryName: string,
-  furnacePrefixes: ReadonlySet<string>
-): Promise<GitStatusEntry[]> {
-  const ownedPrefixes = buildPrepareOwnedPrefixes(binaryName, furnacePrefixes);
-  const candidates: GitStatusEntry[] = [];
-
-  for (const entry of status) {
-    if (isOverwrittenByBuildPrepare(entry.file, binaryName, furnacePrefixes)) {
-      candidates.push(entry);
-      continue;
-    }
-    if (!entry.isUntracked || !entry.file.endsWith('/')) continue;
-    // A collapsed untracked ancestor of an owned prefix: walk only the
-    // owned subtrees under it, never the whole directory.
-    for (const prefix of ownedPrefixes) {
-      if (prefix.startsWith(entry.file)) {
-        candidates.push({ ...entry, file: prefix });
-      }
-    }
-  }
-
-  if (candidates.length === 0) return [];
-
-  const expanded = await expandUntrackedDirectoryEntries(engineDir, candidates);
-  // Re-test after expansion: an ancestor rewrite can only widen, and a
-  // directory that survived expansion (nothing untracked under it any
-  // more) carries no content to classify.
-  return expanded.filter(
-    (entry) =>
-      !entry.file.endsWith('/') &&
-      isOverwrittenByBuildPrepare(entry.file, binaryName, furnacePrefixes)
-  );
 }
 
 /**
@@ -229,8 +176,7 @@ export async function findUnexportedDriftAtRisk(
  * Furnace files no patch records yet whose content is their component
  * source's (`deployedUnexported`, safe to overwrite).
  *
- * Fail-open like {@link findUnexportedDriftAtRisk}: a probe failure yields
- * an empty assessment.
+ * Probe failures remain explicit so strict callers can refuse before writes.
  *
  * @param projectRoot - Project root
  * @param config - Loaded FireForge config (reads `binaryName`)
@@ -243,14 +189,11 @@ export async function assessUnexportedDrift(
   const empty: UnexportedDriftAssessment = { atRisk: [], deployedUnexported: [] };
   const paths = getProjectPaths(projectRoot);
   try {
-    const status = await getWorkingTreeStatus(paths.engine);
+    const status = [...(await readEngineInventory(paths.engine)).entries];
     if (status.length === 0) return empty;
     const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
-    const candidates = await collectOverwrittenEntries(
-      paths.engine,
-      status,
-      config.binaryName,
-      furnacePrefixes
+    const candidates = status.filter((entry) =>
+      isOverwrittenByBuildPrepare(entry.file, config.binaryName, furnacePrefixes)
     );
     if (candidates.length === 0) return empty;
 
@@ -273,7 +216,7 @@ export async function assessUnexportedDrift(
     return await separateDeployedUnexported(projectRoot, paths.engine, atRisk);
   } catch (error: unknown) {
     verbose(`Unexported-drift guard could not run: ${toError(error).message}`);
-    return empty;
+    return { ...empty, probeError: toError(error).message };
   }
 }
 

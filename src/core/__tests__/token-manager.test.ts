@@ -355,6 +355,61 @@ describe('addToken', () => {
     expect(darkValueIdx).toBeGreaterThan(darkMediaIdx);
   });
 
+  it('keeps a dark override inside a one-line dark :root block', async () => {
+    const oneLine = MOCK_TOKENS_CSS.replace(
+      /@media \(prefers-color-scheme: dark\) \{[\s\S]*$/,
+      '@media (prefers-color-scheme: dark) {\n  :root { --testbrowser-dark-override: #222; }\n}\n'
+    );
+    mockReadText.mockImplementation(makeReadTextImpl(oneLine, MOCK_TOKENS_DOC));
+
+    await addToken('/project', {
+      tokenName: '--testbrowser-canvas-override-test',
+      value: '#fff',
+      category: 'Colors — Canvas',
+      mode: 'override',
+      darkValue: '#000',
+    });
+
+    const cssContent =
+      mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'))?.[1] ?? '';
+    const media = cssContent.slice(cssContent.indexOf('prefers-color-scheme: dark'));
+    expect(media).toBe(
+      [
+        'prefers-color-scheme: dark) {',
+        '  :root {',
+        '    --testbrowser-dark-override: #222;',
+        '    --testbrowser-canvas-override-test: #000;',
+        '  }',
+        '}',
+        '',
+      ].join('\n')
+    );
+  });
+
+  it('adds a variant declaration inside a one-line variant block', async () => {
+    const withBlock = `${MOCK_TOKENS_CSS}\n:root[data-skin="x"] { --testbrowser-a: 1px; }\n`;
+    mockReadText.mockImplementation(makeReadTextImpl(withBlock, MOCK_TOKENS_DOC));
+
+    await addToken('/project', {
+      tokenName: '--testbrowser-b',
+      value: '2px',
+      mode: 'static',
+      variant: '[data-skin="x"]',
+    });
+
+    const cssContent =
+      mockWriteText.mock.calls.find((c) => c[0].includes('testbrowser-tokens.css'))?.[1] ?? '';
+    expect(cssContent.slice(cssContent.indexOf(':root[data-skin="x"]'))).toBe(
+      [
+        ':root[data-skin="x"] {',
+        '  --testbrowser-a: 1px;',
+        '  --testbrowser-b: 2px; /* static, fork-specific */',
+        '}',
+        '',
+      ].join('\n')
+    );
+  });
+
   it('mirrors an override into existing:root[data-theme] blocks', async () => {
     const cssWithThemeBlocks = `${MOCK_TOKENS_CSS}
 :root[data-theme="dark"] {
@@ -626,6 +681,44 @@ describe('addToken', () => {
       })
     ).rejects.toThrow('*/');
   });
+
+  it.each([
+    ['red; } body { display: none', { value: 'red; } body { display: none' }],
+    ['a value with a newline', { value: '1px\n2px' }],
+    ['an unterminated string', { value: '"abc' }],
+    [
+      'a dark value that closes the block',
+      { value: '#fff', darkValue: '#000; }', mode: 'override' as const },
+    ],
+    ['a description that closes the comment', { value: '1px', description: 'x */ a { b: c } /*' }],
+  ])('rejects %s before writing', async (_label, extra) => {
+    mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+    await expect(
+      addToken('/project', {
+        tokenName: '--testbrowser-injected',
+        category: 'Colors — Canvas',
+        mode: 'static',
+        ...extra,
+      })
+    ).rejects.toThrow(/Token (value|dark value|description)/);
+    expect(mockWriteText).not.toHaveBeenCalled();
+  });
+
+  it.each(['url("data:image/svg+xml;base64,AAAA")', 'light-dark(#fff, #000)', 'var(--a, 1px)'])(
+    'accepts the value %s',
+    async (value) => {
+      mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));
+
+      const result = await addToken('/project', {
+        tokenName: '--testbrowser-fine',
+        value,
+        category: 'Colors — Canvas',
+        mode: 'static',
+      });
+      expect(result.skipped).toBe(false);
+    }
+  );
 
   it('rejects token names with control characters', async () => {
     mockReadText.mockImplementation(makeReadTextImpl(MOCK_TOKENS_CSS, MOCK_TOKENS_DOC));

@@ -30,6 +30,8 @@ export interface PatchManifestConsistencyIssue {
     | 'duplicate-manifest-entry';
   filename: string;
   message: string;
+  /** `files-affected-mismatch` only: files the patch body targets that its row omits. */
+  undeclaredFiles?: string[];
 }
 
 /**
@@ -99,6 +101,7 @@ export async function validatePatchesManifestConsistency(
       issues.push({
         code: 'files-affected-mismatch',
         filename: metadata.filename,
+        undeclaredFiles: actualFiles.filter((file) => !declaredFiles.includes(file)),
         message:
           `${metadata.filename} declares [${declaredFiles.join(', ')}] in patches.json ` +
           `but the patch file targets [${actualFiles.join(', ')}].`,
@@ -209,7 +212,7 @@ export async function rebuildPatchesManifest(
   options: RebuildPatchesManifestOptions = {}
 ): Promise<RebuildPatchesManifestResult> {
   // The whole read → discover → rebuild → save cycle runs under the shared
-  // patch-directory lock (invariant 2, docs/lifecycle-invariants.md):
+  // patch-directory lock (invariant 2, contributing/lifecycle-invariants.md):
   // manifest writes serialize on this lock, so without it a repair racing a
   // concurrent export/reorder can clobber the other writer's manifest. Not
   // reentrant: callers must not already hold it.

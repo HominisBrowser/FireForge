@@ -9,6 +9,7 @@ import { stdioIsInteractive } from '../core/destructive.js';
 import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { getStagedDiffForFiles } from '../core/git-diff.js';
 import { stageFiles, unstageFiles } from '../core/git-file-ops.js';
+import { filesSharedWithOtherPatches } from '../core/ownership-table.js';
 import { extractAffectedFiles } from '../core/patch-apply.js';
 import { updatePatchAndMetadata } from '../core/patch-export.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
@@ -28,6 +29,7 @@ import {
 } from '../utils/logger.js';
 import { addWaitLockOption, resolveWaitLockSeconds } from '../utils/options.js';
 import { clearPendingResolution } from './pending-resolution.js';
+import { runUnderEngineLock } from './with-engine-lock.js';
 
 /**
  * Options accepted by {@link resolveCommand}.
@@ -113,6 +115,18 @@ export async function resolveCommand(
   const patchMetadata = manifest.patches.find((p) => p.filename === patchFilename);
   if (!patchMetadata) {
     throw new ResolutionError(`Patch ${patchFilename} not found in manifest.`);
+  }
+
+  // The body written below is the cumulative HEAD..worktree diff of the
+  // patch's files. A file another patch also lists would drag that patch's
+  // hunks into this body, and the next import would double-apply them.
+  const sharedFiles = filesSharedWithOtherPatches(manifest.patches, patchMetadata);
+  if (sharedFiles.length > 0) {
+    throw new ResolutionError(
+      `${patchFilename} shares file(s) with other patches (${sharedFiles.join(', ')}), so resolve ` +
+        'cannot attribute the diff to this patch alone and left it unchanged. Re-export it with ' +
+        `"fireforge re-export ${patchFilename} --hunks-from <diff>", naming only this patch's hunks, then clear the marker with "fireforge doctor --clear-resolution".`
+    );
   }
 
   // Refuse to proceed if the patch file was deleted between the conflict
@@ -241,7 +255,10 @@ export function registerResolve(
     );
   addWaitLockOption(command).action(
     withErrorHandling(async (options: { yes?: boolean; waitLock?: boolean | number }) => {
-      await resolveCommand(getProjectRoot(), options);
+      const projectRoot = getProjectRoot();
+      await runUnderEngineLock(projectRoot, 'resolve', options, () =>
+        resolveCommand(projectRoot, options)
+      );
     })
   );
 }

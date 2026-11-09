@@ -145,7 +145,7 @@ describe('patch manifest recovery paths', () => {
   });
 
   it('waits for the patch-directory lock before rewriting the manifest', async () => {
-    // Invariant 2 (docs/lifecycle-invariants.md): manifest writes
+    // Invariant 2 (contributing/lifecycle-invariants.md): manifest writes
     // serialize on the patch lock. doctor --repair-patches-manifest used
     // to call this rebuild without the lock, so a repair racing a
     // concurrent export/reorder could clobber the other writer's

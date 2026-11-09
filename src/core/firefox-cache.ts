@@ -60,11 +60,15 @@ async function sha256File(filePath: string): Promise<string> {
  */
 async function fetchPublishedSha256(archive: ResolvedArchive): Promise<PublishedSha256Lookup> {
   try {
-    const response = await fetchWithRetry(archive.checksumsUrl);
+    const response = await fetchWithRetry(archive.checksumsUrl, async (reply) => ({
+      ok: reply.ok,
+      status: reply.status,
+      body: reply.ok ? await reply.text() : '',
+    }));
     if (!response.ok) {
       return { sha256: null, reason: `HTTP ${response.status} fetching SHA256SUMS` };
     }
-    const body = await response.text();
+    const body = response.body;
     for (const line of body.split('\n')) {
       const match = /^([0-9a-f]{64})\s+\*?(.+)$/.exec(line.trim());
       if (match?.[1] && match[2] === archive.pathInChecksums) {
@@ -98,13 +102,13 @@ async function verifyAgainstPublishedSha256(
   archive: ResolvedArchive,
   actualSha256: string,
   options: ArchiveIntegrityOptions
-): Promise<void> {
+): Promise<'published' | 'unverified'> {
   const published = await fetchPublishedSha256(archive);
   if (published.sha256 !== null) {
     if (actualSha256 !== published.sha256) {
       throw new ChecksumMismatchError(archive.product, published.sha256, actualSha256, archive.url);
     }
-    return;
+    return 'published';
   }
   verbose(`${published.reason} (${archive.checksumsUrl})`);
   if (options.allowUnverifiedDownload !== true) {
@@ -120,6 +124,7 @@ async function verifyAgainstPublishedSha256(
       `(${published.reason}). firefox.allowUnverifiedDownload is set, so the download is ` +
       'trusted on TLS alone — pin firefox.sha256 in fireforge.json to verify it.'
   );
+  return 'unverified';
 }
 
 /**
@@ -143,7 +148,17 @@ export async function ensureCachedArchive(
   const lockPath = createSiblingLockPath(join(cacheDir, archive.filename), '.fireforge-cache.lock');
   await withFileLock(lockPath, async () => {
     onCacheProgress?.(`Validating source archive cache metadata for ${archive.filename}...`);
-    if (await validateCachedArchive(archive, cacheDir, expectedSha256)) {
+    const cached = await validateCachedArchive(archive, cacheDir, expectedSha256);
+    if (cached !== undefined) {
+      if (!expectedSha256 && (cached.verification !== 'published' || cached.sha256 === undefined)) {
+        const sha256 = await sha256File(join(cacheDir, archive.filename));
+        const verification = await verifyAgainstPublishedSha256(archive, sha256, integrity);
+        await writeJson(join(cacheDir, archive.metadataFilename), {
+          ...cached,
+          sha256,
+          verification,
+        });
+      }
       onCacheProgress?.(`Using validated cached source archive ${archive.filename}`);
       return;
     }
@@ -182,7 +197,7 @@ async function validateCachedArchive(
   archive: ResolvedArchive,
   cacheDir: string,
   expectedSha256?: string
-): Promise<boolean> {
+): Promise<ArchiveMetadata | undefined> {
   const tarballPath = join(cacheDir, archive.filename);
   const metadataPath = join(cacheDir, archive.metadataFilename);
 
@@ -190,7 +205,7 @@ async function validateCachedArchive(
   // cache must propagate instead of reading as "invalid cache" and triggering
   // a re-download into a directory we cannot write anyway.
   if (!(await pathExistsStrict(tarballPath)) || !(await pathExistsStrict(metadataPath))) {
-    return false;
+    return undefined;
   }
 
   try {
@@ -200,32 +215,32 @@ async function validateCachedArchive(
       metadata.archiveVersion !== archive.archiveVersion ||
       metadata.url !== archive.url
     ) {
-      return false;
+      return undefined;
     }
 
     if (metadata.contentLength !== undefined) {
       const archiveStats = await stat(tarballPath);
       if (archiveStats.size !== metadata.contentLength) {
-        return false;
+        return undefined;
       }
     }
 
     if (expectedSha256 || metadata.sha256) {
       const actualHash = await sha256File(tarballPath);
       if (expectedSha256 && actualHash !== expectedSha256) {
-        return false;
+        return undefined;
       }
       if (metadata.sha256 && actualHash !== metadata.sha256) {
-        return false;
+        return undefined;
       }
     }
 
-    return true;
+    return metadata;
   } catch (error: unknown) {
     verbose(
       `Cache validation failed for ${tarballPath}; treating cache entry as invalid: ${toError(error).message}`
     );
-    return false;
+    return undefined;
   }
 }
 
@@ -257,6 +272,7 @@ async function downloadToCache(
     promotedTarball = true;
     onCacheProgress?.(`Calculating source archive SHA-256 for ${archive.filename}...`);
     const sha256 = await sha256File(tarballPath);
+    let verification: NonNullable<ArchiveMetadata['verification']> = 'operator-pin';
     if (expectedSha256) {
       // Operator-pinned digest (firefox.sha256 config): takes precedence
       // and always fails closed.
@@ -267,7 +283,7 @@ async function downloadToCache(
       // Default integrity check (see verifyAgainstPublishedSha256): any
       // failure throws, and the catch below deletes the promoted artifact.
       onCacheProgress?.(`Verifying archive against published SHA256SUMS...`);
-      await verifyAgainstPublishedSha256(archive, sha256, integrity);
+      verification = await verifyAgainstPublishedSha256(archive, sha256, integrity);
     }
     onCacheProgress?.(`Writing source archive cache metadata for ${archive.metadataFilename}...`);
     await writeJson(metadataPath, {
@@ -277,6 +293,7 @@ async function downloadToCache(
       url: archive.url,
       ...(contentLength !== undefined ? { contentLength } : {}),
       sha256,
+      verification,
       downloadedAt: new Date().toISOString(),
     } satisfies ArchiveMetadata);
     onCacheProgress?.(`Source archive cache metadata written: ${archive.metadataFilename}`);

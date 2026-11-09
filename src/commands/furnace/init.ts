@@ -4,8 +4,9 @@ import { basename, dirname, isAbsolute, join, posix } from 'node:path';
 
 import { text } from '@clack/prompts';
 
+import { ensureDir, pathExists, writeText } from '../../core/authored/fs.js';
+import { authoringProjectPaths } from '../../core/authored/writer.js';
 import {
-  getProjectPaths,
   loadConfig,
   loadRawConfigDocument,
   mutateConfig,
@@ -26,7 +27,6 @@ import { generateDefaultTokensCss } from '../../core/token-scaffold.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
 import { getNodeErrorCode, toError } from '../../utils/errors.js';
-import { ensureDir, pathExists, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, note, outro, success, warn } from '../../utils/logger.js';
 import { normalizePathSlashes } from '../../utils/paths.js';
 
@@ -146,7 +146,7 @@ export async function furnaceInitCommand(
     throw new FurnaceError('furnace.json already exists. Use --force to overwrite it.');
   }
 
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
 
   // Seed the default furnace config with a tokenPrefix derived from
   // fireforge.json's binaryName so `token coverage` sees real tokens on the
@@ -247,7 +247,7 @@ export async function furnaceInitCommand(
  * the init command can surface it in the summary note.
  */
 async function scaffoldTokensCss(projectRoot: string): Promise<{ tokensCssPath?: string }> {
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
   if (!(await pathExists(paths.engine))) {
     info(
       'Skipping tokens CSS scaffold: engine/ not found. Run "fireforge download" followed by "fireforge furnace init --force" to scaffold it.'

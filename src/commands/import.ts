@@ -45,7 +45,8 @@ import {
   verbose,
   warn,
 } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { addWaitLockOption, pickDefined } from '../utils/options.js';
+import { runUnderEngineLock } from './with-engine-lock.js';
 
 /**
  * Errno codes for filesystem-level failures against the working file.
@@ -593,7 +594,7 @@ export function registerImport(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const command = program
     .command('import')
     .description('Apply patches from the patches directory')
     .option('--continue', 'Continue applying patches even if one fails')
@@ -610,18 +611,22 @@ export function registerImport(
       'Answer the drift prompt non-interactively. Unlike --force, this does NOT waive the patch-integrity gate.'
     )
     .option('--until <patch>', 'Apply patches only up to and including this patch')
-    .option('--dry-run', 'Preview which patches would be applied without modifying the engine')
-    .action(
-      withErrorHandling(
-        async (options: {
-          continue?: boolean;
-          force?: boolean;
-          yes?: boolean;
-          until?: string;
-          dryRun?: boolean;
-        }) => {
-          await importCommand(getProjectRoot(), pickDefined(options));
-        }
-      )
-    );
+    .option('--dry-run', 'Preview which patches would be applied without modifying the engine');
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (options: {
+        continue?: boolean;
+        force?: boolean;
+        yes?: boolean;
+        until?: string;
+        dryRun?: boolean;
+        waitLock?: boolean | number;
+      }) => {
+        const projectRoot = getProjectRoot();
+        await runUnderEngineLock(projectRoot, 'import', options, () =>
+          importCommand(projectRoot, pickDefined(options))
+        );
+      }
+    )
+  );
 }

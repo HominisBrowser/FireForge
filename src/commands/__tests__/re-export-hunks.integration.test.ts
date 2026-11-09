@@ -89,6 +89,14 @@ function hunk(lines: string[], oldStart: number, newStart: number): ParsedHunk {
 }
 
 describe('applyHunksByContext', () => {
+  it('refuses an insertion a peer export already carried instead of duplicating it', () => {
+    expect(() => applyHunksByContext('a\nn\nb\n', [hunk([' a', '+n'], 1, 1)], false, 'f')).toThrow(
+      /already present.*regenerate --hunks-from/s
+    );
+    expect(() => applyHunksByContext('n\na\n', [hunk(['+n'], 0, 1)], false, 'f')).toThrow(
+      /already present/
+    );
+  });
   it('places a hunk by its context when lines above it moved', () => {
     const shifted = 'x\ny\na\nb\nc\n';
     expect(applyHunksByContext(shifted, [hunk([' a', '+n', ' b'], 1, 1)], false, 'f')).toBe(

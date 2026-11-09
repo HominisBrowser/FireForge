@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it } from 'vitest';
 
+import { CONTROL_BASELINE_REPETITION } from '../../core/test-results-document.js';
 import {
   deriveControlOutcome,
   describeControlOutcome,
   formatAggregateBody,
+  formatBaselineFailureBody,
   formatRunLine,
   parseCapturedVerdict,
   type SubRunResult,
@@ -42,6 +44,12 @@ describe('formatRunLine', () => {
       'FIREFORGE-RUN: PASS run=1/2 harness=xpcshell'
     );
   });
+
+  it("names a control's unmutated dispatch as its baseline", () => {
+    expect(formatRunLine(result(CONTROL_BASELINE_REPETITION, 'PASS'), -1, 2)).toBe(
+      'FIREFORGE-RUN: PASS run=baseline'
+    );
+  });
 });
 
 describe('worstRun', () => {
@@ -61,8 +69,11 @@ describe('worstRun', () => {
 });
 
 describe('deriveControlOutcome', () => {
+  const green = result(CONTROL_BASELINE_REPETITION, 'PASS');
+
   it('is caught when every repetition has a test-failures run', () => {
     const results = [
+      green,
       { ...result(1, 'PASS'), harness: 'xpcshell' as const },
       { ...result(1, 'FAIL reason=test-failures'), harness: 'mochitest' as const },
       { ...result(2, 'FAIL reason=test-failures'), harness: 'xpcshell' as const },
@@ -73,15 +84,47 @@ describe('deriveControlOutcome', () => {
 
   it('is missed when one repetition stayed green', () => {
     expect(
-      deriveControlOutcome([result(1, 'FAIL reason=test-failures'), result(2, 'PASS')], 2, true)
+      deriveControlOutcome(
+        [green, result(1, 'FAIL reason=test-failures'), result(2, 'PASS')],
+        2,
+        true
+      )
     ).toBe('missed');
   });
 
   it('is inconclusive on any other failure or an incomplete invocation', () => {
-    expect(deriveControlOutcome([result(1, 'FAIL reason=crash')], 1, true)).toBe('inconclusive');
-    expect(deriveControlOutcome([result(1, 'FAIL reason=test-failures')], 2, false)).toBe(
+    expect(deriveControlOutcome([green, result(1, 'FAIL reason=crash')], 1, true)).toBe(
       'inconclusive'
     );
+    expect(deriveControlOutcome([green, result(1, 'FAIL reason=test-failures')], 2, false)).toBe(
+      'inconclusive'
+    );
+  });
+
+  it('never reads a red as caught without a green unmutated baseline', () => {
+    const redRun = result(1, 'FAIL reason=test-failures');
+    expect(deriveControlOutcome([redRun], 1, true)).toBe('inconclusive');
+    expect(
+      deriveControlOutcome(
+        [result(CONTROL_BASELINE_REPETITION, 'FAIL reason=test-failures'), redRun],
+        1,
+        true
+      )
+    ).toBe('inconclusive');
+  });
+});
+
+describe('formatBaselineFailureBody', () => {
+  it('reads a red baseline as baseline-red, and a refusal by its own note', () => {
+    expect(
+      formatBaselineFailureBody(result(CONTROL_BASELINE_REPETITION, 'FAIL reason=test-failures'), 2)
+    ).toBe('FAIL reason=test-failures note=baseline-red runs=0/2 control=inconclusive');
+    expect(
+      formatBaselineFailureBody(
+        result(CONTROL_BASELINE_REPETITION, 'FAIL reason=preflight note=stale-build'),
+        1
+      )
+    ).toBe('FAIL reason=preflight note=stale-build runs=0/1 control=inconclusive');
   });
 });
 

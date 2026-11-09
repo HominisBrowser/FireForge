@@ -28,11 +28,18 @@ vi.mock('../../core/furnace-config.js', () => ({
 vi.mock('../../core/patch-manifest.js', () => ({
   loadPatchesManifest: vi.fn(() => Promise.resolve(null)),
 }));
+vi.mock('../../core/authored-gates.js', () => ({
+  authoredGateContext: vi.fn(),
+}));
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
+import type { AuthoredFile } from '../../core/authored/types.js';
+import { authoredGateContext, type SourceGateContext } from '../../core/authored-gates.js';
+import { loadConfig } from '../../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
 import { loadPatchesManifest } from '../../core/patch-manifest.js';
 import type { PatchesManifest } from '../../types/commands/index.js';
+import type { FireForgeConfig } from '../../types/config.js';
 import type { FurnaceConfig } from '../../types/furnace.js';
 import { info, setStdoutSealed, success, warn } from '../../utils/logger.js';
 import { tokenLintCommand } from '../token-lint.js';
@@ -230,5 +237,57 @@ describe('tokenLintCommand', () => {
     stdout = [];
     await expect(tokenLintCommand(projectRoot, { json: true })).rejects.toThrow();
     expect(JSON.parse(stdout[0] ?? '')).toMatchObject({ code: 'token-lint-failed' });
+  });
+
+  it('in source mode judges every CSS file of the captured snapshot, not patches.json', async () => {
+    vi.mocked(furnaceConfigExists).mockResolvedValue(false);
+    vi.mocked(loadConfig).mockResolvedValueOnce({
+      binaryName: 'mybrowser',
+      sources: { root: 'src' },
+    } as unknown as FireForgeConfig);
+    const files: Record<string, string> = {
+      'tokens.css': CLEAN_TOKENS,
+      'browser/created.css': '.a { gap: var(--mybrowser-gapp); }\n',
+      'browser/overridden.css': '.b { gap: var(--mybrowser-host-only); }\n',
+      'browser/host.xhtml':
+        '<link rel="stylesheet" href="chrome://browser/content/host.css"/>\n<link rel="stylesheet" href="overridden.css"/>\n',
+      'browser/jar.mn': 'browser.jar:\n  content/browser/host.css (host.css)\n',
+      'browser/host.css': ':root { --mybrowser-host-only: 1px; }\n',
+    };
+    for (const [file, content] of Object.entries(files)) {
+      await writeFile(join(projectRoot, 'engine', file), content);
+    }
+    const kinds: Record<string, AuthoredFile['kind']> = {
+      'browser/overridden.css': 'override',
+      'browser/host.xhtml': 'override',
+      'browser/jar.mn': 'override',
+    };
+    vi.mocked(authoredGateContext).mockResolvedValue({
+      projectRoot,
+      engine: join(projectRoot, 'engine'),
+      phase: 'off-slot-feedback',
+      pristineRepository: '/pristine',
+      snapshot: {
+        files: [
+          ...Object.keys(files).map((path) => ({
+            path,
+            kind: kinds[path] ?? 'created',
+            blob: 'b'.repeat(40),
+            mode: '100644' as const,
+          })),
+          { path: 'browser/gone.css', kind: 'delete', mode: '100644' },
+        ],
+      },
+    } as unknown as SourceGateContext);
+
+    await expect(tokenLintCommand(projectRoot)).rejects.toThrow('token lint found 1 finding(s).');
+
+    expect(loadPatchesManifest).not.toHaveBeenCalled();
+    expect(vi.mocked(warn).mock.calls.map((call) => call[0])).toEqual([
+      expect.stringMatching(
+        /^browser\/created\.css:1 \[token-undeclared\] var\(--mybrowser-gapp\)/
+      ),
+    ]);
+    expect(vi.mocked(info).mock.calls.flat().join('\n')).toContain('4 CSS file(s) scanned');
   });
 });

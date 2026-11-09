@@ -397,6 +397,27 @@ describe('furnaceChromeDocCreateCommand', () => {
     expect(jarMn.match(/content\/browser\/mybrowser\.xhtml/g)?.length).toBe(1);
   });
 
+  it('does not treat a commented-out jar.mn line as a registration', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    await ensureDir(join(engineDir, 'browser/base/content'));
+    await ensureDir(join(engineDir, 'browser/themes/shared'));
+    await ensureDir(join(engineDir, 'browser/locales/en-US/browser'));
+    await writeText(
+      join(engineDir, 'browser/base/jar.mn'),
+      '#header\n#    content/browser/mybrowser.xhtml                (content/mybrowser.xhtml)\n'
+    );
+    await writeText(join(engineDir, 'browser/themes/shared/jar.inc.mn'), '#header\n');
+    await writeText(join(engineDir, 'browser/locales/jar.mn'), '#header\n');
+
+    await furnaceChromeDocCreateCommand(projectRoot, 'mybrowser');
+    const { readFile } = await import('node:fs/promises');
+    const jarMn = await readFile(join(engineDir, 'browser/base/jar.mn'), 'utf8');
+    const live = jarMn
+      .split('\n')
+      .filter((line) => !line.startsWith('#') && line.includes('content/browser/mybrowser.xhtml'));
+    expect(live).toHaveLength(1);
+  });
+
   it('scaffolds an xpcshell packaging-verification test when --with-tests is set', async () => {
     const engineDir = join(projectRoot, 'engine');
     await ensureDir(join(engineDir, 'browser/base/content'));

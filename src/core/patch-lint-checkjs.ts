@@ -44,14 +44,17 @@ import {
   type AnyTypedImports,
   createModuleLiteralResolver,
   isAnyTypedMemberReference,
+  type ResolvedImports,
 } from './patch-lint-checkjs-any-import.js';
 import { type CheckJsSourceFileCache, withSharedSourceFiles } from './patch-lint-checkjs-cache.js';
 import { collectCheckJsDiagnostics } from './patch-lint-checkjs-diagnostics.js';
 import { createOwnedPathMatcher, pathsTargetCandidates } from './patch-lint-checkjs-resolve.js';
+import { isHeadScript } from './patch-lint-ownership.js';
 import {
   collectUnmanagedCompanions,
   retargetUnmanagedCompanionHints,
 } from './patch-lint-unmanaged-companion.js';
+import { isResolvedModuleMemberError } from './resolved-module-diagnostics.js';
 import {
   composeShimSource,
   SHIM_FILENAME,
@@ -60,6 +63,7 @@ import {
   UNDEFINED_IDENTIFIER_CODES,
   UNDEFINED_IDENTIFIER_HINT,
 } from './typecheck-shim.js';
+import { loadTypeScriptApi, MISSING_TYPESCRIPT_API } from './typescript-api.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -206,6 +210,37 @@ export interface RunCheckJsGroupedInput {
 }
 
 /**
+ * The result when no program root exists on disk. A scope that selects no
+ * owned file checked nothing by design; one that selects owned files none of
+ * which exist, or no scope with none of the owned files present, checked
+ * nothing by accident, and that is an error rather than a pass.
+ */
+function emptyRootsResult(
+  repoDir: string,
+  resolutionOwned: ReadonlySet<string>,
+  rootScope: ReadonlySet<string> | undefined
+): GroupedCheckJsResult {
+  const selected = rootScope
+    ? [...resolutionOwned].filter((rel) => rootScope.has(rel))
+    : [...resolutionOwned];
+  if (selected.length === 0) return { byFile: new Map(), global: [] };
+  return {
+    byFile: new Map(),
+    global: [
+      {
+        file: '(checkJs)',
+        check: 'checkjs-type-error',
+        message:
+          `patchLint.checkJs found none of the ${selected.length} file(s) it was asked to check ` +
+          `under ${repoDir}; nothing was type-checked. Apply the source (or run from the engine ` +
+          'that contains it) before relying on this result.',
+        severity: 'error',
+      },
+    ],
+  };
+}
+
+/**
  * Builds the checkJs program once over `resolutionOwned` and returns its
  * diagnostics grouped by originating file. Callers slice the result by their
  * own report scope: per-patch lint attributes each file to its owning patch,
@@ -223,25 +258,22 @@ export async function runCheckJsGrouped(
   const empty: GroupedCheckJsResult = { byFile: new Map(), global: [] };
   if (resolutionOwned.size === 0) return empty;
 
-  // Dynamic import: typescript stays as a dev dependency
-  let ts: typeof import('typescript');
-  try {
-    ts = await import('typescript');
-  } catch {
+  // Loaded at run time: typescript stays a dev dependency.
+  const api = await loadTypeScriptApi();
+  if (api === undefined) {
     return {
       byFile: new Map(),
       global: [
         {
           file: '(checkJs)',
           check: 'checkjs-type-error',
-          message:
-            'patchLint.checkJs is enabled but the "typescript" package is not installed. ' +
-            'Run "npm install typescript" to enable type checking.',
+          message: `patchLint.checkJs is enabled but no installed package carries the TypeScript compiler API. ${MISSING_TYPESCRIPT_API}.`,
           severity: 'error',
         },
       ],
     };
   }
+  const { ts } = api;
 
   // Resolve absolute paths for root files, filtering to files that exist.
   // Under a rootScope, non-scoped owned files stay resolvable (host
@@ -259,7 +291,7 @@ export async function runCheckJsGrouped(
     }
   }
 
-  if (rootFiles.length === 0) return empty;
+  if (rootFiles.length === 0) return emptyRootsResult(repoDir, resolutionOwned, rootScope);
 
   // Compose the shim. `extraShimPath` is project-relative (validated
   // by config-validate). Resolve it against `projectRoot`. When the
@@ -343,9 +375,9 @@ export async function runCheckJsGrouped(
   };
 
   const resolveOwnedSpecifier = createOwnedSpecifierResolver(ts, ownedAbsolute);
-  // URL imports this program cannot resolve, per importing file (see
-  // patch-lint-checkjs-any-import.ts).
+  // Per importing file: unresolved URL imports, and imports that resolved.
   const anyTypedImports: AnyTypedImports = new Map();
+  const resolvedImports: ResolvedImports = new Map();
 
   // Custom compiler host: reads patch-owned files from disk, returns
   // the shim for the shim path, and returns empty content for
@@ -393,7 +425,8 @@ export async function runCheckJsGrouped(
     resolveModuleNameLiterals: createModuleLiteralResolver(
       resolveOwnedSpecifier,
       resolveViaPaths,
-      anyTypedImports
+      anyTypedImports,
+      resolvedImports
     ),
   };
 
@@ -407,7 +440,8 @@ export async function runCheckJsGrouped(
     collectCheckJsDiagnostics(program, relByAbsolute, input.reportOnly),
     relByAbsolute,
     input.mode?.undefinedIdentifiers ?? 'warning',
-    anyTypedImports
+    anyTypedImports,
+    resolvedImports
   );
 
   verbose(`checkJs: analyzed ${rootFiles.length - 1} file(s) across ${byFile.size} owning file(s)`);
@@ -428,11 +462,18 @@ function groupOwnedDiagnostics(
   diagnostics: readonly import('typescript').Diagnostic[],
   relByAbsolute: ReadonlyMap<string, string>,
   undefinedIdentifiers: PatchLintSeverityGate = 'warning',
-  anyTypedImports: AnyTypedImports = new Map()
+  anyTypedImports: AnyTypedImports = new Map(),
+  resolvedImports: ResolvedImports = new Map()
 ): Map<string, PatchLintIssue[]> {
   const byFile = new Map<string, PatchLintIssue[]>();
+  const isResolved = (file: string, specifier: string): boolean =>
+    resolvedImports.get(file)?.has(specifier) === true;
   for (const diag of diagnostics) {
-    if (SUPPRESSED_DIAGNOSTIC_CODES.has(diag.code)) continue;
+    if (
+      SUPPRESSED_DIAGNOSTIC_CODES.has(diag.code) &&
+      !isResolvedModuleMemberError(ts, diag, isResolved)
+    )
+      continue;
     const isUndefinedIdentifier = UNDEFINED_IDENTIFIER_CODES.has(diag.code);
     if (isUndefinedIdentifier && undefinedIdentifiers === 'off') continue;
     const sourceFile = diag.file;
@@ -473,7 +514,7 @@ function groupOwnedDiagnostics(
  * Flattens a {@link runCheckJsGrouped} run into a single issue list. When
  * `reportScope` is supplied, only diagnostics from files in that set are
  * returned (resolution still spans every owned file). Omitting it reports
- * every owned file's diagnostics, the historical whole-set behaviour.
+ * every owned file's diagnostics.
  *
  * @param repoDir - Absolute engine (repository) directory
  * @param patchOwnedFiles - Patch-owned `.sys.mjs` paths to resolve against
@@ -589,8 +630,7 @@ export async function runCheckJsTestFilesGrouped(
     const roots = new Set([file]);
     for (const candidate of files) {
       if (candidate === file) continue;
-      const base = candidate.split('/').pop() ?? '';
-      if (candidate.startsWith(dir) && /^head(?:_.*)?\.js$/.test(base)) {
+      if (candidate.startsWith(dir) && isHeadScript(candidate)) {
         roots.add(candidate);
       }
     }
@@ -686,16 +726,12 @@ export async function probeCheckJsGlobalIssues(
   patchLint: PatchLintConfig,
   projectRoot: string
 ): Promise<PatchLintIssue[]> {
-  try {
-    await import('typescript');
-  } catch {
+  if ((await loadTypeScriptApi()) === undefined) {
     return [
       {
         file: '(checkJs)',
         check: 'checkjs-type-error',
-        message:
-          'patchLint.checkJs is enabled but the "typescript" package is not installed. ' +
-          'Run "npm install typescript" to enable type checking.',
+        message: `patchLint.checkJs is enabled but no installed package carries the TypeScript compiler API. ${MISSING_TYPESCRIPT_API}.`,
         severity: 'error',
       },
     ];

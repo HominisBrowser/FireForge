@@ -8,9 +8,10 @@
  * exports the stale deployed copy: per-patch lint then flags the old line
  * count and the patch body lags the source. This gate detects that sequence
  * by comparing component source directories against the checksums recorded
- * at the last apply (`FurnaceState.appliedChecksums`), the same signal
- * `warnIfFurnaceStale` uses for run/watch, and refuses the export unless
- * the operator passes `--allow-stale-furnace`.
+ * at the last apply (`FurnaceState.appliedChecksums`). A recorded mismatch
+ * only refuses when the captured engine bytes are not already the source's
+ * composed expansion. The export is refused unless the operator passes
+ * `--allow-stale-furnace`.
  *
  * Checksum-based on purpose: git checkouts and `furnace refresh` churn
  * mtimes without content changes, so an mtime comparison would misfire.
@@ -24,7 +25,9 @@ import { GeneralError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { verbose, warn } from '../utils/logger.js';
+import { getProjectPaths } from './config.js';
 import { extractComponentChecksums, hasComponentChanged } from './furnace-apply-helpers.js';
+import { matchDeployedComponentFiles } from './furnace-composed-source.js';
 import {
   furnaceConfigExists,
   getFurnacePaths,
@@ -95,14 +98,13 @@ export async function findStaleFurnaceComponentsForFiles(
       })),
     ];
 
+    const { engine: engineDir } = getProjectPaths(projectRoot);
     const stale: StaleFurnaceComponent[] = [];
     for (const candidate of candidates) {
-      if (
-        !files.some(
-          (file) => file.startsWith(candidate.prefix) || candidate.exactFiles.includes(file)
-        )
-      )
-        continue;
+      const attributed = files.filter(
+        (file) => file.startsWith(candidate.prefix) || candidate.exactFiles.includes(file)
+      );
+      if (attributed.length === 0) continue;
       const sourceRoot =
         candidate.type === 'override' ? furnacePaths.overridesDir : furnacePaths.customDir;
       const sourceDir = `${sourceRoot}/${candidate.name}`;
@@ -112,7 +114,10 @@ export async function findStaleFurnaceComponentsForFiles(
         candidate.type,
         candidate.name
       );
-      if (await hasComponentChanged(sourceDir, previous)) {
+      if (
+        (await hasComponentChanged(sourceDir, previous)) &&
+        !(await engineHoldsCurrentSource(projectRoot, engineDir, attributed))
+      ) {
         stale.push({ name: candidate.name, type: candidate.type, prefix: candidate.prefix });
       }
     }
@@ -121,6 +126,23 @@ export async function findStaleFurnaceComponentsForFiles(
     verbose(`Stale-furnace export gate skipped due to an error: ${toError(error).message}`);
     return [];
   }
+}
+
+/**
+ * True when every captured file of the component is byte-equal to its
+ * current source expansion. The recorded checksum can lag the engine (a
+ * peer's apply already deployed the edit, a restore or a full apply from an
+ * older snapshot rewrote the record), and the export captures engine bytes,
+ * so the bytes decide. A stale expansion of a shared fragment or an earlier
+ * deploy does not count as current.
+ */
+async function engineHoldsCurrentSource(
+  projectRoot: string,
+  engineDir: string,
+  files: readonly string[]
+): Promise<boolean> {
+  const matches = await matchDeployedComponentFiles(projectRoot, engineDir, files);
+  return files.every((file) => matches.get(file) === 'composed-source');
 }
 
 /**

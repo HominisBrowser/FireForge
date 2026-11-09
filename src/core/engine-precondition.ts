@@ -12,8 +12,10 @@
  * The remediation wording lives here once so the callers cannot drift apart.
  */
 
+import { dirname, join } from 'node:path';
+
 import { GeneralError } from '../errors/base.js';
-import { pathExists } from '../utils/fs.js';
+import { pathExists, readText } from '../utils/fs.js';
 import { getHead, isGitRepository, isMissingHeadError } from './git.js';
 
 /** Remediation for an engine whose baseline commit was never created. */
@@ -23,6 +25,58 @@ const UNBORN_HEAD_REMEDIATION =
   // No terminating period: the suffix below supplies its own punctuation, and
   // hardcoding one here rendered as "…cleanly., then retry the rebase."
   'Re-run "fireforge download --force" to recreate the baseline repository cleanly';
+
+/** Whether the project that owns this engine path is in source mode. */
+export async function isSourceModeEngine(engineDir: string): Promise<boolean> {
+  try {
+    const config = JSON.parse(await readText(join(dirname(engineDir), 'fireforge.json'))) as {
+      sources?: unknown;
+    };
+    return config.sources !== undefined;
+  } catch {
+    // No readable config: the ordinary first-run remedy applies.
+    return false;
+  }
+}
+
+/** What a source-mode checkout without `engine/` says: what reads one runs in a job. */
+export const SOURCE_MODE_NO_ENGINE_MESSAGE =
+  'This source-mode checkout has no engine/. Run this inside a job, for example "fireforge job run --check", which gives it a slot.';
+
+/**
+ * What to do about a missing `engine/`. A source-mode checkout keeps none on
+ * purpose, and `download` is refused there: what reads one runs in a job.
+ *
+ * @param engineDir - Absolute path to the engine checkout
+ */
+export async function missingEngineMessage(engineDir: string): Promise<string> {
+  return (await isSourceModeEngine(engineDir))
+    ? SOURCE_MODE_NO_ENGINE_MESSAGE
+    : 'Firefox source not found. Run "fireforge download" first.';
+}
+
+/**
+ * Refuses a command that judges what has been applied to `engine/` when it runs
+ * in a source-mode editing checkout. There `engine/` is at most the pristine
+ * donor: nothing is deployed to it, so the answer would be wrong rather than
+ * merely empty. Inside a job the executor names the step in
+ * `FIREFORGE_ADAPTER_COMMAND`, which only ever allows the command, never grants it.
+ *
+ * @param projectRoot - Project root directory
+ * @param command - The command, as the person typed it
+ * @param alternative - What to run instead
+ */
+export async function assertJudgedInSlot(
+  projectRoot: string,
+  command: string,
+  alternative = 'fireforge job run --check'
+): Promise<void> {
+  if (process.env['FIREFORGE_ADAPTER_COMMAND'] !== undefined) return;
+  if (!(await isSourceModeEngine(join(projectRoot, 'engine')))) return;
+  throw new GeneralError(
+    `${command} judges what has been deployed to engine/, and in a source-mode editing checkout engine/ is only the pristine donor, so its answer would be wrong. Run "${alternative}", which gives it a slot.`
+  );
+}
 
 /** Options for {@link assertEngineGitReady}. */
 export interface EngineGitReadyOptions {
@@ -47,7 +101,7 @@ export interface EngineGitReadyOptions {
  */
 export async function assertEngineExists(engineDir: string): Promise<void> {
   if (!(await pathExists(engineDir))) {
-    throw new GeneralError('Firefox source not found. Run "fireforge download" first.');
+    throw new GeneralError(await missingEngineMessage(engineDir));
   }
 }
 

@@ -9,6 +9,7 @@
 import { FurnaceError } from '../errors/furnace.js';
 import type { FurnaceConfig, OverrideComponentConfig } from '../types/furnace.js';
 import type { JsonObject, JsonValue } from '../types/json.js';
+import { isExplicitAbsolutePath } from '../utils/paths.js';
 import { isJsonObject, isString } from '../utils/validation.js';
 import { parseStringArray } from './furnace-config-array-utils.js';
 import {
@@ -17,6 +18,18 @@ import {
   parseTokenSiblingSheets,
   parseValidationExceptions,
 } from './furnace-config-validate-exceptions.js';
+
+/**
+ * Refuses an absolute or NUL-bearing path: every furnace.json path is joined
+ * under a project or engine root, and one that is resolved instead escapes it.
+ */
+function assertRelativeConfigPath(path: string, label: string): void {
+  if (isExplicitAbsolutePath(path) || path.includes('\0')) {
+    throw new FurnaceError(
+      `Furnace config: ${label} must be a relative path without null bytes, got ${JSON.stringify(path)}`
+    );
+  }
+}
 
 /**
  * Validates an override component config object.
@@ -41,6 +54,7 @@ export function parseOverrideConfig(data: JsonObject, name: string): OverrideCom
       `Furnace config: override "${name}.basePath" must not contain ".." (path traversal)`
     );
   }
+  assertRelativeConfigPath(data['basePath'], `override "${name}.basePath"`);
   if (!isString(data['baseVersion'])) {
     throw new FurnaceError(`Furnace config: override "${name}.baseVersion" must be a string`);
   }
@@ -121,6 +135,7 @@ function parseTypecheckJsconfig(raw: JsonValue): string | string[] {
   ) {
     throw new FurnaceError(message);
   }
+  for (const path of paths) assertRelativeConfigPath(path as string, '"typecheckJsconfig" entry');
   return isString(raw) ? raw : (paths as string[]);
 }
 
@@ -161,6 +176,7 @@ export function applyOptionalFurnaceFields(migrated: JsonObject, config: Furnace
         'Furnace config: "ftlBasePath" must not contain ".." (path traversal)'
       );
     }
+    assertRelativeConfigPath(migrated['ftlBasePath'], '"ftlBasePath"');
     config.ftlBasePath = migrated['ftlBasePath'];
   }
 
@@ -179,6 +195,7 @@ export function applyOptionalFurnaceFields(migrated: JsonObject, config: Furnace
         'Furnace config: "typecheckTagMap" must be a ".d.ts" path without ".." (path traversal)'
       );
     }
+    assertRelativeConfigPath(tagMap, '"typecheckTagMap"');
     config.typecheckTagMap = tagMap;
   }
 
@@ -192,6 +209,7 @@ export function applyOptionalFurnaceFields(migrated: JsonObject, config: Furnace
         );
       }
     }
+    for (const p of paths) assertRelativeConfigPath(p, '"scanPaths" entry');
     config.scanPaths = paths;
   }
 

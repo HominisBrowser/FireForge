@@ -10,8 +10,8 @@
  */
 import { join } from 'node:path';
 
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { escapeRegex } from '../utils/regex.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
 import { JAR_MN } from './furnace-constants.js';
 
 /**

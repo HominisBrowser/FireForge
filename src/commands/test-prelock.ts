@@ -9,6 +9,8 @@
  *  - a missing launchable binary (a peer's interrupted build) refuses
  *    before the wait, naming the cause;
  *  - the named-file checkJs pass refuses a type error without a queue;
+ *  - a stale-packaging refusal, when the lock is contended or a browser or port
+ *    wait would block, comes before that wait;
  *  - `--wait-browser` and `--wait-port` spend their budget without holding
  *    the lock, so no peer queues behind a run that is doing nothing.
  *
@@ -23,6 +25,8 @@ import { join } from 'node:path';
 import { describeBuildRunState, readBuildRunState } from '../core/build-run-record.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
+import { readEngineSessionLockStatus } from '../core/engine-session-lock.js';
+import { settleDeadRunHelpers, wantsOrphanReap } from '../core/harness-helper-pids.js';
 import { autoPortsRequested } from '../core/harness-port-fallback.js';
 import { hasBuildArtifacts, hasRunnableBundle } from '../core/mach.js';
 import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
@@ -44,6 +48,7 @@ import { stripEnginePrefix } from '../utils/paths.js';
 import { checkRequestedTestTypes } from './test-checkjs.js';
 import { assertPathlessTestMode, classifyBeforeDispatch, resolveCanaryPath } from './test-modes.js';
 import { enforceStaleBuildGate } from './test-stale-gate.js';
+import { addVerdictRunCount } from './test-verdict.js';
 
 /**
  * Resolves the launchable binary a test run needs, or refuses naming why
@@ -62,11 +67,16 @@ export async function resolveLaunchablePathForTests(
   projectRoot: string,
   engineDir: string,
   binaryName: string,
-  objDir: string | undefined
+  objDir: string | undefined,
+  repairBuild = false
 ): Promise<string | undefined> {
   if (!objDir) return undefined;
   const bundleCheck = await hasRunnableBundle(engineDir, binaryName, objDir);
   if (bundleCheck.runnable) return bundleCheck.expectedPath;
+  if (repairBuild && bundleCheck.expectedPath !== undefined) {
+    info('The launchable binary is missing; the requested build will repair it before dispatch.');
+    return bundleCheck.expectedPath;
+  }
   const expectedSuffix = bundleCheck.expectedPath
     ? ` (expected at engine/${bundleCheck.expectedPath})`
     : '';
@@ -128,6 +138,14 @@ export async function runTestPreLockPreflight(
   if (loaded === undefined) return withLockMode(options, 'exclusive');
   const { paths, config, objDir } = loaded;
   options = withLockMode(options, resolveTestLockMode(options, config));
+  // Before the lock: a killed run's process group keeps that lock held for as long
+  // as its helpers live, and what it recorded needs no lock to be claimed.
+  addVerdictRunCount(
+    'orphans-reaped',
+    await settleDeadRunHelpers(projectRoot, join(paths.engine, objDir), {
+      reap: wantsOrphanReap(options, config),
+    })
+  );
 
   let launchablePath: string | undefined;
   try {
@@ -135,7 +153,8 @@ export async function runTestPreLockPreflight(
       projectRoot,
       paths.engine,
       config.binaryName,
-      objDir
+      objDir,
+      options.build === true || options.buildOnly === true
     );
   } catch (error: unknown) {
     // A build in progress holds the engine lock and relinks the bundle
@@ -148,20 +167,25 @@ export async function runTestPreLockPreflight(
   const normalizedPaths = (canaryPath !== undefined ? [canaryPath] : testPaths).map((path) =>
     stripEnginePrefix(path).trim()
   );
+  const request = { normalizedPaths, launchablePath };
+  let judgeBeforeWaiting: (() => Promise<void>) | undefined;
   if (options.build === true || options.buildOnly === true) {
     await checkRequestedTestTypes(paths, config, normalizedPaths);
   } else {
     await refuseCompiledControlBeforeLock(projectRoot, paths.engine, options);
-    await refuseStalePackagingBeforeLock(projectRoot, paths.engine, options, {
-      normalizedPaths,
-      launchablePath,
-    });
+    const judged = await refuseStalePackagingBeforeLock(
+      projectRoot,
+      paths.engine,
+      options,
+      request
+    );
+    if (!judged) {
+      judgeBeforeWaiting = () =>
+        judgeStalePackagingBeforeLock(projectRoot, paths.engine, options, request).then(() => {});
+    }
   }
 
-  return waitForResourcesBeforeLock(paths.engine, config, options, {
-    launchablePath,
-    normalizedPaths,
-  });
+  return waitForResourcesBeforeLock(paths.engine, config, options, request, judgeBeforeWaiting);
 }
 
 /** `options` with `sharedLock` set to the resolved decision. */
@@ -230,39 +254,64 @@ async function refuseCompiledControlBeforeLock(
 /**
  * Runs the build-less run's packaging gates (coverage, stale content,
  * StaticComponents) before the lock, so a refusal surfaces before the run
- * queues instead of after it reached the head of the queue. The same gate
- * runs again under the lock, where a peer's build may since have changed
- * the answer; this pass only refuses early what would refuse anyway.
+ * queues instead of after it reached the head of the queue. It exists only to
+ * spare that wait: with the lock free the in-lock gate runs right away and gives
+ * the same refusal, so this pass does not pay a walk of the engine for it unless
+ * a browser or port wait is about to block (see {@link waitForResourcesBeforeLock}).
+ * The in-lock gate always runs, because a peer's build may since have changed the
+ * answer; this pass only refuses early what would refuse anyway.
  *
- * Skipped while a build runs (it will rewrite the record this reads) and
- * under `--allow-stale-build`/`--allow-stale-components`, whose warnings
- * belong to the in-lock pass alone. A `--negative-control` refusal says to
- * add `--build`: without it the control has nothing current to run on, and
- * the invocation would end `control=inconclusive` after a full queue.
+ * @returns Whether the gate ran, or has no business running
  */
 async function refuseStalePackagingBeforeLock(
   projectRoot: string,
   engineDir: string,
   options: TestOptions,
-  request: { normalizedPaths: readonly string[]; launchablePath: string | undefined }
+  request: StaleGateRequest
+): Promise<boolean> {
+  const lock = await readEngineSessionLockStatus(projectRoot);
+  const peersShared = (lock.sharedHolders ?? 0) > 0 && options.sharedLock !== true;
+  if (!lock.held && lock.queueDepth === 0 && !peersShared) return false;
+  await judgeStalePackagingBeforeLock(projectRoot, engineDir, options, request);
+  return true;
+}
+
+/** What the packaging gates judge. */
+interface StaleGateRequest {
+  normalizedPaths: readonly string[];
+  launchablePath: string | undefined;
+}
+
+/**
+ * The early packaging gates. Skipped while a build runs (it will rewrite the
+ * record this reads) and under `--allow-stale-build`/`--allow-stale-components`,
+ * whose warnings belong to the in-lock pass alone.
+ */
+async function judgeStalePackagingBeforeLock(
+  projectRoot: string,
+  engineDir: string,
+  options: TestOptions,
+  request: StaleGateRequest
 ): Promise<void> {
   if (options.allowStaleBuild === true || options.allowStaleComponents === true) return;
   if ((await readBuildRunState(projectRoot)).kind === 'running') return;
+  await enforceStaleBuildGate(projectRoot, engineDir, options, request.normalizedPaths, {
+    quiet: true,
+    launchablePath: request.launchablePath,
+    controlWithoutBuild: options.negativeControl !== undefined,
+  });
+}
+
+/** Whether one probe would make a wait block now. A refusal of `clearNotes` would not. */
+async function wouldBlock(
+  probe: () => Promise<void>,
+  clearNotes: readonly string[] = []
+): Promise<boolean> {
   try {
-    await enforceStaleBuildGate(projectRoot, engineDir, options, request.normalizedPaths, {
-      quiet: true,
-      launchablePath: request.launchablePath,
-    });
+    await probe();
+    return false;
   } catch (error: unknown) {
-    if (options.negativeControl === undefined || !(error instanceof PreflightRefusalError)) {
-      throw error;
-    }
-    throw new PreflightRefusalError(
-      `${error.message}\n\nThis --negative-control run has no --build, so its control would ` +
-        'run on this packaging and end inconclusive. Add --build: the control is then planned ' +
-        'against a fresh build of the requested paths.',
-      error.note
-    );
+    return error instanceof PreflightRefusalError && !clearNotes.includes(error.note);
   }
 }
 
@@ -300,18 +349,36 @@ export function rearmSpentWaits(options: TestOptions): TestOptions {
 /**
  * Spends `--wait-browser` and `--wait-port` before the lock, mirroring
  * which in-lock checks would apply to this run, and strips each budget it
- * spent from the returned options.
+ * spent from the returned options. A run that is going to be refused as stale
+ * hears so before it waits: `judgeBeforeWaiting` runs once, on the first wait
+ * that would actually block.
  */
 async function waitForResourcesBeforeLock(
   engineDir: string,
   config: FireForgeConfig,
   options: TestOptions,
-  request: { launchablePath: string | undefined; normalizedPaths: string[] }
+  request: StaleGateRequest,
+  judgeBeforeWaiting: (() => Promise<void>) | undefined
 ): Promise<TestOptions> {
   if (options.waitBrowser === undefined && options.waitPort === undefined) return options;
   let xpcshellOnly: boolean;
+  let judge = judgeBeforeWaiting;
+  const waitFor = async (
+    probe: () => Promise<void>,
+    seconds: number | undefined,
+    clearNotes?: readonly string[]
+  ): Promise<void> => {
+    if (judge !== undefined && (await wouldBlock(probe, clearNotes))) {
+      const judgeOnce = judge;
+      judge = undefined;
+      await judgeOnce();
+    }
+    await (clearNotes === undefined
+      ? waitBeforeLock(probe, seconds)
+      : waitBeforeLock(probe, seconds, clearNotes));
+  };
   try {
-    ({ xpcshellOnly } = await classifyBeforeDispatch(engineDir, request.normalizedPaths, {
+    ({ xpcshellOnly } = await classifyBeforeDispatch(engineDir, [...request.normalizedPaths], {
       allowMixed: true,
     }));
   } catch {
@@ -327,7 +394,7 @@ async function waitForResourcesBeforeLock(
     (building || !xpcshellOnly)
   ) {
     const binary = join(engineDir, request.launchablePath);
-    await waitBeforeLock(
+    await waitFor(
       () => ensureLaunchableBrowserNotRunning(binary),
       resolveWaitLockSeconds(options.waitBrowser),
       // A stale browser the run may reap is not worth waiting out; the
@@ -343,14 +410,11 @@ async function waitForResourcesBeforeLock(
   if (options.waitPort !== undefined && options.buildOnly !== true && !kill) {
     const seconds = resolveWaitLockSeconds(options.waitPort);
     if (!xpcshellOnly) {
-      await waitBeforeLock(
-        () => ensureMochitestServerPortAvailable(undefined, { engineDir }),
-        seconds
-      );
+      await waitFor(() => ensureMochitestServerPortAvailable(undefined, { engineDir }), seconds);
     }
     if (!xpcshellOnly || options.doctor === true) {
       const port = options.marionettePort ?? extractForwardedMarionettePort(options.machArg ?? []);
-      await waitBeforeLock(
+      await waitFor(
         () => assertMarionettePortAvailable(port, { binaryName: config.binaryName }),
         seconds
       );

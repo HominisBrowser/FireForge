@@ -29,9 +29,16 @@ import { PreflightRefusalError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { getPlatform, type Platform } from '../utils/platform.js';
 import { exec } from '../utils/process.js';
+import { listProcesses, listProcessText } from '../utils/process-list.js';
+import { parseProcessListing } from '../utils/process-listing.js';
 import { formatPsDuration, parsePsDuration } from '../utils/ps-duration.js';
 import { waitForPreflight } from './preflight-wait.js';
-import { isOrphanedHarness, isStillOrphanedProcess, readProcessOwner } from './process-owner.js';
+import {
+  commandIsInCheckout,
+  isOrphanedHarness,
+  isStillOrphanedProcess,
+  readProcessOwner,
+} from './process-owner.js';
 
 /** Default Marionette control port set by `-marionette`. */
 export const DEFAULT_MARIONETTE_PORT = 2828;
@@ -118,8 +125,7 @@ async function findRunningBundleProcesses(
 
     // `etime=` is what makes the refusal attributable on a shared checkout:
     // a browser that started as your run was finishing is not yours.
-    const result = await exec('ps', ['-axo', 'pid=,etime=,args=']);
-    return parseProcessList(result.stdout, launchableBinary);
+    return parseProcessList(await listProcessText(['pid', 'etime', 'args']), launchableBinary);
   } catch {
     return [];
   }
@@ -137,24 +143,24 @@ async function findRunningBundleProcesses(
  */
 export function parseProcessList(stdout: string, launchableBinary: string): RunningBundleProcess[] {
   const matches: RunningBundleProcess[] = [];
-  for (const line of stdout.split(/\r?\n/)) {
-    const match = /^\s*(\d+)\s+(\S+)\s+(.+)$/.exec(line);
-    if (!match?.[1]) continue;
-    const pid = Number(match[1]);
-    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) continue;
-    const maybeElapsed = match[2] ?? '';
+  for (const { pid, args } of parseProcessListing(stdout, ['pid', 'args'] as const)) {
+    if (pid <= 0 || pid === process.pid) continue;
+    const match = /^(\S+)\s+(.+)$/.exec(args);
+    if (!match) continue;
+    const maybeElapsed = match[1] ?? '';
     const elapsedSeconds = parsePsDuration(maybeElapsed);
     // Without an `etime` column the second field is the head of the command
     // line, so put it back rather than swallowing it.
     const commandLine = Number.isNaN(elapsedSeconds)
-      ? `${maybeElapsed} ${match[3] ?? ''}`.trim()
-      : (match[3] ?? '');
+      ? `${maybeElapsed} ${match[2] ?? ''}`.trim()
+      : (match[2] ?? '');
     if (!(
       commandLine === launchableBinary ||
       commandLine.startsWith(launchableBinary + ' ') ||
       commandLine.startsWith('"' + launchableBinary + '" ')
-    ))
+    )) {
       continue;
+    }
     matches.push({ pid, commandLine, elapsedSeconds });
   }
   return matches;
@@ -210,10 +216,8 @@ export async function ensureLaunchableBrowserNotRunning(
  *
  * Reports the evidence rather than a bare PID: the elapsed time and the
  * command line are what let an operator on a shared checkout decide whose
- * process it is, without reconstructing PID ancestry by hand. A downstream
- * fork hit exactly this: the message named a PID belonging to a peer
- * session's live browser and offered a flag that would have killed a
- * multi-hour evaluation run.
+ * process it is, without reconstructing PID ancestry by hand. The PID may
+ * belong to a peer session's live browser, in the middle of a long run.
  *
  * So `--kill-stale-marionette` is offered only for a marionette-driven
  * browser. For a bare launch the message says what it found and stops:
@@ -303,9 +307,8 @@ async function probeWithLsof(port: number): Promise<MarionettePortProbeResult> {
     // alone, which is still enough to match `BROWSER_BASENAMES`.
     let commandLine = command;
     try {
-      const psResult = await exec('ps', ['-p', String(pid), '-o', 'args=']);
-      const psLine = psResult.stdout.split(/\r?\n/).find((l) => l.trim().length > 0);
-      if (psLine) commandLine = psLine.trim();
+      const [row] = await listProcesses(['args'] as const, { pids: [pid] });
+      if (row !== undefined) commandLine = row.args;
     } catch {
       // ps not available, so keep the basename.
     }
@@ -408,7 +411,7 @@ export async function assertMarionettePortAvailable(
       `Marionette port ${port} is already in use by ${holder.command} (PID ${holder.pid}). ` +
         `Owner: parent ${owner?.parentPid ?? 'unknown'} (${owner?.owner ?? 'unavailable'}). ` +
         (orphan
-          ? 'The harness parent exited; retry with --kill-stale-marionette to reap this orphan. '
+          ? 'The harness parent exited; if it is from this checkout, retry with --kill-stale-marionette to reap this orphan. '
           : 'A live peer may own it; FireForge will not suggest terminating it. ') +
         'Use --wait-port [seconds] to queue, or --marionette-port <port> to use a different port.',
       'marionette-port-busy'
@@ -428,11 +431,18 @@ export async function assertMarionettePortAvailable(
 
 /**
  * Ensures the Marionette port is usable, optionally terminating a stale
- * Firefox-family browser holder first. Unrelated listeners still fail.
+ * Firefox-family browser holder first. Termination takes a dead parent and a
+ * command line pointing into this checkout (`checkout` is its engine and objdir
+ * directories); another checkout's browser, a `nohup`'d session and unrelated
+ * listeners still fail.
  */
 export async function ensureMarionettePortAvailable(
   port: number = DEFAULT_MARIONETTE_PORT,
-  options: { binaryName?: string; killStaleBrowser?: boolean } = {}
+  options: {
+    binaryName?: string;
+    killStaleBrowser?: boolean;
+    checkout?: readonly (string | undefined)[];
+  } = {}
 ): Promise<void> {
   const probe = await probeMarionettePort(port);
   if (!probe.inUse || !probe.holder) return;
@@ -444,7 +454,10 @@ export async function ensureMarionettePortAvailable(
     return;
   }
   const owner = await readProcessOwner(holder.pid);
-  if (!isOrphanedHarness(holder.commandLine, owner?.parentPid)) {
+  if (
+    !isOrphanedHarness(holder.commandLine, owner?.parentPid) ||
+    !commandIsInCheckout(holder.commandLine, options.checkout ?? [])
+  ) {
     await assertMarionettePortAvailable(port, options);
     return;
   }
@@ -555,8 +568,7 @@ export function hasExplicitXpcshellFlavor(machArgs: string[]): boolean {
  * `--marionette=127.0.0.1:<n>` when the operator passed `--marionette-port`.
  * Forwards for every harness except an explicit `--flavor=xpcshell` /
  * `xpcshell-tests` (toolkit widget mochitests under `toolkit/content/tests/`
- * do not match the older path-only heuristic but still launch a
- * Marionette-driven browser).
+ * have no telling path but still launch a Marionette-driven browser).
  */
 export function shouldAutoForwardMarionettePortToMach(machArgs: string[]): boolean {
   return !hasExplicitXpcshellFlavor(machArgs);

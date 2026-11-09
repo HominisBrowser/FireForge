@@ -45,6 +45,7 @@ vi.mock('../../utils/logger.js', () => ({
   info: vi.fn(),
   error: vi.fn(),
   verbose: vi.fn(),
+  notice: vi.fn(),
   warn: vi.fn(),
   spinner: vi.fn(() => ({
     stop: vi.fn(),
@@ -68,10 +69,8 @@ vi.mock('../../core/build-baseline.js', () => ({
   readBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
   writeBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
 }));
-
-// The cleanup itself is covered by src/core/__tests__/dev-profile.test.ts.
-vi.mock('../../core/dev-profile.js', () => ({
-  cleanDevProfile: vi.fn(() => Promise.resolve(0)),
+vi.mock('../../core/build-run-record.js', () => ({
+  readBuildRunState: vi.fn(() => Promise.resolve({ kind: 'none' })),
 }));
 
 vi.mock('../../core/build-audit.js', () => ({
@@ -96,8 +95,8 @@ vi.mock('../../core/toolchain-preflight.js', async (importOriginal) => {
 import { validateBrandOverride } from '../../core/brand-validation.js';
 import { writeBuildBaseline } from '../../core/build-baseline.js';
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
+import { readBuildRunState } from '../../core/build-run-record.js';
 import { getProjectPaths, loadConfig } from '../../core/config.js';
-import { cleanDevProfile } from '../../core/dev-profile.js';
 import {
   attemptMozinfoRewrite,
   build,
@@ -281,20 +280,14 @@ describe('buildCommand', () => {
     });
   });
 
-  it('drops the dev profile startup cache after a UI build and names the -purgecaches need', async () => {
-    vi.mocked(cleanDevProfile).mockResolvedValue(1);
-
+  it('reports the browser-owned purge without touching profile caches or locks after UI build', async () => {
     await expect(buildCommand('/project', { ui: true })).resolves.toBeUndefined();
 
-    // The browser may still hold its lock; only the startup cache goes.
-    expect(cleanDevProfile).toHaveBeenCalledWith(nativePath('/project/engine'), {
-      removeParentLock: false,
-    });
     const line = vi
       .mocked(info)
       .mock.calls.map(([message]) => message)
       .find((message) => message.startsWith('Startup cache:'));
-    expect(line).toContain("removed profile-default's startup cache");
+    expect(line).toContain('default and named profiles');
     expect(line).toContain('the next browser launch purges');
     expect(line).toContain('-purgecaches');
   });
@@ -302,7 +295,6 @@ describe('buildCommand', () => {
   it('leaves the startup cache alone after a full build, which changes the build id', async () => {
     await expect(buildCommand('/project', {})).resolves.toBeUndefined();
 
-    expect(cleanDevProfile).not.toHaveBeenCalled();
     expect(vi.mocked(info).mock.calls.flat().join('\n')).not.toContain('Startup cache:');
   });
 
@@ -310,8 +302,6 @@ describe('buildCommand', () => {
     vi.mocked(buildUI).mockResolvedValue({ exitCode: 2, stdout: '', stderr: '', attempts: 1 });
 
     await expect(buildCommand('/project', { ui: true })).rejects.toThrow();
-
-    expect(cleanDevProfile).not.toHaveBeenCalled();
   });
 
   it('refuses UI-only builds when the launchable bundle is missing', async () => {
@@ -327,6 +317,46 @@ describe('buildCommand', () => {
     expect(prepareBuildEnvironment).not.toHaveBeenCalled();
     expect(buildUI).not.toHaveBeenCalled();
     expect(build).not.toHaveBeenCalled();
+  });
+
+  it('repairs an interrupted UI build with a full build instead of refusing every later command', async () => {
+    vi.mocked(hasRunnableBundle).mockResolvedValue({
+      runnable: false,
+      expectedPath: 'obj-debug/dist/bin/mybrowser',
+    });
+    vi.mocked(readBuildRunState).mockResolvedValueOnce({
+      kind: 'interrupted',
+      record: {
+        status: 'running',
+        pid: 4242,
+        command: 'fireforge test --build',
+        machCommand: 'mach build faster',
+        startedAt: '2026-11-01T00:00:00.000Z',
+      },
+    });
+    await expect(buildCommand('/project', { ui: true })).resolves.toBeUndefined();
+    expect(build).toHaveBeenCalled();
+    expect(buildUI).not.toHaveBeenCalled();
+  });
+
+  it('honors packaging escalation from preparation instead of running an incomplete UI build', async () => {
+    vi.mocked(prepareBuildEnvironment).mockResolvedValueOnce({
+      furnaceApplied: 0,
+      reconfigured: false,
+      fullBuildRequired: true,
+      fullBuildReason: 'browser/base/jar.mn needs full packaging',
+    });
+    await buildCommand('/project', { ui: true });
+    expect(build).toHaveBeenCalled();
+    expect(buildUI).not.toHaveBeenCalled();
+    expect(writeBuildBaseline).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectRoot: '/project',
+        engineDir: '/project/engine',
+        binaryName: 'mybrowser',
+        buildKind: 'full',
+      })
+    );
   });
 
   it('uses build.jobs from config when the CLI does not override it', async () => {

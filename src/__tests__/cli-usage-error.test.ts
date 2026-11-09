@@ -12,7 +12,7 @@ vi.mock('../utils/build-info.js', () => ({
 }));
 
 import { createProgram } from '../cli.js';
-import { handleParseError } from '../cli-usage-error.js';
+import { handleParseError, wantsMachineOutput } from '../cli-usage-error.js';
 import { CommandError } from '../errors/base.js';
 import { ExitCode } from '../errors/codes.js';
 
@@ -127,5 +127,18 @@ describe('createProgram exit override', () => {
         error.code === 'commander.helpDisplayed' &&
         error.exitCode === 0
     );
+  });
+});
+
+describe('wantsMachineOutput', () => {
+  it('detects --json and --raw among the options', () => {
+    expect(wantsMachineOutput(['node', 'fireforge', 'status', '--json'])).toBe(true);
+    expect(wantsMachineOutput(['node', 'fireforge', 'status', '--raw'])).toBe(true);
+    expect(wantsMachineOutput(['node', 'fireforge', 'status'])).toBe(false);
+  });
+
+  it('ignores flags after the -- separator, which belong to the launched program', () => {
+    expect(wantsMachineOutput(['node', 'fireforge', 'run', '--', '--json'])).toBe(false);
+    expect(wantsMachineOutput(['node', 'fireforge', 'run', '--json', '--', '--raw'])).toBe(true);
   });
 });

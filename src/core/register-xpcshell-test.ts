@@ -12,7 +12,7 @@
 import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
 import { mozbuildSortCompare } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 import { ensureXpcshellManifestWiring, type ScaffoldAction } from './register-scaffold.js';

@@ -12,6 +12,7 @@ vi.mock('../../utils/process.js', () => ({
 
 import type { DoctorCheck } from '../../types/commands/index.js';
 import { exec } from '../../utils/process.js';
+import { PS_BINARY, PS_ENV } from '../../utils/process-listing.js';
 import {
   findOrphanedHarnessWorkers,
   ORPHANED_HARNESS_DOCTOR_CHECK,
@@ -92,9 +93,9 @@ describe('ORPHANED_HARNESS_DOCTOR_CHECK', () => {
     const check = await runCheck();
 
     expect(exec).toHaveBeenCalledWith(
-      'ps',
+      PS_BINARY,
       ['-axo', 'pid=,ppid=,time=,command='],
-      expect.anything()
+      expect.objectContaining({ env: PS_ENV })
     );
     // 'warning' is the report-only assertion: it is the single field that
     // decides the outcome, so a separate `passed` check would restate it.

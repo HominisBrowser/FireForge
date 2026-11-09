@@ -6,22 +6,18 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../git-base.js', () => ({
-  ensureGit: vi.fn(() => Promise.resolve()),
-}));
-
-vi.mock('../git-file-ops.js', () => ({
-  getFileContentAtRef: vi.fn((_repo: string, _path: string, ref: string) =>
-    Promise.resolve(ref === 'HEAD' ? 'theirs\n' : 'base\n')
-  ),
-}));
-
-vi.mock('../../utils/process.js', () => ({
-  exec: vi.fn(() =>
+  gitResult: vi.fn(() =>
     Promise.resolve({
       stdout: '',
       stderr: 'fatal: refusing to merge unrelated binary input\n',
       exitCode: 255,
     })
+  ),
+}));
+
+vi.mock('../git-file-ops.js', () => ({
+  getFileContentAtRef: vi.fn((_repo: string, _path: string, ref: string) =>
+    Promise.resolve(ref === 'HEAD' ? 'theirs\n' : 'base\n')
   ),
 }));
 

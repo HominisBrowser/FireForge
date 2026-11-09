@@ -130,6 +130,18 @@ function findCoverageRecordProblem(value: unknown): BuildBaselineProblem | undef
   return undefined;
 }
 
+function isStaticComponents(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    typeof value['engineHeadSha'] === 'string' &&
+    isFingerprintMap(value['fingerprints'])
+  );
+}
+
+function isBuildKind(value: unknown): boolean {
+  return value === undefined || value === 'full' || value === 'faster';
+}
+
 /**
  * Validates persisted fields without converting malformed coverage into a
  * full claim, and returns the first failing field with its value, or
@@ -139,6 +151,7 @@ function findCoverageRecordProblem(value: unknown): BuildBaselineProblem | undef
  */
 export function findBuildBaselineProblem(value: unknown): BuildBaselineProblem | undefined {
   if (!isObject(value)) return { field: '(root)', value };
+  if (!isBuildKind(value['buildKind'])) return { field: 'buildKind', value: value['buildKind'] };
   if (typeof value['engineHeadSha'] !== 'string') {
     return { field: 'engineHeadSha', value: value['engineHeadSha'] };
   }
@@ -182,14 +195,7 @@ export function findBuildBaselineProblem(value: unknown): BuildBaselineProblem |
     return { field: 'fullCoverageAnchor', value: value['fullCoverageAnchor'] };
   }
   const components = value['staticComponentsBaseline'];
-  if (
-    components !== undefined &&
-    !(
-      isObject(components) &&
-      typeof components['engineHeadSha'] === 'string' &&
-      isFingerprintMap(components['fingerprints'])
-    )
-  ) {
+  if (components !== undefined && !isStaticComponents(components)) {
     return { field: 'staticComponentsBaseline', value: components };
   }
   if (value['controlBuild'] !== undefined && !isControlBuildStamp(value['controlBuild'])) {

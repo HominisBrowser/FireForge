@@ -9,6 +9,7 @@ import {
   hasForwardedRawLog,
   parseRawTestLog,
   readRawTestLog,
+  trimsAnnouncedTests,
 } from '../test-raw-log.js';
 
 const line = (record: Record<string, unknown>): string => JSON.stringify(record);
@@ -56,6 +57,8 @@ describe('parseRawTestLog', () => {
         expected: 'OK',
         unexpected: true,
         unexpectedSubtests: 1,
+        unexpectedAssertions: ['x'],
+        unexpectedAssertionResults: [{ assertion: 'x', status: 'FAIL', expected: 'PASS' }],
       },
       {
         test: 'd/browser_c.js',
@@ -77,6 +80,112 @@ describe('parseRawTestLog', () => {
       skipped: ['d/browser_s.js'],
     });
     expect(parsed.unfinished).toEqual(['d/browser_d.js']);
+  });
+  it('requires a real status mismatch and preserves unexpected-pass direction', () => {
+    const parsed = parseRawTestLog(
+      [
+        line({ action: 'test_start', test: 'a.js' }),
+        line({
+          action: 'test_status',
+          test: 'a.js',
+          subtest: 'ordinary green',
+          status: 'PASS',
+          expected: 'PASS',
+        }),
+        line({
+          action: 'test_status',
+          test: 'a.js',
+          subtest: 'unexpected pass',
+          status: 'PASS',
+          expected: 'FAIL',
+        }),
+        line({ action: 'test_end', test: 'a.js', status: 'OK' }),
+      ].join('\n')
+    );
+    expect(parsed.results[0]?.unexpectedAssertions).toEqual(['unexpected pass']);
+    expect(parsed.results[0]?.unexpectedAssertionResults).toEqual([
+      { assertion: 'unexpected pass', status: 'PASS', expected: 'FAIL' },
+    ]);
+  });
+
+  it('keeps an xpcshell red’s assertion text beside its task label, and a mochitest diagnostic out', () => {
+    const parsed = parseRawTestLog(
+      [
+        line({ action: 'test_start', test: 'u/test_wire.js' }),
+        line({
+          action: 'test_status',
+          test: 'u/test_wire.js',
+          subtest: 'test_wire_three_streams',
+          status: 'FAIL',
+          expected: 'PASS',
+          message: '[test_wire_three_streams : 42] the stream settled - false == true',
+        }),
+        line({ action: 'test_end', test: 'u/test_wire.js', status: 'FAIL', expected: 'PASS' }),
+        line({ action: 'test_start', test: 'b/browser_a.js' }),
+        line({
+          action: 'test_status',
+          test: 'b/browser_a.js',
+          subtest: 'the guard holds',
+          status: 'FAIL',
+          expected: 'PASS',
+          message: 'Got false, expected true',
+        }),
+        line({ action: 'test_end', test: 'b/browser_a.js', status: 'OK' }),
+      ].join('\n')
+    );
+    expect(parsed.results[0]?.unexpectedAssertionResults).toEqual([
+      {
+        assertion: 'test_wire_three_streams',
+        status: 'FAIL',
+        expected: 'PASS',
+        message: 'the stream settled - false == true',
+      },
+    ]);
+    expect(parsed.results[1]?.unexpectedAssertionResults).toEqual([
+      { assertion: 'the guard holds', status: 'FAIL', expected: 'PASS' },
+    ]);
+  });
+});
+
+describe('the suite_start roster', () => {
+  it('joins every suite_start, by manifest in sorted order, each test once', () => {
+    // mochitest announces tests keyed by manifest; a list arrives as mozlog's `default` group.
+    const parsed = parseRawTestLog(
+      [
+        line({
+          action: 'suite_start',
+          name: 'mochitest-browser',
+          tests: {
+            'd/z/browser.toml': ['d/z/browser_z.js'],
+            'd/a/browser.toml': ['d/a/browser_a.js', 'd/a/browser_b.js'],
+            'd/missing/browser.toml': [],
+          },
+        }),
+        line({ action: 'suite_end' }),
+        line({
+          action: 'suite_start',
+          tests: { default: ['d/a/browser_a.js', 'd/y/browser_y.js'] },
+        }),
+        line({ action: 'suite_end' }),
+        line({ action: 'suite_start', tests: ['d/x/browser_x.js', 7] }),
+        line({ action: 'suite_end' }),
+      ].join('\n')
+    );
+    expect(parsed.roster).toEqual([
+      'd/a/browser_a.js',
+      'd/a/browser_b.js',
+      'd/z/browser_z.js',
+      'd/y/browser_y.js',
+      'd/x/browser_x.js',
+    ]);
+    expect(parsed.suiteCompleted).toBe(true);
+    expect(parseRawTestLog(LOG).roster).toEqual([]);
+  });
+
+  it('is no count for a run --start-at or --end-at trims in the browser', () => {
+    expect(trimsAnnouncedTests(['--start-at=d/browser_b.js'])).toBe(true);
+    expect(trimsAnnouncedTests(['--end-at', 'd/browser_b.js'])).toBe(true);
+    expect(trimsAnnouncedTests(['--headless', '--start-attempt'])).toBe(false);
   });
 });
 

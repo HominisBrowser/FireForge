@@ -18,6 +18,7 @@ import {
   recoverPendingNegativeControl,
   restoreActiveNegativeControlsForSignal,
   restoreNegativeControl,
+  verifyNegativeControlForDispatch,
 } from '../negative-control.js';
 
 const SOURCE = 'export function check() {\n  return true;\n}\n';
@@ -227,6 +228,32 @@ describe('planNegativeControl', () => {
 });
 
 describe('apply and restore', () => {
+  it('binds dispatch to the actual mutation and refuses a generation which replaced it', async () => {
+    const control = await applyNegativeControl(
+      paths,
+      await planNegativeControl(root, paths.engineDir, 'control.diff')
+    );
+    await verifyNegativeControlForDispatch(control);
+    expect(control.verifiedForDispatch).toBe(true);
+    await writeFile(join(paths.engineDir, target), SOURCE);
+    await expect(verifyNegativeControlForDispatch(control)).rejects.toMatchObject({
+      note: 'negative-control-overwritten',
+    });
+    await restoreNegativeControl(control);
+  });
+
+  it('does not certify restored original bytes with a foreign mode change', async () => {
+    const control = await applyNegativeControl(
+      paths,
+      await planNegativeControl(root, paths.engineDir, 'control.diff')
+    );
+    await writeFile(join(paths.engineDir, target), SOURCE);
+    await chmod(join(paths.engineDir, target), 0o700);
+    await expect(restoreNegativeControl(control)).rejects.toThrow(/Reconcile by hand/);
+    const entry = control.journal.entries[0];
+    if (entry === undefined) throw new Error('fixture journal entry missing');
+    await chmod(join(paths.engineDir, target), entry.mode);
+  });
   it('mutates the file, journals the original, and restores bytes, mode and mtime', async () => {
     const file = join(paths.engineDir, target);
     await chmod(file, 0o640);

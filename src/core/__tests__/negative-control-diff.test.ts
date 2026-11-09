@@ -13,6 +13,19 @@ function diffOf(path: string, body: string, header = ''): string {
 const NEUTER = diffOf('browser/x.mjs', '@@ -3,3 +3,3 @@\n three\n-four\n+FOUR\n five\n');
 
 describe('parseControlDiff', () => {
+  it('accepts a reversed git header and independently normalizes mixed plain and git sections', () => {
+    const reversed =
+      'diff --git b/engine/a.js a/engine/a.js\n--- b/engine/a.js\n+++ a/engine/a.js\n@@ -1 +1 @@\n-new\n+old\n';
+    expect(parseControlDiff(reversed)[0]?.path).toBe('engine/a.js');
+    const plain = '--- engine/plain.js\n+++ engine/plain.js\n@@ -1 +1 @@\n-before\n+after\n';
+    const files = parseControlDiff(plain + NEUTER + reversed);
+    expect(files.map((file) => file.path)).toEqual([
+      'engine/plain.js',
+      'browser/x.mjs',
+      'engine/a.js',
+    ]);
+    expect(applyControlHunks('new\n', files[2]?.hunks ?? [], 'engine/a.js')).toBe('old\n');
+  });
   it('parses one section per file with its hunks', () => {
     const files = parseControlDiff(NEUTER);
     expect(files).toHaveLength(1);

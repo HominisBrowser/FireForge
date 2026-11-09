@@ -3,21 +3,23 @@
  * `fireforge furnace chrome-doc remove <name>` removes the files and
  * registrations created by `furnace chrome-doc create`.
  */
-
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { confirm } from '@clack/prompts';
 
+import { pathExists, readText, writeText } from '../../core/authored/fs.js';
+import { authoringProjectPaths } from '../../core/authored/writer.js';
 import { loadConfig } from '../../core/config.js';
 import { stdioIsInteractive } from '../../core/destructive.js';
+import { removeAuthoringDir, removeAuthoringFile } from '../../core/furnace-authored-lifecycle.js';
 import {
   completeJournalRollback,
   type FurnaceOperationContext,
   runFurnaceMutation,
   waitLockMutationOptions,
 } from '../../core/furnace-operation.js';
-import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
+import { assertFurnaceEngineDirReady } from '../../core/furnace-precondition.js';
 import {
   createRollbackJournal,
   type RollbackJournal,
@@ -26,7 +28,6 @@ import {
 } from '../../core/furnace-rollback.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceLockWaitable } from '../../types/commands/index.js';
-import { pathExists, readText, removeDir, removeFile, writeText } from '../../utils/fs.js';
 import { cancel, info, intro, isCancel, note, outro } from '../../utils/logger.js';
 import { buildChromeDocPlan, type ChromeDocPlan, validateChromeDocName } from './chrome-doc.js';
 
@@ -38,10 +39,10 @@ export interface FurnaceChromeDocRemoveOptions extends FurnaceLockWaitable {
   dryRun?: boolean;
 }
 
-function removeExactLine(content: string, line: string): string {
-  const lines = content.split('\n');
-  const filtered = lines.filter((candidate) => candidate !== line);
-  return filtered.join('\n').replace(/\n*$/, '\n');
+function removeExactLine(content: string, line: string): { content: string; removed: number } {
+  const lines = content.split(/(?<=\n)/);
+  const kept = lines.filter((candidate) => candidate.trimEnd() !== line.trimEnd());
+  return { content: kept.join(''), removed: lines.length - kept.length };
 }
 
 async function removeChromeDocJarEntryIfPresent(
@@ -49,7 +50,7 @@ async function removeChromeDocJarEntryIfPresent(
   file: string,
   entry: string,
   journal: RollbackJournal
-): Promise<boolean> {
+): Promise<number> {
   const jarPath = join(engineDir, file);
   if (!(await pathExists(jarPath))) {
     throw new FurnaceError(
@@ -57,12 +58,13 @@ async function removeChromeDocJarEntryIfPresent(
     );
   }
   const existing = await readText(jarPath);
-  if (!existing.includes(entry)) {
-    return false;
+  const updated = removeExactLine(existing, entry);
+  if (updated.removed === 0) {
+    return 0;
   }
   await snapshotFile(journal, jarPath);
-  await writeText(jarPath, removeExactLine(existing, entry));
-  return true;
+  await writeText(jarPath, updated.content);
+  return updated.removed;
 }
 
 async function removeEmptyDirIfPresent(
@@ -73,7 +75,7 @@ async function removeEmptyDirIfPresent(
   const entries = await readdir(dirPath);
   if (entries.length > 0) return false;
   await snapshotDir(journal, dirPath);
-  await removeDir(dirPath);
+  await removeAuthoringDir(dirPath, journal);
   return true;
 }
 
@@ -117,15 +119,18 @@ async function performChromeDocRemoveMutations(args: {
       const filePath = join(args.engineDir, file);
       if (await pathExists(filePath)) {
         await snapshotFile(journal, filePath);
-        await removeFile(filePath);
+        await removeAuthoringFile(filePath, journal);
         removedFiles++;
       }
     }
 
     for (const { file, entry } of args.plan.jarEntries) {
-      if (await removeChromeDocJarEntryIfPresent(args.engineDir, file, entry, journal)) {
-        removedJarEntries++;
-      }
+      removedJarEntries += await removeChromeDocJarEntryIfPresent(
+        args.engineDir,
+        file,
+        entry,
+        journal
+      );
     }
 
     const testDir = join(
@@ -136,7 +141,7 @@ async function performChromeDocRemoveMutations(args: {
     );
     if (await pathExists(testDir)) {
       await snapshotDir(journal, testDir);
-      await removeDir(testDir);
+      await removeAuthoringDir(testDir, journal);
       removedTestDir = true;
     }
     await removeEmptyDirIfPresent(
@@ -166,10 +171,11 @@ export async function furnaceChromeDocRemoveCommand(
   validateChromeDocName(name);
 
   const forgeConfig = await loadConfig(projectRoot);
-  const engineDir = join(projectRoot, 'engine');
-  await assertFurnaceEngineReady(projectRoot, {
-    engineMissingSuffix: ' before removing a chrome-doc.',
-  });
+  const engineDir = (await authoringProjectPaths(projectRoot)).engine;
+  if (!forgeConfig.sources)
+    await assertFurnaceEngineDirReady(engineDir, {
+      engineMissingSuffix: ' before removing a chrome-doc.',
+    });
 
   const plan = await buildChromeDocPlan({
     engineDir,

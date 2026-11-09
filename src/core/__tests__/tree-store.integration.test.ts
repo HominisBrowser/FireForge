@@ -6,7 +6,7 @@
  * `tree-cow.test.ts`. A real clonefile/reflink clone is exercised by the
  * capability-gated case in `tree.integration.test.ts`.
  */
-import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,6 +35,7 @@ import {
   writeSyntheticObjdir,
 } from '../../test-utils/index.js';
 import { pathExists } from '../../utils/fs.js';
+import { git } from '../git-base.js';
 import {
   assertObjdirMatchesTreeMarker,
   assertValidTreeName,
@@ -159,6 +160,36 @@ describe('tree store', () => {
     expect(primaryMozinfo['topsrcdir']).toBe(engineDir);
   });
 
+  it('never snapshots secret roots or the selected objdir temporary browser profile', async () => {
+    await writeSyntheticObjdir(join(projectRoot, 'engine'), 'obj-x86_64');
+    const sensitive = [
+      'secrets/token',
+      '.env.local',
+      '.npmrc',
+      '.aws/credentials',
+      'signing.pem',
+      'credentials.json',
+      'UX_example/private',
+      'concepts/private',
+      'artifacts-capture/private',
+      '.sweep-autonomous/private',
+      'engine/obj-x86_64/tmp/profile-default/cookies.sqlite',
+      'engine/obj-x86_64/tmp/profile-default/hominis.sqlite',
+    ];
+    await writeFiles(
+      projectRoot,
+      Object.fromEntries(sensitive.map((path) => [path, 'private-sentinel']))
+    );
+    const treeRoot = await createTestTree('private-profile', {
+      withObjdir: { objDir: 'obj-x86_64' },
+    });
+    for (const path of sensitive) {
+      await expect(pathExists(join(treeRoot, path)), path).resolves.toBe(false);
+      await expect(readFile(join(projectRoot, path), 'utf8')).resolves.toBe('private-sentinel');
+    }
+    await expect(pathExists(join(treeRoot, 'engine/obj-x86_64/dist'))).resolves.toBe(true);
+  });
+
   it('withObjdir refuses fail-closed when the mozinfo rewrite cannot prove safety', async () => {
     // A topobjdir outside topsrcdir means the workspace was configured
     // differently. The rewriter refuses, and the clone must too, because
@@ -261,10 +292,17 @@ describe('tree store', () => {
     const externalBuild = join(projectRoot, 'external-build', 'obj-x86_64');
     await writeSyntheticObjdir(join(projectRoot, 'external-build'), 'obj-x86_64');
     const externalMozinfoBefore = await readFile(join(externalBuild, 'mozinfo.json'), 'utf8');
+    const copiedChildren = new Set<string>();
+    const sourceChildren = (await readdir(join(engineDir, 'obj-x86_64'))).filter(
+      (child) => child !== 'tmp'
+    );
+    const targetObjdir = join(getTreesDir(projectRoot), 'shard-deep', 'engine', 'obj-x86_64');
     cloneEntryHook.after = async (destinationPath: string): Promise<void> => {
-      if (!destinationPath.endsWith(`${sep}engine${sep}obj-x86_64`)) return;
-      await rm(destinationPath, { recursive: true, force: true });
-      await symlink(externalBuild, destinationPath);
+      if (!destinationPath.startsWith(`${targetObjdir}${sep}`)) return;
+      copiedChildren.add(destinationPath);
+      if (copiedChildren.size !== sourceChildren.length) return;
+      await rm(targetObjdir, { recursive: true, force: true });
+      await symlink(externalBuild, targetObjdir);
     };
 
     await expect(
@@ -592,5 +630,28 @@ describe('tree store', () => {
     // (the guard already refuses build-less test there).
     const treeRoot = await createTestTree('shard-plain-check');
     await expect(assertObjdirMatchesTreeMarker(treeRoot, 'obj-x86_64')).resolves.toBeUndefined();
+  });
+});
+
+describe('a cloned tree index', () => {
+  it('reads clean under the hermetic environment, which refreshes nothing', async () => {
+    const primary = await createTempProject();
+    try {
+      await writeFireForgeConfig(primary);
+      await initCommittedRepo(join(primary, 'engine'), { 'a.js': 'a\n', 'dir/b.js': 'b\n' });
+      const treeRoot = join(primary, '.fireforge', 'trees', 'clean');
+      await cloneTree({
+        primaryRoot: primary,
+        treeRoot,
+        name: 'clean',
+        capability: 'none',
+        createdAt: new Date(0).toISOString(),
+      });
+      // `diff-files` lists an entry whose stat data no longer matches the index,
+      // even when its content is unchanged.
+      expect(await git(['diff-files', '--name-only'], join(treeRoot, 'engine'))).toBe('');
+    } finally {
+      await removeTempProject(primary);
+    }
   });
 });

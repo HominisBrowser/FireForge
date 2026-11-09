@@ -7,11 +7,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // relying on an accident: `/project` is a filesystem root on POSIX, so the
 // best-effort open fails and degrades to "no log", but on Windows the same
 // path resolves against the current drive and succeeds.
-vi.mock('../../core/test-host-state.js', () => ({
-  sampleTestHost: vi.fn(() => Promise.resolve({ load: 0, power: 'unknown' })),
-  reportTestHost: vi.fn(() => false),
-  stampPerfHost: vi.fn(() => Promise.resolve(false)),
-}));
+vi.mock('../../core/test-host-state.js', async (importOriginal) =>
+  (await import('./test-command-mocks.js')).testHostStateMock(importOriginal)
+);
 
 vi.mock('../../core/run-log.js', async () =>
   (await import('../../test-utils/module-mocks.js')).createRunLogMock()
@@ -107,7 +105,8 @@ import { testCommand } from '../test.js';
 describe('testCommand harness resilience', () => {
   const GREEN = {
     exitCode: 0,
-    stdout: 'TEST-START | requested-test\nTEST-OK | requested-test\nPassed: 3',
+    stdout:
+      'TEST-START | requested-test\nTEST-OK | requested-test\nPassed: 3\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
     stderr: '',
   };
   const CRASH = {
@@ -158,6 +157,21 @@ describe('testCommand harness resilience', () => {
       )
     );
     expect(info).toHaveBeenCalledWith(expect.stringContaining('Expected true'));
+  });
+
+  it.each([
+    'TEST-UNEXPECTED-FAIL | browser_a.js | Assertion failed\nFailed: 1',
+    'PROCESS-CRASH | browser_a.js | application crashed',
+    'Unexpected results: 1\nUnexpected results: 0',
+  ])('keeps a completed-start zero-exit run failing for hard evidence: %s', async (evidence) => {
+    vi.mocked(runMachTestSuite).mockResolvedValue({
+      exitCode: 0,
+      stdout: `TEST-START | browser_a.js\n${evidence}\nTEST-OK | browser_a.js`,
+      stderr: '',
+    });
+    await expect(testCommand('/project', ['browser_a.js'])).rejects.toThrow(/Tests failed/);
+    expect(runMachTestSuite).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Retrying'));
   });
 
   it('retries a recognized harness crash and succeeds on a green re-run', async () => {
@@ -286,7 +300,7 @@ describe('testCommand harness resilience', () => {
       );
       // The sharded aggregate ends with the machine-readable verdict.
       expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
-        'FIREFORGE-VERDICT: PASS shards=2/2 host-load=0.00\n'
+        'FIREFORGE-VERDICT: PASS shards=2/2 host-load=0.00 display=unknown power-source=unknown\n'
       );
     } finally {
       writeSpy.mockRestore();
@@ -309,7 +323,7 @@ describe('testCommand harness resilience', () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('Tests failed with exit code 1'));
       // The FAIL aggregate verdict is emitted before the throw.
       expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
-        'FIREFORGE-VERDICT: FAIL reason=test-failures shards=1/2 failed-shards=browser/components/b/test/browser_b.js host-load=0.00\n'
+        'FIREFORGE-VERDICT: FAIL reason=test-failures shards=1/2 failed-shards=browser/components/b/test/browser_b.js host-load=0.00 display=unknown power-source=unknown\n'
       );
     } finally {
       writeSpy.mockRestore();
@@ -374,7 +388,7 @@ describe('testCommand harness resilience', () => {
       expect(info).toHaveBeenCalledWith(expect.stringContaining('--shuffle=42'));
       // The seed rides the verdict line so a shuffled red carries its own repro.
       expect(writeSpy.mock.calls.map((args) => args[0])).toContain(
-        'FIREFORGE-VERDICT: PASS shuffle=42 host-load=0.00\n'
+        'FIREFORGE-VERDICT: PASS checks=1 unexpected=0 shuffle=42 host-load=0.00 display=unknown power-source=unknown\n'
       );
     } finally {
       writeSpy.mockRestore();

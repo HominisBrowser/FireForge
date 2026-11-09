@@ -105,6 +105,7 @@ import { isSymlink, pathExists, removeFile } from '../../utils/fs.js';
 import { info, notice, warn } from '../../utils/logger.js';
 import { testCommand } from '../test.js';
 import * as browserPreflight from '../test-browser-preflight.js';
+import { RECORDED_BUILD_BASELINE } from './test-command-mocks.js';
 
 // The stale-build and packaging-coverage gates, plus the --build-only /
 // --extend-coverage union claims. Split out of `test.test.ts`. The shared
@@ -139,7 +140,8 @@ describe('testCommand staleness and packaging coverage', () => {
     });
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -169,7 +171,8 @@ describe('testCommand staleness and packaging coverage', () => {
     });
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -214,7 +217,8 @@ describe('testCommand staleness and packaging coverage', () => {
     // against a baseline that the rebuild just invalidated.
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -230,7 +234,8 @@ describe('testCommand staleness and packaging coverage', () => {
   it('does not warn when the stale-build preflight reports no packageable changes', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     // Default mock already returns stale: false.
@@ -256,7 +261,7 @@ describe('testCommand staleness and packaging coverage', () => {
     });
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nTEST-OK | t',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -271,7 +276,7 @@ describe('testCommand staleness and packaging coverage', () => {
       engineDir: '/project/engine',
       binaryName: 'mybrowser',
       testPackagingCoverage: ['browser/components/tests/unit/test_distribution.js'],
-      previousBaseline: undefined,
+      previousBaseline: RECORDED_BUILD_BASELINE,
       recordedBy: 'fireforge test --build browser/components/tests/unit/test_distribution.js',
       staticComponentsHandling: 'auto',
       buildKind: 'faster',
@@ -292,7 +297,7 @@ describe('testCommand staleness and packaging coverage', () => {
     });
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nTEST-OK | t',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -305,7 +310,7 @@ describe('testCommand staleness and packaging coverage', () => {
       engineDir: '/project/engine',
       binaryName: 'mybrowser',
       testPackagingCoverage: ['browser/components/tests/unit'],
-      previousBaseline: undefined,
+      previousBaseline: RECORDED_BUILD_BASELINE,
       recordedBy: 'fireforge test --build browser/components/tests/unit',
       staticComponentsHandling: 'auto',
       buildKind: 'faster',
@@ -321,7 +326,7 @@ describe('testCommand staleness and packaging coverage', () => {
     });
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nTEST-OK | t',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -332,7 +337,7 @@ describe('testCommand staleness and packaging coverage', () => {
       engineDir: '/project/engine',
       binaryName: 'mybrowser',
       testPackagingCoverage: 'full',
-      previousBaseline: undefined,
+      previousBaseline: RECORDED_BUILD_BASELINE,
       recordedBy: 'fireforge test --build',
       staticComponentsHandling: 'auto',
       buildKind: 'faster',
@@ -406,7 +411,8 @@ describe('testCommand staleness and packaging coverage', () => {
     vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(scopedCoverageBaseline(true));
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -483,7 +489,8 @@ describe('testCommand staleness and packaging coverage', () => {
     vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(legacy);
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -552,7 +559,8 @@ describe('testCommand staleness and packaging coverage', () => {
     });
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -611,7 +619,7 @@ describe('testCommand staleness and packaging coverage', () => {
         engineDir: '/project/engine',
         binaryName: expect.any(String) as string,
         testPackagingCoverage: MIXED_PATHS,
-        previousBaseline: undefined,
+        previousBaseline: RECORDED_BUILD_BASELINE,
         recordedBy: expect.stringContaining('fireforge test --build') as string,
         staticComponentsHandling: 'auto',
         buildKind: 'faster',
@@ -626,7 +634,7 @@ describe('testCommand staleness and packaging coverage', () => {
       );
       vi.mocked(runMachTestSuite).mockResolvedValue({
         exitCode: 0,
-        stdout: 'TEST-START | t\nTEST-OK | t',
+        stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
         stderr: '',
       });
 
@@ -669,7 +677,7 @@ describe('testCommand staleness and packaging coverage', () => {
       });
       vi.mocked(runMachTestSuite).mockResolvedValue({
         exitCode: 0,
-        stdout: 'TEST-START | t\nTEST-OK | t',
+        stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
         stderr: '',
       });
     }
@@ -734,7 +742,7 @@ describe('testCommand staleness and packaging coverage', () => {
         engineDir: '/project/engine',
         binaryName: 'mybrowser',
         testPackagingCoverage: 'full',
-        previousBaseline: undefined,
+        previousBaseline: RECORDED_BUILD_BASELINE,
         recordedBy: expect.any(String) as string,
         staticComponentsHandling: 'carry-forward',
         buildKind: 'faster',
@@ -751,7 +759,11 @@ describe('testCommand staleness and packaging coverage', () => {
           staticComponentsHandling: 'carry-forward',
         })
       );
-      expect(planCoverageRetention).toHaveBeenCalledWith('/project/engine', undefined, [SLICE_B]);
+      expect(planCoverageRetention).toHaveBeenCalledWith(
+        '/project/engine',
+        RECORDED_BUILD_BASELINE,
+        [SLICE_B]
+      );
       expect(notice).not.toHaveBeenCalledWith(expect.stringContaining('drops previous'));
     });
 

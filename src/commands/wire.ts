@@ -3,26 +3,27 @@ import { join, relative } from 'node:path';
 
 import { Command } from 'commander';
 
+import { authoringProjectPaths } from '../core/authored/writer.js';
 import {
   DEFAULT_BROWSER_SUBSCRIPT_DIR,
   type WireResult,
   wireSubscript,
 } from '../core/browser-wire.js';
-import { getProjectPaths, loadConfig } from '../core/config.js';
+import { loadConfig } from '../core/config.js';
 import {
   furnaceConfigExists as checkFurnaceConfigExists,
   loadFurnaceConfig,
 } from '../core/furnace-config.js';
 import { consumeParserFallbackEvents } from '../core/parser-fallback.js';
 import { DEFAULT_DOM_TARGET, probeDomFragmentInsertionPoint } from '../core/wire-dom-fragment.js';
-import { coerceToCall, validateWireName as validateWireExpression } from '../core/wire-utils.js';
+import { coerceToCall, validateWireExpression } from '../core/wire-utils.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { WireOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { addWaitLockOption, pickDefined } from '../utils/options.js';
 import {
   isContainedRelativePath,
   isExplicitAbsolutePath,
@@ -31,6 +32,7 @@ import {
   toRootRelativePath,
 } from '../utils/paths.js';
 import { normalizePathSlashes } from '../utils/paths.js';
+import { runUnderEngineLockForAuthoredEdit } from './with-engine-lock.js';
 
 const BROWSER_BASE_DIR = 'browser/base';
 
@@ -136,7 +138,7 @@ async function assertDomTargetIsWireable(
   domFilePath: string,
   domTargetPath: string
 ): Promise<void> {
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
   if (!(await pathExists(join(paths.engine, domTargetPath)))) {
     throw new InvalidArgumentError(
       `Chrome document not found in engine: ${domTargetPath}\n` +
@@ -189,7 +191,7 @@ async function ensureSubscriptSourceExists(
   name: string,
   dryRun: boolean
 ): Promise<void> {
-  const paths = getProjectPaths(projectRoot);
+  const paths = await authoringProjectPaths(projectRoot);
   const subscriptPath = join(paths.engine, subscriptDir, `${name}.js`);
   if (!(await pathExists(subscriptPath))) {
     if (dryRun) {
@@ -232,7 +234,7 @@ async function resolveDomFragmentPath(
   // stripped when the input is relative.
   if (!dom) return undefined;
   {
-    const paths = getProjectPaths(projectRoot);
+    const paths = await authoringProjectPaths(projectRoot);
     const domCandidate = isExplicitAbsolutePath(dom) ? dom : stripEnginePrefix(dom);
     // `pathExists` resolves relative paths against CWD, so an
     // engine-relative `domCandidate` (e.g.
@@ -420,7 +422,7 @@ export async function wireCommand(
 
   if (options.dryRun) {
     printWireDryRun(
-      getProjectPaths(projectRoot).engine,
+      (await authoringProjectPaths(projectRoot)).engine,
       name,
       subscriptDir,
       domFilePath,
@@ -447,7 +449,7 @@ export function registerWire(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const command = program
     .command('wire <name>')
     .description('Wire a chrome subscript into the browser')
     .option('--init <expression>', 'Init expression for browser-init.js onLoad()')
@@ -463,10 +465,15 @@ export function registerWire(
       '--target <path>',
       'Chrome document to insert --dom into, relative to engine/ ' +
         '(default: first entry of furnace.json tokenHostDocuments, else browser/base/content/browser.xhtml)'
-    )
-    .action(
-      withErrorHandling(async (name: string, options: WireOptions) => {
-        await wireCommand(getProjectRoot(), name, pickDefined(options));
-      })
     );
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (name: string, options: WireOptions & { waitLock?: number | boolean }) => {
+        const projectRoot = getProjectRoot();
+        await runUnderEngineLockForAuthoredEdit(projectRoot, 'wire', options, () =>
+          wireCommand(projectRoot, name, pickDefined(options))
+        );
+      }
+    )
+  );
 }

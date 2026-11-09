@@ -16,9 +16,10 @@
  * mid-scaffold restores every touched file. A successful run leaves the tree
  * ready for `fireforge build`.
  */
-
 import { join } from 'node:path';
 
+import { ensureDir, pathExists, readText, writeText } from '../../core/authored/fs.js';
+import { authoringProjectPaths } from '../../core/authored/writer.js';
 import { loadConfig } from '../../core/config.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../../core/furnace-config.js';
 import {
@@ -27,7 +28,7 @@ import {
   runFurnaceMutation,
   waitLockMutationOptions,
 } from '../../core/furnace-operation.js';
-import { assertFurnaceEngineReady } from '../../core/furnace-precondition.js';
+import { assertFurnaceEngineDirReady } from '../../core/furnace-precondition.js';
 import {
   createRollbackJournal,
   recordCreatedDir,
@@ -38,7 +39,6 @@ import { InvalidArgumentError } from '../../errors/base.js';
 import { FurnaceError } from '../../errors/furnace.js';
 import type { FurnaceLockWaitable } from '../../types/commands/index.js';
 import type { ProjectLicense } from '../../types/config.js';
-import { ensureDir, pathExists, readText, writeText } from '../../utils/fs.js';
 import { intro, note, outro, warn } from '../../utils/logger.js';
 import {
   generateBrowserWindowXhtml,
@@ -201,6 +201,15 @@ export async function buildChromeDocPlan(args: {
     );
   }
 
+  if (args.validateCreateConflicts) {
+    for (const file of [...files, ...testFiles]) {
+      if (await pathExists(join(args.engineDir, file)))
+        throw new FurnaceError(
+          `Scaffold output already exists at ${join(args.engineDir, file)}. Remove it or choose a different name.`
+        );
+    }
+  }
+
   return {
     files,
     dirs,
@@ -268,7 +277,11 @@ async function appendJarEntryIfAbsent(
     );
   }
   const existing = await readText(filePath);
-  if (existing.includes(entry)) {
+  // A commented-out line carrying the entry is not a registration.
+  const registered = existing
+    .split(/\r?\n/)
+    .some((line) => !line.trimStart().startsWith('#') && line.includes(entry));
+  if (registered) {
     return;
   }
   await snapshotFile(journal, filePath);
@@ -304,6 +317,13 @@ async function performChromeDocMutations(args: {
   const written: string[] = [];
 
   try {
+    await buildChromeDocPlan({
+      engineDir: args.engineDir,
+      name: args.name,
+      withTests: args.withTests,
+      binaryName: args.binaryName,
+      validateCreateConflicts: true,
+    });
     const contentDir = join(args.engineDir, 'browser/base/content');
     const sharedThemeDir = join(args.engineDir, 'browser/themes/shared');
     const localeDir = join(args.engineDir, 'browser/locales/en-US/browser');
@@ -445,11 +465,12 @@ export async function furnaceChromeDocCreateCommand(
 
   const forgeConfig = await loadConfig(projectRoot);
   const license = forgeConfig.license ?? DEFAULT_LICENSE;
-  const engineDir = join(projectRoot, 'engine');
+  const engineDir = (await authoringProjectPaths(projectRoot)).engine;
 
-  await assertFurnaceEngineReady(projectRoot, {
-    engineMissingSuffix: ' to scaffold a chrome-doc.',
-  });
+  if (!forgeConfig.sources)
+    await assertFurnaceEngineDirReady(engineDir, {
+      engineMissingSuffix: ' to scaffold a chrome-doc.',
+    });
 
   const browserWindow = options.browserWindow ?? false;
   // The browser-window skeleton always carries its own titlebar markup and
@@ -511,16 +532,25 @@ export async function furnaceChromeDocCreateCommand(
     waitLockMutationOptions(options.waitLockSeconds)
   );
 
+  const sourceRoot = forgeConfig.sources?.root ?? 'engine';
   const nextSteps: string[] = [
-    `  1. Edit engine/browser/base/content/${name}.xhtml and fill in the body.`,
-    `  2. Localize strings in engine/browser/locales/en-US/browser/${name}.ftl.`,
-    `  3. Run "fireforge build" to validate packaging (post-build audit will flag`,
-    '     any entry whose file does not land in the dist bundle).',
+    `  1. Edit ${sourceRoot}/browser/base/content/${name}.xhtml and fill in the body.`,
+    `  2. Localize strings in ${sourceRoot}/browser/locales/en-US/browser/${name}.ftl.`,
+    ...(forgeConfig.sources
+      ? [
+          '  3. Capture tracked inputs with "fireforge authored capture" and submit a frozen proof job.',
+        ]
+      : [
+          `  3. Run "fireforge build" to validate packaging (post-build audit will flag`,
+          '     any entry whose file does not land in the dist bundle).',
+        ]),
   ];
   if (withTests) {
     nextSteps.push(
       `  4. Register the xpcshell test directory in the nearest moz.build under`,
-      `     XPCSHELL_TESTS_MANIFESTS, then run "fireforge test browser/base/content/test/${forgeConfig.binaryName}-xpcshell/${name}/xpcshell.toml".`
+      forgeConfig.sources
+        ? `     XPCSHELL_TESTS_MANIFESTS, then include it in the frozen source job.`
+        : `     XPCSHELL_TESTS_MANIFESTS, then run "fireforge test browser/base/content/test/${forgeConfig.binaryName}-xpcshell/${name}/xpcshell.toml".`
     );
   }
   nextSteps.push(
@@ -536,7 +566,7 @@ export async function furnaceChromeDocCreateCommand(
   note(
     [
       `Chrome document "${name}" scaffolded:`,
-      ...written.map((f) => `  engine/${f}`),
+      ...written.map((f) => `  ${sourceRoot}/${f}`),
       '',
       'Next steps:',
       ...nextSteps,

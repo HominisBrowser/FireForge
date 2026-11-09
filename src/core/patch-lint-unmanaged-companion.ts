@@ -30,6 +30,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { PatchLintIssue } from '../types/commands/index.js';
+import { isHeadScript } from './patch-lint-ownership.js';
 import { UNDEFINED_IDENTIFIER_HINT } from './typecheck-shim.js';
 
 /**
@@ -202,8 +203,7 @@ export async function collectUnmanagedCompanions(
 ): Promise<UnmanagedCompanion[]> {
   const heads: { file: string; source: string }[] = [];
   for (const file of files) {
-    const base = file.split('/').pop() ?? '';
-    if (!/^head(?:_.*)?\.js$/.test(base)) continue;
+    if (!isHeadScript(file)) continue;
     try {
       heads.push({ file, source: await readFile(join(repoDir, file), 'utf8') });
     } catch {

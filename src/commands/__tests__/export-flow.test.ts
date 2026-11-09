@@ -741,6 +741,47 @@ describe('commitPlacementExport rollback', () => {
     return (JSON.parse(raw) as PatchesManifest).patches;
   }
 
+  it.each(['body-write', 'manifest-before', 'manifest-after'])(
+    'restores byte-exact queue when the new slot reuses a displaced filename: %s',
+    async (failure) => {
+      await seedTwoPatchQueue();
+      const names = ['001-infra-a.patch', '002-infra-b.patch', 'patches.json'];
+      const before = await Promise.all(
+        names.map((name) => readFile(join(patchesDir, name), 'utf8'))
+      );
+      const manifest = await readManifestPatches();
+      const expectedPlan = computePlacementPlan(manifest, 'infra', 'a', 1);
+      if (failure === 'body-write')
+        vi.mocked(writeText).mockRejectedValueOnce(new Error('injected body-write failure'));
+      else {
+        const actual = await vi.importActual<typeof import('../../core/patch-manifest.js')>(
+          '../../core/patch-manifest.js'
+        );
+        vi.mocked(addPatchToManifest).mockImplementationOnce(async (...args) => {
+          if (failure === 'manifest-after') await actual.addPatchToManifest(...args);
+          throw new Error('injected manifest failure');
+        });
+      }
+      await expect(
+        commitPlacementExport({
+          patchesDir,
+          options: { before: '001-infra-a.patch' },
+          category: 'infra',
+          name: 'a',
+          diff: createDiff('foo/New.sys.mjs', 'export const New = 1;'),
+          metadata: makeMetadata('001-infra-a.patch', 1, ['foo/New.sys.mjs']),
+          expectedPlan,
+        })
+      ).rejects.toThrow('injected');
+      expect((await readdir(patchesDir)).filter((name) => name.endsWith('.patch')).sort()).toEqual(
+        names.slice(0, 2)
+      );
+      expect(
+        await Promise.all(names.map((name) => readFile(join(patchesDir, name), 'utf8')))
+      ).toEqual(before);
+    }
+  );
+
   it('restores queue state when writeText fails after renumber', async () => {
     await seedTwoPatchQueue();
 

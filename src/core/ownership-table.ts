@@ -199,3 +199,20 @@ export function renderOwnershipTable(rows: OwnershipRow[]): void {
     );
   }
 }
+
+/**
+ * Files of `patch` that another manifest row also lists. Rewriting `patch`
+ * from `getDiffForFilesAgainstHead` for such a file writes the cumulative
+ * diff, which carries the other owners' hunks too.
+ */
+export function filesSharedWithOtherPatches(
+  patches: readonly PatchMetadata[],
+  patch: PatchMetadata
+): string[] {
+  const shared = new Set<string>();
+  for (const other of patches) {
+    if (other.filename === patch.filename) continue;
+    for (const file of other.filesAffected) shared.add(file);
+  }
+  return patch.filesAffected.filter((file) => shared.has(file));
+}

@@ -69,20 +69,16 @@ describe('configCommand', () => {
     expect(info).toHaveBeenCalledWith('wire.subscriptDir = browser/components/custom');
   });
 
-  it('preserves --force-written keys when a known key is set afterwards', async () => {
-    // Round-tripping the ordinary set branch through loadConfig →
-    // validateConfig, whose typed clone contains only known schema fields,
-    // makes any normal `config <key> <value>` silently delete every
-    // previously --force-written key. Both branches mutate the raw document.
-    await configCommand(projectRoot, 'myext.flag', 'true', { force: true });
+  it('keeps a --force-written schema path when a known key is set afterwards', async () => {
+    await configCommand(projectRoot, 'check.timeouts.lint', '30', { force: true });
     await configCommand(projectRoot, 'build.jobs', '8');
 
     const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
-      myext?: { flag?: boolean };
+      check?: { timeouts?: { lint?: number } };
       build?: { jobs?: number };
     };
     expect(config.build?.jobs).toBe(8);
-    expect(config.myext?.flag).toBe(true);
+    expect(config.check?.timeouts?.lint).toBe(30);
   });
 
   it('still rejects structurally invalid values for known keys after the raw-document change', async () => {
@@ -179,20 +175,29 @@ describe('configCommand', () => {
     );
   });
 
-  it('accepts unknown top-level keys with force', async () => {
-    await configCommand(projectRoot, 'custom.key', '1', { force: true });
+  it('rejects unknown keys even with force, leaving fireforge.json untouched', async () => {
+    const before = await readProjectText(projectRoot, 'fireforge.json');
+    await expect(configCommand(projectRoot, 'custom.key', '1', { force: true })).rejects.toThrow(
+      /unknown key "custom"/
+    );
+    await expect(
+      configCommand(projectRoot, 'patchLint.prettir', '"error"', { force: true })
+    ).rejects.toThrow(/Did you mean "prettier"\?/);
+    expect(await readProjectText(projectRoot, 'fireforge.json')).toBe(before);
+  });
 
+  it('validates schema-known keys that were missing from the known-path list', async () => {
+    await expect(
+      configCommand(projectRoot, 'patchLint.prettier', 'banana', { force: true })
+    ).rejects.toThrow('Invalid value for "patchLint.prettier"');
+    await configCommand(projectRoot, 'patchLint.prettier', 'error');
     const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
-      custom?: { key?: number };
+      patchLint?: { prettier?: string };
     };
-    expect(config.custom?.key).toBe(1);
+    expect(config.patchLint?.prettier).toBe('error');
   });
 
   it('still rejects invalid values for known keys even with force', async () => {
-    // --force is intended as an escape hatch for unknown keys. It must
-    // not also let the user write a structurally invalid value for a
-    // known key. That bypass would silently corrupt fireforge.json so
-    // the next loadConfig fails with no breadcrumb back to this write.
     await expect(
       configCommand(projectRoot, 'build.jobs', '"oops"', { force: true })
     ).rejects.toThrow('Invalid value for "build.jobs"');
@@ -200,22 +205,7 @@ describe('configCommand', () => {
     const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
       build?: { jobs?: number };
     };
-    // The original value remains untouched.
     expect(config.build?.jobs).not.toBe('oops');
-  });
-
-  it('reads keys that were persisted via --force (raw-document fallback)', async () => {
-    // A value written with `fireforge config foo bar --force` is readable on
-    // disk, but a read path that consults the validated config throws
-    // `Unknown config key` because `validateConfig` strips it from the typed
-    // result. The get branch reads the raw JSON document so forced keys
-    // round-trip.
-    await configCommand(projectRoot, 'totallyUnknown', 'forced-value', { force: true });
-
-    vi.mocked(info).mockClear();
-    await configCommand(projectRoot, 'totallyUnknown');
-
-    expect(info).toHaveBeenCalledWith('totallyUnknown = forced-value');
   });
 
   it('rejects prototype-pollution attempts even with --force', async () => {
@@ -268,20 +258,20 @@ describe('configCommand', () => {
     expect(info).toHaveBeenCalledWith('firefox.version = 140.9.0esr (unchanged)');
   });
 
-  it('detects no-op writes for forced unknown keys', async () => {
+  it('detects no-op writes for forced schema paths', async () => {
     // The short-circuit also covers --force writes: re-setting a
     // previously forced key to its current value must not rewrite the
     // file or duplicate the success line.
-    await configCommand(projectRoot, 'arbitraryUnknown', 'one', { force: true });
+    await configCommand(projectRoot, 'check.timeouts.lint', '5', { force: true });
     const { stat } = await import('node:fs/promises');
     const beforeStat = await stat(`${projectRoot}/fireforge.json`);
 
     vi.mocked(info).mockClear();
-    await configCommand(projectRoot, 'arbitraryUnknown', 'one', { force: true });
+    await configCommand(projectRoot, 'check.timeouts.lint', '5', { force: true });
     const afterStat = await stat(`${projectRoot}/fireforge.json`);
 
     expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
-    expect(info).toHaveBeenCalledWith('arbitraryUnknown = one (unchanged)');
+    expect(info).toHaveBeenCalledWith('check.timeouts.lint = 5 (unchanged)');
   });
 
   it('changes only the set key and keeps compact sections on one line', async () => {
@@ -306,19 +296,13 @@ describe('configCommand', () => {
     );
   });
 
-  it('preserves earlier forced keys when subsequent --force writes land', async () => {
-    // Seeding the `--force` write path from `loadConfig`, which strips
-    // unknowns, makes writing a second forced key silently drop every
-    // earlier forced key. The mutation is seeded from the raw document when
-    // the key is unknown.
-    await configCommand(projectRoot, 'firstUnknown', 'one', { force: true });
-    await configCommand(projectRoot, 'secondUnknown', 'two', { force: true });
+  it('keeps earlier forced schema paths when later --force writes land', async () => {
+    await configCommand(projectRoot, 'check.timeouts.lint', '5', { force: true });
+    await configCommand(projectRoot, 'check.timeouts.verify', '7', { force: true });
 
-    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as Record<
-      string,
-      unknown
-    >;
-    expect(config['firstUnknown']).toBe('one');
-    expect(config['secondUnknown']).toBe('two');
+    const config = JSON.parse(await readProjectText(projectRoot, 'fireforge.json')) as {
+      check?: { timeouts?: Record<string, number> };
+    };
+    expect(config.check?.timeouts).toEqual({ lint: 5, verify: 7 });
   });
 });

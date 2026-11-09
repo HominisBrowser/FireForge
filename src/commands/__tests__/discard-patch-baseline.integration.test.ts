@@ -241,6 +241,23 @@ describe('discard restores the patch-applied baseline', () => {
     expect(vi.mocked(warn)).toHaveBeenCalledWith(expect.stringContaining('claimed by 2 patches'));
   });
 
+  it('refuses when a manifest row omits a file its patch body touches', async () => {
+    const manifest: PatchesManifest = {
+      version: 1,
+      patches: [
+        makeMetadata('0001-ui-edit.patch', 1, []),
+        makeMetadata('0002-ui-create.patch', 2, [CREATED]),
+      ],
+    };
+    await writeFile(join(patchesDir, 'patches.json'), JSON.stringify(manifest, null, 2));
+    await writeFiles(engineDir, { [TRACKED]: 'garbage edit\n' });
+
+    await expect(discardCommand(projectRoot, CREATED, { yes: true })).rejects.toThrow(
+      /ownership disagrees with the patch bodies.*--to-upstream/s
+    );
+    expect(await readProjectText(projectRoot, `engine/${TRACKED}`)).toBe('garbage edit\n');
+  });
+
   it('refuses (rather than reverting to upstream) when the manifest is unreadable', async () => {
     await writeFile(join(patchesDir, 'patches.json'), '{ not json');
     await writeFiles(engineDir, { [TRACKED]: 'garbage edit\n' });

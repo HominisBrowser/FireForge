@@ -94,7 +94,7 @@ function parseExtraStep(raw: unknown, field: string): CheckExtraStep {
       `Config field "${field}" must be a plain object with "name" and "command"`
     );
   }
-  assertKnownKeys(raw, field, ['name', 'command', 'cwd', 'timeout', 'after']);
+  assertKnownKeys(raw, field, ['name', 'command', 'cwd', 'timeout', 'after', 'footprint']);
   const name = raw['name'];
   if (typeof name !== 'string' || !STEP_NAME_PATTERN.test(name)) {
     throw new ConfigError(
@@ -120,7 +120,25 @@ function parseExtraStep(raw: unknown, field: string): CheckExtraStep {
     step.timeout = parsePositiveSeconds(raw['timeout'], `${field}.timeout`);
   }
   if (raw['after'] !== undefined) step.after = parseStringList(raw['after'], `${field}.after`);
+  if (raw['footprint'] !== undefined)
+    step.footprint = parseFootprint(raw['footprint'], `${field}.footprint`);
   return step;
+}
+
+function parseFootprint(raw: unknown, field: string): NonNullable<CheckExtraStep['footprint']> {
+  if (!isObject(raw)) throw new ConfigError(`Config field "${field}" must be a plain object`);
+  assertKnownKeys(raw, field, ['static', 'cpu', 'memory']);
+  if (typeof raw['static'] !== 'boolean')
+    throw new ConfigError(`Config field "${field}.static" must be a boolean`);
+  const out: NonNullable<CheckExtraStep['footprint']> = { static: raw['static'] };
+  for (const name of ['cpu', 'memory'] as const) {
+    const value = raw[name];
+    if (value === undefined) continue;
+    const count = parseNonNegativeInteger(value, `${field}.${name}`);
+    if (count === 0) throw new ConfigError(`Config field "${field}.${name}" must be positive`);
+    out[name] = count;
+  }
+  return out;
 }
 
 function parsePositiveSeconds(raw: unknown, field: string): number {

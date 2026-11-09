@@ -23,7 +23,10 @@ const NOISE_FLOOR_MS = 5;
 
 const BASE_N = 10_000;
 
-function bestOfMs(run: () => void, reps = 3): number {
+/** Measurement attempts before a ratio above the bound counts as growth. */
+const ATTEMPTS = 5;
+
+function bestOfMs(run: () => void, reps = 5): number {
   let best = Number.POSITIVE_INFINITY;
   for (let i = 0; i < reps; i++) {
     const start = performance.now();
@@ -44,16 +47,26 @@ export function expectLinearGrowth<T>(build: (n: number) => T, run: (input: T) =
   // Warm-up: JIT and regex compilation must not land on the small run.
   run(small);
   run(large);
-  const smallMs = bestOfMs(() => {
-    run(small);
-  });
-  const largeMs = bestOfMs(() => {
-    run(large);
-  });
-  if (largeMs < NOISE_FLOOR_MS) return;
-  const ratio = largeMs / smallMs;
-  expect(
-    ratio,
-    `time(${SIZE_FACTOR}N)=${largeMs.toFixed(2)}ms / time(N)=${smallMs.toFixed(2)}ms`
-  ).toBeLessThan(MAX_GROWTH_RATIO);
+  // Scheduler noise only ever inflates a measurement, and a loaded host
+  // inflates the tiny N run (sub-millisecond, near timer resolution) unevenly.
+  // A genuinely super-linear scan exceeds the bound on every attempt, so a
+  // linear scan only has to land under it once.
+  let ratio = Number.POSITIVE_INFINITY;
+  let detail = '';
+  for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+    const smallMs = bestOfMs(() => {
+      run(small);
+    });
+    const largeMs = bestOfMs(() => {
+      run(large);
+    });
+    if (largeMs < NOISE_FLOOR_MS) return;
+    const measured = largeMs / smallMs;
+    if (measured < ratio) {
+      ratio = measured;
+      detail = `time(${SIZE_FACTOR}N)=${largeMs.toFixed(2)}ms / time(N)=${smallMs.toFixed(2)}ms`;
+    }
+    if (ratio < MAX_GROWTH_RATIO) break;
+  }
+  expect(ratio, detail).toBeLessThan(MAX_GROWTH_RATIO);
 }

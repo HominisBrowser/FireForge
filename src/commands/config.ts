@@ -141,18 +141,17 @@ export async function configCommand(
       !options.force
     ) {
       throw new InvalidArgumentError(
-        `Unknown config key prefix: "${topLevelKey}". Known keys: ${SUPPORTED_CONFIG_ROOT_KEYS.join(', ')}. Use --force to set anyway.`
+        `Unknown config key prefix: "${topLevelKey}". Known keys: ${SUPPORTED_CONFIG_ROOT_KEYS.join(', ')}. Use --force to set a schema path missing from this list.`
       );
     }
 
     if (!(SUPPORTED_CONFIG_PATHS as readonly string[]).includes(key) && !options.force) {
       throw new InvalidArgumentError(
-        `Unknown config key: "${key}". Known keys: ${SUPPORTED_CONFIG_PATHS.join(', ')}. Use --force to set anyway.`
+        `Unknown config key: "${key}". Known keys: ${SUPPORTED_CONFIG_PATHS.join(', ')}. Use --force to set a deeper schema path.`
       );
     }
 
     const parsedValue = parseValue(value, key);
-    const keyIsKnown = (SUPPORTED_CONFIG_PATHS as readonly string[]).includes(key);
 
     let unchanged: boolean;
     try {
@@ -175,30 +174,12 @@ export async function configCommand(
           return true;
         }
 
-        // `--force` is an escape hatch for unknown keys. It must not also
-        // let the user write a structurally invalid value for a known key.
-        // Strict validation applies whenever the key is listed in
-        // SUPPORTED_CONFIG_PATHS, regardless of --force.
-        //
-        // Both branches seed the mutation from the raw on-disk document.
-        // Round-tripping the known-key branch through `loadConfig` →
-        // `validateConfig` builds a typed clone containing only the known
-        // schema fields, so any ordinary `fireforge config <key> <value>`
-        // would silently drop every previously --force-written key from
-        // fireforge.json.
-        if (options.force && !keyIsKnown) {
-          const updatedConfig = mutateConfig(rawConfig, key, parsedValue, true);
-          await writeConfigDocument(projectRoot, updatedConfig);
-        } else {
-          // Mutate the raw document (preserving unknown keys), then run
-          // strict validation on the result. validateConfig checks the
-          // known schema fields and ignores unknown keys, so this keeps
-          // exactly the old validation strength while writing the
-          // unstripped document.
-          const updatedConfig = mutateConfig(rawConfig, key, parsedValue, true);
-          validateConfig(updatedConfig);
-          await writeConfigDocument(projectRoot, updatedConfig);
-        }
+        // Mutate the raw document, then validate the whole result: `--force`
+        // only skips the key-name check above, never the schema, so neither a
+        // bad value nor an unknown key can be written.
+        const updatedConfig = mutateConfig(rawConfig, key, parsedValue, true);
+        validateConfig(updatedConfig);
+        await writeConfigDocument(projectRoot, updatedConfig);
         return false;
       });
     } catch (error: unknown) {
@@ -258,7 +239,10 @@ export function registerConfig(
   program
     .command('config <key> [value]')
     .description('Get or set configuration values')
-    .option('-f, --force', 'Allow setting unknown config keys')
+    .option(
+      '-f, --force',
+      'Allow a path missing from the known-path list (the result is still schema-validated)'
+    )
     .action(
       withErrorHandling(
         async (key: string, value: string | undefined, options: { force?: boolean }) => {

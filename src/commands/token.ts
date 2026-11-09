@@ -9,7 +9,6 @@ import {
   getTokensCssPath,
   isTokenMode,
   TOKEN_MODES,
-  validateTokenAdd,
 } from '../core/token-manager.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import { FurnaceError } from '../errors/furnace.js';
@@ -17,11 +16,12 @@ import type { CommandContext } from '../types/cli.js';
 import type { TokenAddOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { addWaitLockOption, pickDefined } from '../utils/options.js';
 import { normalizeTokenName } from '../utils/validation.js';
 import { tokenCoverageCommand } from './token-coverage.js';
 import { tokenLintCommand } from './token-lint.js';
 import { tokenListCommand, tokenShowCommand } from './token-list.js';
+import { runUnderEngineLockForAuthoredEdit } from './with-engine-lock.js';
 
 async function normalizeTokenNameForProject(
   projectRoot: string,
@@ -46,7 +46,7 @@ async function normalizeTokenNameForProject(
         );
         return normalizeTokenName(strippedName);
       }
-      return `--${strippedPrefix}-${strippedName}`;
+      return normalizeTokenName(`--${strippedPrefix}-${strippedName}`);
     }
   } catch (error: unknown) {
     warn(
@@ -118,8 +118,7 @@ export async function tokenAddCommand(
   // user supplied a bare token name like "canvas-gap".
   tokenName = await normalizeTokenNameForProject(projectRoot, tokenName);
 
-  // Validate mode. The guard IS the runtime proof, so the three `as
-  // TokenMode` casts this replaced are gone with it.
+  // Validate mode. The guard is the runtime proof that narrows the type.
   if (!isTokenMode(options.mode)) {
     throw new InvalidArgumentError(
       `Invalid mode "${options.mode}". Must be one of: ${TOKEN_MODES.join(', ')}`,
@@ -128,7 +127,7 @@ export async function tokenAddCommand(
   }
 
   if (options.dryRun) {
-    await validateTokenAdd(projectRoot, {
+    const preview = await addToken(projectRoot, {
       tokenName,
       value,
       mode: options.mode,
@@ -139,6 +138,12 @@ export async function tokenAddCommand(
       ...(options.variant !== undefined ? { variant: options.variant } : {}),
       dryRun: true,
     });
+
+    if (preview.skipped) {
+      reportSkippedToken(tokenName, preview, options);
+      outro('Dry run complete');
+      return;
+    }
 
     info('[dry-run] Would add token:');
     info(`  Name: ${tokenName}`);
@@ -200,7 +205,7 @@ export function registerToken(
       token.outputHelp();
     });
 
-  token
+  const add = token
     .command('add <token-name> <value>')
     .description(
       'Add a design token to CSS and documentation. The token name is a positional argument, but most tokens start with `--` (CSS custom property syntax), which Commander reads as an option flag. Use the standard `--` separator to mark the end of options before the token name, e.g. `fireforge token add --mode static --category Colors -- --my-token "#fff"`. Bare names without `--` are accepted directly and prefixed using the configured Furnace `tokenPrefix`.'
@@ -243,23 +248,26 @@ export function registerToken(
       '--create-category',
       'Declare the category banner in the tokens CSS if it does not exist yet'
     )
-    .option('--dry-run', 'Show what would be changed without writing')
-    .action(
-      withErrorHandling(
-        async (
-          tokenName: string,
-          value: string,
-          options: {
-            category?: string;
-            mode: string;
-            description?: string;
-            darkValue?: string;
-            dryRun?: boolean;
-            createCategory?: boolean;
-            variant?: string;
-          }
-        ) => {
-          await tokenAddCommand(getProjectRoot(), tokenName, value, {
+    .option('--dry-run', 'Show what would be changed without writing');
+  addWaitLockOption(add).action(
+    withErrorHandling(
+      async (
+        tokenName: string,
+        value: string,
+        options: {
+          category?: string;
+          mode: string;
+          description?: string;
+          darkValue?: string;
+          dryRun?: boolean;
+          createCategory?: boolean;
+          variant?: string;
+          waitLock?: boolean | number;
+        }
+      ) => {
+        const projectRoot = getProjectRoot();
+        await runUnderEngineLockForAuthoredEdit(projectRoot, 'token add', options, () =>
+          tokenAddCommand(projectRoot, tokenName, value, {
             mode: options.mode,
             ...pickDefined({
               category: options.category,
@@ -269,10 +277,11 @@ export function registerToken(
               createCategory: options.createCategory,
               variant: options.variant,
             }),
-          });
-        }
-      )
-    );
+          })
+        );
+      }
+    )
+  );
 
   token
     .command('list')

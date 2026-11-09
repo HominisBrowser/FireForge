@@ -2,7 +2,7 @@
 import { join } from 'node:path';
 
 import { getProjectPaths, loadConfig } from '../core/config.js';
-import { assertEngineGitReady } from '../core/engine-precondition.js';
+import { assertEngineGitReady, assertJudgedInSlot } from '../core/engine-precondition.js';
 import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
 import { measureTokenCoverage } from '../core/token-coverage.js';
@@ -26,6 +26,7 @@ export async function tokenCoverageCommand(projectRoot: string): Promise<void> {
 
   const paths = getProjectPaths(projectRoot);
 
+  await assertJudgedInSlot(projectRoot, '"token coverage"');
   await assertEngineGitReady(paths.engine);
 
   const config = await loadConfig(projectRoot);
@@ -113,7 +114,7 @@ export async function tokenCoverageCommand(projectRoot: string): Promise<void> {
 
   const summary = `Token coverage: ${coverage}% (${report.tokenUsages} tokens / ${denominator} total) — ${report.rawColorCount} raw colors, ${report.unknownVarUsages} unknown vars`;
 
-  if (coverage === 100 && report.rawColorCount === 0) {
+  if (coverage === 100 && report.rawColorCount === 0 && report.unknownVarUsages === 0) {
     success(summary);
   } else {
     warn(summary);

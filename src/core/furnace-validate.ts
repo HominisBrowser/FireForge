@@ -9,7 +9,11 @@ import { extractComponentChecksums } from './furnace-checksum-utils.js';
 import { getFurnacePaths, loadFurnaceConfig, loadFurnaceState } from './furnace-config.js';
 import { resolveFtlDir, xpcshellTestParentDir } from './furnace-constants.js';
 import { validateCssFragments } from './furnace-css-fragments.js';
-import { findJsconfigPathsDrift, typecheckJsconfigList } from './furnace-jsconfig.js';
+import {
+  findJsconfigPathsDrift,
+  GENERATED_TYPES_REMEDY,
+  typecheckJsconfigList,
+} from './furnace-jsconfig.js';
 import { syncFurnaceTagMap } from './furnace-tag-map.js';
 import {
   validateAccessibility,
@@ -142,7 +146,7 @@ export async function validateComponent(
   // aggregate versions itself. Otherwise the same issues are reported twice.
   if (root && config && type === 'custom' && !options?.skipAggregateChecks) {
     const customConfig = config.custom[tagName];
-    if (customConfig?.register) {
+    if (customConfig) {
       const singleConfig: FurnaceConfig = {
         ...config,
         custom: { [tagName]: customConfig },
@@ -270,19 +274,28 @@ export async function validateAllComponents(root: string): Promise<Map<string, V
 
 /**
  * Drift findings for the Furnace-maintained typecheck files: one
- * `jsconfig-paths-drift` warning per out-of-date `typecheckJsconfig` file,
- * and a `tag-map-drift` warning when `typecheckTagMap` is out of date.
- * Detection never breaks validation: a missing or unparsable jsconfig is
- * reported by deploy, with guidance.
+ * `jsconfig-paths-drift` finding per out-of-date `typecheckJsconfig` file,
+ * and a `tag-map-drift` finding when `typecheckTagMap` is out of date.
+ * Warnings in queue mode, where `typecheck` regenerates them; errors in
+ * source mode, where the committed copy is what every slot gets. Detection
+ * never breaks validation: a missing or unparsable jsconfig is reported by
+ * the writer, with guidance.
  */
 async function findTypecheckArtifactDrift(
   root: string,
   config: FurnaceConfig
 ): Promise<ValidationIssue[]> {
+  let sourceRoot: string | undefined;
+  try {
+    sourceRoot = (await loadConfig(root)).sources?.root;
+  } catch {
+    sourceRoot = undefined;
+  }
+  const severity = sourceRoot === undefined ? 'warning' : 'error';
   const issues: ValidationIssue[] = [];
   for (const jsconfig of typecheckJsconfigList(config)) {
     try {
-      const drift = await findJsconfigPathsDrift(root, config, jsconfig);
+      const drift = await findJsconfigPathsDrift(root, config, jsconfig, sourceRoot);
       if (!drift.changed) continue;
       const detail = [
         ...drift.added.map((key) => `missing: ${key}`),
@@ -291,26 +304,28 @@ async function findTypecheckArtifactDrift(
       ].join('; ');
       issues.push({
         component: 'furnace',
-        severity: 'warning',
+        severity,
         check: 'jsconfig-paths-drift',
         message:
           `${jsconfig} chrome-module paths are out of sync with the workspace (${detail}). ` +
-          'Run "fireforge furnace deploy" to update them.',
+          GENERATED_TYPES_REMEDY,
       });
     } catch {
       continue;
     }
   }
   try {
-    const tagMap = await syncFurnaceTagMap(root, config, { dryRun: true });
+    const tagMap = await syncFurnaceTagMap(root, config, { dryRun: true, sourceRoot });
     if (tagMap?.changed === true) {
       issues.push({
         component: 'furnace',
-        severity: 'warning',
+        severity,
         check: 'tag-map-drift',
         message:
-          `${tagMap.file} is out of date with the workspace's custom element definitions. ` +
-          'Run "fireforge furnace deploy" to rewrite it.',
+          (tagMap.missing
+            ? `${tagMap.file} does not exist. `
+            : `${tagMap.file} is out of date with the workspace's custom element definitions. `) +
+          GENERATED_TYPES_REMEDY,
       });
     }
   } catch {

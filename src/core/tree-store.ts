@@ -25,7 +25,7 @@ import { verbose, warn } from '../utils/logger.js';
 import { isObject } from '../utils/validation.js';
 import { getBuildBaselinePath } from './build-baseline.js';
 import { LOCK_PID_FILE, withFileLock } from './file-lock.js';
-import { git } from './git-base.js';
+import { git, gitResult } from './git-base.js';
 import { getAllDiff } from './git-diff.js';
 import { attemptMozinfoRewrite } from './mach-build-artifacts.js';
 import { checkDocumentVersion, describeNewerDocument } from './state-file.js';
@@ -68,6 +68,10 @@ export interface TreeListEntry {
     | 'unknown';
 }
 
+/** Project-root files and directories that conventionally hold credentials. */
+const CREDENTIAL_ROOT_ENTRY =
+  /^(?:\.npmrc|\.netrc|\.pypirc|\.aws|\.ssh|\.gnupg|\.docker|credentials(?:\..*)?|.*\.(?:pem|key|p12|pfx))$/i;
+
 /**
  * Top-level entries never cloned into a tree: per-tree state must start
  * clean (`.fireforge/`), locks are never inherited, the destructive-
@@ -79,6 +83,14 @@ function isExcludedRootEntry(name: string): boolean {
     name === '.fireforge' ||
     name === 'node_modules' ||
     name === '.fireforge-history.jsonl' ||
+    name === 'secrets' ||
+    name === '.env' ||
+    name.startsWith('.env.') ||
+    CREDENTIAL_ROOT_ENTRY.test(name) ||
+    name === 'UX_example' ||
+    name === 'concepts' ||
+    name === '.sweep-autonomous' ||
+    name.startsWith('artifacts') ||
     name.endsWith('.lock')
   );
 }
@@ -396,6 +408,16 @@ export async function cloneTree(args: {
       (engineEntry) => !engineEntry.startsWith('obj-') || engineEntry === withObjdir?.objDir
     );
     await mapWithConcurrency(engineEntries, TREE_CLONE_CONCURRENCY, async (engineEntry) => {
+      if (engineEntry === withObjdir?.objDir) {
+        const sourceObjdir = join(primaryEngineDir, engineEntry);
+        const targetObjdir = join(engineDir, engineEntry);
+        await mkdir(targetObjdir, { recursive: true });
+        const children = (await readdir(sourceObjdir)).filter((child) => child !== 'tmp');
+        await mapWithConcurrency(children, TREE_CLONE_CONCURRENCY, async (child) => {
+          await cloneEntry(capability, join(sourceObjdir, child), join(targetObjdir, child));
+        });
+        return;
+      }
       await cloneEntry(
         capability,
         join(primaryEngineDir, engineEntry),
@@ -410,6 +432,12 @@ export async function cloneTree(args: {
   if (await pathExists(engineDir)) {
     // Defensive: never inherit a mid-operation git index lock.
     await rm(join(engineDir, '.git', 'index.lock'), { force: true });
+    // Every file is a new inode here, so each entry reads as stat-dirty until the
+    // index is refreshed, and FireForge's Git environment never refreshes it on
+    // a status. Exit 1 only reports entries that really differ.
+    if (await pathExists(join(engineDir, '.git'))) {
+      await gitResult(['update-index', '-q', '--refresh'], engineDir);
+    }
   }
 
   if (withObjdir) {

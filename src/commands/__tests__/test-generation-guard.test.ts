@@ -5,8 +5,8 @@
  * `FAIL reason=inconclusive` as its single verdict line: the sharded
  * aggregate `PASS shards=N/N` must never print first, and single runs must
  * not end verdict-less. Kept separate from `test.test.ts`, which leaves
- * `engine-session-lock.js` unmocked (its probes fail
- * against the fake `/project/engine` and take the warn-only branch).
+ * `engine-state.js` unmocked (its probes fail against the fake
+ * `/project/engine` and take the warn-only branch).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -16,11 +16,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // relying on an accident: `/project` is a filesystem root on POSIX, so the
 // best-effort open fails and degrades to "no log", but on Windows the same
 // path resolves against the current drive and succeeds.
-vi.mock('../../core/test-host-state.js', () => ({
-  sampleTestHost: vi.fn(() => Promise.resolve({ load: 0, power: 'unknown' })),
-  reportTestHost: vi.fn(() => false),
-  stampPerfHost: vi.fn(() => Promise.resolve(false)),
-}));
+vi.mock('../../core/test-host-state.js', async (importOriginal) =>
+  (await import('./test-command-mocks.js')).testHostStateMock(importOriginal)
+);
 
 vi.mock('../../core/run-log.js', async () =>
   (await import('../../test-utils/module-mocks.js')).createRunLogMock()
@@ -62,15 +60,16 @@ vi.mock('../../core/mach.js', () => {
   };
 });
 
-vi.mock('../../core/engine-session-lock.js', () => ({
-  snapshotEngineGeneration: vi.fn(() => Promise.resolve('generation-before')),
-  assertEngineGenerationUnchanged: vi.fn(() => Promise.resolve()),
+vi.mock('../../core/engine-state.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/engine-state.js')>()),
+  captureEngineGeneration: vi.fn(() => Promise.resolve('generation-before')),
+  refreshEngineGeneration: vi.fn(() => Promise.resolve('generation-after')),
+  judgeEngineGeneration: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock('../../core/build-baseline.js', () => ({
-  readBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
-  writeBuildBaseline: vi.fn(() => Promise.resolve()),
-}));
+vi.mock('../../core/build-baseline.js', async () =>
+  (await import('./test-command-mocks.js')).buildBaselineMock()
+);
 
 vi.mock('../../core/test-path-scope.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../core/test-path-scope.js')>();
@@ -130,19 +129,9 @@ vi.mock('../../core/marionette-port.js', async () => {
   };
 });
 
-vi.mock('../../core/test-stale-check.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../core/test-stale-check.js')>();
-  return {
-    ...actual,
-    checkStaleBuildForTest: vi.fn(() =>
-      Promise.resolve({ stale: false, changedPaths: [], truncated: 0, baseline: undefined })
-    ),
-    checkStaticComponentsStale: vi.fn(() =>
-      Promise.resolve({ stale: false, changedManifests: [] })
-    ),
-    formatStaleBuildWarning: vi.fn(() => 'stale warning'),
-  };
-});
+vi.mock('../../core/test-stale-check.js', async (importOriginal) =>
+  (await import('./test-command-mocks.js')).testStaleCheckMock(importOriginal)
+);
 
 vi.mock('../../core/xpcshell-appdir.js', () => ({
   findNearestXpcshellManifest: vi.fn(() => Promise.resolve(null)),
@@ -154,14 +143,15 @@ vi.mock('../../core/tree-store.js', () => ({
   assertObjdirMatchesTreeMarker: vi.fn(() => Promise.resolve()),
 }));
 
-import { assertEngineGenerationUnchanged } from '../../core/engine-session-lock.js';
+import { judgeEngineGeneration } from '../../core/engine-state.js';
 import { runMachTestSuite } from '../../core/mach.js';
 import { GeneralError } from '../../errors/base.js';
 import { testCommand } from '../test.js';
 
 const GREEN = {
   exitCode: 0,
-  stdout: 'TEST-START | requested-test\nTEST-OK | requested-test\nPassed: 3',
+  stdout:
+    'TEST-START | requested-test\nTEST-OK | requested-test\nPassed: 3\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
   stderr: '',
 };
 
@@ -188,12 +178,12 @@ function captureVerdictLines(): { verdicts: () => string[]; restore: () => void 
 describe('engine-generation guard verdict ordering', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(assertEngineGenerationUnchanged).mockResolvedValue();
+    vi.mocked(judgeEngineGeneration).mockResolvedValue();
   });
 
   it('a green sharded run whose engine mutated emits FAIL reason=inconclusive, never PASS shards=', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
-    vi.mocked(assertEngineGenerationUnchanged).mockRejectedValue(GENERATION_ERROR);
+    vi.mocked(judgeEngineGeneration).mockRejectedValue(GENERATION_ERROR);
 
     const capture = captureVerdictLines();
     try {
@@ -207,13 +197,13 @@ describe('engine-generation guard verdict ordering', () => {
       capture.restore();
     }
     expect(capture.verdicts()).toEqual([
-      'FIREFORGE-VERDICT: FAIL reason=inconclusive host-load=0.00\n',
+      'FIREFORGE-VERDICT: FAIL reason=inconclusive host-load=0.00 display=unknown power-source=unknown\n',
     ]);
   });
 
   it('a green single run whose engine mutated emits FAIL reason=inconclusive instead of nothing', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue(GREEN);
-    vi.mocked(assertEngineGenerationUnchanged).mockRejectedValue(GENERATION_ERROR);
+    vi.mocked(judgeEngineGeneration).mockRejectedValue(GENERATION_ERROR);
 
     const capture = captureVerdictLines();
     try {
@@ -224,7 +214,7 @@ describe('engine-generation guard verdict ordering', () => {
       capture.restore();
     }
     expect(capture.verdicts()).toEqual([
-      'FIREFORGE-VERDICT: FAIL reason=inconclusive host-load=0.00\n',
+      'FIREFORGE-VERDICT: FAIL reason=inconclusive host-load=0.00 display=unknown power-source=unknown\n',
     ]);
   });
 
@@ -242,12 +232,14 @@ describe('engine-generation guard verdict ordering', () => {
     } finally {
       capture.restore();
     }
-    expect(capture.verdicts()).toEqual(['FIREFORGE-VERDICT: PASS shards=2/2 host-load=0.00\n']);
+    expect(capture.verdicts()).toEqual([
+      'FIREFORGE-VERDICT: PASS shards=2/2 host-load=0.00 display=unknown power-source=unknown\n',
+    ]);
     // The guard ran before the verdict was emitted.
     // An ordinary run passes the run-scoped drift tolerance (test-perf-scope.ts).
-    expect(assertEngineGenerationUnchanged).toHaveBeenCalledWith(
-      '/project/engine',
+    expect(judgeEngineGeneration).toHaveBeenCalledWith(
       'generation-before',
+      'generation-after',
       expect.any(Function)
     );
   });

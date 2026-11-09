@@ -21,11 +21,11 @@
  */
 
 import { createWriteStream, type WriteStream } from 'node:fs';
-import { mkdir, readdir, stat, unlink } from 'node:fs/promises';
+import { mkdir, open, readdir, stat, unlink } from 'node:fs/promises';
 import { basename as basenameOf, dirname, join, resolve } from 'node:path';
 import { Writable } from 'node:stream';
 
-import { toError } from '../utils/errors.js';
+import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { FIREFORGE_DIR } from './config-paths.js';
 import { redactRunLogText } from './run-log-redact.js';
@@ -133,15 +133,39 @@ export async function openRunLog(
   now: Date = new Date()
 ): Promise<RunLog | undefined> {
   const dir = getRunLogDir(projectRoot);
-  const path = join(dir, `${command}-${fileSafeTimestamp(now)}.log`);
+  const stem = `${command}-${fileSafeTimestamp(now)}`;
+  let path = join(dir, `${stem}.log`);
   try {
     await mkdir(dir, { recursive: true });
     await pruneRunLogs(dir, command);
+    path = await reserveRunLogPath(dir, stem);
   } catch (error: unknown) {
     verbose(`Run log unavailable (${path}): ${toError(error).message}`);
     return undefined;
   }
   return openRunLogSink(path);
+}
+
+/**
+ * Creates the run's log file exclusively, so two runs started within the
+ * same millisecond never share (and interleave into) one file. A taken
+ * name gets a numeric suffix.
+ *
+ * @param dir - Log directory
+ * @param stem - `<command>-<timestamp>`
+ * @returns The path of the newly created, empty file
+ */
+async function reserveRunLogPath(dir: string, stem: string): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    const path = join(dir, attempt === 0 ? `${stem}.log` : `${stem}-${attempt}.log`);
+    try {
+      const handle = await open(path, 'wx');
+      await handle.close();
+      return path;
+    } catch (error: unknown) {
+      if (getNodeErrorCode(error) !== 'EEXIST' || attempt >= 99) throw error;
+    }
+  }
 }
 
 /**

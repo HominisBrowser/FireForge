@@ -263,6 +263,10 @@ export function validatePatchesManifest(data: unknown): PatchesManifest {
   };
   if (data['retired'] !== undefined) manifest.retired = parseRetiredSlots(data['retired']);
   if (data['reserved'] !== undefined) manifest.reserved = parseReservedSlots(data['reserved']);
+  if (data['source'] !== undefined) {
+    const source = parseObject(data['source'], 'source');
+    manifest.source = { snapshot: source.string('snapshot') };
+  }
   return manifest;
 }
 

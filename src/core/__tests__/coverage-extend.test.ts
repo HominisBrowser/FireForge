@@ -6,6 +6,7 @@
  * not prove.
  */
 import { createHash } from 'node:crypto';
+import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -19,6 +20,7 @@ import {
 } from '../../test-utils/index.js';
 import type { BuildBaseline, CoverageRecord } from '../build-baseline-types.js';
 import { isBuildBaseline } from '../build-baseline-validate.js';
+import { filterByCarriedFullCoverage } from '../coverage-dispatch.js';
 import {
   applyMozconfigAnchor,
   baselineAnchor,
@@ -30,6 +32,7 @@ import {
   planCoverageRetention,
   recordScopedCoverage,
 } from '../coverage-extend.js';
+import { FULL_SUITE_REQUEST } from '../test-stale-check.js';
 
 const MOZCONFIG = 'ac_add_options --enable-application=browser\n';
 const A_TEST = 'browser/a/test/browser_a.js';
@@ -110,6 +113,76 @@ describe('per-path coverage retention', () => {
     );
     expect(plan.dropped).toEqual([]);
     expect(Object.keys(plan.retained)).toEqual([A_TEST]);
+  });
+
+  describe('a changed input the runtime already serves', () => {
+    const OBJ = 'obj-test';
+    const SEP = '\x1f';
+
+    beforeEach(async () => {
+      await writeFile(join(engineDir, '.git/info/exclude'), `${OBJ}/\n`);
+      const manifest = (entries: string[][]): string =>
+        ['5', ...entries.map((fields) => fields.join(SEP))].join('\n');
+      await writeFiles(engineDir, {
+        [`${OBJ}/_build_manifests/install/dist_bin`]: manifest([
+          ['2', 'chrome/fixture.txt', join(engineDir, SHARED)],
+        ]),
+      });
+    });
+
+    const plan = (): Promise<CoverageRetentionPlan> =>
+      planCoverageRetention(
+        engineDir,
+        scopedBaseline({ testCoverageRecords: { [A_TEST]: recordFor() } }),
+        [B_TEST]
+      );
+
+    it("keeps a claim over a peer's new test beside it, which only a manifest entry can stage", async () => {
+      await writeFiles(engineDir, { 'browser/a/test/browser_peer.js': 'peer test\n' });
+      const kept = await plan();
+      expect(kept.dropped).toEqual([]);
+      expect(Object.keys(kept.retained)).toEqual([A_TEST]);
+    });
+
+    it('still drops a claim over a changed manifest, which is what stages fixtures', async () => {
+      await writeFiles(engineDir, {
+        'browser/a/test/browser.toml': '["browser_a.js"]\n["browser_new.js"]\n',
+      });
+      const { dropped } = await plan();
+      expect(dropped).toEqual([expect.objectContaining({ path: A_TEST })]);
+      expect(dropped[0]?.changed).toEqual(['browser/a/test/browser.toml']);
+    });
+
+    it('still drops a claim over a fixture the build copied into the package', async () => {
+      await writeFiles(engineDir, { [SHARED]: 'edited copy source\n' });
+      const { dropped } = await plan();
+      expect(dropped[0]?.changed).toEqual([SHARED]);
+    });
+
+    it('still drops a claim over a deleted input, which nothing serves', async () => {
+      await rm(join(engineDir, A_TEST));
+      const { dropped } = await plan();
+      expect(dropped[0]?.changed).toEqual([A_TEST]);
+    });
+
+    it('lets a build-less run through a carried full anchor on the same terms', async () => {
+      const baseline = scopedBaseline({
+        testCoverageRecords: {},
+        fullCoverageAnchor: {
+          engineHeadSha: head,
+          mozconfigHash: sha256(MOZCONFIG),
+          fingerprints: {},
+        },
+      });
+      await writeFiles(engineDir, { 'browser/a/test/browser_peer.js': 'peer test\n' });
+      await expect(
+        filterByCarriedFullCoverage(engineDir, baseline, [A_TEST], FULL_SUITE_REQUEST)
+      ).resolves.toEqual([]);
+      await writeFiles(engineDir, { 'browser/a/test/browser.toml': '["browser_new.js"]\n' });
+      await expect(
+        filterByCarriedFullCoverage(engineDir, baseline, [A_TEST], FULL_SUITE_REQUEST)
+      ).resolves.toEqual([{ path: A_TEST, changed: ['browser/a/test/browser.toml'] }]);
+    });
   });
 
   it('drops only the path whose own staging input changed, naming the input', async () => {

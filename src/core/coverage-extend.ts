@@ -3,9 +3,10 @@
  * Decides which earlier packaging claims a scoped `fireforge test --build`
  * keeps. Retention is per staged path (see `coverage-records.ts`): an
  * earlier path stays covered while its own staging inputs are unchanged,
- * whatever moved elsewhere in the engine, and a full claim narrows to
- * per-path checks once something outside the new scope changed instead of
- * collapsing to this build's paths. `--extend-coverage` turns any drop into
+ * whatever moved elsewhere in the engine, and a change to one the runtime
+ * already serves (see `createCoverageInputFilter`) does not count. A full claim
+ * narrows to per-path checks once something outside the new scope changed
+ * instead of collapsing to this build's paths. `--extend-coverage` turns any drop into
  * a refusal before the build.
  *
  * Fingerprints must be complete: a record of packageable inputs only cannot
@@ -33,6 +34,7 @@ import {
   refreshAnchor,
   widenWithRestagedManifests,
 } from './coverage-records.js';
+import { createCoverageInputFilter } from './test-stale-exempt.js';
 
 export { hashEngineFile } from './coverage-records.js';
 
@@ -105,13 +107,13 @@ async function planFullClaim(
     plan.dropped.push({ path: FULL_CLAIM_LABEL, changed: [], reason: NO_FINGERPRINTS });
     return plan;
   }
-  const changed = await findChangedInputs(state, anchor, undefined, requested);
-  const refreshed =
-    changed === undefined ? undefined : await refreshAnchor(state, anchor, requested);
-  if (changed === undefined || refreshed === undefined) {
+  const found = await findChangedInputs(state, anchor, undefined, requested);
+  const refreshed = found === undefined ? undefined : await refreshAnchor(state, anchor, requested);
+  if (found === undefined || refreshed === undefined) {
     plan.dropped.push({ path: FULL_CLAIM_LABEL, changed: [], reason: UNVERIFIABLE });
     return plan;
   }
+  const changed = await createCoverageInputFilter(state.engineDir)(found);
   plan.keepFull = changed.length === 0;
   plan.fullAnchor = refreshed;
   plan.narrowedBy = changed;
@@ -122,7 +124,8 @@ async function retainRecord(
   state: EngineContentState,
   previous: BuildBaseline,
   path: string,
-  requested: string[]
+  requested: string[],
+  voiding: (changed: readonly string[]) => Promise<string[]>
 ): Promise<{ record: CoverageRecord } | DroppedClaim> {
   let record = previous.testCoverageRecords?.[path];
   if (record === undefined) {
@@ -134,8 +137,9 @@ async function retainRecord(
     record = await narrowAnchor(state, anchor, inputs);
     if (record === undefined) return { path, changed: [], reason: UNVERIFIABLE };
   }
-  const changed = await findChangedInputs(state, record, record.inputs, requested);
-  if (changed === undefined) return { path, changed: [], reason: UNVERIFIABLE };
+  const found = await findChangedInputs(state, record, record.inputs, requested);
+  if (found === undefined) return { path, changed: [], reason: UNVERIFIABLE };
+  const changed = await voiding(found);
   if (changed.length > 0) return { path, changed };
   const refreshed = await refreshAnchor(state, record, requested);
   return refreshed === undefined
@@ -183,9 +187,10 @@ export async function planCoverageRetention(
       plan.dropped.push({ path: FULL_CLAIM_LABEL, changed: [], reason: UNVERIFIABLE });
     }
   }
+  const voiding = createCoverageInputFilter(engineDir);
   for (const path of coverage) {
     if (rebuiltBy(path, rebuilt)) continue;
-    const outcome = await retainRecord(state, previous, path, rebuilt);
+    const outcome = await retainRecord(state, previous, path, rebuilt, voiding);
     if ('record' in outcome) plan.retained[path] = outcome.record;
     else plan.dropped.push(outcome);
   }

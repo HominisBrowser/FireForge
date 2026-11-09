@@ -11,7 +11,6 @@ import MagicString from 'magic-string';
 
 import { FurnaceError } from '../errors/furnace.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { verbose, warn } from '../utils/logger.js';
 import { escapeRegex } from '../utils/regex.js';
 import {
@@ -22,6 +21,7 @@ import {
   parseScript,
   walkAST,
 } from './ast-utils.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
 import { CUSTOM_ELEMENTS_JS } from './furnace-constants.js';
 import { validateRegistrationPlacement, validateTagName } from './furnace-registration-validate.js';
 

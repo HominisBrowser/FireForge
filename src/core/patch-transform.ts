@@ -76,9 +76,9 @@ export function extractNewFileContentsFromDiff(
  */
 function contentFromSections(sections: readonly DiffSection[]): string {
   // An empty new file is a legitimate git diff: `new file mode` with no
-  // hunks at all. It must extract as '': the historical line-walker
-  // returned '\n' for it, creating a one-byte file that failed checksum
-  // and drift comparisons against the truly empty file the patch creates.
+  // hunks at all. It must extract as '', not '\n': a one-byte file would
+  // fail checksum and drift comparisons against the truly empty file the
+  // patch creates.
   const hunks = sections.flatMap((section) => section.hunks);
   if (hunks.length === 0) {
     return '';

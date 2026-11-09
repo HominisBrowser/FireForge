@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { updateState } from '../../core/config.js';
 import { stampFurnaceOverrideBaseVersions } from '../../core/furnace-config.js';
 import { getDiffForFilesAgainstHead } from '../../core/git-diff.js';
+import { filesSharedWithOtherPatches } from '../../core/ownership-table.js';
 import { applyPatchWithFuzz } from '../../core/patch-apply-fuzz.js';
 import { updatePatch } from '../../core/patch-export.js';
 import { discoverPatches } from '../../core/patch-files.js';
@@ -283,13 +284,6 @@ async function reExportAppliedPatches(
   // double-materialises. Refuse to auto-re-export any patch whose files
   // overlap another patch. The operator re-exports those manually where
   // per-patch attribution is possible.
-  const fileOwners = new Map<string, number>();
-  for (const patch of manifest.patches) {
-    for (const file of patch.filesAffected) {
-      fileOwners.set(file, (fileOwners.get(file) ?? 0) + 1);
-    }
-  }
-
   const s = spinner('Re-exporting patches...');
 
   const reExportable = session.patches.filter(
@@ -301,7 +295,7 @@ async function reExportAppliedPatches(
     const meta = manifest.patches.find((p) => p.filename === entry.filename);
     if (!meta) continue;
 
-    const sharedFiles = meta.filesAffected.filter((f) => (fileOwners.get(f) ?? 0) > 1);
+    const sharedFiles = filesSharedWithOtherPatches(manifest.patches, meta);
     if (sharedFiles.length > 0) {
       overlapSkipped.push(entry.filename);
       warn(

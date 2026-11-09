@@ -6,8 +6,10 @@
  *  - mixed harness paths run as two consecutive mach invocations, xpcshell
  *    first, with one pre-test build (when `--build`) packaging both halves;
  *  - `--repeat <n>` runs the same selection n times, building once;
- *  - `--negative-control <diff>` applies a reviewed mutation after the
- *    build and right before each dispatch, and restores it after the run.
+ *  - `--negative-control <diff>` first dispatches the selection unmutated, then
+ *    applies a reviewed mutation after the build and right before each
+ *    dispatch, and restores it after the run. Only a selection green without
+ *    the mutation can show the mutation is what turned it red.
  *
  * Each sub-run is the ordinary single-run body. Its verdict line is
  * captured rather than printed (see `setVerdictCapture`) and echoed as a
@@ -16,8 +18,13 @@
  * body exactly as before.
  */
 
+import { lstat, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import type { ControlBuildStamp } from '../core/build-baseline-types.js';
 import { getProjectPaths } from '../core/config.js';
+import { CONTROL_ASSERTIONS_ENV, controlLabelRefusal } from '../core/control-assertions.js';
+import { invalidateEngineState } from '../core/engine-state.js';
 import {
   type ActiveNegativeControl,
   applyNegativeControl,
@@ -26,16 +33,19 @@ import {
   planNegativeControl,
   recoverPendingNegativeControl,
   restoreNegativeControl,
+  verifyNegativeControlForDispatch,
 } from '../core/negative-control.js';
 import {
   formatCompiledControlBuildNotice,
   formatCompiledControlRefusal,
 } from '../core/negative-control-compiled.js';
 import { getActiveRunLogPath, writeToActiveRunLog } from '../core/run-log.js';
+import { CONTROL_BASELINE_REPETITION } from '../core/test-results-document.js';
 import { GeneralError, InvalidArgumentError, PreflightRefusalError } from '../errors/base.js';
 import { TestFailureError } from '../errors/build.js';
 import type { TestOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
+import { sha256Hex } from '../utils/hash.js';
 import { info, notice, success } from '../utils/logger.js';
 import { stripEnginePrefix } from '../utils/paths.js';
 import { controlBuildRecorded, runControlRestoreBuild } from './test-control-restore.js';
@@ -45,12 +55,18 @@ import {
   deriveControlOutcome,
   describeControlOutcome,
   formatAggregateBody,
+  formatBaselineFailureBody,
   formatRunLine,
   parseCapturedVerdict,
   type SubRunResult,
   worstRun,
 } from './test-multi-verdict.js';
 import { rearmSpentWaits } from './test-prelock.js';
+import {
+  collectedTestResults,
+  recordCompiledControlRestore,
+  recordControlEvidence,
+} from './test-results.js';
 import {
   emitAggregateVerdict,
   emitFailVerdict,
@@ -91,6 +107,8 @@ export interface TestRunHooks {
    * the fresh mtimes its restore left on the control's own targets.
    */
   ownControlBuild?: ControlBuildStamp;
+  /** A negative control with no `--build` anywhere in this invocation. */
+  controlWithoutBuild?: boolean;
   /** `--repeat` run this sub-run is (1-based), for `--results`. */
   repetition?: number;
   /** Where dispatches write their mozlog raw logs (`--results`, `--shard-size`). */
@@ -160,6 +178,7 @@ function laterRunOptions(options: TestOptions): TestOptions {
   delete later.extendCoverage;
   delete later.refuseUnexportedDrift;
   delete later.doctor;
+  delete later.furnaceApply;
   return later;
 }
 
@@ -196,6 +215,31 @@ async function planRuns(
   return runs;
 }
 
+/**
+ * Puts the control's unmutated baseline in front of the mutated runs: one
+ * dispatch of each harness half, which takes over the first run's build. A
+ * compiled control keeps a build of its own on its first mutated run, since
+ * only that build carries the mutation into the binary.
+ */
+function withControlBaseline(
+  runs: readonly PlannedRun[],
+  options: TestOptions,
+  compiled: boolean
+): PlannedRun[] {
+  const baseline = runs
+    .filter((run) => run.repetition === 1)
+    .map((run) => ({
+      ...run,
+      repetition: CONTROL_BASELINE_REPETITION,
+      hooks: { ...run.hooks, repetition: CONTROL_BASELINE_REPETITION },
+    }));
+  const mutated = runs.map((run, index) => {
+    if (index !== 0 || compiled) return run;
+    return { ...run, options: laterRunOptions(options), hooks: { repetition: run.repetition } };
+  });
+  return [...baseline, ...mutated];
+}
+
 function writeRunLine(line: string): void {
   process.stdout.write(`${line}\n`);
   writeToActiveRunLog(`${line}\n`);
@@ -206,18 +250,144 @@ interface ControlSlot {
   applied?: ActiveNegativeControl;
 }
 
+/** Restoration receipts bind to the mutation parsed before dispatch, and reread restored bytes/modes. */
+async function restoreWithEvidence(
+  control: ActiveNegativeControl,
+  run: PlannedRun,
+  index: number,
+  compiled: boolean
+): Promise<void> {
+  const restored = await restoreNegativeControl(control);
+  invalidateEngineState(control.paths.engineDir);
+  const targets = [];
+  for (const entry of control.journal.entries) {
+    const path = join(control.paths.engineDir, entry.enginePath);
+    targets.push({
+      path: entry.enginePath,
+      originalSha256: entry.originalSha256,
+      mutatedSha256: entry.mutatedSha256,
+      mode: entry.mode & 0o7777,
+      restoredSha256: sha256Hex(await readFile(path)),
+      restoredMode: (await lstat(path)).mode & 0o7777,
+    });
+  }
+  recordControlEvidence({
+    run: run.repetition,
+    dispatch: index + 1,
+    ...(run.harness === undefined ? {} : { harness: run.harness }),
+    diffDigest: control.diffDigest,
+    mutationVerified: control.verifiedForDispatch === true,
+    restored: targets.every(
+      (target) =>
+        target.originalSha256 === target.restoredSha256 && target.mode === target.restoredMode
+    ),
+    compiled,
+    targets,
+  });
+  if (
+    targets.some(
+      (target) =>
+        target.originalSha256 !== target.restoredSha256 || target.mode !== target.restoredMode
+    )
+  )
+    throw new GeneralError(
+      'Negative-control restoration changed before its evidence was captured.'
+    );
+  info(`Negative control restored byte-exact: ${restored.restored.length} file(s).`);
+}
+
 function controlHook(
   paths: NegativeControlPaths,
   plan: NegativeControlPlan,
-  slot: ControlSlot
+  slot: ControlSlot,
+  verify = true
 ): () => Promise<void> {
   return async () => {
     slot.applied = await applyNegativeControl(paths, plan);
+    invalidateEngineState(paths.engineDir);
+    if (verify) await verifyNegativeControlForDispatch(slot.applied);
     notice(
       `Negative control applied to ${plan.targets.map((target) => `engine/${target.enginePath}`).join(', ')}; ` +
         'it stays in place until this run has finished.'
     );
   };
+}
+
+/** A planned negative control, as each of its mutated runs needs it. */
+interface PlannedControl {
+  paths: NegativeControlPaths;
+  plan: NegativeControlPlan;
+  /** The stamp a compiled control's own build records. */
+  stamp?: ControlBuildStamp;
+}
+
+/**
+ * The hooks of one mutated run. A compiled control goes in before its first run's
+ * build, which compiles it; every other mutated run applies it before dispatch.
+ */
+function controlHooks(
+  control: PlannedControl,
+  slot: ControlSlot,
+  firstMutated: boolean
+): TestRunHooks {
+  const { paths, plan, stamp } = control;
+  if (plan.compiled === undefined || !firstMutated) {
+    return {
+      beforeDispatch: controlHook(paths, plan, slot),
+      ...(stamp === undefined ? {} : { ownControlBuild: stamp }),
+    };
+  }
+  return {
+    beforeBuild: controlHook(paths, plan, slot, false),
+    beforeDispatch: async () => {
+      if (slot.applied === undefined) {
+        throw new GeneralError('Compiled control was not applied before build.');
+      }
+      await verifyNegativeControlForDispatch(slot.applied);
+    },
+    fullBuildReason: formatCompiledControlBuildNotice(plan.compiled),
+    ...(stamp === undefined ? {} : { controlBuild: stamp }),
+  };
+}
+
+/**
+ * Whether the runs after this one would not be comparable: a refusal or an
+ * inconclusive run, or a control's baseline that was not green.
+ */
+function endsInvocation(result: SubRunResult): boolean {
+  if (result.reason === 'preflight' || result.reason === 'inconclusive') return true;
+  return result.repetition === CONTROL_BASELINE_REPETITION && !result.passed;
+}
+
+/** The notice opening one sub-run. */
+function describeRun(
+  run: PlannedRun,
+  mutatedIndex: number,
+  plannedTotal: number,
+  isControl: boolean
+): string {
+  const baseline = run.repetition === CONTROL_BASELINE_REPETITION;
+  const which = baseline ? 'Baseline run, no mutation' : `Run ${mutatedIndex + 1}/${plannedTotal}`;
+  const harness = run.harness === undefined ? '' : ` (${run.harness})`;
+  const mutation = isControl && !baseline ? ', negative control' : '';
+  return `${which}${harness}${mutation}: ${run.paths.join(' ')}`;
+}
+
+/** The invocation's verdict body. A control's baseline is not one of its runs. */
+function aggregateBody(
+  results: readonly SubRunResult[],
+  plannedTotal: number,
+  outcome: ControlOutcome | undefined
+): string {
+  const isBaseline = (result: SubRunResult): boolean =>
+    result.repetition === CONTROL_BASELINE_REPETITION;
+  const failed = results.find((result) => isBaseline(result) && !result.passed);
+  if (failed !== undefined) return formatBaselineFailureBody(failed, plannedTotal);
+  return formatAggregateBody(
+    results.filter((result) => !isBaseline(result)),
+    plannedTotal,
+    outcome
+  );
 }
 
 /** The stamp a compiled control's pre-test build records on its baseline. */
@@ -242,12 +412,41 @@ async function rebuildAfterCompiledControl(
   projectRoot: string,
   stamp: ControlBuildStamp | undefined,
   options: TestOptions
-): Promise<void> {
-  if (stamp === undefined || !(await controlBuildRecorded(projectRoot, stamp))) return;
-  setVerdictRunAttribute(
-    'control-restore-build',
-    await runControlRestoreBuild(projectRoot, stamp, options.harnessRetries)
-  );
+): Promise<'done' | 'failed' | 'not-built'> {
+  if (stamp === undefined || !(await controlBuildRecorded(projectRoot, stamp))) return 'not-built';
+  const state = await runControlRestoreBuild(projectRoot, stamp, options.harnessRetries);
+  setVerdictRunAttribute('control-restore-build', state);
+  return state;
+}
+
+/** The labels a control has to redden, when its caller stated them. */
+function expectedControlLabels(): string[] | undefined {
+  const raw = process.env[CONTROL_ASSERTIONS_ENV];
+  if (raw === undefined || raw === '') return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((label) => typeof label === 'string'))
+      return parsed.length === 0 ? undefined : parsed;
+  } catch {
+    // An unreadable statement states nothing; the job's own judgement still refuses.
+  }
+  return undefined;
+}
+
+/**
+ * A control that reddened, judged against the labels its caller expects with
+ * the matching the job's evidence uses, so `control=caught` means both agree.
+ *
+ * @returns The outcome, and why the labels did not match when they did not
+ */
+function judgeCaughtLabels(outcome: ControlOutcome | undefined): {
+  outcome: ControlOutcome | undefined;
+  refusal?: string;
+} {
+  const expected = expectedControlLabels();
+  if (outcome !== 'caught' || expected === undefined) return { outcome };
+  const refusal = controlLabelRefusal(expected, collectedTestResults().files);
+  return refusal === undefined ? { outcome } : { outcome: 'inconclusive', refusal };
 }
 
 /**
@@ -257,9 +456,12 @@ async function rebuildAfterCompiledControl(
 function finishInvocation(
   results: readonly SubRunResult[],
   plannedTotal: number,
-  control: ControlOutcome | undefined
+  control: ControlOutcome | undefined,
+  labelRefusal?: string
 ): void {
   if (control !== undefined) info(describeControlOutcome(control));
+  if (labelRefusal !== undefined)
+    throw new TestFailureError(labelRefusal, 'mach test', undefined, getActiveRunLogPath());
   if (control === 'caught') {
     success('Negative control caught.');
     return;
@@ -316,8 +518,8 @@ export async function orchestrateTestRuns(
     fireforgeDir: projectPaths.fireforgeDir,
   };
   await recoverPendingNegativeControl(controlPaths);
-  const runs = await planRuns(projectPaths.engine, testPaths, options);
-  if (runs === undefined) {
+  const planned = await planRuns(projectPaths.engine, testPaths, options);
+  if (planned === undefined) {
     await body(testPaths, options, {});
     return;
   }
@@ -338,14 +540,25 @@ export async function orchestrateTestRuns(
     setVerdictRunAttribute('control-build', 'compiled');
   }
   const controlStamp = compiledControlStamp(options, compiled);
+  const control: PlannedControl | undefined =
+    plan === undefined
+      ? undefined
+      : {
+          paths: controlPaths,
+          plan,
+          ...(controlStamp === undefined ? {} : { stamp: controlStamp }),
+        };
+  const runs =
+    plan === undefined ? planned : withControlBaseline(planned, options, compiledControl);
+  const baselineCount = runs.length - planned.length;
+  const controlWithoutBuild = plan !== undefined && options.build !== true;
 
   const results: SubRunResult[] = [];
   let restoreError: unknown;
   for (const [index, run] of runs.entries()) {
-    notice(
-      `Run ${index + 1}/${runs.length}${run.harness === undefined ? '' : ` (${run.harness})`}` +
-        `${plan === undefined ? '' : ', negative control'}: ${run.paths.join(' ')}`
-    );
+    const isBaseline = run.repetition === CONTROL_BASELINE_REPETITION;
+    const mutatedIndex = index - baselineCount;
+    notice(describeRun(run, mutatedIndex, planned.length, plan !== undefined));
     const capture: { line?: string } = {};
     const slot: ControlSlot = {};
     let error: unknown;
@@ -353,18 +566,10 @@ export async function orchestrateTestRuns(
     try {
       await body(run.paths, run.options, {
         ...run.hooks,
-        ...(plan === undefined
+        ...(controlWithoutBuild ? { controlWithoutBuild } : {}),
+        ...(control === undefined || isBaseline
           ? {}
-          : compiledControl && index === 0
-            ? {
-                beforeBuild: controlHook(controlPaths, plan, slot),
-                fullBuildReason: formatCompiledControlBuildNotice(compiled),
-                ...(controlStamp === undefined ? {} : { controlBuild: controlStamp }),
-              }
-            : {
-                beforeDispatch: controlHook(controlPaths, plan, slot),
-                ...(controlStamp === undefined ? {} : { ownControlBuild: controlStamp }),
-              }),
+          : controlHooks(control, slot, mutatedIndex === 0)),
       });
     } catch (caught: unknown) {
       error = caught;
@@ -378,8 +583,7 @@ export async function orchestrateTestRuns(
     const killed = verdictEmitted();
     if (slot.applied !== undefined) {
       try {
-        const restored = await restoreNegativeControl(slot.applied);
-        info(`Negative control restored byte-exact: ${restored.restored.length} file(s).`);
+        await restoreWithEvidence(slot.applied, run, index, compiledControl);
       } catch (caught: unknown) {
         restoreError = caught;
       }
@@ -392,9 +596,8 @@ export async function orchestrateTestRuns(
       ...(error === undefined ? {} : { error }),
     };
     results.push(result);
-    writeRunLine(formatRunLine(result, index, runs.length));
-    if (restoreError !== undefined) break;
-    if (result.reason === 'preflight' || result.reason === 'inconclusive') break;
+    writeRunLine(formatRunLine(result, mutatedIndex, planned.length));
+    if (restoreError !== undefined || endsInvocation(result)) break;
   }
 
   if (restoreError !== undefined) {
@@ -405,12 +608,15 @@ export async function orchestrateTestRuns(
   // compiled control: rebuild it under this same hold (see
   // test-control-restore.ts). Only after every run, since a later
   // `--repeat` run tests the same control-built binary.
-  await rebuildAfterCompiledControl(projectRoot, controlStamp, options);
+  recordCompiledControlRestore(
+    await rebuildAfterCompiledControl(projectRoot, controlStamp, options)
+  );
   const repetitions = options.repeat ?? 1;
-  const control =
+  const { outcome, refusal } = judgeCaughtLabels(
     plan === undefined
       ? undefined
-      : deriveControlOutcome(results, repetitions, results.length === runs.length);
-  emitAggregateVerdict(formatAggregateBody(results, runs.length, control));
-  finishInvocation(results, runs.length, control);
+      : deriveControlOutcome(results, repetitions, results.length === runs.length)
+  );
+  emitAggregateVerdict(aggregateBody(results, planned.length, outcome));
+  finishInvocation(results, runs.length, outcome, refusal);
 }

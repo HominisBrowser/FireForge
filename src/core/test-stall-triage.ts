@@ -15,8 +15,8 @@
  * injected, so unit tests need no mocking.
  */
 
-import type { DisplaySleepState } from './display-state.js';
 import type { HarnessCrashSignature } from './test-harness-signature.js';
+import type { DisplaySleepState } from './test-host-state.js';
 
 /**
  * First step for the `timed out … with no output` / `Ran 0 checks`
@@ -37,8 +37,8 @@ const NO_OUTPUT_STALL_CONTROL_STEP =
  *
  * Evidence per entry is unequal, and the text says so:
  *
- *  - (1) is measured: `probeDisplaySleepState` reads the display's power
- *    state, so the hint states it as fact rather than as a possibility.
+ *  - (1) is measured: `sampleTestHost` reads the display's sleep state, so the
+ *    hint states it as fact rather than as a possibility.
  *  - (2) is discriminated by `--headless`.
  *  - (4) is mechanical and was root-caused downstream: the harness serves
  *    its manifest from `server.js` on 8888, and a survivor of an
@@ -90,7 +90,7 @@ const NO_OUTPUT_STALL_TRIAGE = [
   '  4. A stale mochitest httpd holding the harness server port (127.0.0.1:8888). A fresh ' +
     "browser connects to THAT server, which cannot serve this run's manifest, so the run " +
     'stalls before TEST_START. Probe with "lsof -nP -iTCP:8888": any listener that is not ' +
-    "this run's own is the cause. FireForge now refuses this at preflight, so it should " +
+    "this run's own is the cause. FireForge refuses this at preflight, so it should " +
     'reach a stall only on a host where the port could not be probed.',
 ];
 
@@ -122,7 +122,7 @@ export function headedNoOutputTimeoutHint(
   const lead =
     context.displayState === 'asleep'
       ? 'Hint: this was a HEADED run on macOS and the display was MEASURED ASLEEP ' +
-        '(IODisplayWrangler below its awake power state). A headed browser on a sleeping ' +
+        '(system_profiler reads "Display Asleep: Yes"). A headed browser on a sleeping ' +
         'display never paints and never starts a test, so this stall is environmental — not a ' +
         'product or test failure.'
       : context.displayState === 'awake'

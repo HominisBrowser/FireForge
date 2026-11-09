@@ -28,8 +28,8 @@ import { join } from 'node:path';
 import type * as estree from 'estree';
 import MagicString from 'magic-string';
 
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { type AcornESTreeNode, asEstree, parseScript, walkAST } from './ast-utils.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
 import { CUSTOM_ELEMENTS_JS } from './furnace-constants.js';
 
 /** A `[start, end)` source range in customElements.js. */

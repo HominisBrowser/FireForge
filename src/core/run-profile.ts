@@ -18,7 +18,7 @@ import { join, resolve } from 'node:path';
 
 import { InvalidArgumentError } from '../errors/base.js';
 import { isProcessAlive, toError } from '../utils/errors.js';
-import { verbose, warn } from '../utils/logger.js';
+import { info, verbose, warn } from '../utils/logger.js';
 
 /** Directory-name prefix of every FireForge-owned temporary run profile. */
 export const RUN_PROFILE_PREFIX = 'fireforge-run-profile-';
@@ -37,7 +37,7 @@ const SEEDED_USER_JS =
 
 /** The profile a run launches with, and how to release it afterwards. */
 export interface RunProfile {
-  /** Program parameters to append to `mach run` (empty for mach's default). */
+  /** Program parameters, including cache purging for the chosen or Mach-default profile. */
   args: string[];
   /** Absolute profile directory, when one was chosen. */
   dir?: string;
@@ -127,7 +127,9 @@ export async function resolveRunProfile(request: RunProfileRequest): Promise<Run
   }
 
   if (request.tempProfile !== true && !request.smoke) {
-    return NO_PROFILE;
+    // Firefox purges only after acquiring its own profile lock. Never unlink
+    // another browser's lock or cache while guessing which profile Mach uses.
+    return { ...NO_PROFILE, args: request.purgeCaches === false ? [] : ['-purgecaches'] };
   }
 
   const dir = await mkdtemp(join(request.tempRoot ?? tmpdir(), RUN_PROFILE_PREFIX));
@@ -136,7 +138,7 @@ export async function resolveRunProfile(request: RunProfileRequest): Promise<Run
   // leaves a directory the next run can prove abandoned.
   await writeFile(join(dir, OWNER_MARKER), `${process.pid}\n`);
   await writeFile(join(dir, 'user.js'), SEEDED_USER_JS);
-  verbose(`Temporary run profile: ${dir}`);
+  info(`Temporary run profile: ${dir}`);
   return {
     args: ['-profile', dir],
     dir,

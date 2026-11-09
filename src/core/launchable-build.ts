@@ -67,9 +67,12 @@ export async function readBuildId(
 }
 
 /**
- * When the launchable build's compiled code was last linked: the newest
- * mtime of the binary and the `libxul` beside it. Undefined when neither
- * can be read.
+ * When the launchable build's compiled code was last linked: the mtime of the
+ * `libxul` beside the binary, which is what a compiled-source edit relinks. The
+ * launcher is only the answer on a build without one, since anything can touch
+ * it without compiling a line (a bundle step, a repaired install), and a newer
+ * launcher would hide every edit made since the last real link. Undefined when
+ * neither can be read.
  *
  * @param engineDir - Absolute engine directory
  * @param launchablePath - Engine-relative launchable binary path
@@ -79,16 +82,14 @@ export async function readLinkedAt(
   launchablePath: string
 ): Promise<{ mtimeMs: number; path: string } | undefined> {
   const binary = join(engineDir, launchablePath);
-  const candidates = [binary, ...LINKED_LIBRARY_NAMES.map((name) => join(dirname(binary), name))];
-  let newest: { mtimeMs: number; path: string } | undefined;
+  const candidates = [...LINKED_LIBRARY_NAMES.map((name) => join(dirname(binary), name)), binary];
   for (const path of candidates) {
     try {
       // stat follows the dist/bin symlinks to the linked objdir file.
-      const { mtimeMs } = await stat(path);
-      if (newest === undefined || mtimeMs > newest.mtimeMs) newest = { mtimeMs, path };
+      return { mtimeMs: (await stat(path)).mtimeMs, path };
     } catch {
       // A platform's other library names are simply absent.
     }
   }
-  return newest;
+  return undefined;
 }

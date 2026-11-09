@@ -7,6 +7,7 @@ import { loadConfig } from '../../core/config.js';
 import { getAllDiff } from '../../core/git-diff.js';
 import { extractAffectedFiles } from '../../core/patch-apply.js';
 import { lintExportedPatch } from '../../core/patch-lint.js';
+import { InvalidArgumentError } from '../../errors/base.js';
 import {
   FIREFOX_WORKFLOW_FIXTURES,
   FIREFOX_WORKFLOW_SETUP_OPTIONS,
@@ -81,6 +82,40 @@ describe('lint integration', () => {
     await writeFiles(join(projectRoot, 'engine'), fixture.modifiedFiles);
 
     await expect(lintCommand(projectRoot, [fixture.exportPath])).resolves.toBeUndefined();
+  });
+
+  describe('--since', () => {
+    async function rawColorEngine(): Promise<void> {
+      const fixture = FIREFOX_WORKFLOW_FIXTURES.cssRawColorViolation;
+      await initCommittedRepo(join(projectRoot, 'engine'), {
+        'browser/themes/shared/.gitkeep': '',
+      });
+      await writeFiles(join(projectRoot, 'engine'), fixture.modifiedFiles);
+    }
+
+    it('fails a --since that names no commit instead of calling every error cumulative', async () => {
+      await rawColorEngine();
+      const rejection = lintCommand(projectRoot, [], {
+        since: 'no-such-branch',
+        onlyIntroduced: true,
+      });
+      await expect(rejection).rejects.toBeInstanceOf(InvalidArgumentError);
+      await expect(rejection).rejects.toThrow(/--since "no-such-branch" does not name a commit/);
+    });
+
+    it('fails a --since that names no commit on a clean engine too', async () => {
+      await initCommittedRepo(join(projectRoot, 'engine'), { 'README.txt': 'clean\n' });
+      await expect(lintCommand(projectRoot, [], { since: 'no-such-branch' })).rejects.toThrow(
+        InvalidArgumentError
+      );
+    });
+
+    it('counts an error in a file changed since a real revision as introduced', async () => {
+      await rawColorEngine();
+      await expect(
+        lintCommand(projectRoot, [], { since: 'HEAD', onlyIntroduced: true })
+      ).rejects.toThrow(/introduced error\(s\)/);
+    });
   });
 
   it('lint detects raw CSS color values as error', async () => {

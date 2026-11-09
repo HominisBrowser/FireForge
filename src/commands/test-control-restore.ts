@@ -17,6 +17,7 @@
 import { readBuildBaseline, writeBuildBaseline } from '../core/build-baseline.js';
 import type { ControlBuildStamp } from '../core/build-baseline-types.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
+import { invalidateEngineState } from '../core/engine-state.js';
 import { runProtectedMachBuild, withBuildLock } from '../core/mach.js';
 import { toError } from '../utils/errors.js';
 import { info, notice, verbose, warn } from '../utils/logger.js';
@@ -73,6 +74,7 @@ export async function runControlRestoreBuild(
       const result = await runProtectedMachBuild('full', paths.engine, {
         ...(harnessRetries === undefined ? {} : { retries: harnessRetries }),
       });
+      invalidateEngineState(paths.engine);
       if (result.exitCode !== 0) {
         warn(
           'The restore build after the negative control failed, so the binary still carries ' +

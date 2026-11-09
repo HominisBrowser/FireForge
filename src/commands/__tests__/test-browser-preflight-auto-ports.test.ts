@@ -20,7 +20,7 @@ vi.mock('../../core/mochitest-server-port.js', () => ({
   ensureMochitestServerPortAvailable: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('../../core/harness-orphans.js', () => ({
-  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve({ reaped: 0 })),
+  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve([])),
 }));
 
 import { assertMarionettePortAvailable, probeMarionettePort } from '../../core/marionette-port.js';

@@ -29,12 +29,14 @@ import { buildPatchQueueContext, collectNewFileCreatorsByPath } from './patch-li
 import { createOwnedPathMatcher, pathsTargetCandidates } from './patch-lint-checkjs-resolve.js';
 import type { PatchQueueContext } from './patch-lint-cross.js';
 import {
+  isHeadScript,
   isTestScriptFile,
   resolvableModulesForTests,
   resolvePatchOwnedSysMjs,
   resolvePatchOwnedTestScripts,
 } from './patch-lint-ownership.js';
 import { findProjectOverrideKey, resolveProjectExtraShim } from './typecheck.js';
+import { loadTypeScriptApi } from './typescript-api.js';
 
 /** How one configured project relates to the file. */
 export interface ProjectExplanation {
@@ -107,8 +109,6 @@ export interface TypecheckExplanation {
   perPatch: PerPatchExplanation;
 }
 
-const HEAD_SCRIPT = /^head(?:_.*)?\.js$/;
-
 /** URL specifiers in static imports, `import()` calls and JSDoc `import("…")` types. */
 function findUrlImports(source: string): string[] {
   const found = new Set<string>();
@@ -145,7 +145,8 @@ async function explainProject(
     ...(overrideKey !== undefined ? { overrideKey } : {}),
     undefinedIdentifiers: cfg.undefinedIdentifiers ?? 'warning',
   };
-  if (ts === undefined) return { ...base, detail: 'the "typescript" package is not installed' };
+  if (ts === undefined)
+    return { ...base, detail: 'no installed package carries the TypeScript compiler API' };
   const absConfig = resolve(projectRoot, project);
   if (!(await pathExists(absConfig))) return { ...base, detail: 'the jsconfig does not exist' };
   const read = ts.readConfigFile(absConfig, (path) => ts.sys.readFile(path));
@@ -272,7 +273,7 @@ async function explainPerPatch(
     program = 'test';
     const dir = rel.slice(0, rel.lastIndexOf('/') + 1);
     heads = [...resolvePatchOwnedTestScripts(new Set(), ctx)].filter(
-      (f) => f !== rel && f.startsWith(dir) && HEAD_SCRIPT.test(f.slice(f.lastIndexOf('/') + 1))
+      (f) => f !== rel && f.startsWith(dir) && isHeadScript(f)
     );
     resolvable = [...resolvableModulesForTests(ctx)(rel)];
   }
@@ -325,12 +326,7 @@ export async function explainTypecheckFile(
     !(await pathExists(fromRoot)) && (await pathExists(fromEngine)) ? fromEngine : fromRoot;
   const display = normalizePathSlashes(relative(paths.root, absoluteFile));
 
-  let ts: typeof import('typescript') | undefined;
-  try {
-    ts = await import('typescript');
-  } catch {
-    ts = undefined;
-  }
+  const ts = (await loadTypeScriptApi())?.ts;
   const projects: ProjectExplanation[] = [];
   for (const project of typecheck?.projects ?? []) {
     projects.push(

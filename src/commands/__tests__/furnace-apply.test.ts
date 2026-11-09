@@ -54,14 +54,6 @@ vi.mock('../../core/furnace-operation.js', async (importOriginal) => ({
   recordFurnaceRollbackFailure: vi.fn(),
 }));
 
-vi.mock('../../core/furnace-state-persist.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../core/furnace-state-persist.js')>();
-  return {
-    ...actual,
-    persistSingleComponentState: vi.fn(() => Promise.resolve()),
-  };
-});
-
 vi.mock('../../core/furnace-config.js', () => ({
   // The shared rollback handler records the pending-repair marker
   // through furnace state.
@@ -376,13 +368,7 @@ describe('furnaceApplyCommand', () => {
     expect(applyAllComponents).toHaveBeenCalled();
   });
 
-  it('named apply disables the batch state persist and merges per-component state', async () => {
-    // A named apply must not run the batch persist path, whose wholesale
-    // appliedChecksums replace wipes every other component's checksum
-    // state. After that, orphan detection and deleted-file undeploy, both
-    // keyed on that state, go blind. Named apply mirrors
-    // `furnace deploy <name>`: persistState: false plus a per-component
-    // merge.
+  it('named apply scopes the run to the component; state merging lives in applyAllComponents', async () => {
     vi.mocked(loadConfig).mockResolvedValue({
       name: 'Test Browser',
       vendor: 'Test Vendor',
@@ -390,7 +376,6 @@ describe('furnaceApplyCommand', () => {
       binaryName: 'testbrowser',
       firefox: { version: '145.0', product: 'firefox' },
     });
-    const { persistSingleComponentState } = await import('../../core/furnace-state-persist.js');
     vi.mocked(applyAllComponents).mockResolvedValue({
       applied: [{ name: 'moz-card', type: 'override', filesAffected: [] }],
       skipped: [],
@@ -403,16 +388,11 @@ describe('furnaceApplyCommand', () => {
     expect(applyAllComponents).toHaveBeenCalledWith(
       '/project',
       false,
-      expect.objectContaining({ componentName: 'moz-card', persistState: false })
-    );
-    expect(vi.mocked(persistSingleComponentState)).toHaveBeenCalledWith(
-      '/project',
-      { name: 'moz-card', type: 'override' },
-      expect.anything()
+      expect.objectContaining({ componentName: 'moz-card' })
     );
   });
 
-  it('named apply does not persist state when the run reported errors', async () => {
+  it('named apply fails the command when the run reported errors', async () => {
     vi.mocked(loadConfig).mockResolvedValue({
       name: 'Test Browser',
       vendor: 'Test Vendor',
@@ -420,7 +400,6 @@ describe('furnaceApplyCommand', () => {
       binaryName: 'testbrowser',
       firefox: { version: '145.0', product: 'firefox' },
     });
-    const { persistSingleComponentState } = await import('../../core/furnace-state-persist.js');
     vi.mocked(applyAllComponents).mockResolvedValue({
       applied: [],
       skipped: [],
@@ -431,10 +410,9 @@ describe('furnaceApplyCommand', () => {
     await expect(furnaceApplyCommand('/project', 'moz-card', {})).rejects.toThrow(
       /failed to apply cleanly/
     );
-    expect(vi.mocked(persistSingleComponentState)).not.toHaveBeenCalled();
   });
 
-  it('batch apply keeps the wholesale persist path and no per-component merge', async () => {
+  it('batch apply is not scoped to a component', async () => {
     vi.mocked(loadConfig).mockResolvedValue({
       name: 'Test Browser',
       vendor: 'Test Vendor',
@@ -442,7 +420,6 @@ describe('furnaceApplyCommand', () => {
       binaryName: 'testbrowser',
       firefox: { version: '145.0', product: 'firefox' },
     });
-    const { persistSingleComponentState } = await import('../../core/furnace-state-persist.js');
     vi.mocked(applyAllComponents).mockResolvedValue({
       applied: [{ name: 'moz-card', type: 'override', filesAffected: [] }],
       skipped: [],
@@ -452,9 +429,6 @@ describe('furnaceApplyCommand', () => {
 
     await furnaceApplyCommand('/project', undefined, {});
 
-    const optionsArg = vi.mocked(applyAllComponents).mock.calls[0]?.[2];
-    expect(optionsArg).not.toHaveProperty('persistState');
-    expect(optionsArg).not.toHaveProperty('componentName');
-    expect(vi.mocked(persistSingleComponentState)).not.toHaveBeenCalled();
+    expect(vi.mocked(applyAllComponents).mock.calls[0]?.[2]).not.toHaveProperty('componentName');
   });
 });

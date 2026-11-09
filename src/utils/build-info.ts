@@ -40,7 +40,7 @@ interface BuildIdentity {
   dirtyHash?: string;
 }
 
-/** @internal Reads the stamped dist/build-info.json. Null when absent/invalid. */
+/** Reads a package's stamped dist/build-info.json. Null when absent/invalid. */
 export function readBuildInfoFile(packageRoot: string): BuildIdentity | null {
   try {
     const raw = readFileSync(join(packageRoot, 'dist', 'build-info.json'), 'utf-8');
@@ -99,7 +99,7 @@ function getBuildIdentity(): BuildIdentity | null {
 }
 
 /**
- * @internal Formats `<version>+g<sha>[.dirty[.<hash>]]`. Plain version on
+ * Formats `<version>+g<sha>[.dirty[.<hash>]]`. Plain version on
  * null identity. The trailing content hash appears only for a dirty
  * installed build, where `dist/build-info.json` already carries it. Every
  * segment stays valid semver build metadata (dot-separated alphanumerics).

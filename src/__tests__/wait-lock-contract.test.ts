@@ -47,6 +47,7 @@ const EXPECTED_WAIT_LOCK_COMMANDS = [
   'furnace preview',
   'furnace chrome-doc create',
   'furnace chrome-doc remove',
+  'furnace types',
   'patch delete',
   'patch retire',
   'patch reorder',
@@ -66,6 +67,13 @@ const EXPECTED_WAIT_LOCK_COMMANDS = [
   'resolve',
   'doctor',
   'rebase',
+  'import',
+  'reset',
+  'discard',
+  'download',
+  'register',
+  'wire',
+  'token add',
 ].sort();
 
 /** The accept-and-ignore registration says so in its description. */

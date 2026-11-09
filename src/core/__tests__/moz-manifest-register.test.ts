@@ -380,7 +380,9 @@ describe('isFileRegistered', () => {
   });
 
   it('checks nested browser.toml manifests', async () => {
-    mockReadText.mockResolvedValue('    "content/test/widget/inner/browser.toml",\n');
+    mockReadText.mockResolvedValue(
+      'BROWSER_CHROME_MANIFESTS += [\n    "content/test/widget/inner/browser.toml",\n]\n'
+    );
     await expect(
       isFileRegistered('/project', 'browser/base/content/test/widget/inner/browser.toml')
     ).resolves.toBe(true);
@@ -607,7 +609,9 @@ describe('isFileRegistered (all rule paths)', () => {
   });
 
   it('returns true for test manifest already in moz.build', async () => {
-    mockReadText.mockResolvedValue('    "content/test/custom-widget/browser.toml",\n');
+    mockReadText.mockResolvedValue(
+      'BROWSER_CHROME_MANIFESTS += [\n    "content/test/custom-widget/browser.toml",\n]\n'
+    );
 
     await expect(
       isFileRegistered('/project', 'browser/base/content/test/custom-widget/browser.toml')
@@ -623,7 +627,7 @@ describe('isFileRegistered (all rule paths)', () => {
   });
 
   it('returns true for fireforge module already in moz.build', async () => {
-    mockReadText.mockResolvedValue('    "Overlay.sys.mjs",\n');
+    mockReadText.mockResolvedValue('EXTRA_JS_MODULES += [\n    "Overlay.sys.mjs",\n]\n');
 
     await expect(
       isFileRegistered('/project', 'browser/modules/testbrowser/Overlay.sys.mjs')

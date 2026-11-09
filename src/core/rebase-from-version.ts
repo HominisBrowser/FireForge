@@ -13,13 +13,13 @@
  */
 
 import type { FirefoxProduct } from '../types/config.js';
-import { exec } from '../utils/process.js';
 import {
   compareFirefoxVersions,
   isObject,
   isValidFirefoxProduct,
   isValidFirefoxVersion,
 } from '../utils/validation.js';
+import { gitResult } from './git-base.js';
 
 /** A `firefox.version` / `firefox.product` pair. */
 export interface FirefoxPin {
@@ -49,7 +49,7 @@ export interface PatchStampSpread {
 export async function readCommittedFirefoxPin(
   projectRoot: string
 ): Promise<FirefoxPin | undefined> {
-  const result = await exec('git', ['show', 'HEAD:./fireforge.json'], { cwd: projectRoot }).catch(
+  const result = await gitResult(['show', 'HEAD:./fireforge.json'], projectRoot).catch(
     () => undefined
   );
   if (result?.exitCode !== 0) return undefined;

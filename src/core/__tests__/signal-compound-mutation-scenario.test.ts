@@ -6,7 +6,7 @@
  * cross-module behavior as `bin/fireforge.ts` actually composes it:
  * `Promise.allSettled` of furnace rollback + critical-section drain, then
  * furnace lock force-release, then (simulated) `process.exit`. See
- * docs/lifecycle-invariants.md for the invariants under test:
+ * contributing/lifecycle-invariants.md for the invariants under test:
  *
  *  1. exit is held until an in-flight "engine apply + state persist" pair
  *     finishes, so bookkeeping can never be left stale relative to the

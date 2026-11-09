@@ -4,10 +4,8 @@ import { join } from 'node:path';
 
 import { GitError } from '../errors/git.js';
 import { removeFile } from '../utils/fs.js';
-import { exec } from '../utils/process.js';
-import { execWithInput } from '../utils/process-input.js';
 import type { GitStatusEntry } from './git-base.js';
-import { chunkPathspecs, ensureGit, git } from './git-base.js';
+import { chunkPathspecs, ensureGit, git, gitResult, gitResultWithInput } from './git-base.js';
 
 /**
  * Restores a tracked path from HEAD, including staged changes.
@@ -150,7 +148,7 @@ export async function hashObjectBatch(
   await ensureGit();
 
   for (const chunk of chunkPathspecs(fullPaths)) {
-    const result = await exec('git', ['hash-object', '--', ...chunk], { cwd: repoDir });
+    const result = await gitResult(['hash-object', '--', ...chunk], repoDir);
     const lines = result.stdout.split('\n').filter((line) => line.length > 0);
     if (result.exitCode === 0 && lines.length === chunk.length) {
       for (const [i, path] of chunk.entries()) {
@@ -163,7 +161,7 @@ export async function hashObjectBatch(
     // and here, or otherwise failed). Recover per file so one bad path only
     // loses its own hash, exactly as the pre-batch per-file code behaved.
     for (const path of chunk) {
-      const single = await exec('git', ['hash-object', '--', path], { cwd: repoDir });
+      const single = await gitResult(['hash-object', '--', path], repoDir);
       const hash = single.stdout.trim();
       if (single.exitCode === 0 && hash.length > 0) hashes.set(path, hash);
     }
@@ -184,7 +182,7 @@ export async function getFileContentAtRef(
   ref = 'HEAD'
 ): Promise<string | null> {
   await ensureGit();
-  const result = await exec('git', ['show', `${ref}:${filePath}`], { cwd: repoDir });
+  const result = await gitResult(['show', `${ref}:${filePath}`], repoDir);
   if (result.exitCode !== 0) {
     const stderr = result.stderr.trim();
     // Recognise the "file does not exist at this ref" variants across git versions.
@@ -235,9 +233,11 @@ export async function getFilesContentAtRef(
   if (batchable.length > 0) {
     await ensureGit();
     const requests = [ref, ...batchable.map((path) => `${ref}:${path}`)];
-    const result = await execWithInput('git', ['cat-file', '--batch'], requests.join('\n') + '\n', {
-      cwd: repoDir,
-    });
+    const result = await gitResultWithInput(
+      ['cat-file', '--batch'],
+      requests.join('\n') + '\n',
+      repoDir
+    );
     if (result.exitCode !== 0) {
       throw new GitError(result.stderr.trim() || 'git cat-file --batch failed', 'cat-file --batch');
     }

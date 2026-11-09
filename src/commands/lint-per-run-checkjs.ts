@@ -21,6 +21,7 @@
  *   cold" via `probeCheckJsGlobalIssues` instead of building anything.
  */
 
+import { isCheckJsCacheRelevant } from '../core/patch-lint-cache-checkjs.js';
 import {
   type GroupedCheckJsResult,
   invokePatchLintCheckJsGrouped,
@@ -162,7 +163,7 @@ export function buildPerRunCheckJs(
       }
       return issues;
     },
-    isRelevant: (file) => file.endsWith('.sys.mjs') || (testFilesEnabled && isTestScriptFile(file)),
+    isRelevant: (file) => isCheckJsCacheRelevant(file, patchLint),
     rootScope: scopedRoots,
   };
 }

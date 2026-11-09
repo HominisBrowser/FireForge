@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { loadState } from '../../core/config.js';
+import { withEngineSessionLock } from '../../core/engine-session-lock.js';
 import { resolveArchive } from '../../core/firefox-archive.js';
 import type { FirefoxProduct } from '../../types/config.js';
 
@@ -66,6 +68,7 @@ describe('downloadCommand integration', () => {
 
   afterEach(async () => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     await removeTempProject(projectRoot);
   });
 
@@ -281,6 +284,10 @@ describe('downloadCommand integration', () => {
           archiveVersion: '140.9.0esr',
           url: downloadUrl('140.9.0esr', 'firefox-esr'),
           contentLength: 'not a real tarball'.length,
+          // A cache entry already verified against the published checksums
+          // is trusted as-is, so this reaches extraction, which then fails.
+          sha256: createHash('sha256').update('not a real tarball').digest('hex'),
+          verification: 'published',
           downloadedAt: new Date().toISOString(),
         },
         null,
@@ -345,5 +352,106 @@ describe('downloadCommand integration', () => {
 
     const tarballName = tarballFilename('140.9.0esr', 'firefox-esr');
     await expect(readFile(join(projectRoot, '.fireforge/cache', tarballName))).rejects.toThrow();
+  });
+
+  describe('the engine-session lock around a forced replacement', () => {
+    /** A clean ESR engine, then a config that asks for stable 140.0. */
+    async function engineThenNewVersion(): Promise<void> {
+      const esr = await readFile(
+        await makeTarXzArchive(projectRoot, 'esr.tar.xz', 'firefox-140.9.0esr', {
+          'browser/config/version.txt': '140.9.0esr\n',
+        })
+      );
+      const stable = await readFile(
+        await makeTarXzArchive(projectRoot, 'stable.tar.xz', 'firefox-140.0', {
+          'browser/config/version.txt': '140.0\n',
+        })
+      );
+      installUrlFetch({
+        [downloadUrl('140.9.0esr', 'firefox-esr')]: esr,
+        [downloadUrl('140.0', 'firefox')]: stable,
+      });
+      await writeFireForgeConfig(projectRoot);
+      await downloadCommand(projectRoot, {});
+      await writeFireForgeConfig(projectRoot, {
+        firefox: { version: '140.0', product: 'firefox' },
+      });
+    }
+
+    async function leftoverWorkDirs(): Promise<string[]> {
+      return (await readdir(projectRoot)).filter((name) => name.startsWith('engine.'));
+    }
+
+    beforeEach(() => {
+      // The lock is bypassed inside vitest workers unless a test opts in.
+      vi.stubEnv('FIREFORGE_ENABLE_ENGINE_SESSION_LOCK_IN_TEST', '1');
+    });
+
+    it('does not swap engine/ while another command holds the lock', async () => {
+      await engineThenNewVersion();
+      let release!: () => void;
+      const held = withEngineSessionLock(
+        projectRoot,
+        'build',
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          })
+      );
+      const pidFile = join(projectRoot, '.fireforge', 'engine-session.lock', 'pid');
+      for (let tries = 0; ; tries += 1) {
+        try {
+          await stat(pidFile);
+          break;
+        } catch (error: unknown) {
+          if (tries > 200) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+
+      try {
+        await expect(downloadCommand(projectRoot, { force: true, yes: true })).rejects.toThrow(
+          /engine-mutating command is already running/
+        );
+        await expect(
+          readProjectText(projectRoot, 'engine/browser/config/version.txt')
+        ).resolves.toBe('140.9.0esr\n');
+        expect((await loadState(projectRoot)).downloadedVersion).toBe('140.9.0esr');
+        expect(await leftoverWorkDirs()).toEqual([]);
+      } finally {
+        release();
+        await held;
+      }
+
+      await downloadCommand(projectRoot, { force: true, yes: true });
+      await expect(readProjectText(projectRoot, 'engine/browser/config/version.txt')).resolves.toBe(
+        '140.0\n'
+      );
+      expect((await loadState(projectRoot)).downloadedVersion).toBe('140.0');
+      expect(await leftoverWorkDirs()).toEqual([]);
+    }, 60_000);
+
+    it('refuses to swap an engine/ that changed after the replacement was confirmed', async () => {
+      await engineThenNewVersion();
+      const serve = fetchMock.getMockImplementation();
+      // A peer writes into engine/ while the replacement downloads.
+      fetchMock.mockImplementation(async (url: unknown) => {
+        if (String(url) === downloadUrl('140.0', 'firefox'))
+          await writeFile(join(projectRoot, 'engine', 'peer-work.txt'), 'unexported\n');
+        if (serve === undefined) throw new Error('no fetch implementation');
+        return serve(url);
+      });
+
+      await expect(downloadCommand(projectRoot, { force: true, yes: true })).rejects.toThrow(
+        /engine\/ changed while the replacement downloaded/
+      );
+      await expect(readProjectText(projectRoot, 'engine/peer-work.txt')).resolves.toBe(
+        'unexported\n'
+      );
+      await expect(readProjectText(projectRoot, 'engine/browser/config/version.txt')).resolves.toBe(
+        '140.9.0esr\n'
+      );
+      expect(await leftoverWorkDirs()).toEqual([]);
+    }, 60_000);
   });
 });

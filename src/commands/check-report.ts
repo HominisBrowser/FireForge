@@ -5,31 +5,15 @@
  * computed once here and shared by all three, so the exit code, the line
  * and the JSON can never disagree.
  */
+import type { CheckStepResult, CheckVerdict } from '../core/check/types.js';
 import { setStdoutSealed } from '../utils/logger.js';
-import type { CheckStepResult } from './check-run.js';
-
-/**
- * Why a check failed. `step-failures`: at least one step went red.
- * `lock-timeout`: every failing step exited 15, so nothing was judged red,
- * the steps just never got their locks. Re-queue rather than fix.
- * `skipped-steps`: nothing went red, but `check.failOnSkipped` is set and a
- * step had nothing to run.
- */
-export type CheckVerdictReason = 'step-failures' | 'lock-timeout' | 'skipped-steps';
 
 /** How the verdict treats skipped steps. */
 export interface CheckJudgeOptions {
   /** `check.failOnSkipped`: a step skipped for want of anything to run fails the check. */
   failOnSkipped?: boolean | undefined;
-}
-
-/** The verdict over all steps. */
-export interface CheckVerdict {
-  passed: boolean;
-  reason?: CheckVerdictReason;
-  failed: string[];
-  skipped: string[];
-  steps: number;
+  /** `--only`/`--skip` left steps out of this run. */
+  narrowed?: boolean | undefined;
 }
 
 /** Exit code a step reports when its lock wait expired. */
@@ -50,12 +34,18 @@ export function judgeCheck(
       ? results.filter((result) => result.status === 'skipped' && result.skipKind !== 'config')
       : [];
   const verdict: CheckVerdict = {
-    passed: failedResults.length === 0 && gaps.length === 0,
+    passed:
+      results.some((result) => result.status !== 'skipped') &&
+      failedResults.length === 0 &&
+      gaps.length === 0,
     failed: [...failedResults, ...gaps].map((result) => result.name),
     skipped: results.filter((result) => result.status === 'skipped').map((result) => result.name),
     steps: results.length,
+    ...(options.narrowed === true ? { narrowed: true } : {}),
   };
-  if (failedResults.length > 0) {
+  if (results.length === 0 || results.every((result) => result.status === 'skipped')) {
+    verdict.reason = 'empty-plan';
+  } else if (failedResults.length > 0) {
     verdict.reason = failedResults.every((result) => result.exitCode === LOCK_TIMEOUT_EXIT)
       ? 'lock-timeout'
       : 'step-failures';
@@ -69,12 +59,14 @@ export function judgeCheck(
  * The verdict line: `FIREFORGE-VERDICT: PASS steps=<n> skipped=<n>` or
  * `FIREFORGE-VERDICT: FAIL reason=<reason> failed=<a,b> steps=<n> skipped=<n>`,
  * with an additive `skipped-steps=<a,b>` naming the skipped steps when
- * there are any.
+ * there are any, and `selection=narrowed` when `--only`/`--skip` left steps out,
+ * so a narrowed PASS cannot be read as the full gate.
  */
 export function formatCheckVerdictLine(verdict: CheckVerdict): string {
   const skippedNames =
     verdict.skipped.length > 0 ? ` skipped-steps=${verdict.skipped.join(',')}` : '';
-  const counts = `steps=${verdict.steps} skipped=${verdict.skipped.length}${skippedNames}`;
+  const selection = verdict.narrowed === true ? ' selection=narrowed' : '';
+  const counts = `steps=${verdict.steps} skipped=${verdict.skipped.length}${skippedNames}${selection}`;
   if (verdict.passed) return `FIREFORGE-VERDICT: PASS ${counts}`;
   return `FIREFORGE-VERDICT: FAIL reason=${verdict.reason ?? 'step-failures'} failed=${verdict.failed.join(',')} ${counts}`;
 }

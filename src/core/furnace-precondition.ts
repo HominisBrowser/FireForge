@@ -19,6 +19,7 @@ import type { FurnaceConfig } from '../types/furnace.js';
 import type { ProjectPaths } from '../types/index.js';
 import { pathExists } from '../utils/fs.js';
 import { getProjectPaths } from './config-paths.js';
+import { isSourceModeEngine, SOURCE_MODE_NO_ENGINE_MESSAGE } from './engine-precondition.js';
 import { furnaceConfigExists, loadFurnaceConfig } from './furnace-config.js';
 
 /** Options shared by the Furnace precondition assertions. */
@@ -46,6 +47,7 @@ export async function assertFurnaceEngineDirReady(
   options: FurnacePreconditionOptions = {}
 ): Promise<void> {
   if (!(await pathExists(engineDir))) {
+    if (await isSourceModeEngine(engineDir)) throw new FurnaceError(SOURCE_MODE_NO_ENGINE_MESSAGE);
     throw new FurnaceError(
       `Engine directory not found. Run "fireforge download" first${options.engineMissingSuffix ?? '.'}`
     );

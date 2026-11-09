@@ -1,8 +1,21 @@
 {
   "$schema": "https://unpkg.com/knip@latest/schema.json",
-  "entry": ["scripts/*.mjs", "eslint-rules/index.js"],
-  "project": ["src/**/*.ts", "bin/**/*.ts", "scripts/**/*.mjs", "eslint-rules/**/*.js"],
-  "ignoreBinaries": ["pgrep"],
+  "entry": [
+    "scripts/*.mjs",
+    "eslint-rules/index.js",
+    "src/core/jobs/supervisor-main.ts",
+    "src/core/jobs/runner-main.ts",
+    "runtime/qualified-node-bootstrap.cjs",
+    "src/core/jobs/source-loader-bootstrap.cjs"
+  ],
+  "project": [
+    "src/**/*.ts",
+    "bin/**/*.ts",
+    "scripts/**/*.mjs",
+    "eslint-rules/**/*.js",
+    "runtime/**/*.cjs",
+    "src/**/*.cjs"
+  ],
   "ignoreDependencies": ["husky"],
   "ignoreExportsUsedInFile": {
     "type": true,

@@ -103,12 +103,19 @@ vi.mock('../../core/patch-lint-cache.js', () => ({
   setCachedPerPatchLintIssues: vi.fn(),
 }));
 
+// The private-index scope is covered by git-readonly-index tests; here it only wraps the body.
+vi.mock('../../core/git-readonly-index.js', () => ({
+  withPrivateGitIndex: <T>(_repoDir: string, operation: () => Promise<T>): Promise<T> =>
+    operation(),
+}));
+
 vi.mock('../../core/patch-manifest.js', () => ({
   loadPatchesManifest: vi.fn(() => Promise.resolve(null)),
 }));
 
 vi.mock('../../core/patch-lint-diff-tag.js', () => ({
   collectDiffFilePaths: vi.fn(() => Promise.resolve(new Set<string>())),
+  resolveSinceRevision: vi.fn(() => Promise.resolve('0'.repeat(40))),
   tagLintIssues: vi.fn(),
 }));
 
@@ -541,6 +548,7 @@ describe('lintCommand — ad-hoc input resolution and verdict', () => {
       );
       vi.mocked(setCachedPerPatchLintIssues).mockImplementation(
         ({ cache, patchFilename, key, issues, suppressed, lineCount, lintIgnore }) => {
+          if (key === undefined) return;
           cache.entries[patchFilename] = {
             key,
             patchFilename,
@@ -914,17 +922,15 @@ describe('lintCommand — ad-hoc input resolution and verdict', () => {
         return Promise.resolve(true);
       });
 
-      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+      await expect(lintCommand('/project', [], { perPatch: true })).rejects.toThrow(
+        /No patch in the queue was linted.*001-ui-test\.patch/
+      );
 
       expect(lintExportedPatch).not.toHaveBeenCalled();
-      // The success line names the skipped patch count so operators can tell
-      // "queue clean" from "queue not yet applied".
-      expect(vi.mocked(success)).toHaveBeenCalledWith(
-        expect.stringContaining('No lint issues found across 0 patch(es) (1 skipped')
-      );
+      expect(vi.mocked(success)).not.toHaveBeenCalled();
     });
 
-    it('points at fireforge import when the entire queue is unapplied', async () => {
+    it('fails, pointing at fireforge import, when the entire queue is unapplied', async () => {
       // An unapplied queue otherwise produces `No lint issues found across 0
       // patch(es).` with no hint that nothing was linted. The info banner
       // names the missing prerequisite (`fireforge import`) so the success
@@ -942,16 +948,11 @@ describe('lintCommand — ad-hoc input resolution and verdict', () => {
         return Promise.resolve(true);
       });
 
-      await expect(lintCommand('/project', [], { perPatch: true })).resolves.toBeUndefined();
+      await expect(lintCommand('/project', [], { perPatch: true })).rejects.toThrow(
+        /all 3 patch\(es\).*Run "fireforge import" first/
+      );
 
-      expect(vi.mocked(info)).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'No patches in the queue have been applied to engine/. Run "fireforge import" first'
-        )
-      );
-      expect(vi.mocked(success)).toHaveBeenCalledWith(
-        expect.stringContaining('No lint issues found across 0 patch(es) (3 skipped')
-      );
+      expect(vi.mocked(success)).not.toHaveBeenCalled();
     });
 
     it('does not emit the unapplied-queue hint when at least one patch was linted', async () => {
@@ -1345,5 +1346,23 @@ describe('applyAggregateLintIgnoreSuppression', () => {
 
     expect(result.dropped).toBe(0);
     expect(result.issues).toBe(issues);
+  });
+});
+
+describe('lintCommand — authored mode flags', () => {
+  it.each([
+    [{ perPatch: true }, '--per-patch'],
+    [{ perPatch: true, report: 'out.json' }, '--per-patch'],
+    [{ notices: 'summary' as const }, '--notices'],
+  ])('refuses %j because authored lint has no per-patch rows', async (options, flag) => {
+    vi.mocked(loadConfig).mockResolvedValue({
+      name: 'My Browser',
+      vendor: 'Acme',
+      appId: 'org.acme.browser',
+      binaryName: 'mybrowser',
+      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      sources: { schemaVersion: 1, mode: 'authored', root: 'src' },
+    } as never);
+    await expect(lintCommand('/project', [], options)).rejects.toThrow(flag);
   });
 });

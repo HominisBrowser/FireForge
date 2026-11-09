@@ -265,8 +265,7 @@ interface ParamsReturnsContext {
 /**
  * Validates @param name matching and @returns presence on a function-like
  * node that already has an attached JSDoc comment. Destructured, default-
- * valued, and rest params are silently skipped to match historical behavior
- * of the top-level export check.
+ * valued, and rest params are silently skipped, as in the top-level export check.
  */
 function validateParamsAndReturns(
   fnNode: AcornESTreeNode<FunctionDeclaration | FunctionExpression>,

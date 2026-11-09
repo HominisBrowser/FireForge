@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as hostState from '../../core/test-host-state.js';
 import { sampleTestHost, stampPerfHost } from '../../core/test-host-state.js';
 
 // The run log is opened before any preflight and its path rides the
@@ -9,11 +10,9 @@ import { sampleTestHost, stampPerfHost } from '../../core/test-host-state.js';
 // relying on an accident: `/project` is a filesystem root on POSIX, so the
 // best-effort open fails and degrades to "no log", but on Windows the same
 // path resolves against the current drive and succeeds.
-vi.mock('../../core/test-host-state.js', () => ({
-  sampleTestHost: vi.fn(() => Promise.resolve({ load: 0, power: 'unknown' })),
-  reportTestHost: vi.fn(() => false),
-  stampPerfHost: vi.fn(() => Promise.resolve(false)),
-}));
+vi.mock('../../core/test-host-state.js', async (importOriginal) =>
+  (await import('./test-command-mocks.js')).testHostStateMock(importOriginal)
+);
 
 vi.mock('../../core/test-profile-files.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../core/test-profile-files.js')>()),
@@ -122,7 +121,8 @@ import { removePgidFile } from '../test-harness-teardown.js';
 describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per run)', () => {
   const GREEN = {
     exitCode: 0,
-    stdout: 'TEST-START | requested-test\nTEST-OK | requested-test\nPassed: 3',
+    stdout:
+      'TEST-START | requested-test\nTEST-OK | requested-test\nPassed: 3\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
     stderr: '',
   };
   const CRASH = {
@@ -146,7 +146,7 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
     vi.mocked(cleanupProfileFiles).mockReset().mockResolvedValue(undefined);
     vi.mocked(removePgidFile).mockReset().mockResolvedValue(undefined);
     vi.mocked(closeActiveRunLog).mockReset().mockResolvedValue(undefined);
-    vi.mocked(sampleTestHost).mockResolvedValue({ load: 0, power: 'unknown' });
+    vi.mocked(sampleTestHost).mockResolvedValue({ load: 0, power: 'unknown', display: 'unknown' });
     vi.mocked(stampPerfHost).mockReset().mockResolvedValue(false);
     vi.mocked(pathExists).mockResolvedValue(true);
     vi.mocked(hasBuildArtifacts).mockResolvedValue({ exists: true, objDir: 'obj-debug' });
@@ -203,11 +203,13 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
   }
 
   it('refuses a perf sample with a power transition even when every harness assertion passed', async () => {
-    vi.mocked(sampleTestHost).mockResolvedValue({ load: 2, power: 'ac' });
+    vi.mocked(sampleTestHost)
+      .mockResolvedValueOnce({ load: 2, power: 'ac', display: 'awake' })
+      .mockResolvedValue({ load: 2, power: 'battery', display: 'awake' });
     vi.mocked(stampPerfHost).mockResolvedValueOnce(true);
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | t\nTEST-OK | t',
+      stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     const capture = captureVerdictLines();
@@ -222,9 +224,62 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
     }
     expect(capture.verdicts()).toHaveLength(1);
     expect(capture.verdicts()[0]).toContain('FAIL reason=inconclusive');
-    expect(capture.verdicts()[0]).toContain('power-source=ac');
+    expect(capture.verdicts()[0]).toContain('power-source=battery');
     expect(capture.verdicts()[0]).toContain('power-changed=true');
-    vi.mocked(sampleTestHost).mockResolvedValue({ load: 0, power: 'unknown' });
+    vi.mocked(sampleTestHost).mockResolvedValue({ load: 0, power: 'unknown', display: 'unknown' });
+  });
+
+  it('names a sleeping display and a mid-run system sleep on a headless timing failure', async () => {
+    vi.mocked(sampleTestHost).mockResolvedValue({ load: 1, power: 'battery', display: 'asleep' });
+    const watch = vi.spyOn(hostState, 'watchForHostSleep').mockReturnValue(() => true);
+    vi.mocked(runMachTestSuite).mockResolvedValue({
+      exitCode: 1,
+      stdout:
+        'TEST-START | browser_a.js\nTEST-UNEXPECTED-FAIL | browser_a.js | timed out\nFailed: 1',
+      stderr: '',
+    });
+    const capture = captureVerdictLines();
+    try {
+      await expect(
+        testCommand('/project', ['browser/base/content/test/tiles/browser_a.js'], {
+          headless: true,
+        })
+      ).rejects.toThrow();
+    } finally {
+      capture.restore();
+      watch.mockRestore();
+    }
+    const [verdict] = capture.verdicts();
+    expect(verdict).toContain('FAIL reason=test-failures');
+    expect(verdict).toContain('display=asleep');
+    expect(verdict).toContain('power-source=battery');
+    expect(verdict).toContain('host-slept=true');
+  });
+
+  it('names the load a suite peaked at between its edges, and when', async () => {
+    vi.mocked(sampleTestHost).mockResolvedValue({ load: 1, power: 'ac', display: 'awake' });
+    const peak = vi
+      .spyOn(hostState, 'watchHostLoad')
+      .mockReturnValue(() => ({ load: 38.204, at: Date.now() + 412_000 }));
+    vi.mocked(runMachTestSuite).mockResolvedValue({
+      exitCode: 1,
+      stdout:
+        'TEST-START | browser_a.js\nTEST-UNEXPECTED-FAIL | browser_a.js | timed out\nFailed: 1',
+      stderr: '',
+    });
+    const capture = captureVerdictLines();
+    try {
+      await expect(
+        testCommand('/project', ['browser/base/content/test/tiles/browser_a.js'], {})
+      ).rejects.toThrow();
+    } finally {
+      capture.restore();
+      peak.mockRestore();
+    }
+    const [verdict] = capture.verdicts();
+    expect(verdict).toContain('host-load=1.00');
+    expect(verdict).toMatch(/ host-load-peak=38\.20 host-load-peak-at=41[2-3] /);
+    expect(verdict).toContain('host-cpu-warning=true');
   });
 
   it('a missing engine emits exactly one FAIL reason=preflight line', async () => {
@@ -283,7 +338,7 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
       capture.restore();
     }
     expect(capture.verdicts()).toEqual([
-      'FIREFORGE-VERDICT: FAIL reason=crash shards=1/2 failed-shards=browser/components/b/test/browser_b.js host-load=0.00\n',
+      'FIREFORGE-VERDICT: FAIL reason=crash shards=1/2 failed-shards=browser/components/b/test/browser_b.js host-load=0.00 display=unknown power-source=unknown\n',
     ]);
   });
 
@@ -299,7 +354,7 @@ describe('testCommand verdict contract (exactly one FIREFORGE-VERDICT line per r
       capture.restore();
     }
     expect(capture.verdicts()).toEqual([
-      'FIREFORGE-VERDICT: FAIL reason=test-failures host-load=0.00\n',
+      'FIREFORGE-VERDICT: FAIL reason=test-failures host-load=0.00 display=unknown power-source=unknown\n',
     ]);
   });
 

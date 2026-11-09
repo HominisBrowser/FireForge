@@ -18,7 +18,7 @@ import { error, info, intro, outro, success, warn } from '../utils/logger.js';
 import { addWaitLockOption } from '../utils/options.js';
 import { findExecutable } from '../utils/process.js';
 import type { DoctorCheckContext, DoctorCheckDefinition } from './doctor-check-core.js';
-import { failure, ok, warning } from './doctor-check-core.js';
+import { failure, inSourceMode, ok, warning } from './doctor-check-core.js';
 import { ENGINE_ESLINT_DOCTOR_CHECK } from './doctor-engine-eslint.js';
 import { EXTERNAL_TOOLCHAIN_DOCTOR_CHECK } from './doctor-external-toolchains.js';
 import { FURNACE_DOCTOR_CHECKS } from './doctor-furnace.js';
@@ -234,6 +234,8 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
   EXTERNAL_TOOLCHAIN_DOCTOR_CHECK,
   {
     name: 'Engine directory exists',
+    // A source-mode checkout keeps no engine/ on purpose; its slots do.
+    skipIf: (ctx) => !ctx.engineExists && ctx.config?.sources !== undefined,
     run: (ctx) => {
       if (!ctx.engineExists) {
         throw new Error('engine/ directory not found');
@@ -257,7 +259,7 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
           );
         }
 
-        await clearPendingResolution(ctx.projectRoot);
+        await clearPendingResolution(ctx.projectRoot, ctx.state.pendingResolution);
         return ok('Pending Resolution');
       }
 
@@ -290,12 +292,15 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
 
       // Git-dependent follow-up checks share mutable currentHead/branch
       // state, so they live in a helper that returns all rows at once.
-      return [ok('Engine is git repository'), ...(await runEngineGitChecks(ctx))];
+      // A source-mode engine/ is a read-only pristine donor with no baseline, branch or edits to judge.
+      return inSourceMode(ctx)
+        ? ok('Engine is git repository')
+        : [ok('Engine is git repository'), ...(await runEngineGitChecks(ctx))];
     },
   },
   {
     name: 'mach available',
-    skipIf: (ctx) => !ctx.engineExists,
+    skipIf: (ctx) => !ctx.engineExists || inSourceMode(ctx),
     run: async (ctx) => {
       await ensureMach(ctx.paths.engine);
       return ok('mach available');
@@ -309,6 +314,8 @@ const DOCTOR_CHECKS: DoctorCheckDefinition[] = [
     // never run watch, so a missing watchman should not fail `doctor`
     // outright, but the information needs to be visible ahead of time.
     name: 'Watchman available',
+    // `watch` is refused in source mode.
+    skipIf: inSourceMode,
     run: async () => {
       // Resolve the absolute path so the OK row names what doctor actually
       // found. A PATH-export discrepancy between the operator's interactive
@@ -483,6 +490,14 @@ export interface DoctorResult {
  * changes".
  */
 function assertRepairOptions(options: DoctorOptions): void {
+  if (
+    options.dryRun === true &&
+    (options.repairFurnace === true || options.clearResolution === true)
+  )
+    throw new InvalidArgumentError(
+      '--dry-run cannot combine with --repair-furnace or --clear-resolution; those repairs do not support previews.',
+      '--dry-run'
+    );
   if (options.repairPatchesManifest === true && options.repairFilesAffected === true) {
     throw new InvalidArgumentError(
       '--repair-patches-manifest and --repair-files-affected are mutually exclusive. ' +

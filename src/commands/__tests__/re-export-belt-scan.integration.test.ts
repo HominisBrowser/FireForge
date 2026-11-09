@@ -273,6 +273,27 @@ describe('--scan-file <patch>:<path> across several patches', () => {
     );
   });
 
+  it('admits a file assigned to one selected patch in the other patch’s adjacency belt', async () => {
+    // Beside 001's own file, so 001's belt sees it as adjacent and unmanaged.
+    const adopted = 'shell/new-tile.txt';
+    await writeFiles(join(projectRoot, 'engine'), {
+      [adopted]: 'export const tile = 1;\n',
+      [SHELL]: 'line1\nshell edit\nline2\nline3\n',
+    });
+
+    await reExportCommand(projectRoot, ['001', '002'], {
+      scan: true,
+      scanFiles: [`002:${adopted}`],
+      refuseAdjacentUnmanaged: true,
+      skipLint: true,
+    });
+
+    const rows = await readProjectText(projectRoot, 'patches/patches.json');
+    expect(filesAffected(rows, '002-ui-tiles.patch')).toEqual([adopted, TILES]);
+    expect(filesAffected(rows, '001-ui-shell.patch')).toEqual([SHELL]);
+    expect(infoLines().join('\n')).toContain('assigned for adoption');
+  });
+
   it('refuses an owner that is not among the selected patches', async () => {
     await writeFiles(join(projectRoot, 'engine'), { [NEW_TILE]: 'export const tile = 1;\n' });
 

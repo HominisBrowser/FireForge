@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { getProjectPaths, loadState } from '../../core/config.js';
 import { diffLines, renderHunks } from '../../core/diff-hunks.js';
+import { assertJudgedInSlot } from '../../core/engine-precondition.js';
 import { getOverrideEngineTargetPath } from '../../core/furnace-apply-helpers.js';
 import { normalizeForChecksum } from '../../core/furnace-checksum-utils.js';
 import { composeComponentSource } from '../../core/furnace-composed-source.js';
@@ -248,6 +249,7 @@ async function diffCustom(name: string, projectRoot: string, config: FurnaceConf
 export async function furnaceDiffCommand(projectRoot: string, name?: string): Promise<void> {
   intro('Furnace Diff');
 
+  await assertJudgedInSlot(projectRoot, '"furnace diff"');
   const config = await loadFurnaceConfig(projectRoot);
 
   if (name) {

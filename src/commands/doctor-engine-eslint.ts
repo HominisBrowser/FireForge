@@ -3,12 +3,12 @@ import { join } from 'node:path';
 
 import { pathExists } from '../utils/fs.js';
 import type { DoctorCheckDefinition } from './doctor-check-core.js';
-import { ok, warning } from './doctor-check-core.js';
+import { inSourceMode, ok, warning } from './doctor-check-core.js';
 
 /** Surfaces the source-refresh ESLint precondition before an expensive gate/build. */
 export const ENGINE_ESLINT_DOCTOR_CHECK: DoctorCheckDefinition = {
   name: 'Engine ESLint installed',
-  skipIf: (ctx) => !ctx.engineExists,
+  skipIf: (ctx) => !ctx.engineExists || inSourceMode(ctx),
   run: async (ctx) =>
     (await pathExists(join(ctx.paths.engine, 'node_modules/eslint/bin/eslint.js')))
       ? ok('Engine ESLint installed')

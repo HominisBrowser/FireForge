@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { unlink } from 'node:fs/promises';
+import { unlink, writeFile } from 'node:fs/promises';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { reapTrackedHarnessPids, snapshotObjdirHelpers } from '../../core/harness-helper-pids.js';
+import { reapTrackedHarnessPids } from '../../core/harness-helper-pids.js';
 import { startParentExitWatchdog } from '../../core/parent-exit-watchdog.js';
-import { sweepProcessGroup } from '../../utils/process-group.js';
+import { warn } from '../../utils/logger.js';
+import type { ProcessOwnership, ProcessTeardown } from '../../utils/process-group.js';
 import {
   createHarnessTeardown,
   removeActivePgidFile,
@@ -21,13 +22,9 @@ vi.mock('node:fs/promises', () => ({
 vi.mock('../../core/harness-helper-pids.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../core/harness-helper-pids.js')>()),
   reapTrackedHarnessPids: vi.fn(() => Promise.resolve(0)),
-  snapshotObjdirHelpers: vi.fn(() => Promise.resolve(undefined)),
 }));
 vi.mock('../../core/parent-exit-watchdog.js', () => ({
   startParentExitWatchdog: vi.fn(() => ({ stop: vi.fn() })),
-}));
-vi.mock('../../utils/process-group.js', () => ({
-  sweepProcessGroup: vi.fn(() => Promise.resolve({ survivors: [] })),
 }));
 vi.mock('../../utils/logger.js', () => ({ warn: vi.fn(), verbose: vi.fn() }));
 vi.mock('../test-verdict.js', () => ({
@@ -36,6 +33,21 @@ vi.mock('../test-verdict.js', () => ({
 }));
 
 const OBJ = '/proj/engine/obj-debug';
+
+const QUIET_TEARDOWN: ProcessTeardown = { signalled: [], detached: [], stillAlive: [] };
+const finishOwned = vi.fn(() => Promise.resolve(QUIET_TEARDOWN));
+const anchorTo = vi.fn();
+
+function owner(pid: number): ProcessOwnership {
+  return {
+    pid,
+    finish: finishOwned,
+    signal: vi.fn(),
+    anchorTo,
+    owns: vi.fn(() => Promise.resolve(false)),
+    dispose: vi.fn(),
+  };
+}
 
 /** Pulls the watchdog callback the teardown registered. */
 function parentExitCallback(): (info: { originalPpid: number; currentPpid: number }) => void {
@@ -49,22 +61,25 @@ describe('createHarnessTeardown', () => {
     vi.clearAllMocks();
   });
 
-  it('feeds tracked pids and the pre-dispatch baseline to the post-close reap and stamps the count', async () => {
+  it('feeds tracked pids to the post-close reap and stamps what both teardowns terminated', async () => {
     const teardown = createHarnessTeardown({ objDir: OBJ, pgidFile: undefined });
-    vi.mocked(snapshotObjdirHelpers).mockResolvedValueOnce(new Set([19144]));
-    await teardown.prepare();
+    teardown.hooks.onProcessGroup?.(555, owner(555));
     teardown.hooks.onOutputChunk?.('stdout', 'INFO runtests.py | Server pid: 4242\n');
+    finishOwned.mockResolvedValueOnce({
+      ...QUIET_TEARDOWN,
+      signalled: [{ pid: 556, start: 'x', parent: 555, group: 555 }],
+    });
     vi.mocked(reapTrackedHarnessPids).mockResolvedValueOnce(1);
 
     await teardown.hooks.postCloseSweep?.();
 
-    expect(snapshotObjdirHelpers).toHaveBeenCalledWith(OBJ);
+    expect(anchorTo).toHaveBeenCalledWith([OBJ]);
+    // A live process at that pid on the host adds its birth identity; the tracked pid and kind are what must reach the reap.
     expect(reapTrackedHarnessPids).toHaveBeenCalledWith(
-      [{ pid: 4242, kind: 'Server' }],
-      OBJ,
-      new Set([19144])
+      [expect.objectContaining({ pid: 4242, kind: 'Server' })],
+      OBJ
     );
-    expect(addVerdictRunCount).toHaveBeenCalledWith('orphans-reaped', 1);
+    expect(addVerdictRunCount).toHaveBeenCalledWith('orphans-reaped', 2);
     teardown.dispose();
   });
 
@@ -92,18 +107,14 @@ describe('createHarnessTeardown', () => {
   // the one line a log tail keeps and the sweep can take seconds.
   it('on parent exit writes the killed verdict and reaps the harness group', () => {
     const teardown = createHarnessTeardown({ objDir: OBJ, pgidFile: undefined });
-    teardown.hooks.onProcessGroup?.(555);
+    teardown.hooks.onProcessGroup?.(555, owner(555));
 
     parentExitCallback()({ originalPpid: 4000, currentPpid: 1 });
 
     expect(emitKilledVerdict).toHaveBeenCalledWith('parent-exit');
-    expect(sweepProcessGroup).toHaveBeenCalledWith(
-      555,
-      undefined,
-      'after the parent process exited'
-    );
+    expect(finishOwned).toHaveBeenCalledOnce();
     expect(vi.mocked(emitKilledVerdict).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(sweepProcessGroup).mock.invocationCallOrder[0] ?? 0
+      finishOwned.mock.invocationCallOrder[0] ?? 0
     );
     teardown.dispose();
   });
@@ -112,7 +123,28 @@ describe('createHarnessTeardown', () => {
     createHarnessTeardown({ objDir: OBJ, pgidFile: undefined });
     parentExitCallback()({ originalPpid: 4000, currentPpid: 1 });
     expect(emitKilledVerdict).toHaveBeenCalledWith('parent-exit');
-    expect(sweepProcessGroup).not.toHaveBeenCalled();
+    expect(finishOwned).not.toHaveBeenCalled();
+  });
+
+  it('warns and carries on when the reap after a parent exit fails', async () => {
+    finishOwned.mockRejectedValueOnce(new Error('census gone'));
+    const teardown = createHarnessTeardown({ objDir: OBJ, pgidFile: undefined });
+    teardown.hooks.onProcessGroup?.(4242, owner(4242));
+    const { onParentExit } = vi.mocked(startParentExitWatchdog).mock.calls.at(-1)?.[0] ?? {};
+    onParentExit?.({ originalPpid: 1, currentPpid: 2 });
+    await vi.waitFor(() => {
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('census gone'));
+    });
+  });
+
+  it('warns and carries on when the pgid file cannot be written', async () => {
+    vi.mocked(writeFile).mockRejectedValueOnce(new Error('read-only'));
+    const teardown = createHarnessTeardown({ objDir: undefined, pgidFile: '/run/pgid' });
+    teardown.hooks.onProcessGroup?.(4242, owner(4242));
+    await vi.waitFor(() => {
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('read-only'));
+    });
+    expect(anchorTo).not.toHaveBeenCalled();
   });
 
   it('stops the watchdog on dispose', () => {

@@ -13,7 +13,6 @@ import { elapsedSince } from '../utils/elapsed.js';
 import { toError } from '../utils/errors.js';
 import { pathExists, pathExistsStrict, removeFile } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
-import { exec } from '../utils/process.js';
 import { ensureFirefoxIgnorefileCompatibility } from './firefox-ignorefile.js';
 import {
   chunkPathspecs,
@@ -24,6 +23,7 @@ import {
   GIT_ADD_CHUNK_TIMEOUT_ENV_VAR,
   GIT_ADD_CHUNK_TIMEOUT_MS,
   GIT_ADD_TIMEOUT_MS,
+  gitResult,
 } from './git-base.js';
 import { getWorkingTreeStatus } from './git-status.js';
 
@@ -50,7 +50,7 @@ export async function isGitRepository(dir: string): Promise<boolean> {
  * @param dir - Git working directory
  */
 export async function ensureOriginRemote(dir: string): Promise<void> {
-  const result = await exec('git', ['remote', 'get-url', 'origin'], { cwd: dir });
+  const result = await gitResult(['remote', 'get-url', 'origin'], dir);
   if (result.exitCode !== 0) {
     await git(['remote', 'add', 'origin', 'https://github.com/mozilla-firefox/firefox'], dir);
   }
@@ -84,17 +84,6 @@ function isTimeoutError(error: unknown): boolean {
 }
 
 /**
- * Removes `.git/index.lock` left behind by a killed git process.
- */
-async function cleanupIndexLock(dir: string): Promise<void> {
-  const lockPath = join(dir, '.git', 'index.lock');
-  if (await pathExists(lockPath)) {
-    await removeFile(lockPath);
-    verbose('Cleaned up stale .git/index.lock after timeout');
-  }
-}
-
-/**
  * Returns true when {@link relativePath} is ignored by `.gitignore` (or any
  * other exclusion mechanism git considers, e.g. `.git/info/exclude`,
  * core.excludesFile). Used by the chunked staging fallback to skip entries
@@ -110,8 +99,8 @@ async function cleanupIndexLock(dir: string): Promise<void> {
  * as "unknown" and conservatively returns false, so the chunk runs and any
  * real underlying failure surfaces normally.
  */
-async function isPathIgnored(dir: string, relativePath: string): Promise<boolean> {
-  const result = await exec('git', ['check-ignore', '-q', '--', relativePath], { cwd: dir });
+export async function isPathIgnored(dir: string, relativePath: string): Promise<boolean> {
+  const result = await gitResult(['check-ignore', '-q', '--', relativePath], dir);
   if (result.exitCode === 0) return true;
   if (result.exitCode === 1) return false;
   // Any other shape is "we don't know", so let the caller proceed and
@@ -132,9 +121,11 @@ async function isPathIgnored(dir: string, relativePath: string): Promise<boolean
 async function stageAllFilesChunked(
   dir: string,
   scan: SourceScanSummary,
-  options: { onProgress?: (message: string) => void } = {}
+  options: { onProgress?: (message: string) => void; includeIgnored?: boolean } = {}
 ): Promise<void> {
   const { directories, topLevelFiles: topLevelCandidates } = scan;
+  const includeIgnored = options.includeIgnored === true;
+  const force = includeIgnored ? ['-f'] : [];
 
   async function runChunk(args: string[], label: string): Promise<void> {
     try {
@@ -159,7 +150,7 @@ async function stageAllFilesChunked(
   let stagedDirectories = 0;
   for (const dirName of directories) {
     stagedDirectories++;
-    if (await isPathIgnored(dir, dirName)) {
+    if (!includeIgnored && (await isPathIgnored(dir, dirName))) {
       options.onProgress?.(
         `Skipping gitignored directory ${stagedDirectories}/${directories.length}: ${dirName}/`
       );
@@ -168,7 +159,7 @@ async function stageAllFilesChunked(
     options.onProgress?.(
       `Staging directory ${stagedDirectories}/${directories.length}: ${dirName}/...`
     );
-    await runChunk(['add', '--', dirName], dirName);
+    await runChunk(['add', ...force, '--', dirName], dirName);
   }
 
   // Stage any top-level files (excluding gitignored ones, because `git add`
@@ -177,7 +168,7 @@ async function stageAllFilesChunked(
   // timed out).
   const topLevelFiles: string[] = [];
   for (const name of topLevelCandidates) {
-    if (await isPathIgnored(dir, name)) {
+    if (!includeIgnored && (await isPathIgnored(dir, name))) {
       options.onProgress?.(`Skipping gitignored top-level file: ${name}`);
       continue;
     }
@@ -185,7 +176,7 @@ async function stageAllFilesChunked(
   }
   if (topLevelFiles.length > 0) {
     options.onProgress?.(`Staging ${topLevelFiles.length} top-level file(s)...`);
-    await runChunk(['add', '--', ...topLevelFiles], 'top-level files');
+    await runChunk(['add', ...force, '--', ...topLevelFiles], 'top-level files');
   }
 }
 
@@ -220,9 +211,14 @@ async function scanTopLevelSource(dir: string): Promise<SourceScanSummary> {
  */
 export async function stageAllFiles(
   dir: string,
-  options: { onProgress?: (message: string) => void; timeout?: number } = {}
+  options: {
+    onProgress?: (message: string) => void;
+    timeout?: number;
+    includeIgnored?: boolean;
+  } = {}
 ): Promise<void> {
   const timeout = options.timeout ?? GIT_ADD_TIMEOUT_MS;
+  const force = options.includeIgnored === true ? ['-f'] : [];
   const reportProgress = options.onProgress;
   reportProgress?.('Scanning Firefox source tree before indexing...');
   const scan = await scanTopLevelSource(dir);
@@ -254,7 +250,7 @@ export async function stageAllFiles(
       reportProgress?.(
         `Starting monolithic git add -A for ${scan.directories.length} director${scan.directories.length === 1 ? 'y' : 'ies'} and ${scan.topLevelFiles.length} top-level file${scan.topLevelFiles.length === 1 ? '' : 's'}...`
       );
-      await git(['add', '-A'], dir, { timeout, env: GIT_ADD_ENV });
+      await git(['add', '-A', ...force], dir, { timeout, env: GIT_ADD_ENV });
       reportProgress?.('Git phase complete: git add -A source indexing finished.');
       return;
     } catch (error: unknown) {
@@ -270,8 +266,8 @@ export async function stageAllFiles(
       );
     }
 
-    // The killed process may have left an index lock
-    await cleanupIndexLock(dir);
+    // No observed lock is ours to remove: a replacement writer may already own it.
+    await assertNoGitIndexLock(dir);
 
     // Reset elapsed accounting for the chunked phase so its heartbeat
     // names a believable per-phase number rather than rolling the
@@ -314,11 +310,13 @@ async function createInitialSourceCommit(
  * Initializes a new git repository with an orphan branch.
  * @param dir - Directory to initialize
  * @param branchName - Name for the initial branch
+ * @param options - `includeIgnored` stages what the tree's own `.gitignore` hides.
+ *   Only a tree fresh from an archive may ask: it holds nothing a build wrote.
  */
 export async function initRepository(
   dir: string,
   branchName: string = 'main',
-  options: { onProgress?: (message: string) => void } = {}
+  options: { onProgress?: (message: string) => void; includeIgnored?: boolean } = {}
 ): Promise<void> {
   await ensureGit();
   const reportProgress = options.onProgress ?? (() => {});
@@ -352,7 +350,8 @@ export async function initRepository(
   await stageAndCommitSource(
     dir,
     reportProgress,
-    'Indexing Firefox source with git add -A (this can take several minutes on large trees)...'
+    'Indexing Firefox source with git add -A (this can take several minutes on large trees)...',
+    options.includeIgnored === true
   );
 }
 
@@ -366,7 +365,8 @@ export async function initRepository(
 async function stageAndCommitSource(
   dir: string,
   reportProgress: (message: string) => void,
-  stagingMessage: string
+  stagingMessage: string,
+  includeIgnored = false
 ): Promise<void> {
   reportProgress('Normalizing Firefox ignore files for Git-backed mach lint compatibility...');
   await ensureFirefoxIgnorefileCompatibility(dir);
@@ -375,7 +375,7 @@ async function stageAndCommitSource(
   reportProgress(stagingMessage);
   await assertNoGitIndexLock(dir);
   try {
-    await stageAllFiles(dir, { onProgress: reportProgress });
+    await stageAllFiles(dir, { onProgress: reportProgress, includeIgnored });
   } catch (error: unknown) {
     throw await maybeWrapIndexLockError(dir, error);
   }
@@ -391,7 +391,7 @@ async function stageAndCommitSource(
 /**
  * Resumes a partially initialized git repository (e.g. after a killed
  * `git add -A` left an unborn HEAD).  Re-applies performance settings,
- * cleans up stale locks, stages all files, and creates the initial commit.
+ * refuses unowned index locks, stages all files, and creates the initial commit.
  */
 export async function resumeRepository(
   dir: string,
@@ -405,13 +405,12 @@ export async function resumeRepository(
 
   reportProgress('Resuming interrupted repository initialization...');
 
+  await assertNoGitIndexLock(dir);
+
   // Ensure performance settings are in place (may not have been set)
   reportProgress('Configuring git performance settings...');
   await configureGitPerformance(dir);
   await configureGitLineEndings(dir);
-
-  // Clean up any stale index lock left by the killed process
-  await cleanupIndexLock(dir);
 
   // Ensure origin remote exists (may have been added before the interrupt)
   await ensureOriginRemote(dir);
@@ -474,7 +473,7 @@ export async function applyPatch(
 
   if (!options.reject) {
     const checkArgs = ['apply', '--check', '--', patchPath];
-    const result = await exec('git', checkArgs, { cwd: repoDir });
+    const result = await gitResult(checkArgs, repoDir);
 
     if (result.exitCode !== 0) {
       throw new PatchApplyError(patchPath, new Error(result.stderr));
@@ -488,7 +487,7 @@ export async function applyPatch(
   }
   applyArgs.push('--', patchPath);
 
-  const applyResult = await exec('git', applyArgs, { cwd: repoDir });
+  const applyResult = await gitResult(applyArgs, repoDir);
 
   if (applyResult.exitCode !== 0) {
     throw new PatchApplyError(patchPath, new Error(applyResult.stderr));
@@ -518,15 +517,13 @@ export async function applyPatchIdempotent(
   await ensureGit();
 
   // Try to reverse the patch (ignore errors if not applied)
-  const reverseResult = await exec('git', ['apply', '--reverse', '--', patchPath], {
-    cwd: repoDir,
-  });
+  const reverseResult = await gitResult(['apply', '--reverse', '--', patchPath], repoDir);
 
   // If reverse failed (patch wasn't applied), restore only the files the
   // patch would have touched so that unrelated local edits are preserved.
   if (reverseResult.exitCode !== 0) {
     // Extract the set of files referenced in the patch
-    const listResult = await exec('git', ['apply', '--numstat', '--', patchPath], { cwd: repoDir });
+    const listResult = await gitResult(['apply', '--numstat', '--', patchPath], repoDir);
     const touchedFiles = listResult.stdout
       .split('\n')
       .map((line) => line.split('\t')[2])
@@ -562,9 +559,10 @@ async function restoreFilesToHead(
   // (patch-created leftovers: delete from the worktree).
   const trackedInHead = new Set<string>();
   for (const chunk of chunkPathspecs(files)) {
-    const lsTree = await exec('git', ['ls-tree', '-r', '--name-only', 'HEAD', '--', ...chunk], {
-      cwd: repoDir,
-    });
+    const lsTree = await gitResult(
+      ['ls-tree', '-r', '--name-only', 'HEAD', '--', ...chunk],
+      repoDir
+    );
     if (lsTree.exitCode !== 0) {
       throw new PatchApplyError(
         patchPath,
@@ -580,7 +578,7 @@ async function restoreFilesToHead(
   const toDelete = files.filter((f) => !trackedInHead.has(f));
 
   for (const chunk of chunkPathspecs(toCheckout)) {
-    const checkout = await exec('git', ['checkout', 'HEAD', '--', ...chunk], { cwd: repoDir });
+    const checkout = await gitResult(['checkout', 'HEAD', '--', ...chunk], repoDir);
     if (checkout.exitCode !== 0) {
       throw new PatchApplyError(
         patchPath,
@@ -607,7 +605,7 @@ async function restoreFilesToHead(
  */
 export async function reversePatch(patchPath: string, repoDir: string): Promise<void> {
   await ensureGit();
-  const result = await exec('git', ['apply', '--reverse', '--', patchPath], { cwd: repoDir });
+  const result = await gitResult(['apply', '--reverse', '--', patchPath], repoDir);
   if (result.exitCode !== 0) {
     throw new PatchApplyError(patchPath, new Error(result.stderr));
   }

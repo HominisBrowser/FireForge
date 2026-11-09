@@ -23,7 +23,7 @@ import {
   writeJson,
   writeText,
 } from '../../utils/fs.js';
-import { verbose, warn } from '../../utils/logger.js';
+import { warn } from '../../utils/logger.js';
 import {
   configExists,
   loadConfig,
@@ -40,7 +40,6 @@ const mockPathExists = vi.mocked(pathExists);
 const mockPathExistsStrict = vi.mocked(pathExistsStrict);
 const mockReadJson = vi.mocked(readJson);
 const mockWriteJson = vi.mocked(writeJson);
-const mockVerbose = vi.mocked(verbose);
 const mockWarn = vi.mocked(warn);
 const mockWithStateFileLock = vi.mocked(withStateFileLock);
 const mockQuarantineStateFile = vi.mocked(quarantineStateFile);
@@ -343,15 +342,46 @@ describe('validateConfig', () => {
     ).toThrow('Config field "firefox.sha256" must be a 64-character SHA-256 hex digest');
   });
 
-  it('logs unknown root keys and ignores them', () => {
-    const config = validateConfig({
-      ...makeValidConfig(),
-      experimental: { enabled: true },
-    });
+  it('rejects unknown root keys with a suggestion for near misses', () => {
+    expect(() => validateConfig({ ...makeValidConfig(), experimental: { enabled: true } })).toThrow(
+      'fireforge.json has unknown key "experimental"'
+    );
+    expect(() => validateConfig({ ...makeValidConfig(), patchlint: {} })).toThrow(
+      'Did you mean "patchLint"?'
+    );
+  });
 
-    expect(config).toEqual(makeValidConfig());
-    expect(mockVerbose).toHaveBeenCalledWith(
-      'Unknown config key "experimental" in fireforge.json — it will be ignored.'
+  it.each<[string, Record<string, unknown>]>([
+    ['firefox', { firefox: { version: '140.0esr', product: 'firefox-esr', chanel: 'x' } }],
+    ['build', { build: { job: 2 } }],
+    ['wire', { wire: { subscriptdir: 'a' } }],
+    ['history', { history: { file: 'a.json' } }],
+    ['test', { test: { canaryPaths: 'a' } }],
+    ['patchLint', { patchLint: { prettir: 'error' } }],
+    ['patchPolicy', { patchPolicy: { ranges: [{ category: 'a', from: 1, to: 2 }], gaps: true } }],
+    ['typecheck', { typecheck: { projects: ['a'], extrashim: 'a.d.ts' } }],
+    [
+      'externalToolchains[0]',
+      { externalToolchains: [{ name: 'x', tools: [{ name: 'y' }], z: 1 }] },
+    ],
+    [
+      'externalToolchains[0].tools[0]',
+      { externalToolchains: [{ name: 'x', tools: [{ name: 'y', requird: true }] }] },
+    ],
+  ])('rejects an unknown key inside %s', (_block, overrides) => {
+    expect(() => validateConfig({ ...makeValidConfig(), ...overrides })).toThrow(/has unknown key/);
+  });
+
+  it.each([['x;touch${IFS}pwned'], ['.'], ['Upper'], ['9lives'], ['bad name']])(
+    'rejects binaryName %j, which would reach the shell-evaluated mozconfig',
+    (binaryName) => {
+      expect(() => validateConfig(makeValidConfig({ binaryName }))).toThrow(/binaryName/);
+    }
+  );
+
+  it.each(['name', 'vendor'])('rejects a newline in %s', (field) => {
+    expect(() => validateConfig(makeValidConfig({ [field]: 'Evil\ntouch pwned' }))).toThrow(
+      `Config field "${field}" must not contain control characters`
     );
   });
 
@@ -1012,8 +1042,8 @@ describe('config persistence', () => {
   });
 
   it('warns and resets when the state file is corrupted', async () => {
-    mockPathExists.mockResolvedValueOnce(true);
-    mockReadJson.mockRejectedValueOnce(new Error('bad json'));
+    mockPathExists.mockResolvedValue(true);
+    mockReadJson.mockRejectedValue(new Error('bad json'));
 
     await expect(loadState('/project')).resolves.toEqual({});
     expect(mockQuarantineStateFile).toHaveBeenCalledWith(
@@ -1023,8 +1053,8 @@ describe('config persistence', () => {
   });
 
   it('salvages valid fields from an invalid state file and rewrites the sanitized result', async () => {
-    mockPathExists.mockResolvedValueOnce(true);
-    mockReadJson.mockResolvedValueOnce({
+    mockPathExists.mockResolvedValue(true);
+    mockReadJson.mockResolvedValue({
       baseCommit: 'abc123',
       buildMode: 123,
       pendingResolution: {

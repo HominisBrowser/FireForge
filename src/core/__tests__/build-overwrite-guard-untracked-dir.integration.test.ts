@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * Git reports a wholly untracked directory as a single `?? dir/` entry
- * instead of listing the files under it. Passing raw status entries to the
- * classifier gives it a directory with no content to match against a patch
- * body or the pristine baseline, so every untracked branding subdirectory
- * classifies `unmanaged` and gets named on every build, while
- * `fireforge status --unmanaged` (which expands) calls the same tree clean.
- * `--refuse-unexported-drift` then hard-fails every scripted build on such a
- * checkout.
+ * Git's default status reports a wholly untracked directory as a single
+ * `?? dir/` entry. A directory has no content to match against a patch body or
+ * the pristine baseline, so the guard has to judge the files under it, or every
+ * untracked branding subdirectory would classify `unmanaged` on every build
+ * while `fireforge status --unmanaged` calls the same tree clean, and
+ * `--refuse-unexported-drift` would hard-fail every scripted build.
  *
  * These tests run against a real git repository on purpose: git's collapsing
  * is the trigger, and it only happens when the whole directory is untracked.

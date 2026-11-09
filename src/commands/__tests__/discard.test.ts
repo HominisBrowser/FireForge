@@ -45,6 +45,10 @@ vi.mock('../../core/discard-baseline.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../../core/recovery-snapshot.js', () => ({
+  takeRecoverySnapshot: vi.fn(() => Promise.resolve(undefined)),
+}));
+
 vi.mock('../../core/git-status.js', () => ({
   resolveMaxUntrackedFilesPerDir: vi.fn(() => 5000),
   getWorkingTreeStatus: vi.fn(() => Promise.resolve([])),
@@ -90,6 +94,7 @@ import { collectFurnaceManagedPrefixes } from '../../core/furnace-config.js';
 import { isGitRepository } from '../../core/git.js';
 import { discardStatusEntry } from '../../core/git-file-ops.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../../core/git-status.js';
+import { takeRecoverySnapshot } from '../../core/recovery-snapshot.js';
 import { GitError } from '../../errors/git.js';
 import { setInteractiveMode } from '../../test-utils/index.js';
 import { pathExists } from '../../utils/fs.js';
@@ -259,6 +264,48 @@ describe('discardCommand', () => {
 
     expect(warn).not.toHaveBeenCalled();
     expect(outro).toHaveBeenCalledWith('File restored to original state');
+  });
+
+  describe('several paths in one call', () => {
+    const a = makeGitStatusEntry({ file: 'x/a.css' });
+    const b = makeGitStatusEntry({ file: 'y/b.css' });
+    const c = makeGitStatusEntry({ file: 'z/deep/c.css' });
+
+    beforeEach(() => {
+      vi.mocked(getWorkingTreeStatus).mockResolvedValue([a, b, c]);
+    });
+
+    it('scans the engine once and discards every named path and directory', async () => {
+      await discardCommand('/project', ['x/a.css', 'y/b.css', 'z'], { yes: true });
+
+      expect(getWorkingTreeStatus).toHaveBeenCalledTimes(1);
+      expect(discardStatusEntry).toHaveBeenCalledTimes(3);
+      expect(takeRecoverySnapshot).toHaveBeenCalledWith('/project/engine', 'discard', [
+        'x/a.css',
+        'y/b.css',
+        'z/deep/c.css',
+      ]);
+      expect(outro).toHaveBeenCalledWith('3 file(s) restored to upstream state');
+    });
+
+    it('discards a path named twice once', async () => {
+      await discardCommand('/project', ['x/a.css', 'x', 'x/a.css'], { yes: true });
+      expect(discardStatusEntry).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses before discarding anything when one path has no changes', async () => {
+      await expect(
+        discardCommand('/project', ['x/a.css', 'nope.css'], { yes: true })
+      ).rejects.toThrow('No changes to discard for: nope.css. Nothing was discarded.');
+      expect(discardStatusEntry).not.toHaveBeenCalled();
+      expect(takeRecoverySnapshot).not.toHaveBeenCalled();
+    });
+
+    it('takes no recovery snapshot on a dry run', async () => {
+      await discardCommand('/project', ['x/a.css', 'y/b.css'], { dryRun: true });
+      expect(takeRecoverySnapshot).not.toHaveBeenCalled();
+      expect(discardStatusEntry).not.toHaveBeenCalled();
+    });
   });
 
   describe('directory-recursion fallback', () => {

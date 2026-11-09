@@ -68,7 +68,7 @@ export function getPackageRoot(): string {
   }
 }
 
-/** @internal */
+/** Whether a package manifest exposes the `fireforge` CLI entrypoint. */
 export function isFireForgePackageMetadata(pkg: PackageMetadata): boolean {
   if (!isObject(pkg.bin)) {
     return false;

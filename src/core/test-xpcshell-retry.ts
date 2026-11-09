@@ -8,6 +8,8 @@ export interface XpcshellRetryClassification {
 }
 
 export interface XpcshellRetryOptions {
+  /** Reuse the caller's owned teardown/coverage adapter for a repaired physical dispatch. */
+  dispatch?: () => Promise<MachCommandResult>;
   /** Engine checkout the run happened in. */
   engineDir: string;
   /** Object directory the run used, when one is configured. */
@@ -63,6 +65,7 @@ export async function retryAfterXpcshellSymlinkRepair(
       `${result.stdout}\n${result.stderr}`
     );
     if (repaired) {
+      if (options.dispatch !== undefined) return options.dispatch();
       // The repaired re-run is the same logical invocation, so it keeps
       // the verbosity the run was started with.
       return runMachTestSuite(kind, {

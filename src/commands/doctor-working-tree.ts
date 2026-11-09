@@ -56,7 +56,9 @@ export async function inspectEngineWorkingTree(
 ): Promise<DoctorCheck | undefined> {
   const { paths } = ctx;
   const rawStatus = await getWorkingTreeStatus(paths.engine);
-  const workingTreeStatus = await expandUntrackedDirectoryEntries(paths.engine, rawStatus);
+  const workingTreeStatus = await expandUntrackedDirectoryEntries(paths.engine, rawStatus, {
+    complete: true,
+  });
   if (workingTreeStatus.length === 0) {
     return ok('Engine working tree');
   }

@@ -61,7 +61,7 @@ export async function repairPatchesFilesAffected(
   options: RepairFilesAffectedOptions = {}
 ): Promise<RepairFilesAffectedResult> {
   // Same lock contract as the full rebuild (invariant 2,
-  // docs/lifecycle-invariants.md): a manifest write serializes on the
+  // contributing/lifecycle-invariants.md): a manifest write serializes on the
   // patch-directory lock, and a dry run reads under it so its projection
   // cannot be computed against a queue being rewritten underneath.
   return withPatchDirectoryLock(

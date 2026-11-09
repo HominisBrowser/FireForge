@@ -42,7 +42,9 @@ export type AffectingPatchLookup = Pick<
   PatchedContentContext,
   'getAffectingPatches' | 'readPatchBody'
 > &
-  Partial<Pick<PatchedContentContext, 'liveBlobHash'>>;
+  Partial<Pick<PatchedContentContext, 'liveBlobHash'>> & {
+    lastSection?: (file: string) => Promise<DiffSection | undefined>;
+  };
 
 /**
  * Classification result for a binary comparison. Structurally assignable
@@ -62,6 +64,7 @@ async function findLastAffectingSection(
   file: string,
   lookup?: AffectingPatchLookup
 ): Promise<DiffSection | undefined> {
+  if (lookup?.lastSection) return lookup.lastSection(file);
   // The lookup shares one manifest load + memoized body reads across the
   // whole classification batch. The fallback keeps single-file callers
   // (and existing direct tests) working without a context.
@@ -114,11 +117,9 @@ export async function classifyBinaryOwnedFile(args: {
   // `binary-unsupported` because a probe failed would hide real drift.
   let section: DiffSection | undefined;
   try {
-    if (!fileMissing) {
-      const liveBinary = await isBinaryFile(engineDir, entry.file);
-      if (!liveBinary) return null;
-    }
     section = await findLastAffectingSection(patchesDir, entry.file, args.lookup);
+    if (!fileMissing && section?.isBinary !== true && !(await isBinaryFile(engineDir, entry.file)))
+      return null;
   } catch (error: unknown) {
     if (fileMissing) return null;
     verbose(
@@ -141,7 +142,7 @@ export async function classifyBinaryOwnedFile(args: {
       return fileMissing ? null : unsupported();
     }
 
-    if (section.isDeletedFile) {
+    if (section.isDeletedFile || section.targetPath !== entry.file) {
       return {
         ...entry,
         classification: fileMissing ? matchClassification : 'patch-owned-drift',

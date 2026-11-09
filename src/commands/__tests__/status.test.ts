@@ -27,6 +27,14 @@ const { machineOutputModeState } = vi.hoisted(() => ({
   machineOutputModeState: { enabled: false },
 }));
 
+vi.mock('../../core/status-mode.js', () => ({
+  prepareOwnedModes: vi.fn(),
+  ownedBinaryPaths: vi.fn(() => Promise.resolve(new Set())),
+  ownedLastSection: vi.fn(() => Promise.resolve(undefined)),
+  ownedModeMatches: vi.fn(() => Promise.resolve(true)),
+  readOwnedText: vi.fn(() => Promise.resolve(undefined)),
+}));
+
 vi.mock('../../core/config.js', () => ({
   getProjectPaths: vi.fn().mockReturnValue({
     root: '/fake/root',
@@ -349,6 +357,26 @@ describe('statusCommand', () => {
       expect(infoMessages()).toContain(
         "  browser/base/content/example.js — run 'fireforge register browser/base/content/example.js'"
       );
+    });
+
+    it('enforces --check and implied policies after displaying --lock', async () => {
+      vi.mocked(getStatusWithCodes).mockResolvedValue([
+        { status: ' M', file: 'browser/unowned.js' },
+      ]);
+      for (const policy of [{ check: true }, { failOn: 'unmanaged' }, { allow: 'branding' }])
+        await expect(statusCommand(projectRoot, { lock: true, ...policy })).rejects.toThrow(
+          'unmanaged'
+        );
+    });
+
+    it('fails --check for an unmanaged file beyond the human untracked display cap', async () => {
+      vi.mocked(collectFurnaceManagedPrefixes).mockResolvedValue(new Set(['browser/managed/']));
+      vi.mocked(getStatusWithCodes).mockResolvedValue([{ status: '??', file: 'browser/' }]);
+      vi.mocked(getUntrackedFilesInDir).mockResolvedValue([
+        ...Array.from({ length: 5000 }, (_, index) => `browser/managed/${index}.js`),
+        'browser/hidden.js',
+      ]);
+      await expect(statusCommand(projectRoot, { check: true })).rejects.toThrow('1 unmanaged');
     });
 
     it('classifies patch-backed file when content matches expected', async () => {

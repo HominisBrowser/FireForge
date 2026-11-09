@@ -26,6 +26,7 @@ vi.mock('../test-control-restore.js', async (importOriginal) => ({
 }));
 
 import { getBuildBaselinePath } from '../../core/build-baseline.js';
+import { CONTROL_BASELINE_REPETITION } from '../../core/test-results-document.js';
 import { findNearestXpcshellManifest } from '../../core/xpcshell-appdir.js';
 import { InvalidArgumentError, PreflightRefusalError } from '../../errors/base.js';
 import { TestFailureError } from '../../errors/build.js';
@@ -35,6 +36,7 @@ import { ensureDir, writeJson } from '../../utils/fs.js';
 import { info, success } from '../../utils/logger.js';
 import { runControlRestoreBuild } from '../test-control-restore.js';
 import { orchestrateTestRuns, type TestRunBody, type TestRunHooks } from '../test-orchestrate.js';
+import { collectedTestResults, recordTestResults, resetTestResults } from '../test-results.js';
 import {
   emitFailVerdict,
   emitHarnessVerdict,
@@ -57,6 +59,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   vi.mocked(findNearestXpcshellManifest).mockResolvedValue(null);
   resetVerdictEmission();
+  resetTestResults();
   root = await createTempProject('fireforge-orchestrate-');
   await writeFiles(root, { [`engine/${TARGET}`]: SOURCE, 'control.diff': DIFF });
   writes = [];
@@ -126,6 +129,33 @@ describe('orchestrateTestRuns', () => {
       { repeat: 2, waitBrowser: 3600, waitPort: 600 },
     ]);
   });
+
+  it.each(['all', 'reached', 'none', false] as const)(
+    'consumes the Furnace build policy %j before later repeated harness dispatches',
+    async (furnaceApply) => {
+      vi.mocked(findNearestXpcshellManifest).mockImplementation((_engineDir, path) =>
+        Promise.resolve(path.includes('/unit/') ? '/x/xpcshell.toml' : null)
+      );
+      const body = vi.fn<TestRunBody>((_paths, options) => {
+        if (options.furnaceApply !== undefined && options.build !== true) {
+          throw new InvalidArgumentError('Furnace policy requires a build', '--furnace-apply');
+        }
+        return pass();
+      });
+      await run(
+        ['b/browser_a.js', 'u/unit/test_a.js'],
+        { repeat: 2, build: true, furnaceApply },
+        body
+      );
+      expect(body).toHaveBeenCalledTimes(4);
+      expect(body.mock.calls[0]?.[1]).toMatchObject({ build: true, furnaceApply });
+      for (const [, options] of body.mock.calls.slice(1)) {
+        expect(options).not.toHaveProperty('furnaceApply');
+        expect(options).not.toHaveProperty('build');
+      }
+      expect(lines('FIREFORGE-VERDICT')).toEqual(['FIREFORGE-VERDICT: PASS runs=4/4']);
+    }
+  );
 
   it('--repeat reports each red run and fails the aggregate', async () => {
     const body = vi
@@ -205,14 +235,92 @@ describe('orchestrateTestRuns', () => {
 describe('--negative-control', () => {
   const engineFile = (): Promise<string> => readFile(join(root, 'engine', TARGET), 'utf8');
 
+  /** A body whose unmutated baseline is green, then does `mutated` for each mutated run. */
+  function greenBaseline(mutated: TestRunBody): TestRunBody {
+    return async (paths, options, hooks) => {
+      if (hooks.repetition !== CONTROL_BASELINE_REPETITION) return mutated(paths, options, hooks);
+      expect(hooks.beforeBuild).toBeUndefined();
+      expect(hooks.beforeDispatch).toBeUndefined();
+      expect(hooks.controlBuild).toBeUndefined();
+      await pass();
+    };
+  }
+
   /** A body that dispatches like the real one: hook first, then the harness. */
   function dispatching(outcome: () => Promise<void>): TestRunBody {
-    return async (_paths, _options, hooks) => {
+    return greenBaseline(async (_paths, _options, hooks) => {
       await hooks.beforeDispatch?.();
       expect(await engineFile()).toBe(NEUTERED);
       await outcome();
-    };
+    });
   }
+
+  it('dispatches the selection unmutated first, which takes over the build', async () => {
+    const seen: Array<{ file: string; options: TestOptions }> = [];
+    const body: TestRunBody = async (_paths, options, hooks) => {
+      await hooks.beforeDispatch?.();
+      seen.push({ file: await engineFile(), options });
+      if (hooks.repetition === CONTROL_BASELINE_REPETITION) await pass();
+      else await red();
+    };
+    await run(['a.js'], { negativeControl: 'control.diff', build: true, doctor: true }, body);
+    expect(seen.map(({ file }) => file)).toEqual([SOURCE, NEUTERED]);
+    expect(seen[0]?.options).toMatchObject({ build: true, doctor: true });
+    expect(seen[1]?.options).not.toHaveProperty('build');
+    expect(seen[1]?.options).not.toHaveProperty('doctor');
+    expect(lines('FIREFORGE-RUN')).toEqual([
+      'FIREFORGE-RUN: PASS checks=2 run=baseline',
+      'FIREFORGE-RUN: FAIL reason=test-failures checks=2 unexpected=1 run=1/1',
+    ]);
+  });
+
+  it('a selection already red without the mutation proves nothing and applies nothing', async () => {
+    const body = vi.fn<TestRunBody>(async (_paths, _options, hooks) => {
+      await hooks.beforeDispatch?.();
+      expect(await engineFile()).toBe(SOURCE);
+      await red();
+    });
+    await expect(
+      run(['a.js'], { negativeControl: 'control.diff', repeat: 2 }, body)
+    ).rejects.toThrow(TestFailureError);
+    expect(body).toHaveBeenCalledOnce();
+    expect(success).not.toHaveBeenCalled();
+    expect(lines('FIREFORGE-VERDICT')).toEqual([
+      'FIREFORGE-VERDICT: FAIL reason=test-failures note=baseline-red runs=0/2 control=inconclusive',
+    ]);
+  });
+
+  it('runs every harness half of a mixed selection in the baseline', async () => {
+    vi.mocked(findNearestXpcshellManifest).mockImplementation((_engineDir, path) =>
+      Promise.resolve(path.includes('/unit/') ? '/x/xpcshell.toml' : null)
+    );
+    const seen: Array<{ run: number | undefined; paths: string[]; file: string }> = [];
+    const body: TestRunBody = async (paths, _options, hooks) => {
+      await hooks.beforeDispatch?.();
+      seen.push({ run: hooks.repetition, paths, file: await engineFile() });
+      if (hooks.repetition === CONTROL_BASELINE_REPETITION) await pass();
+      else if (paths[0]?.includes('/unit/')) await red();
+      else await pass();
+    };
+    await run(['b/browser_a.js', 'u/unit/test_a.js'], { negativeControl: 'control.diff' }, body);
+    expect(seen).toEqual([
+      { run: CONTROL_BASELINE_REPETITION, paths: ['u/unit/test_a.js'], file: SOURCE },
+      { run: CONTROL_BASELINE_REPETITION, paths: ['b/browser_a.js'], file: SOURCE },
+      { run: 1, paths: ['u/unit/test_a.js'], file: NEUTERED },
+      { run: 1, paths: ['b/browser_a.js'], file: NEUTERED },
+    ]);
+    expect(lines('FIREFORGE-VERDICT')[0]).toContain('control=caught');
+  });
+
+  it('a refused baseline keeps the note of the gate that refused it', async () => {
+    const refusal = new PreflightRefusalError('stale', 'stale-build');
+    await expect(
+      run(['a.js'], { negativeControl: 'control.diff' }, () => Promise.reject(refusal))
+    ).rejects.toBe(refusal);
+    expect(lines('FIREFORGE-VERDICT')).toEqual([
+      'FIREFORGE-VERDICT: FAIL reason=preflight note=stale-build runs=0/1 control=inconclusive',
+    ]);
+  });
 
   it('applies before dispatch, restores after, and reports a caught control', async () => {
     await run(['a.js'], { negativeControl: 'control.diff' }, dispatching(red));
@@ -221,7 +329,64 @@ describe('--negative-control', () => {
       'FIREFORGE-VERDICT: FAIL reason=test-failures checks=2 unexpected=1 control=caught',
     ]);
     expect(success).toHaveBeenCalledWith('Negative control caught.');
+    const control = collectedTestResults().controls?.[0];
+    expect(control).toMatchObject({
+      run: 1,
+      mutationVerified: true,
+      restored: true,
+      compiled: false,
+    });
+    expect(control?.diffDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(control?.targets[0]?.restoredSha256).toBe(control?.targets[0]?.originalSha256);
+    expect(control?.targets[0]?.restoredMode).toBe(control?.targets[0]?.mode);
     expect(info).toHaveBeenCalledWith(expect.stringMatching(/restored byte-exact: 1 file/));
+  });
+
+  describe('with the labels a job expects', () => {
+    const xpcshellRed = (): Promise<void> => {
+      recordTestResults(
+        [
+          {
+            test: 'u/test_wire.js',
+            status: 'FAIL',
+            expected: 'PASS',
+            unexpected: true,
+            unexpectedSubtests: 1,
+            unexpectedAssertionResults: [
+              {
+                assertion: 'test_wire_three_streams',
+                status: 'FAIL',
+                expected: 'PASS',
+                message: 'the stream settled - false == true',
+              },
+            ],
+          },
+        ],
+        [],
+        { run: 1, shard: 'u/test_wire.js', logLine: 1 }
+      );
+      return red();
+    };
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('reads caught when the reds are at its labels, by assertion text', async () => {
+      vi.stubEnv('FIREFORGE_CONTROL_ASSERTIONS', JSON.stringify(['the stream settled']));
+      await run(['u/test_wire.js'], { negativeControl: 'control.diff' }, dispatching(xpcshellRed));
+      expect(lines('FIREFORGE-VERDICT')[0]).toContain('control=caught');
+    });
+
+    it('never reads caught when they are elsewhere, and names the labels it saw', async () => {
+      vi.stubEnv('FIREFORGE_CONTROL_ASSERTIONS', JSON.stringify(['the stream closed']));
+      await expect(
+        run(['u/test_wire.js'], { negativeControl: 'control.diff' }, dispatching(xpcshellRed))
+      ).rejects.toThrow(
+        /unexpected assertion: expected "the stream closed"; the reds were labelled "test_wire_three_streams" \(assertion "the stream settled - false == true"\)/
+      );
+      expect(lines('FIREFORGE-VERDICT')[0]).toContain('control=inconclusive');
+      expect(lines('FIREFORGE-VERDICT')[0]).not.toContain('control=caught');
+    });
   });
 
   it('a control that stays green fails the invocation as missed', async () => {
@@ -247,10 +412,10 @@ describe('--negative-control', () => {
   });
 
   it('is restored even when a later gate refuses after the apply', async () => {
-    const body: TestRunBody = async (_paths, _options, hooks) => {
+    const body = greenBaseline(async (_paths, _options, hooks) => {
       await hooks.beforeDispatch?.();
       throw new PreflightRefusalError('late', 'late-gate');
-    };
+    });
     await expect(run(['a.js'], { negativeControl: 'control.diff' }, body)).rejects.toThrow('late');
     expect(await engineFile()).toBe(SOURCE);
     expect(lines('FIREFORGE-VERDICT')).toEqual([
@@ -297,11 +462,11 @@ describe('--negative-control', () => {
   });
 
   it('a file edited under the control is kept and the invocation is inconclusive', async () => {
-    const body: TestRunBody = async (_paths, _options, hooks) => {
+    const body = greenBaseline(async (_paths, _options, hooks) => {
       await hooks.beforeDispatch?.();
       await writeFile(join(root, 'engine', TARGET), 'peer edit\n');
       await red();
-    };
+    });
     await expect(run(['a.js'], { negativeControl: 'control.diff' }, body)).rejects.toThrow(
       /left 1 file\(s\) alone/
     );
@@ -347,11 +512,17 @@ describe('--negative-control', () => {
       expect(body).not.toHaveBeenCalled();
     });
 
-    it('goes in before the first build, stays for later runs, and marks the verdict', async () => {
+    it('builds its own binary after the baseline, stays for later runs, and marks the verdict', async () => {
       const seen: string[] = [];
-      const body = vi.fn<TestRunBody>(async (_paths, _options, hooks) => {
+      const builds: boolean[] = [];
+      const body = vi.fn<TestRunBody>(async (paths, options, hooks) => {
+        builds.push(options.build === true);
+        if (hooks.repetition === CONTROL_BASELINE_REPETITION) {
+          seen.push('baseline');
+          return greenBaseline(() => Promise.resolve())(paths, options, hooks);
+        }
         seen.push(hooks.beforeBuild === undefined ? 'dispatch' : 'build');
-        // Only the first run builds, and it must be a full mach build:
+        // Only the first mutated run builds, and it must be a full mach build:
         // `mach build faster` compiles nothing.
         expect(hooks.fullBuildReason !== undefined).toBe(hooks.beforeBuild !== undefined);
         if (hooks.fullBuildReason !== undefined) {
@@ -363,7 +534,8 @@ describe('--negative-control', () => {
         await red();
       });
       await run(['a.js'], { negativeControl: 'cpp.diff', build: true, repeat: 2 }, body);
-      expect(seen).toEqual(['build', 'dispatch']);
+      expect(seen).toEqual(['baseline', 'build', 'dispatch']);
+      expect(builds).toEqual([true, true, false]);
       expect(await cppFile()).toBe(SOURCE);
       expect(lines('FIREFORGE-VERDICT')[0]).toContain('control=caught');
       expect(lines('FIREFORGE-VERDICT')[0]).toContain('control-build=compiled');
@@ -373,7 +545,7 @@ describe('--negative-control', () => {
 
     it("hands the first run's control-build stamp to every later run", async () => {
       const hooksSeen: TestRunHooks[] = [];
-      const body = vi.fn<TestRunBody>(async (_paths, _options, hooks) => {
+      const body = greenBaseline(async (_paths, _options, hooks) => {
         hooksSeen.push(hooks);
         await hooks.beforeBuild?.();
         await hooks.beforeDispatch?.();
@@ -391,7 +563,7 @@ describe('--negative-control', () => {
     });
 
     it('rebuilds once after the restore when its build recorded the control stamp', async () => {
-      const body = vi.fn<TestRunBody>(async (_paths, _options, hooks) => {
+      const body = greenBaseline(async (_paths, _options, hooks) => {
         await hooks.beforeBuild?.();
         if (hooks.controlBuild !== undefined) {
           expect(hooks.controlBuild).toMatchObject({ diffFile: 'cpp.diff', targets: [CPP] });

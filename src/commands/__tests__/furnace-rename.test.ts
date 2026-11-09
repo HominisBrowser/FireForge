@@ -4,6 +4,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { nativePath } from '../../test-utils/index.js';
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
+// These unit fixtures exercise legacy orchestration through their existing fs mocks.
+// Real authored path/writer behavior is covered by authored/furnace-lifecycle.test.ts.
+vi.mock('../../core/authored/fs.js', async () => import('../../utils/fs.js'));
+vi.mock('../../core/authored/writer.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/authored/writer.js')>()),
+  authoringProjectPaths: async (root: string) =>
+    (await import('../../core/config.js')).getProjectPaths(root),
+  authoringProjectRoot: () => Promise.resolve('/project'),
+}));
+
 vi.mock('node:fs/promises', () => ({
   readdir: vi.fn(),
 }));
@@ -1065,6 +1075,30 @@ describe('furnaceRenameCommand engine-tree cleanup', () => {
     const tomlContent = tomlWriteCall?.[1] ?? '';
     expect(tomlContent).toContain('["test_moz-nav.html"]');
     expect(tomlContent).not.toContain('["test_moz-sidebar.html"]');
+  });
+
+  it('leaves an existing mochikit test of the new name alone instead of overwriting it', async () => {
+    const mochikitDir = nativePath('/project/engine/toolkit/content/tests/widgets');
+    const oldTestPath = nativePath(`${mochikitDir}/test_moz-sidebar.html`);
+    const newTestPath = nativePath(`${mochikitDir}/test_moz-nav.html`);
+
+    mockPathExists.mockImplementation((path: string) => {
+      if (path === nativePath('/project/engine')) return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-sidebar'))
+        return Promise.resolve(true);
+      if (path === nativePath('/project/components/custom/moz-nav')) return Promise.resolve(false);
+      if (path === mochikitDir || path === oldTestPath || path === newTestPath)
+        return Promise.resolve(true);
+      if (path.includes('customElements.js')) return Promise.resolve(true);
+      if (path.includes('jar.mn')) return Promise.resolve(true);
+      return Promise.resolve(false);
+    });
+    mockReadText.mockResolvedValue('');
+
+    await furnaceRenameCommand('/project', 'moz-sidebar', 'moz-nav');
+
+    expect(mockWriteText.mock.calls.some((c) => c[0] === newTestPath)).toBe(false);
+    expect(mockRemoveFile).not.toHaveBeenCalledWith(oldTestPath);
   });
 
   it('no-ops when the mochikit scaffold was never created', async () => {

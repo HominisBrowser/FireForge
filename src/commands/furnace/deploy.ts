@@ -7,8 +7,7 @@ import { assertDeployOverwritesOwnedBy } from '../../core/furnace-deploy-owner.j
 import { reportJsconfigPathsSync } from '../../core/furnace-jsconfig.js';
 import { runFurnaceMutation, waitLockMutationOptions } from '../../core/furnace-operation.js';
 import { assertFurnaceReady } from '../../core/furnace-precondition.js';
-import { getStepFailureCount } from '../../core/furnace-state-persist.js';
-import { hasBlockingStepErrors } from '../../core/furnace-step-errors.js';
+import { countApplyFailures, hasBlockingStepErrors } from '../../core/furnace-step-errors.js';
 import type { OverrideVersionDrift } from '../../core/furnace-version-drift.js';
 import {
   findOverrideBaseVersionDrift,
@@ -78,7 +77,7 @@ function printDeploymentSummary(
 ): void {
   const appliedCount = result.applied.length;
   const skippedCount = result.skipped.length;
-  const applyErrors = result.errors.length + getStepFailureCount(result);
+  const applyErrors = countApplyFailures(result);
   const stepErrorCount = result.applied.reduce((sum, a) => sum + (a.stepErrors?.length ?? 0), 0);
 
   if (isDryRun) {
@@ -248,13 +247,13 @@ export async function furnaceDeployCommand(
   // Keep the consumer jsconfig's chrome-module `paths` in step with the
   // deployed module set. Only after a clean apply: a rolled-back deploy
   // must not advance the typecheck mapping either.
-  if (result.errors.length === 0 && getStepFailureCount(result) === 0) {
-    await reportJsconfigPathsSync(projectRoot, config, isDryRun);
+  if (countApplyFailures(result) === 0) {
+    await reportJsconfigPathsSync(projectRoot, config, isDryRun, options.waitLockSeconds);
   }
 
   // --- Step 2: Validate (read-only, runs even in dry-run to show what would fail) ---
   if (options.skipValidate) {
-    const applyErrors = result.errors.length + getStepFailureCount(result);
+    const applyErrors = countApplyFailures(result);
     if (applyErrors > 0)
       throw new FurnaceError(buildDeployFailureMessage(applyErrors, 0, isDryRun));
     outro(

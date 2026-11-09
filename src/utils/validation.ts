@@ -349,6 +349,11 @@ export function describeProductVersionIncompatibility(
   return undefined;
 }
 
+/** Executable names: lowercase letter first, then lowercase letters, digits and hyphens. */
+export function isValidBinaryName(binaryName: string): boolean {
+  return /^[a-z][a-z0-9-]*$/.test(binaryName);
+}
+
 /**
  * Validates an application ID string.
  * Accepts reverse-domain format like "org.example.browser"
@@ -397,6 +402,11 @@ export function describeTokenNameProblem(name: string): string | undefined {
   // the rest of the declaration block.
   if (/[{}();!'"]/.test(ident)) {
     return `Token name contains characters that would corrupt CSS syntax: "${name}"`;
+  }
+
+  // Names are emitted literally; CSS escapes require a separate decoding contract.
+  if (!/^[-_a-zA-Z0-9\u0080-\u{10ffff}]+$/u.test(ident)) {
+    return `Token name must use literal CSS identifier characters (letters, digits, hyphens or underscores): "${name}"`;
   }
 
   return undefined;

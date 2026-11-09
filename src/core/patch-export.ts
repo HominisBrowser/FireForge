@@ -21,7 +21,6 @@ import {
   addPatchToManifest,
   loadPatchesManifestForWrite,
   PATCHES_MANIFEST,
-  savePatchesManifest,
 } from './patch-manifest.js';
 import { formatPatchOrder, requirePatchOrder } from './patch-parse.js';
 import { allocatePolicyOrder, enforcePatchPolicy } from './patch-policy.js';
@@ -159,6 +158,20 @@ export async function getNextPatchFilename(
   return `${patchNumber}-${category}-${sanitizedName}.patch`;
 }
 
+/**
+ * Reads a file's text for a later {@link restoreFileText}, or null when it is
+ * absent. Rollbacks restore the bytes they read, never a re-serialised value.
+ */
+export async function snapshotFileText(path: string): Promise<string | null> {
+  return (await pathExists(path)) ? await readText(path) : null;
+}
+
+/** Puts a {@link snapshotFileText} snapshot back: its text, or removal when it was absent. */
+export async function restoreFileText(path: string, original: string | null): Promise<void> {
+  if (original === null) await removeFile(path);
+  else await writeText(path, original);
+}
+
 export interface CommitExportedPatchInput {
   patchesDir: string;
   category: PatchCategory;
@@ -219,7 +232,9 @@ export async function commitExportedPatch(
       }
 
       const patchPath = plan.patchPath;
-      const originalPatchContent = (await pathExists(patchPath)) ? await readText(patchPath) : null;
+      const originalPatchContent = await snapshotFileText(patchPath);
+      const manifestPath = join(input.patchesDir, PATCHES_MANIFEST);
+      const originalManifestText = await snapshotFileText(manifestPath);
       const removedPatchContents = new Map<string, string>();
 
       for (const oldPatch of plan.supersededPatches) {
@@ -257,11 +272,7 @@ export async function commitExportedPatch(
         // Best-effort rollback: wrap each operation so a secondary failure
         // never masks the original failure.
         try {
-          if (originalPatchContent === null) {
-            await removeFile(patchPath);
-          } else {
-            await writeText(patchPath, originalPatchContent);
-          }
+          await restoreFileText(patchPath, originalPatchContent);
         } catch (error: unknown) {
           warn(`Rollback warning: could not restore patch file: ${toError(error).message}`);
         }
@@ -275,11 +286,7 @@ export async function commitExportedPatch(
         }
 
         try {
-          if (plan.manifestBefore) {
-            await savePatchesManifest(input.patchesDir, plan.manifestBefore);
-          } else {
-            await removeFile(join(input.patchesDir, PATCHES_MANIFEST));
-          }
+          await restoreFileText(manifestPath, originalManifestText);
         } catch (error: unknown) {
           warn(`Rollback warning: could not restore manifest: ${toError(error).message}`);
         }

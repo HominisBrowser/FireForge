@@ -32,6 +32,8 @@ export interface DryRunPlanInput {
   testStyle: ResolvedTestStyle;
   description: string;
   binaryName: string;
+  /** Actual authored source root; legacy engine is the default. */
+  sourceRoot?: string;
   /**
    * Resolved `--test-dir` override (engine-relative, already validated by
    * `resolveValidatedTestDir`). Omit for the default `<binaryName>`-derived
@@ -53,8 +55,10 @@ function formatTestSection(args: {
   componentName: string;
   binaryName: string;
   testDir?: string | undefined;
+  sourceRoot?: string | undefined;
 }): string {
   const { testStyle, componentName, binaryName, testDir } = args;
+  const sourceRoot = args.sourceRoot ?? 'engine';
   if (testStyle === 'none') return '';
 
   const underscored = deriveTestStem(componentName, binaryName);
@@ -66,19 +70,19 @@ function formatTestSection(args: {
     const testDirRel = resolveBrowserChromeTestDir(binaryName, testDir);
     const manifestName = testDirRel.slice(BROWSER_TEST_SCAFFOLD_ROOT.length);
     return (
-      `\n\nWould create test files in engine/${testDirRel}/:\n` +
+      `\n\nWould create test files in ${sourceRoot}/${testDirRel}/:\n` +
       `  browser.toml\n  head.js\n  browser_${binaryName}_${underscored}.js` +
-      `\n\nWould register ${manifestName}/browser.toml in engine/browser/base/moz.build`
+      `\n\nWould register ${manifestName}/browser.toml in ${sourceRoot}/browser/base/moz.build`
     );
   }
 
   if (testStyle === 'xpcshell') {
     const testDirRel = resolveXpcshellTestDir(binaryName, componentName, testDir);
-    return `\n\nWould create xpcshell test files in engine/${testDirRel}/`;
+    return `\n\nWould create xpcshell test files in ${sourceRoot}/${testDirRel}/`;
   }
 
   // testStyle === 'mochikit' (last remaining branch in ResolvedTestStyle).
-  const testRoot = 'engine/toolkit/content/tests/widgets/';
+  const testRoot = `${sourceRoot}/toolkit/content/tests/widgets/`;
   return `\n\nWould create mochikit test file in ${testRoot}`;
 }
 
@@ -95,8 +99,10 @@ export function formatSuccessNote(args: {
   binaryName: string;
   /** Resolved `--test-dir` override. See {@link DryRunPlanInput.testDir}. */
   testDir?: string | undefined;
+  sourceRoot?: string | undefined;
 }): string {
   const { componentName, files, testFiles, testStyle, binaryName, testDir } = args;
+  const sourceRoot = args.sourceRoot ?? 'engine';
 
   let note =
     `Files created in components/custom/${componentName}/:\n` +
@@ -105,15 +111,20 @@ export function formatSuccessNote(args: {
   if (testFiles.length > 0) {
     let testRoot: string;
     if (testStyle === 'xpcshell') {
-      testRoot = `engine/${resolveXpcshellTestDir(binaryName, componentName, testDir)}/`;
+      testRoot = `${sourceRoot}/${resolveXpcshellTestDir(binaryName, componentName, testDir)}/`;
     } else if (testStyle === 'mochikit') {
-      testRoot = 'engine/toolkit/content/tests/widgets/';
+      testRoot = `${sourceRoot}/toolkit/content/tests/widgets/`;
     } else {
-      testRoot = `engine/${resolveBrowserChromeTestDir(binaryName, testDir)}/`;
+      testRoot = `${sourceRoot}/${resolveBrowserChromeTestDir(binaryName, testDir)}/`;
     }
     note += `\n\nTest files in ${testRoot}:\n` + testFiles.map((f) => `  ${f}`).join('\n');
   }
 
+  if (sourceRoot !== 'engine')
+    return (
+      note +
+      '\n\nNext steps:\n  1. Edit the component and authored test files\n  2. Capture inputs with "fireforge authored capture"\n  3. Submit a source proof campaign with "fireforge prove"'
+    );
   note +=
     '\n\n' +
     'Next steps:\n' +
@@ -155,7 +166,13 @@ export function formatDryRunPlan(args: DryRunPlanInput): string {
     `Would create files in components/custom/${componentName}/:\n` +
     componentFiles.map((f) => `  ${f}`).join('\n');
 
-  plan += formatTestSection({ testStyle, componentName, binaryName, testDir });
+  plan += formatTestSection({
+    testStyle,
+    componentName,
+    binaryName,
+    testDir,
+    sourceRoot: args.sourceRoot,
+  });
 
   plan += `\n\nWould add custom entry to furnace.json:`;
   plan += `\n  name: ${componentName}`;

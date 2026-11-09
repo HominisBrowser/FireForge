@@ -5,27 +5,77 @@
  * `test-stale-check`.
  */
 
+import { constants } from 'node:fs';
+import { access, readdir } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+
+import { PreflightRefusalError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
-import { verbose } from '../utils/logger.js';
 import type { BuildBaseline } from './build-baseline-types.js';
-import { hashEngineFile } from './coverage-extend.js';
-import { hasChanges, isMissingHeadError } from './git.js';
-import { git } from './git-base.js';
-import { getUntrackedFiles } from './git-status.js';
+import { hashEngineFile } from './coverage-records.js';
+import { readCommittedChanges, readEngineInventory } from './engine-state.js';
+import { gitResult } from './git-base.js';
 
 /**
- * Collects engine-relative paths changed since the baseline's HEAD SHA,
- * plus any workdir modifications (tracked and untracked). Defensive: git
- * failures surface as verbose lines and return the files collected so far,
- * so an empty result means "no drift we can prove" rather than "no drift
- * occurred". When the baseline is missing or the engine has no HEAD yet,
- * falls back to workdir-only collection. The result is sorted.
+ * The commit a build record anchors to is not in this engine repository: the
+ * engine was downloaded again since, or the commit was pruned. The record then
+ * says nothing about this tree, and only a build can make a new one.
+ */
+export class BaselineAnchorMissingError extends PreflightRefusalError {
+  constructor(public readonly commit: string) {
+    super(
+      `The last recorded build anchors to engine commit ${commit}, which no longer exists in ` +
+        'engine/ (re-downloading the engine replaces its repository). Nothing can say the ' +
+        'packaged runtime matches engine/ or covers these paths. Run "fireforge build" or ' +
+        '"fireforge test --build" first. If you built outside FireForge, --allow-stale-build ' +
+        'accepts the runtime as it stands.',
+      'no-build-baseline'
+    );
+  }
+}
+
+/** A whole object name, as a build record writes one. Anything else names no commit at all. */
+const FULL_OBJECT_NAME = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+/**
+ * Whether this repository provably lacks the commit: the one git failure that
+ * means the record is out of date. Git answers a quiet verify of an absent object
+ * with exit 1 and an empty stderr, and complains about one it holds but cannot
+ * read, apart from an unreadable pack file, which reads as absent and so is
+ * checked here. A malformed record or a damaged store proves nothing about the
+ * commit, and stays a failure for the caller to refuse on.
+ */
+export async function isCommitMissing(engineDir: string, commit: string): Promise<boolean> {
+  if (!FULL_OBJECT_NAME.test(commit)) return false;
+  try {
+    const objects = await gitResult(['rev-parse', '--git-path', 'objects'], engineDir);
+    if (objects.exitCode !== 0) return false;
+    const packs = resolve(engineDir, objects.stdout.trim(), 'pack');
+    for (const name of await readdir(packs)) await access(join(packs, name), constants.R_OK);
+    const verify = await gitResult(
+      ['rev-parse', '-q', '--verify', `${commit}^{commit}`],
+      engineDir
+    );
+    return verify.exitCode === 1 && verify.stderr.trim() === '';
+  } catch {
+    // Git could not be asked, or the store could not be read: neither says anything about the commit.
+    return false;
+  }
+}
+
+/**
+ * Collects engine-relative paths changed since the baseline's HEAD SHA, plus
+ * every workdir modification (tracked and untracked). Git failures refuse the
+ * safety decision; a partial inventory never means clean. An anchor commit this
+ * repository does not hold raises {@link BaselineAnchorMissingError}, which
+ * callers answer as "no usable baseline". With no recorded baseline, worktree
+ * status also supports an unborn HEAD. The result is sorted.
  *
  * @param engineDir - Path to the engine directory
  * @param baseline - Last-build baseline, when one exists
- * @param contextLabel - Prefix for verbose-log lines (e.g. `Audit`,
- *   `Auto-configure`, `Stale-build preflight`) so operators can attribute
- *   the probe that emitted them
+ * @param contextLabel - Prefix for the failure message (e.g. `Audit`,
+ *   `Auto-configure`, `Stale-build preflight`) so operators can attribute the
+ *   probe that failed
  * @returns Sorted engine-relative POSIX paths
  */
 export async function collectChangedEnginePaths(
@@ -34,41 +84,29 @@ export async function collectChangedEnginePaths(
   contextLabel: string
 ): Promise<string[]> {
   const collected = new Set<string>();
-
   if (baseline?.engineHeadSha) {
     try {
-      const output = await git(
-        ['diff', '--name-only', `${baseline.engineHeadSha}..HEAD`],
-        engineDir
-      );
-      for (const line of output.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed) collected.add(trimmed);
+      for (const path of await readCommittedChanges(engineDir, baseline.engineHeadSha)) {
+        collected.add(path);
       }
     } catch (error: unknown) {
-      if (!isMissingHeadError(error)) {
-        verbose(
-          `${contextLabel}: could not diff engine against baseline — ${toError(error).message}`
-        );
+      if (await isCommitMissing(engineDir, baseline.engineHeadSha)) {
+        throw new BaselineAnchorMissingError(baseline.engineHeadSha);
       }
+      throw new Error(
+        `${contextLabel}: cannot establish engine changes against baseline ${baseline.engineHeadSha}: ${toError(error).message}`,
+        { cause: error }
+      );
     }
   }
-
   try {
-    if (await hasChanges(engineDir)) {
-      const worktreeDiff = await git(['diff', '--name-only', 'HEAD'], engineDir);
-      for (const line of worktreeDiff.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed) collected.add(trimmed);
-      }
-      for (const untracked of await getUntrackedFiles(engineDir)) {
-        collected.add(untracked);
-      }
-    }
+    for (const path of (await readEngineInventory(engineDir)).paths) collected.add(path);
   } catch (error: unknown) {
-    verbose(`${contextLabel}: could not enumerate workdir changes — ${toError(error).message}`);
+    throw new Error(
+      `${contextLabel}: cannot establish complete workdir changes: ${toError(error).message}`,
+      { cause: error }
+    );
   }
-
   return [...collected].sort();
 }
 

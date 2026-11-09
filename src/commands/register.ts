@@ -3,15 +3,16 @@ import { join } from 'node:path';
 
 import { Command } from 'commander';
 
-import { getProjectPaths } from '../core/config.js';
+import { authoringProjectPaths } from '../core/authored/writer.js';
 import { registerFile } from '../core/moz-manifest-rules.js';
 import { InvalidArgumentError } from '../errors/base.js';
 import type { CommandContext } from '../types/cli.js';
 import type { RegisterOptions } from '../types/commands/index.js';
 import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { addWaitLockOption, pickDefined } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
+import { runUnderEngineLockForAuthoredEdit } from './with-engine-lock.js';
 
 /**
  * Registers a file in the appropriate build manifest.
@@ -53,7 +54,7 @@ export async function registerCommand(
 
   // Verify the file exists in engine/ (skip for dry-run)
   if (!options.dryRun) {
-    const paths = getProjectPaths(projectRoot);
+    const paths = await authoringProjectPaths(projectRoot);
     const fullPath = join(paths.engine, engineRelativePath);
     if (!(await pathExists(fullPath))) {
       throw new InvalidArgumentError(`File not found in engine: ${engineRelativePath}`, 'path');
@@ -120,7 +121,7 @@ export function registerRegister(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
+  const command = program
     .command('register <path>')
     .description('Register a file in the appropriate build manifest')
     .option('--dry-run', 'Show what would be changed without writing')
@@ -132,15 +133,23 @@ export function registerRegister(
     .option(
       '--create-manifest',
       'Scaffold a missing manifest (directory moz.build with EXTRA_JS_MODULES / XPCSHELL_TESTS_MANIFESTS, or xpcshell.toml) and wire the parent DIRS chain instead of failing with "Manifest not found"'
-    )
-    .action(
-      withErrorHandling(
-        async (
-          path: string,
-          options: { dryRun?: boolean; after?: string; createManifest?: boolean }
-        ) => {
-          await registerCommand(getProjectRoot(), path, pickDefined(options));
-        }
-      )
     );
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (
+        path: string,
+        options: {
+          dryRun?: boolean;
+          after?: string;
+          createManifest?: boolean;
+          waitLock?: boolean | number;
+        }
+      ) => {
+        const projectRoot = getProjectRoot();
+        await runUnderEngineLockForAuthoredEdit(projectRoot, 'register', options, () =>
+          registerCommand(projectRoot, path, pickDefined(options))
+        );
+      }
+    )
+  );
 }

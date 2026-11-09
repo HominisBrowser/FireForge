@@ -178,7 +178,7 @@ export async function furnaceSyncCommand(
       );
     }
 
-    await reportJsconfigPathsSync(projectRoot, config, false);
+    await reportJsconfigPathsSync(projectRoot, config, false, options.waitLockSeconds);
 
     outro(
       `Sync complete — ${result.applied.length} applied, ${result.skipped.length} skipped` +

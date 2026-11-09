@@ -33,6 +33,7 @@ import {
   readRebaseSession,
   saveRebaseSession,
 } from '../../core/rebase-session.js';
+import { takeRecoverySnapshot } from '../../core/recovery-snapshot.js';
 import { GeneralError } from '../../errors/base.js';
 import {
   CorruptRebaseSessionError,
@@ -49,6 +50,7 @@ import {
   resolveWaitLockSeconds,
 } from '../../utils/options.js';
 import { parsePositiveIntegerFlag } from '../../utils/validation.js';
+import { runUnderEngineLock } from '../with-engine-lock.js';
 import { handleAbort } from './abort.js';
 import { confirmDirtyEngineReset } from './confirm.js';
 import { handleContinue } from './continue.js';
@@ -166,6 +168,8 @@ async function handleFreshStart(projectRoot: string, options: RebaseOptions): Pr
 
   // Record pre-rebase commit for --abort
   const preRebaseCommit = await getHead(paths.engine);
+
+  await takeRecoverySnapshot(paths.engine, 'rebase');
 
   // Reset engine to baseline
   const resetSpinner = spinner('Resetting engine to baseline...');
@@ -301,7 +305,10 @@ export function registerRebase(
         yes?: boolean;
         waitLock?: boolean | number;
       }) => {
-        await rebaseCommand(getProjectRoot(), pickDefined(options));
+        const projectRoot = getProjectRoot();
+        await runUnderEngineLock(projectRoot, 'rebase', options, () =>
+          rebaseCommand(projectRoot, pickDefined(options))
+        );
       }
     )
   );

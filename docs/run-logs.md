@@ -1,122 +1,21 @@
 <!-- SPDX-License-Identifier: EUPL-1.2 -->
 
-# Run logs (internal)
+# Run logs
 
-`fireforge test` and `fireforge build` write their own complete output to
-`.fireforge/logs/<command>-<timestamp>.log` as they stream. The module is
-`src/core/run-log.ts`.
+`fireforge test` and `fireforge build` write their complete output to `.fireforge/logs/<command>-<timestamp>.log` as they stream. A piped run (`fireforge test … 2>&1 | tail -40`) keeps the summary and discards the lines that say what broke, so the tool keeps the log for you.
 
-## Why the tool holds the log, not the operator
+## Contract
 
-Without a log, a run's diagnosis exists in exactly one place: the terminal.
-The convenient thing to do when output is long is
-`fireforge test … 2>&1 | tail -40`, which keeps the summary, discards the
-`TEST-UNEXPECTED-FAIL` lines that say what broke, and launders the exit code
-as well. Nothing else holds the output: `runMachCapture` keeps a 2 MB
-in-memory tail that dies with the process, and the shard retry loop discards
-earlier attempts outright.
-
-An operator rule ("never pipe a run") gets broken, so this is not an
-operator problem. The tool is the only party that can make the log survive
-the mistake.
-
-## The contract
-
-- **Complete output, never the echo filter's collapsed form.** The artifact
-  exists so that whoever is diagnosing the run can re-read it. Shortening it
-  would lose what it is kept for. The one transformation applied is
-  the secret-masking pass below, which changes values but never line
-  structure.
-- **Secret-shaped values are masked in the file, and only in the file.** The
-  terminal already showed every byte to the operator who ran the command. The
-  file is retained twenty deep and gets attached to bug reports, so it gets a
-  narrow redaction pass (`src/core/run-log-redact.ts`), applied per line
-  before the write. A line split across two chunks is held until its
-  terminator arrives (`\n`, or a lone `\r` from progress-bar repaints), or
-  until it exceeds 1 MiB, or until the log is closed. What gets redacted:
-  - The value of an env-style assignment `KEY=value` whose `KEY` matches
-    `/(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|AUTH)/i`. The value up to the
-    next whitespace, or a whole quoted string, is written as
-    `KEY=<redacted>`. The `--password=x` and `-DAUTH_TOKEN=x` spellings that
-    mach and configure echo from their argv have the same shape and are
-    masked too.
-  - The credential of an `Authorization:` header. `Bearer`, `Basic` and
-    `Token` keep the scheme word. Any other value is masked whole.
-
-  Nothing else is masked. A bare token in a URL, a space-separated
-  `--password foo` argument, a JSON `"token": "…"` field, or a cookie all
-  pass through unchanged. The pass is a seatbelt against the common
-  accidental leak (mach echoing its environment), not a guarantee that a log
-  is free of secrets. Review a log before sharing it.
-
-- **Opened before any preflight**, so a refusal is logged too. Those are
-  exactly the runs whose only output a `tail` throws away.
-- **Retained 20 deep per command kind.** Per kind, so that a busy `test` loop
-  cannot evict the `build` log an operator needs to read beside it. A
-  `--keep-log` copy (below) is outside this count. Pruning
-  runs before the new file is opened, and orders by the timestamp in the
-  filename rather than by stat-ing every entry.
-- **Timestamps are filesystem-safe.** They use the ISO form with `:` and `.`
-  replaced by `-`, which Windows accepts and which still sorts
-  chronologically.
-- **Best-effort throughout.** A log that cannot be opened, written or pruned
-  degrades to no log, because a run must never fail over a diagnostic.
-  `openRunLog` returns `undefined` on failure, a stream error after opening
-  latches `broken` and drops every later write, and pruning failures are
-  logged verbosely only. The entry point's SIGINT/SIGTERM path closes the
-  active log, also best-effort, before exiting, so the held partial line of a
-  killed run reaches disk.
+- **Complete output.** The file holds every line the run printed, never the shortened echo.
+- **Secret-shaped values are masked in the file only.** The terminal already showed them to you; the file is retained and gets attached to bug reports. Masked: the value of `KEY=value` when `KEY` matches `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `API_KEY` or `AUTH` (also the `--password=x` and `-DAUTH_TOKEN=x` spellings), written as `KEY=<redacted>`; and the credential of an `Authorization:` header (the scheme word of `Bearer`, `Basic` and `Token` stays). Nothing else is masked: a token in a URL, a space-separated `--password foo`, a JSON `"token"` field or a cookie pass through. Review a log before sharing it.
+- **Opened before any preflight**, so a refused run is logged too, including the refusal's text.
+- **Retained 20 deep per command kind**, so a busy `test` loop cannot evict the `build` log you read beside it. Timestamps are filesystem-safe and sort chronologically.
+- **Best-effort.** A log that cannot be opened, written or pruned degrades to no log; a run never fails over a diagnostic. An interrupt closes the log first, so a killed run keeps what it wrote.
 
 ## Keeping a log past retention
 
-Retention is shared by every session on the checkout, so on a busy shared
-checkout a log a verdict line names can be pruned within the hour.
-`--keep-log <path>` (on `test` and `build`) also writes the run's log to a
-path of the caller's choosing, outside `.fireforge/logs/` and never pruned.
-`FIREFORGE_LOG_KEEP=<path>` sets the same for every run in a session. The
-flag wins over the variable. A value ending in `/` or naming an existing
-directory receives the log under its own `.fireforge/logs/` file name, so a
-session directory collects one file per run; any other value is the file
-itself. Relative values resolve against the working directory.
-
-The copy is written live, line for line through the same redaction, rather
-than copied at the end, so a killed run keeps what it had written, exactly
-as the primary log does. `log=` still names the primary. The copy is
-best-effort too: if it cannot be opened, the run proceeds with the primary
-alone, and if the primary cannot be opened, the copy stands in for it.
-
-## Preflight refusals
-
-`fireforge test` opens its run log before any preflight, so a refusal is
-logged too. Those are exactly the runs whose only output a `tail` throws
-away. The refusal's own explanatory text is written into the log, and to
-stdout, before the verdict line seals stdout.
-
-Both halves matter. The verdict seal routes everything the CLI error boundary
-renders afterwards to stderr, so a run captured with `> file` would keep
-`FIREFORGE-VERDICT: FAIL reason=preflight` and nothing else. That rendering
-also happens after the run log is closed, so the artifact the verdict's own
-`log=` key points at would hold only the pre-test build. Writing before the
-seal avoids both without giving up the contract: the reason lands on both channels,
-and the verdict is still the run's last stdout line.
+Retention is shared by every session on the checkout, so a log a verdict names can be pruned within the hour on a busy checkout. `--keep-log <path>` (on `test` and `build`) also writes the run's log to a path you choose, outside `.fireforge/logs/` and never pruned. `FIREFORGE_LOG_KEEP=<path>` does the same for every run in a session; the flag wins. A value ending in `/` or naming an existing directory receives the log under its own file name, so a session directory collects one file per run. Any other value is the file itself. Relative values resolve against the working directory. The copy is written live through the same masking; `log=` still names the primary.
 
 ## Where the path is announced
 
-`test` publishes it as an additive `log=<path>` key on the
-`FIREFORGE-VERDICT:` line. That is forced rather than chosen: the verdict has
-to stay the run's last stdout write (see
-[`machine-output.md`](machine-output.md)), so a separate announcement after
-it would break the contract, and one before it is the first thing a `tail`
-cuts.
-
-`build` prints no verdict line, so it announces the path directly
-(`Full build output: <path>`).
-
-## Where the tee sits
-
-At the two mach capture funnels in `src/core/mach.ts`, not at the commands.
-That covers every dispatch: the three test dispatchers, `package`, and the
-stdio-inheriting path `mach build` uses, which rides the collectors' existing
-`mirror` hook rather than growing a second one. A new dispatcher added at the
-funnels is logged automatically, and one added beside them is not, which is
-the reason to keep going through them.
+`test` publishes it as `log=<path>` on the `FIREFORGE-VERDICT:` line (see [machine-output.md](machine-output.md)). `build` prints `Full build output: <path>`.

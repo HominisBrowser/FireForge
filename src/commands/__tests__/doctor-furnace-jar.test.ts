@@ -9,6 +9,19 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../doctor-furnace-transaction.js', () => ({
+  runDoctorFurnaceRepair: (
+    _root: string,
+    body: (operation: object, journal: object) => Promise<unknown>
+  ) => body({}, {}),
+}));
+vi.mock('../../core/furnace-rollback.js', () => ({ snapshotFile: vi.fn(() => Promise.resolve()) }));
+vi.mock('../../core/furnace-config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/furnace-config.js')>()),
+  loadFurnaceConfig: () =>
+    Promise.resolve({ custom: { 'my-widget': {} }, overrides: {}, stock: [] }),
+}));
+
 vi.mock('../../core/furnace-registration.js', () => ({
   findStaleJarMnEntries: vi.fn(),
   pruneStaleJarMnEntries: vi.fn(),

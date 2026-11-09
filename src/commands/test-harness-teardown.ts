@@ -3,34 +3,35 @@
  * Owns the kill path of one mach test dispatch for `fireforge test`.
  *
  * Three things the run must do around every `runMachTestSuite` call, kept
- * together because each one exists for the same incident (a supervisor
- * killed the process above FireForge at its bound and the harness httpd it
- * had launched spun for hours):
+ * together because each one answers the same failure (a supervisor kills the
+ * process above FireForge at its bound and the harness httpd spins on for
+ * hours):
  *
- *  1. Track the helper pids the harness announces, and after mach has
- *     exited terminate any that outlived it (`harness-helper-pids.ts`).
+ *  1. Track the helper pids the harness announces, in a ledger a later run can
+ *     read if this one is killed, and after mach has exited terminate any that
+ *     outlived it (`harness-helper-pids.ts`). The exec layer's own teardown
+ *     covers what it sampled, anchored to the objdir.
  *  2. Publish the harness process group (`--pgid-file`), so a supervisor
- *     that can only SIGKILL FireForge can still take the whole tree with
- *     one `kill -- -<pgid>` afterwards.
+ *     can diagnose the group. A bare PGID is not kill authority after leader exit.
  *  3. Watch FireForge's own parent (`parent-exit-watchdog.ts`). When it
  *     vanishes mid-run, write the killed verdict, reap the group, and let
  *     the dispatch loop end the run instead of retrying.
  *
- * Every reap adds to the `orphans-reaped=` verdict attribute.
+ * Every process terminated adds to the `orphans-reaped=` verdict attribute.
  */
 
 import { unlink, writeFile } from 'node:fs/promises';
 
 import {
   createHelperPidTracker,
+  openHelperLedger,
   reapTrackedHarnessPids,
-  snapshotObjdirHelpers,
 } from '../core/harness-helper-pids.js';
 import type { MachTestSuiteOptions } from '../core/mach.js';
 import { startParentExitWatchdog } from '../core/parent-exit-watchdog.js';
 import { toError } from '../utils/errors.js';
 import { verbose, warn } from '../utils/logger.js';
-import { sweepProcessGroup } from '../utils/process-group.js';
+import type { ProcessOwnership } from '../utils/process-group.js';
 import { addVerdictRunCount, emitKilledVerdict } from './test-verdict.js';
 
 /** Inputs for {@link createHarnessTeardown}. */
@@ -39,19 +40,14 @@ export interface HarnessTeardownInputs {
   objDir: string | undefined;
   /** `--pgid-file`: where to publish the harness process group id. */
   pgidFile: string | undefined;
+  /** Project root, for the ledger of announced helpers a killed run leaves behind. */
+  projectRoot?: string | undefined;
 }
 
 /** One dispatch's teardown: the hooks to spread into `runMachTestSuite`, and its lifecycle. */
 export interface HarnessTeardown {
   /** Hooks for {@link MachTestSuiteOptions.teardown}. */
   hooks: NonNullable<MachTestSuiteOptions['teardown']>;
-  /**
-   * Records the same-objdir helpers alive right now, before the dispatch
-   * spawns anything, so the post-close reap can tell this dispatch's
-   * unannounced helpers from an earlier run's survivors. Await it before
-   * `runMachTestSuite`.
-   */
-  prepare(): Promise<void>;
   /** Stops the parent watchdog. Call after the dispatch resolved or threw. */
   dispose(): void;
 }
@@ -62,9 +58,13 @@ export interface HarnessTeardown {
  * runs only while that dispatch is in flight.
  */
 export function createHarnessTeardown(inputs: HarnessTeardownInputs): HarnessTeardown {
-  const tracker = createHelperPidTracker();
+  const ledger =
+    inputs.projectRoot === undefined ? undefined : openHelperLedger(inputs.projectRoot);
+  const tracker = createHelperPidTracker((helper) => {
+    ledger?.record(helper);
+  });
   let pgid: number | undefined;
-  let baseline: ReadonlySet<number> | undefined;
+  let ownership: ProcessOwnership | undefined;
 
   const watchdog = startParentExitWatchdog({
     onParentExit: ({ originalPpid, currentPpid }) => {
@@ -77,13 +77,9 @@ export function createHarnessTeardown(inputs: HarnessTeardownInputs): HarnessTea
           'cannot run on unsupervised.'
       );
       if (pgid !== undefined) {
-        void sweepProcessGroup(pgid, undefined, 'after the parent process exited').catch(
-          (error: unknown) => {
-            warn(
-              `Reaping harness group ${pgid} after parent exit failed: ${toError(error).message}`
-            );
-          }
-        );
+        void ownership?.finish().catch((error: unknown) => {
+          warn(`Reaping harness group ${pgid} after parent exit failed: ${toError(error).message}`);
+        });
       }
     },
   });
@@ -93,21 +89,24 @@ export function createHarnessTeardown(inputs: HarnessTeardownInputs): HarnessTea
       onOutputChunk: (stream, chunk) => {
         tracker.feed(stream, chunk);
       },
-      onProcessGroup: (id) => {
+      onProcessGroup: (id, owner) => {
         pgid = id;
+        ownership = owner;
+        // mozprocess and mozserve move the browser and moz-http2 into groups
+        // of their own; the objdir is what lets teardown claim them.
+        if (inputs.objDir !== undefined) owner?.anchorTo([inputs.objDir]);
         verbose(`Harness process group: ${id} (mach is the group leader).`);
         if (inputs.pgidFile !== undefined) void publishPgid(inputs.pgidFile, id);
       },
       postCloseSweep: async () => {
-        const reaped = await reapTrackedHarnessPids(tracker.tracked(), inputs.objDir, baseline);
-        addVerdictRunCount('orphans-reaped', reaped);
+        const fromTree = (await ownership?.finish())?.signalled.length ?? 0;
+        const announced = await reapTrackedHarnessPids(tracker.tracked(), inputs.objDir);
+        addVerdictRunCount('orphans-reaped', fromTree + announced);
       },
-    },
-    prepare: async () => {
-      baseline = await snapshotObjdirHelpers(inputs.objDir);
     },
     dispose: () => {
       watchdog.stop();
+      ledger?.close();
     },
   };
 }

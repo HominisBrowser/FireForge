@@ -11,6 +11,7 @@ import { createLoggerMock } from '../../test-utils/module-mocks.js';
 vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 import { InvalidArgumentError } from '../../errors/base.js';
+import { info } from '../../utils/logger.js';
 import {
   removeActiveRunProfiles,
   resolveRunProfile,
@@ -44,9 +45,9 @@ describe('run profiles', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it('gives a plain run no profile arguments', async () => {
+  it('lets Firefox purge its default profile only after acquiring its own lock', async () => {
     const profile = await resolveRunProfile({ smoke: false, tempRoot: root });
-    expect(profile.args).toEqual([]);
+    expect(profile.args).toEqual(['-purgecaches']);
     expect(profile.temporary).toBe(false);
   });
 
@@ -59,9 +60,21 @@ describe('run profiles', () => {
     expect(await existsOnDisk(named)).toBe(true);
   });
 
+  it('honors an explicit cache-purge opt-out for the default profile', async () => {
+    const profile = await resolveRunProfile({ smoke: false, purgeCaches: false, tempRoot: root });
+    expect(profile.args).toEqual([]);
+    await profile.dispose();
+  });
+
   it('leaves a named profile cache alone when purgeCaches is false', async () => {
     const profile = await resolveRunProfile({ profile: 'named', purgeCaches: false, smoke: false });
     expect(profile.args).toEqual(['-profile', resolve('named')]);
+  });
+
+  it('prints a temporary profile at the default log level, so a tool can be given its path', async () => {
+    const profile = await resolveRunProfile({ smoke: true, tempRoot: root });
+    expect(info).toHaveBeenCalledWith(`Temporary run profile: ${profile.dir}`);
+    await profile.dispose();
   });
 
   it('creates a seeded temporary profile for a smoke run and removes it on dispose', async () => {

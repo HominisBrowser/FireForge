@@ -11,9 +11,8 @@
  * stays available via `--no-shard`.
  */
 
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-import { type DisplaySleepState, probeDisplaySleepState } from '../core/display-state.js';
 import {
   createHarnessPortTracker,
   type HarnessPortTracker,
@@ -29,13 +28,31 @@ import {
   type HarnessRunVerdict,
   headedDisplayAsleepVerdictNote,
 } from '../core/test-harness-crash.js';
-import { reportTestHost, sampleTestHost, stampPerfHost } from '../core/test-host-state.js';
+import {
+  type DisplaySleepState,
+  type HostLoadPeak,
+  mergeHostAttributes,
+  reportLoadPeak,
+  reportTestHost,
+  sampleTestHost,
+  stampPerfHost,
+  type TestHostState,
+  watchForHostSleep,
+  watchHostLoad,
+} from '../core/test-host-state.js';
+import {
+  type CoverageReport,
+  finishJsCoverage,
+  prepareJsCoverage,
+} from '../core/test-js-coverage.js';
 import {
   forwardedRawLogPath,
   hasForwardedRawLog,
   type RawTestLog,
   type RawTestResult,
   readRawTestLog,
+  summarizeRawLog,
+  trimsAnnouncedTests,
 } from '../core/test-raw-log.js';
 import {
   createStartMarkerTracker,
@@ -50,7 +67,11 @@ import { getPlatform } from '../utils/platform.js';
 import { maybeInjectAppdirArg } from './test-appdir.js';
 import { createHarnessTeardown } from './test-harness-teardown.js';
 import { recordTestResults } from './test-results.js';
-import { setVerdictRunAttribute } from './test-verdict.js';
+import {
+  getVerdictRunAttribute,
+  setVerdictRunAttribute,
+  verdictRunStartedAt,
+} from './test-verdict.js';
 
 /** Default bounded retry budget for recognized harness crashes. */
 export const DEFAULT_HARNESS_RETRIES = 2;
@@ -73,8 +94,12 @@ function machKindForSuite(suite: TestSuite): MachTestSuiteKind {
 
 /** Inputs shared by every harness invocation in one `fireforge test` run. */
 export interface TestRunContext {
+  /** Persistent root for unique per-attempt coverage artifacts. */
+  coverageDir?: string;
   /** A perf run changed power source; no green result can be trusted. */
   powerChanged?: boolean;
+  /** The display state at the end of the latest dispatch. */
+  lastDisplayState?: DisplaySleepState;
   engineDir: string;
   objDir: string | undefined;
   classification: { xpcshell: string[]; nonXpcshell: string[] };
@@ -181,10 +206,14 @@ async function runTestsWithRetriesInner(
     portTracker = createHarnessPortTracker();
     const raw = rawLogDispatchArgs(ctx, extraArgs);
     logLine = activeRunLogLine();
-    const dispatched = await runTrackedMachTestSuite(ctx, kind, paths, raw.args, env, [
-      tracker,
-      portTracker,
-    ]);
+    const dispatched = await runCoverageTrackedSuite({
+      ctx,
+      kind,
+      paths,
+      args: raw.args,
+      env,
+      trackers: [tracker, portTracker],
+    });
     result = dispatched;
     // The parent that was reading this run is gone and the watchdog has
     // already killed the harness. Classifying the corpse would call it a
@@ -212,22 +241,36 @@ async function runTestsWithRetriesInner(
       onOutputChunk: (stream, chunk) => {
         retryTracker.onChunk(stream, chunk);
       },
+      dispatch: () =>
+        runCoverageTrackedSuite({
+          ctx,
+          kind,
+          paths,
+          args: raw.args,
+          env,
+          trackers: [retryTracker, portTracker],
+        }),
     });
     if (result !== dispatched) tracker = retryTracker;
     rawLog = raw.path === undefined ? undefined : await readRawTestLog(raw.path);
+    // A trimmed run never starts some announced tests, so its roster is no count.
+    if (rawLog !== undefined && trimsAnnouncedTests(raw.args)) rawLog = { ...rawLog, roster: [] };
     const combined = `${result.stdout}\n${result.stderr}`;
-    // An exit-0 run is still not a pass when it stopped partway or
-    // reported unexpected results (see test-run-completeness.ts). The
-    // start count reads the structured raw log when the run wrote one, and
-    // the streamed markers otherwise, never the 2 MB capture tail.
+    // An exit-0 run is still not a pass when it stopped partway or reported
+    // unexpected results (see test-run-completeness.ts). The raw log decides
+    // when the run wrote one; the start count otherwise reads the streamed
+    // markers, never the 2 MB capture tail.
     verdict = vetoIncompletePass(
-      classifyHarnessRun(result.exitCode, combined, paths),
+      classifyHarnessRun(result.exitCode, combined, paths, {
+        raw: rawLog === undefined ? undefined : summarizeRawLog(rawLog),
+        started: rawLog?.markers.started ?? tracker.markers().started,
+      }),
       combined,
       paths,
-      rawLog !== undefined && rawLog.markers.started.length > 0
-        ? { markers: rawLog.markers, source: 'raw' }
-        : { markers: tracker.markers(), source: 'stream' }
+      { markers: tracker.markers(), source: 'stream' },
+      rawLog
     );
+    verdict = coverageVerdict(verdict, coverageOutcomes.get(result));
     // A mochitest server that never came up is retried like a crash: no
     // test ran, and a parallel instance's port race is not a result.
     if (verdict.kind !== 'harness-crash' || attempts >= maxAttempts) break;
@@ -250,7 +293,7 @@ async function runTestsWithRetriesInner(
     if (prefNote !== undefined) verdict = { ...verdict, note: prefNote };
   }
 
-  const displayState = await probeDisplayStateForStall(verdict, ctx.headless);
+  const displayState = stallDisplayState(verdict, ctx);
   if (displayState !== undefined) {
     const note = headedDisplayAsleepVerdictNote(verdict.signature as HarnessCrashSignature, {
       headless: ctx.headless,
@@ -266,6 +309,8 @@ async function runTestsWithRetriesInner(
       shard: label,
       logLine,
       shardFiles: paths,
+      markers: rawLog.markers,
+      attempts,
     });
   }
 
@@ -278,6 +323,59 @@ async function runTestsWithRetriesInner(
     ...(rawLog === undefined ? {} : { fileResults: rawLog.results }),
     ...serverPortsOf(portTracker),
   };
+}
+
+const coverageOutcomes = new WeakMap<MachCommandResult, CoverageReport>();
+
+/** Every physical dispatch, including a repaired xpcshell retry, owns its adapter and teardown. */
+async function runCoverageTrackedSuite(options: {
+  ctx: TestRunContext;
+  kind: MachTestSuiteKind;
+  paths: string[];
+  args: string[];
+  env: Record<string, string> | undefined;
+  trackers: readonly [StartMarkerTracker, HarnessPortTracker];
+}): Promise<MachCommandResult> {
+  const { ctx, kind, paths, args, env, trackers } = options;
+  const coverage =
+    ctx.coverageDir === undefined
+      ? undefined
+      : await prepareJsCoverage({
+          output: ctx.coverageDir,
+          engineDir: ctx.engineDir,
+          objDir: ctx.objDir,
+          suite: ctx.suite,
+          args,
+          ...(env === undefined ? {} : { env }),
+        });
+  if (coverage !== undefined) setVerdictRunAttribute('coverage', coverage.directory);
+  const result = await runTrackedMachTestSuite(
+    ctx,
+    kind,
+    paths,
+    coverage?.args ?? args,
+    coverage?.env ?? env,
+    trackers
+  );
+  if (coverage !== undefined) {
+    const report = await finishJsCoverage(coverage);
+    coverageOutcomes.set(result, report);
+    if (!report.complete)
+      warn(
+        `JavaScript coverage incomplete: ${report.errors.join('; ')}. Artifacts: ${coverage.directory}`
+      );
+  }
+  return result;
+}
+
+/** Incomplete coverage cannot become a green run or a caught negative control. */
+function coverageVerdict(
+  verdict: HarnessRunVerdict,
+  report: CoverageReport | undefined
+): HarnessRunVerdict {
+  return report !== undefined && !report.complete
+    ? { ...verdict, kind: 'harness-crash', note: 'coverage-incomplete' }
+    : verdict;
 }
 
 /** The `serverPorts` field of an outcome, present only when a port was seen. */
@@ -323,17 +421,20 @@ async function runTrackedMachTestSuite(
   const teardown = createHarnessTeardown({
     objDir: ctx.objDir === undefined ? undefined : join(ctx.engineDir, ctx.objDir),
     pgidFile: ctx.pgidFile,
+    projectRoot: dirname(ctx.engineDir),
   });
   const start = await sampleTestHost();
-  const warned = reportTestHost(start, 'suite start');
-  setVerdictRunAttribute('host-load', start.load.toFixed(2));
-  if (warned) setVerdictRunAttribute('host-cpu-warning', 'true');
+  const startWarned = reportTestHost(start, 'suite start');
+  if (start.display === 'asleep') {
+    warn('The display is asleep: timing-sensitive tests can go red without any change at fault.');
+  }
+  stampHost([start], startWarned, false);
   if (env && Object.keys(env).some((key) => key.endsWith('_PERF_SAMPLE_JSON'))) {
-    setVerdictRunAttribute('power-source', start.power);
     env = { ...env, FIREFORGE_POWER_SOURCE: start.power };
   }
+  const stopSleepWatch = watchForHostSleep();
+  const stopLoadWatch = watchHostLoad();
   try {
-    await teardown.prepare();
     return await runMachTestSuite(kind, {
       engineDir: ctx.engineDir,
       testPaths: paths,
@@ -351,29 +452,49 @@ async function runTrackedMachTestSuite(
     });
   } finally {
     teardown.dispose();
+    const slept = stopSleepWatch();
+    const peak = stopLoadWatch();
     const end = await sampleTestHost();
-    if (reportTestHost(end, 'suite end')) setVerdictRunAttribute('host-cpu-warning', 'true');
-    if (await stampPerfHost(env, start, end)) {
-      ctx.powerChanged = true;
-      setVerdictRunAttribute('power-changed', 'true');
-    }
+    ctx.lastDisplayState = end.display;
+    stampHost([start, end], reportTestHost(end, 'suite end'), slept, peak);
+    if (await stampPerfHost(env, start, end)) ctx.powerChanged = true;
+  }
+}
+
+/** Folds one dispatch's samples into the attributes earlier dispatches stamped. */
+function stampHost(
+  samples: readonly TestHostState[],
+  warned: boolean,
+  slept: boolean,
+  peak?: HostLoadPeak
+): void {
+  const atSeconds =
+    peak === undefined ? 0 : Math.max(0, Math.round((peak.at - verdictRunStartedAt()) / 1000));
+  // The edges already reported their own load; only a rise between them is news.
+  if (peak !== undefined && peak.load > Math.max(...samples.map((sample) => sample.load)))
+    reportLoadPeak(peak, atSeconds);
+  const merged = mergeHostAttributes(
+    getVerdictRunAttribute,
+    samples,
+    warned,
+    slept,
+    peak === undefined ? undefined : { load: peak.load, atSeconds }
+  );
+  for (const [key, value] of Object.entries(merged)) {
+    setVerdictRunAttribute(key as keyof typeof merged, value);
   }
 }
 
 /**
- * Probes the display's power state for a headed no-output stall, and only for
- * that shape. Every other outcome (a passing run, a real test failure, a
- * headless run, any other crash shape) skips the probe entirely, so the
- * common paths spawn nothing.
- *
- * @returns The measured state, or undefined when the shape does not apply
+ * The display state a headed no-output stall ran under. Every other outcome (a
+ * passing run, a real test failure, a headless run, any other crash shape) has
+ * no stall to explain.
  */
-async function probeDisplayStateForStall(
+function stallDisplayState(
   verdict: HarnessRunVerdict,
-  headless: boolean
-): Promise<DisplaySleepState | undefined> {
-  if (headless) return undefined;
-  if (verdict.kind !== 'harness-crash') return undefined;
+  ctx: TestRunContext
+): DisplaySleepState | undefined {
+  if (ctx.headless || verdict.kind !== 'harness-crash') return undefined;
   if (!verdict.signature?.reason.includes('no-output timeout')) return undefined;
-  return probeDisplaySleepState(getPlatform());
+  return ctx.lastDisplayState ?? 'unknown';
 }

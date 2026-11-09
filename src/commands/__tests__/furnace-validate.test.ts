@@ -22,6 +22,18 @@ vi.mock('../../core/config.js', () => ({
   })),
 }));
 
+vi.mock('../../core/furnace-operation.js', () => ({
+  runFurnaceMutation: (
+    _root: string,
+    _kind: string,
+    body: (ctx: { registerJournal(journal: unknown): void }) => Promise<unknown>
+  ) => body({ registerJournal: () => undefined }),
+}));
+vi.mock('../../core/furnace-rollback.js', () => ({
+  createRollbackJournal: () => ({}),
+  snapshotFile: () => Promise.resolve(),
+}));
+
 vi.mock('../../core/furnace-registration.js', () => ({
   addJarMnEntries: vi.fn(() => Promise.resolve()),
   addCustomElementRegistration: vi.fn(() => Promise.resolve()),
@@ -90,6 +102,7 @@ import {
   error,
   info,
   intro,
+  isMachineOutputMode,
   note,
   outro,
   setMachineOutputMode,
@@ -386,6 +399,18 @@ describe('furnaceValidateCommand', () => {
       message: `jar.mn registers old-helper.mjs for ${component}, but the source file no longer exists`,
     });
 
+    it('leaves a fixable issue on a component it does not own to the report', async () => {
+      vi.mocked(validateComponent).mockResolvedValue([staleJarIssue('moz-unowned')]);
+      await expect(
+        furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
+      ).rejects.toThrow();
+      expect(pruneStaleJarMnEntries).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        ['moz-unowned']
+      );
+    });
+
     it('prunes stale jar.mn registrations with --fix', async () => {
       vi.mocked(validateComponent)
         .mockResolvedValueOnce([staleJarIssue('moz-sidebar')])
@@ -575,7 +600,7 @@ describe('furnaceValidateCommand', () => {
 
       await expect(
         furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
-      ).rejects.toThrow(/Validation failed/i);
+      ).rejects.toThrow('Permission denied');
 
       expect(warn).toHaveBeenCalledWith('Could not fix jar.mn for moz-sidebar: Permission denied');
       expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Auto-fixed'));
@@ -736,14 +761,14 @@ describe('furnaceValidateCommand', () => {
       expect(addCustomElementRegistration).not.toHaveBeenCalled();
     });
 
-    it('silently ignores addCustomElementRegistration errors', async () => {
+    it('propagates registration writer failures for transactional rollback', async () => {
       vi.mocked(validateComponent).mockResolvedValue([mjsIssue('moz-sidebar')]);
       vi.mocked(readdir).mockResolvedValue([mockDirent('moz-sidebar.mjs')] as never);
       vi.mocked(addCustomElementRegistration).mockRejectedValue(new Error('registration error'));
 
       await expect(
         furnaceValidateCommand('/project', 'moz-sidebar', { fix: true })
-      ).rejects.toThrow(/Validation failed/i);
+      ).rejects.toThrow('registration error');
 
       // Should not warn about the registration error (silent catch)
       expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('registration error'));
@@ -857,6 +882,18 @@ describe('furnaceValidateCommand', () => {
         },
       };
     }
+
+    it('leaves machine mode as it found it once the document is written', async () => {
+      vi.mocked(validateAllComponents).mockResolvedValue(new Map([['moz-card', []]]));
+      vi.mocked(isMachineOutputMode).mockReturnValueOnce(false).mockReturnValueOnce(true);
+      const out = captureStdout();
+      try {
+        await furnaceValidateCommand('/project', undefined, { json: true });
+      } finally {
+        out.restore();
+      }
+      expect(setMachineOutputMode).toHaveBeenLastCalledWith(false);
+    });
 
     it('writes one JSON document, engages machine mode and seals stdout', async () => {
       vi.mocked(validateAllComponents).mockResolvedValue(

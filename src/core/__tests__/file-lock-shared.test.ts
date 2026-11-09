@@ -5,7 +5,7 @@
  * waits), and a dead shared holder is reaped.
  */
 import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -164,5 +164,22 @@ describe('shared lock holds', () => {
     expect(removed).toHaveLength(1);
     expect(await countLiveSharedHolders(lockPath)).toBe(0);
     expect(await forceReleaseHeldLocksForSignal()).toEqual([]);
+  });
+});
+
+describe('an unreadable shared holder record', () => {
+  it('counts as live, and survives the reap', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'fireforge-shared-unreadable-'));
+    cleanup.push(root);
+    const lock = join(root, 'engine-session.lock');
+    const holder = join(sharedHoldersDir(lock), 'live-holder');
+    await mkdir(holder, { recursive: true });
+    const record = join(holder, 'pid');
+    await writeFile(record, `${process.pid}\ntoken\n`);
+    await expect(countLiveSharedHolders(lock)).resolves.toBe(1);
+    await chmod(record, 0o000);
+    await expect(countLiveSharedHolders(lock)).resolves.toBe(1);
+    await chmod(record, 0o600);
+    await expect(access(holder)).resolves.toBeUndefined();
   });
 });

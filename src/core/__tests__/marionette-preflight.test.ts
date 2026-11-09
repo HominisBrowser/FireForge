@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { EventEmitter } from 'node:events';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { createLoggerMock } from '../../test-utils/module-mocks.js';
 
@@ -10,6 +10,10 @@ vi.mock('../../utils/fs.js', () => ({
 }));
 
 vi.mock('../../utils/logger.js', () => createLoggerMock());
+vi.mock('../../utils/process-birth.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/process-birth.js')>()),
+  snapshotProcesses: vi.fn(() => Promise.resolve(new Map())),
+}));
 
 vi.mock('../mach.js', () => ({
   ensureMach: vi.fn(() => Promise.resolve()),
@@ -22,9 +26,10 @@ vi.mock('../mach-python.js', () => ({
 vi.mock('node:fs/promises', () => ({
   mkdtemp: vi.fn(() => Promise.resolve('/tmp/fireforge-marionette-xyz')),
   rm: vi.fn(() => Promise.resolve()),
+  writeFile: vi.fn(() => Promise.resolve()),
 }));
 
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 
 import { pathExists } from '../../utils/fs.js';
 import { info, warn } from '../../utils/logger.js';
@@ -48,7 +53,7 @@ interface MockChild extends EventEmitter {
 }
 
 function makeChild(): MockChild {
-  return Object.assign(new EventEmitter(), {
+  const child = Object.assign(new EventEmitter(), {
     stderr: new MockStream(),
     exitCode: null as number | null,
     signalCode: null as NodeJS.Signals | null,
@@ -56,8 +61,17 @@ function makeChild(): MockChild {
     // branch (`process.kill(-pid, …)`) that stops Firefox
     // grandchildren from keeping the stderr pipe alive after PASS.
     pid: 4242,
-    kill: vi.fn(() => true),
+    kill: vi.fn<(signal?: NodeJS.Signals) => boolean>(() => true),
   });
+  child.kill.mockImplementation((signal) => {
+    if (signal === 'SIGKILL') {
+      child.signalCode = signal;
+      child.emit('exit', null, signal);
+      child.emit('close', null, signal);
+    }
+    return true;
+  });
+  return child;
 }
 
 interface MockSocket extends EventEmitter {
@@ -70,12 +84,22 @@ function makeSocket(): MockSocket {
   });
 }
 
+const noListener = (): Promise<Record<string, never>> => Promise.resolve({});
+
+// The fixture child's pid is made up, so a group signal must never reach the
+// real process table: it reports ESRCH, as for a group that does not exist.
+let groupKill: MockInstance<typeof process.kill>;
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(pathExists).mockResolvedValue(true);
+  groupKill = vi.spyOn(process, 'kill').mockImplementation(() => {
+    throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+  });
 });
 
 afterEach(() => {
+  groupKill.mockRestore();
   vi.useRealTimers();
 });
 
@@ -103,6 +127,7 @@ describe('runMarionettePreflight', () => {
       spawner,
       connect,
       port: 54_321,
+      probeListener: noListener,
       timeoutMs: 5_000,
       spawnSettleMs: 0,
     });
@@ -144,6 +169,7 @@ describe('runMarionettePreflight', () => {
       spawner,
       connect,
       port: 54_321,
+      probeListener: noListener,
       timeoutMs: 50,
       spawnSettleMs: 0,
     });
@@ -183,6 +209,7 @@ describe('runMarionettePreflight', () => {
       spawner,
       connect,
       port: 54_321,
+      probeListener: noListener,
       timeoutMs: 20,
       spawnSettleMs: 0,
     });
@@ -192,15 +219,46 @@ describe('runMarionettePreflight', () => {
 
     await promise;
     // Child never toggled exitCode/signalCode, so SIGKILL fires after the
-    // 500 ms grace. The process-group kill (`process.kill(-pid, …)`)
-    // happens via the module's killProcessGroup helper, which falls back
-    // to `child.kill` on unsupported environments. The test platform is
-    // non-win32 and has a pid on the child, so the fallback only fires
-    // when process.kill throws (which it will here because pid 4242 is
-    // fake). Either way, `child.kill` must have been called with both
-    // signals in order, which is the escalation contract.
+    // 500 ms grace. The group signal is tried first and the group does not
+    // exist here, so both signals fall back to `child.kill`, in order, which is
+    // the escalation contract.
     const calls = child.kill.mock.calls.map((c): unknown => c[0]);
     expect(calls).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  // Any byte would do for the handshake, so a peer's browser on the port would
+  // read as a pass without this.
+  it('fails when the listener is not part of the browser it launched, and uses its own port', async () => {
+    vi.useFakeTimers();
+    const child = makeChild();
+    const connect = vi.fn(() => {
+      const socket = makeSocket();
+      queueMicrotask(() => {
+        socket.emit('connect');
+        socket.emit('data', Buffer.from('{"applicationType":"gecko"}\n'));
+      });
+      return socket;
+    }) as never;
+
+    const promise = runMarionettePreflight('/engine', {
+      spawner: vi.fn(() => child) as never,
+      connect,
+      port: 54_321,
+      probeListener: () => Promise.resolve({ holder: { pid: 99_990 } }),
+      timeoutMs: 5_000,
+      spawnSettleMs: 0,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('PID 99990');
+    expect(result.detail).toContain('not part of the browser');
+    expect(writeFile).toHaveBeenCalledWith(
+      expect.stringContaining('user.js'),
+      'user_pref("marionette.port", 54321);\n'
+    );
   });
 
   it('destroys the stderr pipe in the finally block', async () => {
@@ -227,6 +285,7 @@ describe('runMarionettePreflight', () => {
       spawner,
       connect,
       port: 54_321,
+      probeListener: noListener,
       timeoutMs: 200,
       spawnSettleMs: 0,
     });
@@ -235,6 +294,8 @@ describe('runMarionettePreflight', () => {
     // dance and proceeds straight to the stderr destroy + profile
     // cleanup path.
     child.exitCode = 0;
+    child.emit('exit', 0, null);
+    child.emit('close', 0, null);
     await vi.advanceTimersByTimeAsync(600);
 
     await promise;
@@ -250,6 +311,8 @@ describe('runMarionettePreflight', () => {
       const socket = makeSocket();
       queueMicrotask(() => {
         child.exitCode = 1;
+        child.emit('exit', 1, null);
+        child.emit('close', 1, null);
         socket.emit('error', new Error('ECONNREFUSED'));
       });
       return socket;
@@ -259,6 +322,7 @@ describe('runMarionettePreflight', () => {
       spawner,
       connect,
       port: 54_321,
+      probeListener: noListener,
       timeoutMs: 5_000,
       spawnSettleMs: 0,
     });
@@ -284,6 +348,8 @@ describe('runMarionettePreflight', () => {
     const spawner = vi.fn(() => {
       queueMicrotask(() => {
         child.exitCode = 127;
+        child.emit('exit', 127, null);
+        child.emit('close', 127, null);
       });
       return child;
     }) as never;
@@ -295,6 +361,7 @@ describe('runMarionettePreflight', () => {
       spawner,
       connect,
       port: 54_321,
+      probeListener: noListener,
       timeoutMs: 30_000,
       spawnSettleMs: 250,
     });

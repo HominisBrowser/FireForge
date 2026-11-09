@@ -6,6 +6,9 @@ import { Command, Help } from 'commander';
 
 import { handleParseError, machineErrorCode, wantsMachineOutput } from './cli-usage-error.js';
 import { COMMAND_MANIFEST, type CommandManifestEntry } from './commands/manifest.js';
+import { assertJobAdmission } from './core/jobs/guard.js';
+import { ADAPTER_COMMANDS } from './core/jobs/schema.js';
+import { runSourceGuardHook } from './core/source-guard.js';
 import { runTreeGuardHook } from './core/tree-guard.js';
 import {
   CancellationError,
@@ -408,7 +411,17 @@ export function createProgram(): Command {
     // refuse mutating commands before their action runs. One hook covers
     // every command regardless of how the cwd got there.
     .hook('preAction', async (thisCommand, actionCommand) => {
+      await withErrorHandling(async () => runSourceGuardHook(thisCommand.name(), actionCommand))();
       await runTreeGuardHook(thisCommand.name(), actionCommand);
+      let top = actionCommand;
+      while (top.parent && top.parent !== thisCommand) top = top.parent;
+      const furnaceRuntime =
+        top.name() !== 'furnace' ||
+        ['apply', 'deploy', 'sync'].includes(actionCommand.name()) ||
+        (actionCommand.name() === 'validate' && actionCommand.opts()['fix'] === true);
+      if (ADAPTER_COMMANDS.some((command) => command === top.name()) && furnaceRuntime) {
+        await withErrorHandling(async () => assertJobAdmission(top.name(), getProjectRoot()))();
+      }
     });
 
   const groupedFormatter = buildGroupedHelpFormatter(COMMAND_MANIFEST);

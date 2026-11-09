@@ -8,15 +8,24 @@
  * `src/core/test-stale-check.ts`.
  */
 
+import { readBuildBaseline } from '../core/build-baseline.js';
 import type { BuildBaseline, ControlBuildStamp } from '../core/build-baseline-types.js';
 import { filterByCarriedFullCoverage } from '../core/coverage-dispatch.js';
 import { normalizeRequestPath } from '../core/coverage-records.js';
+import {
+  captureEngineGeneration,
+  isEngineContentJudged,
+  markEngineContentJudged,
+  withEngineStateHold,
+} from '../core/engine-state.js';
+import { trustedSlotBuild } from '../core/jobs/guard.js';
 import {
   checkStaleBuildForTest,
   checkStaticComponentsStale,
   findChangedTestManifestsForPaths,
   findCompiledSourcesNewerThanBinary,
   findUncoveredRequestPaths,
+  formatControlBuiltRefusal,
   formatStaleBuildWarning,
   formatStaleCompiledRefusal,
   formatStaticComponentsRefusal,
@@ -63,20 +72,78 @@ export async function enforceStaleBuildGate(
    * `ownControlBuild`: the stamp this invocation's own compiled-control
    * build recorded, on the runs after the first (see
    * {@link enforceControlBuiltGate}).
+   * `controlWithoutBuild`: a negative control with no `--build`, whose refusal
+   * says to add it.
    */
   gate: {
     quiet?: boolean;
     launchablePath?: string | undefined;
     ownControlBuild?: ControlBuildStamp | undefined;
+    controlWithoutBuild?: boolean | undefined;
   } = {}
 ): Promise<void> {
-  const stale = await checkStaleBuildForTest(projectRoot, engineDir);
-  const ownControl = isOwnControlBuild(stale.baseline, gate.ownControlBuild);
-  if (!ownControl) enforceControlBuiltGate(stale.baseline);
-  const dispatchesNoTests = options.doctor === true && normalizedPaths.length === 0;
-  if (!dispatchesNoTests) {
-    await enforceCoverageGate(engineDir, stale.baseline, normalizedPaths);
+  try {
+    await withEngineStateHold(() =>
+      judgeBuildForRun(projectRoot, engineDir, options, normalizedPaths, gate)
+    );
+  } catch (error: unknown) {
+    if (gate.controlWithoutBuild !== true || !(error instanceof PreflightRefusalError)) throw error;
+    throw new PreflightRefusalError(
+      `${error.message}\n\nThis --negative-control run has no --build, so its control would ` +
+        'run on this packaging and end inconclusive. Add --build: the control is then planned ' +
+        'against a fresh build of the requested paths.',
+      error.note
+    );
   }
+}
+
+async function judgeBuildForRun(
+  projectRoot: string,
+  engineDir: string,
+  options: TestOptions,
+  normalizedPaths: readonly string[],
+  gate: {
+    quiet?: boolean;
+    launchablePath?: string | undefined;
+    ownControlBuild?: ControlBuildStamp | undefined;
+  }
+): Promise<void> {
+  const dispatchesNoTests = options.doctor === true && normalizedPaths.length === 0;
+  const trusted = await trustedSlotBuild(projectRoot);
+  if (trusted !== undefined) {
+    const baseline = await readBuildBaseline(projectRoot, 'refuse');
+    if (baseline === undefined)
+      throw new PreflightRefusalError(
+        'The authenticated slot has no successful build baseline.',
+        'slot-build-missing'
+      );
+    await judgeBaseline(engineDir, baseline, normalizedPaths, gate, {
+      frozen: true,
+      dispatchesNoTests,
+    });
+    setVerdictRunAttribute(
+      'slot-generation',
+      `${trusted.slotGeneration}/${trusted.successfulBuildGeneration}`
+    );
+    return;
+  }
+  // The content half is judged once per hold: every later sub-run tests the same
+  // packaged runtime, and the guard's chained tokens judge whatever lands after.
+  if (isEngineContentJudged(engineDir)) {
+    const baseline = await readBuildBaseline(projectRoot, 'refuse');
+    await judgeBaseline(engineDir, baseline, normalizedPaths, gate, { dispatchesNoTests });
+    return;
+  }
+  // Under the lock, taken before anything is judged: an edit landing during the
+  // judgement is in the first guard's delta, whatever this pass concluded.
+  if (gate.quiet !== true) await captureEngineGeneration(engineDir);
+  const stale = await checkStaleBuildForTest(projectRoot, engineDir);
+  if (stale.baseline === undefined && !dispatchesNoTests) {
+    refuseMissingBaseline(options, stale.unusableBaseline);
+  }
+  const ownControl = await judgeBaseline(engineDir, stale.baseline, normalizedPaths, gate, {
+    dispatchesNoTests,
+  });
 
   await enforceStaticComponentsGate(engineDir, stale.baseline, options);
   await enforceStaleCompiledGate(
@@ -93,33 +160,72 @@ export async function enforceStaleBuildGate(
       `Stale-build preflight: ${exempt.length} edit(s) since the last build need no rebuild: ${formatStaleExemptions(exempt)}.`
     );
   }
-  if (!stale.stale) return;
-
-  // The one-line repackaging command, so a build-less sitting (a perf
-  // series) can repackage and continue without dispatching anything.
-  const repackage =
-    normalizedPaths.length > 0
-      ? `fireforge test --build-only ${normalizedPaths.join(' ')}`
-      : 'fireforge build --ui';
-  const perfImpact =
-    options.perfSamples === undefined
-      ? ''
-      : `\n\n${await describePerfStaleImpact(engineDir, stale.changedPaths, normalizedPaths)}`;
-  const staleMessage =
-    `${formatStaleBuildWarning(stale)}\n\n` +
-    'Run `fireforge test --build` to refresh the packaged runtime first — that is almost ' +
-    'always the right move, because the usual cause is your own edit landing between the ' +
-    'last build and this run. To repackage without running anything: ' +
-    `\`${repackage}\`.${perfImpact}\n\n` +
-    '`--allow-stale-build` is NOT the general escape hatch: it accepts a packaging that ' +
-    'predates the edit under test, so the run tests the OLD code. Pass it only when you ' +
-    'rebuilt out-of-band (outside FireForge) and know the packaged runtime already contains ' +
-    'the change.';
-  if (options.allowStaleBuild === true) {
+  if (stale.stale) {
+    // The one-line repackaging command, so a build-less sitting (a perf
+    // series) can repackage and continue without dispatching anything.
+    const repackage =
+      normalizedPaths.length > 0
+        ? `fireforge test --build-only ${normalizedPaths.join(' ')}`
+        : 'fireforge build --ui';
+    const perfImpact =
+      options.perfSamples === undefined
+        ? ''
+        : `\n\n${await describePerfStaleImpact(engineDir, stale.changedPaths, normalizedPaths)}`;
+    const staleMessage =
+      `${formatStaleBuildWarning(stale)}\n\n` +
+      'Run `fireforge test --build` to refresh the packaged runtime first — that is almost ' +
+      'always the right move, because the usual cause is your own edit landing between the ' +
+      'last build and this run. To repackage without running anything: ' +
+      `\`${repackage}\`.${perfImpact}\n\n` +
+      '`--allow-stale-build` is NOT the general escape hatch: it accepts a packaging that ' +
+      'predates the edit under test, so the run tests the OLD code. Pass it only when you ' +
+      'rebuilt out-of-band (outside FireForge) and know the packaged runtime already contains ' +
+      'the change.';
+    if (options.allowStaleBuild !== true) {
+      throw new PreflightRefusalError(staleMessage, 'stale-build');
+    }
     warn(staleMessage);
-  } else {
-    throw new PreflightRefusalError(staleMessage, 'stale-build');
   }
+  markEngineContentJudged(engineDir);
+}
+
+/**
+ * The checks every sub-run owes the recorded baseline itself: the control-built
+ * refusal and packaging coverage for this run's own paths. Returns whether the
+ * recorded stamp is this invocation's own control build.
+ */
+async function judgeBaseline(
+  engineDir: string,
+  baseline: BuildBaseline | undefined,
+  normalizedPaths: readonly string[],
+  gate: { ownControlBuild?: ControlBuildStamp | undefined },
+  shape: { frozen?: boolean; dispatchesNoTests: boolean }
+): Promise<boolean> {
+  const ownControl = isOwnControlBuild(baseline, gate.ownControlBuild);
+  if (!ownControl) enforceControlBuiltGate(baseline);
+  if (!shape.dispatchesNoTests) {
+    await enforceCoverageGate(engineDir, baseline, normalizedPaths, shape.frozen === true);
+  }
+  return ownControl;
+}
+
+/**
+ * No recorded build means nothing can say the runtime matches the tree or
+ * covers these paths, which is the opposite of fresh. `--allow-stale-build`
+ * (a build made outside FireForge) proceeds, and the verdict says so.
+ */
+function refuseMissingBaseline(options: TestOptions, unusable: string | undefined): void {
+  const message =
+    unusable ??
+    'No successful build is recorded (.fireforge/last-build.json is missing), so nothing can ' +
+      'say the packaged runtime matches engine/ or covers these paths. Run "fireforge build" or ' +
+      '"fireforge test --build" first. If you built outside FireForge, --allow-stale-build ' +
+      'accepts the runtime as it stands.';
+  if (options.allowStaleBuild !== true) {
+    throw new PreflightRefusalError(message, 'no-build-baseline');
+  }
+  warn(message);
+  setVerdictRunAttribute('baseline', 'none');
 }
 
 /**
@@ -153,13 +259,7 @@ function isOwnControlBuild(
 function enforceControlBuiltGate(baseline: BuildBaseline | undefined): void {
   const stamp = baseline?.controlBuild;
   if (stamp === undefined) return;
-  throw new PreflightRefusalError(
-    `The binary under test was built with the negative control ${stamp.diffFile} applied ` +
-      `(${stamp.targets.map((target) => `engine/${target}`).join(', ')}, applied ${stamp.appliedAt}), ` +
-      'and no build has recompiled the restored source since. Run "fireforge build" to ' +
-      'rebuild the binary without the control, then rerun.',
-    'control-built'
-  );
+  throw new PreflightRefusalError(formatControlBuiltRefusal(stamp), 'control-built');
 }
 
 /**
@@ -198,7 +298,8 @@ async function enforceStaleCompiledGate(
 async function enforceCoverageGate(
   engineDir: string,
   baseline: BuildBaseline | undefined,
-  normalizedPaths: readonly string[]
+  normalizedPaths: readonly string[],
+  frozen = false
 ): Promise<void> {
   const recordedCoverage = baseline?.testPackagingCoverage;
   const outsideList = findUncoveredRequestPaths(recordedCoverage, normalizedPaths);
@@ -213,7 +314,9 @@ async function enforceCoverageGate(
   const uncovered = remaining.map((request) => request.path);
   // The refusal is correct on its own. Naming the manifest that gained
   // an entry is the triage step it otherwise leaves to the reader.
-  const changedManifests = await findChangedTestManifestsForPaths(engineDir, baseline, uncovered);
+  const changedManifests = frozen
+    ? []
+    : await findChangedTestManifestsForPaths(engineDir, baseline, uncovered);
   stampBuildPaths(uncovered);
   throw new PreflightRefusalError(
     formatTestCoverageRefusal(

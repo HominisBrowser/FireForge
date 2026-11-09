@@ -6,7 +6,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  analyzeTestCompleteness,
   buildGreenSummaryRejectedMessage,
   buildHarnessCrashMessage,
   buildNoTestsRanMessage,
@@ -14,7 +13,6 @@ import {
   classifyHarnessRun,
   collectUnexpectedFailureBlocks,
   detectHarnessCrashSignature,
-  extractSummaryCounts,
   findCrashMarkerLine,
   formatFireforgeVerdictLine,
   type HarnessCrashSignature,
@@ -24,6 +22,9 @@ import {
   isSilentSegfault,
   stripNonSignalNoise,
 } from '../test-harness-crash.js';
+import { analyzeTestCompleteness, extractSummaryCounts } from '../test-harness-markers.js';
+import { parseRawTestLog, summarizeRawLog } from '../test-raw-log.js';
+import { createStartMarkerTracker, vetoIncompletePass } from '../test-run-completeness.js';
 
 const PATHS = ['browser/components/foo/test/browser_foo.js'];
 
@@ -49,6 +50,7 @@ const GREEN_RUN = [
   ' 0:09.44 INFO TEST-OK | browser/components/foo/test/browser_foo.js | took 4320ms',
   ' 0:10.01 INFO Passed: 12',
   ' 0:10.01 INFO Failed: 0',
+  ' 0:10.20 SUITE_END',
 ].join('\n');
 
 const REAL_FAILURE_RUN = [
@@ -171,8 +173,8 @@ describe('classifyHarnessRun', () => {
     expect(verdict.kind).toBe('no-tests');
   });
 
-  it('does not raise no-tests for full-suite runs without explicit paths', () => {
-    expect(classifyHarnessRun(0, 'Passed: 0', []).kind).toBe('tests-ran-ok');
+  it('reads a path-less run that counted nothing as no-tests', () => {
+    expect(classifyHarnessRun(0, 'Passed: 0', []).kind).toBe('no-tests');
   });
 
   it('treats a passing xpcshell suite summary (no TEST-START) as tests-ran-ok', () => {
@@ -908,6 +910,20 @@ describe('known teardown noise on a clean suite', () => {
   // re-run is green and the log is gone, so the verdict line names the
   // rejecting condition.
   describe('rejection reasons', () => {
+    const path = 'browser/base/content/test/test_a.js';
+    it.each([
+      ['Unexpected results: 3', 'non-zero "Unexpected results:"'],
+      ['Failed: 2', 'non-zero "Failed:"'],
+    ])('names an earlier %s, though the last summary reads clean', (line, reason) => {
+      const verdict = classifyHarnessRun(
+        1,
+        `${line}\n${greenSuiteWithoutSuiteEnd}\n${TEARDOWN_TRACEBACK}`,
+        [path]
+      );
+      expect(verdict.kind).not.toBe('tests-ran-ok');
+      expect(verdict.note).toContain(reason);
+    });
+
     it('names a real failure line as the rejecting condition', () => {
       const output = [
         greenSuiteWithoutSuiteEnd,
@@ -1204,5 +1220,470 @@ describe('server-startup infrastructure failures', () => {
   it('leaves a run whose tests started to the regular chain', () => {
     const started = `${SERVER_STARTUP}\n 0:50.00 INFO TEST-START | ${PATHS[0] ?? ''}`;
     expect(classifyHarnessRun(1, started, PATHS).signature?.verdictReason).toBeUndefined();
+  });
+});
+
+describe('zero-exit hard failure evidence', () => {
+  it('keeps a concrete assertion red without requiring the generic Unexpected summary', () => {
+    const verdict = classifyHarnessRun(0, REAL_FAILURE_RUN, PATHS);
+    expect(verdict.kind).toBe('test-failures');
+    expect(verdict.realFailureLine).toContain('TEST-UNEXPECTED-FAIL');
+  });
+  it.each([
+    'PROCESS-CRASH | browser/components/foo/test/browser_foo.js | application crashed',
+    'Crash dump filename: owned.dmp',
+    'Unexpected results: 1\nUnexpected results: 0',
+    'Failed: 1\nFailed: 0',
+    'Failed: 01\nUnexpected results: 0',
+  ])('does not let an exit-zero or later green summary erase %s', (evidence) => {
+    const output = `${GREEN_RUN}\n${evidence}\nSUITE_END\nUnexpected results: 0`;
+    expect(classifyHarnessRun(0, output, PATHS).kind).toBe('test-failures');
+    expect(classifyHarnessRun(1, output, PATHS).kind).toBe('test-failures');
+  });
+});
+
+describe('a green summary never speaks for what happened after it', () => {
+  const SUITE = [
+    'TEST_START: dir/a/browser_a.js',
+    'TEST_END: Test PASS',
+    'Ran 3 checks',
+    'Unexpected results: 0',
+    'SUITE_END',
+    '',
+  ].join('\n');
+  const line = (exitCode: number, output: string, paths: readonly string[]): string =>
+    formatFireforgeVerdictLine(
+      vetoIncompletePass(classifyHarnessRun(exitCode, output, paths), output, paths, {
+        markers: { started: [], skipped: [] },
+        source: 'stream',
+      })
+    );
+
+  it.each([
+    ['SIGKILL after the first suite, directory request', 137, ['dir/']],
+    ['SIGSEGV after the first suite, manifest request', 139, ['dir/browser.toml']],
+    ['a negated signal number, file request', -9, ['dir/a/browser_a.js']],
+  ])('%s fails', (_name, exitCode, paths) => {
+    const verdict = classifyHarnessRun(exitCode, SUITE, paths);
+    expect(verdict.kind).toBe('test-failures');
+    expect(verdict.greenSummaryRejected?.exitEvidence).toContain('signal');
+    expect(line(exitCode, SUITE, paths)).toContain('FAIL reason=test-failures');
+  });
+
+  it('fails on an unexplained traceback after the last suite', () => {
+    const output = `${SUITE}Traceback (most recent call last):\n  File "runxpcshelltests.py", line 9, in x\nKeyError: foo\n`;
+    const verdict = classifyHarnessRun(1, output, ['dir/']);
+    expect(verdict.kind).toBe('test-failures');
+    expect(verdict.greenSummaryRejected?.exitEvidence).toContain('KeyError: foo');
+    expect(line(1, output, ['dir/a/browser_a.js'])).toContain('FAIL');
+  });
+
+  it.each([
+    ['a directory request', ['dir/']],
+    ['a path-less request', []],
+    ['a file request whose files all finished', ['dir/a/browser_a.js']],
+  ])('fails %s whose non-zero exit nothing explains', (_name, paths) => {
+    const verdict = classifyHarnessRun(1, SUITE, paths);
+    expect(verdict.kind).toBe('test-failures');
+    expect(verdict.greenSummaryRejected?.exitEvidence).toContain('no recognized noise');
+  });
+
+  it.each([9, 15])('reads exit %i as a relayed kill, whatever noise the log holds', (exitCode) => {
+    const noisy = `UserWarning: psutil failed to run\n${SUITE}`;
+    expect(
+      classifyHarnessRun(exitCode, noisy, ['dir/']).greenSummaryRejected?.exitEvidence
+    ).toContain('signal');
+  });
+
+  it('keeps the override when a caught telemetry traceback follows a green directory run', () => {
+    const output = `${SUITE}Traceback (most recent call last):\n  File "mach/telemetry.py", line 661, in submit\nConnectionError: glean upload failed\n`;
+    expect(classifyHarnessRun(1, output, ['dir/'])).toMatchObject({
+      kind: 'tests-ran-ok',
+      greenSummaryOverride: true,
+    });
+  });
+
+  it('keeps the override when recognized noise owns the exit of a directory request', () => {
+    const noise = `${SUITE}Traceback (most recent call last):\n  File "x.py", line 1\nAttributeError: 'NoneType' object has no attribute 'read_bytes'\n`;
+    expect(classifyHarnessRun(1, noise, ['dir/'])).toMatchObject({
+      kind: 'tests-ran-ok',
+      greenSummaryOverride: true,
+    });
+    const chatter = `UserWarning: psutil failed to run\n${SUITE}`;
+    expect(classifyHarnessRun(1, chatter, ['dir/']).kind).toBe('tests-ran-ok');
+  });
+
+  it('names the exit evidence in the operator message', () => {
+    const verdict = classifyHarnessRun(137, SUITE, ['dir/']);
+    expect(
+      buildGreenSummaryRejectedMessage(
+        verdict.greenSummaryRejected as NonNullable<typeof verdict.greenSummaryRejected>,
+        137
+      )
+    ).toContain('the harness died on a signal (exit 137)');
+  });
+});
+
+describe('a startup timeout names the harness lines before it', () => {
+  it('carries port and browser-wait lines into the operator message', () => {
+    const output = [
+      'Falling back to port 8889 (server)',
+      'Waiting for browser...',
+      'timed out after 370 seconds with no output',
+    ].join('\n');
+    const verdict = classifyHarnessRun(1, output, ['dir/browser_a.js']);
+    expect(verdict.signature?.harnessLines).toEqual([
+      'Falling back to port 8889 (server)',
+      'Waiting for browser...',
+    ]);
+    const message = buildHarnessCrashMessage(verdict.signature as HarnessCrashSignature, 2);
+    expect(message).toContain('  Falling back to port 8889 (server)');
+    expect(message).toContain('another checkout');
+  });
+
+  it('adds nothing when the harness printed no such line', () => {
+    const verdict = classifyHarnessRun(1, 'timed out after 370 seconds with no output\n', [
+      'dir/browser_a.js',
+    ]);
+    expect(verdict.signature?.harnessLines).toBeUndefined();
+  });
+});
+
+describe('a summary that counted zero checks is not a run', () => {
+  const HANG =
+    'timed out after 370 seconds with no output\nRan 0 checks\nUnexpected results: 0\nSUITE_END\n';
+
+  it('reads the no-output hang as a crash, however the harness exited', () => {
+    for (const exitCode of [0, 1]) {
+      const verdict = classifyHarnessRun(exitCode, HANG, ['dir/browser_a.js']);
+      expect(verdict.kind).toBe('harness-crash');
+      expect(verdict.signature?.reason).toBe('no-output timeout before any test started');
+    }
+  });
+
+  it.each([
+    ['a directory', ['dir/']],
+    ['a file', ['dir/browser_a.js']],
+  ])('gives no-tests for %s request with exit 0', (_name, paths) => {
+    const output = 'Ran 0 checks\nUnexpected results: 0\nSUITE_END\n';
+    expect(classifyHarnessRun(0, output, paths).kind).toBe('no-tests');
+    expect(formatFireforgeVerdictLine(classifyHarnessRun(0, output, paths))).toContain(
+      'FAIL reason=no-tests checks=0'
+    );
+  });
+
+  it('gives no-tests when starts were printed but nothing was counted', () => {
+    const output = 'TEST_START: dir/browser_a.js\nRan 0 checks\nUnexpected results: 0\nSUITE_END\n';
+    expect(classifyHarnessRun(0, output, ['dir/browser_a.js']).kind).toBe('no-tests');
+  });
+
+  it('leaves a real failure with its own diagnosis', () => {
+    const output =
+      'TEST-START | dir/browser_a.js\nTEST-UNEXPECTED-FAIL | dir/browser_a.js | boom\nRan 0 checks\nSUITE_END\n';
+    expect(classifyHarnessRun(1, output, ['dir/browser_a.js']).kind).toBe('test-failures');
+  });
+
+  it('points a zero-check startup crash at the crash report and a full build', () => {
+    const message = buildNoTestsRanMessage(1, ['dir/browser_a.js'], true);
+    expect(message).toContain('CheckForBrokenChromeURL');
+    expect(message).toContain('plain "fireforge build"');
+    expect(buildNoTestsRanMessage(0, ['dir/browser_a.js'])).not.toContain(
+      'CheckForBrokenChromeURL'
+    );
+  });
+});
+
+/**
+ * Excerpts of retained runs, in the order the harness printed them:
+ * a browser-chrome suite with its closing `TEST-START | Shutdown`, an xpcshell
+ * suite whose starts all precede its ends, and a skipped file.
+ */
+const REAL_BROWSER_RUN = (file: string): string =>
+  [
+    ' 0:00.24 SUITE_START: mochitest-browser - running 1 tests',
+    ` 0:02.43 TEST_START: ${file}`,
+    ' 0:02.84 TEST_END: Test PASS. Subtests passed 7/8. Unexpected 0',
+    ' 0:53.27 INFO TEST-START | Shutdown',
+    ' 0:53.27 INFO Passed:  1178',
+    ' 0:53.27 INFO Failed:  0',
+    ' 0:53.27 INFO Todo:    2',
+    ' 0:53.27 INFO Mode:    e10s',
+    '*** End BrowserChrome Test Results ***',
+    '\tPassed: 1178',
+    '\tFailed: 0',
+    ' 0:53.58 INFO Buffered messages finished',
+    ' 0:53.58 SUITE_END',
+    ' 0:53.58 ',
+    'Overall Summary',
+    '===============',
+    '',
+    'mochitest-browser',
+    '~~~~~~~~~~~~~~~~~',
+    'Ran 1216 checks (1178 subtests, 38 tests)',
+    'Expected results: 1216',
+    'Unexpected results: 0',
+    'OK',
+  ].join('\n');
+
+const REAL_XPCSHELL_RUN = (files: readonly string[]): string =>
+  [
+    ` 0:00.65 SUITE_START: xpcshell - running ${files.length} tests`,
+    ...files.map((file) => ` 0:00.65 TEST_START: ${file}`),
+    ...files.map(() => ' 0:01.21 TEST_END: PASS'),
+    ' 0:16.61 INFO INFO | Result summary:',
+    ` 0:16.61 INFO INFO | Passed: ${files.length}`,
+    ' 0:16.61 INFO INFO | Failed: 0',
+    ' 0:16.61 INFO INFO | Todo: 0',
+    ' 0:16.61 INFO INFO | Retried: 0',
+    ' 0:16.61 SUITE_END',
+    '',
+    'xpcshell',
+    '~~~~~~~~',
+    `Ran ${files.length} checks (${files.length} tests)`,
+    `Expected results: ${files.length}`,
+    'Unexpected results: 0',
+    'OK',
+  ].join('\n');
+
+describe('real-shaped runs stay green', () => {
+  const A = 'browser/x/test/browser_a.js';
+  const run = (exitCode: number, output: string, paths: readonly string[]): string =>
+    formatFireforgeVerdictLine(
+      vetoIncompletePass(classifyHarnessRun(exitCode, output, paths), output, paths)
+    );
+
+  it('passes a browser run: its Shutdown start line has no end and names no test', () => {
+    expect(run(0, REAL_BROWSER_RUN(A), [A])).toContain('PASS checks=1216 unexpected=0');
+    expect(run(0, REAL_BROWSER_RUN(A), ['browser/x/test'])).toContain('PASS');
+    expect(analyzeTestCompleteness(REAL_BROWSER_RUN(A), [A]).neverEnded).toEqual([]);
+  });
+
+  it('passes a parallel xpcshell run: every start precedes every end', () => {
+    expect(run(0, REAL_XPCSHELL_RUN(['a/test_a.js', 'a/test_b.js']), ['a'])).toContain(
+      'PASS checks=2 unexpected=0'
+    );
+  });
+
+  it('passes a run whose file the manifest skipped', () => {
+    const skipped = REAL_BROWSER_RUN(A).replace(
+      ' 0:02.84 TEST_END: Test PASS. Subtests passed 7/8. Unexpected 0',
+      ' 0:02.84 TEST_END: SKIP (skip-if: headless)'
+    );
+    expect(run(0, skipped, [A])).toContain('PASS');
+  });
+
+  it('keeps the same verdict from a capture that lost the start of a long log', () => {
+    const tail = REAL_BROWSER_RUN(A).split('\n').slice(3).join('\n');
+    const verdict = vetoIncompletePass(classifyHarnessRun(0, tail, [A]), tail, [A], {
+      markers: { started: [A], skipped: [] },
+      source: 'stream',
+    });
+    expect(formatFireforgeVerdictLine(verdict)).toContain('PASS');
+  });
+
+  it('keeps the green override for each observed noise shape at exit 1', () => {
+    const noise = [
+      "AttributeError: 'NoneType' object has no attribute 'read_bytes'",
+      'UserWarning: psutil failed to run: host_statistics64(HOST_VM_INFO64) syscall failed',
+      ' 0:00.50 WARNING _collect failed: poll_interval unavailable on degraded monitor',
+      '[FireForge] FireForge: host resource monitor degraded',
+      'failed to read the received data',
+    ];
+    for (const line of noise) {
+      expect(run(1, `${REAL_XPCSHELL_RUN(['a/test_a.js'])}\n${line}`, ['a'])).toContain('PASS');
+    }
+  });
+
+  it('accepts the instance prefix a --jobs log puts on harness lines', () => {
+    const output = REAL_BROWSER_RUN(A)
+      .split('\n')
+      .map((line) => `[job 1] ${line}`)
+      .join('\n');
+    expect(run(0, output, [A])).toContain('PASS checks=1216');
+  });
+});
+
+describe('a long run whose capture kept only the tail', () => {
+  const A = 'browser/x/test/browser_a.js';
+  const B = 'browser/x/test/browser_b.js';
+  const TAIL = `TEST_START: ${B}\nTEST_END: Test PASS\nRan 9 checks\nUnexpected results: 0\nSUITE_END\nUserWarning: psutil failed to run`;
+
+  it('keeps the noise override for a file only the stream saw start', () => {
+    expect(classifyHarnessRun(1, TAIL, [A, B], { started: [A, B] })).toMatchObject({
+      kind: 'tests-ran-ok',
+      greenSummaryOverride: true,
+    });
+  });
+
+  it('still names a file the stream did not see either', () => {
+    expect(
+      classifyHarnessRun(1, TAIL, [A, B], { started: [B] }).greenSummaryRejected?.neverStarted
+    ).toEqual([A]);
+  });
+});
+
+describe('an exit-0 run must show a complete run', () => {
+  const A = 'browser/x/test/browser_a.js';
+  const B = 'browser/x/test/browser_b.js';
+  const SUMMARY = 'Ran 2 checks\nUnexpected results: 0\nSUITE_END';
+  const text = (exitCode: number, output: string, paths: readonly string[]): string => {
+    const tracker = createStartMarkerTracker();
+    tracker.onChunk('stdout', `${output}\n`);
+    return formatFireforgeVerdictLine(
+      vetoIncompletePass(classifyHarnessRun(exitCode, output, paths), output, paths, {
+        markers: tracker.markers(),
+        source: 'stream',
+      })
+    );
+  };
+  const raw = (output: string, paths: readonly string[], records: readonly object[]): string => {
+    const log = parseRawTestLog(records.map((record) => JSON.stringify(record)).join('\n'));
+    return formatFireforgeVerdictLine(
+      vetoIncompletePass(
+        classifyHarnessRun(0, output, paths, { raw: summarizeRawLog(log) }),
+        output,
+        paths,
+        { markers: { started: [], skipped: [] }, source: 'stream' },
+        log
+      )
+    );
+  };
+  const SUITE_OPEN = { action: 'suite_start', tests: {} };
+  const SUITE_CLOSE = { action: 'suite_end' };
+  const started = (test: string): object => ({ action: 'test_start', test });
+  const ended = (test: string, status = 'OK'): object => ({ action: 'test_end', test, status });
+
+  it.each([
+    ['a test started and the log ends there', `TEST_START: ${A}`, [A], 'crash'],
+    [
+      'b started and never ended',
+      `TEST_START: ${A}\nTEST_END: Test OK\nTEST_START: ${B}\n${SUMMARY}`,
+      [A, B],
+      'test-failures',
+    ],
+    [
+      'another file ran',
+      `TEST_START: browser/x/test/browser_other.js\nTEST_END: Test OK\n${SUMMARY}`,
+      [A],
+      'test-failures',
+    ],
+    ['TEST_END is all the output holds', 'TEST_END: Test OK', [A], 'crash'],
+    [
+      'a mochitest summary that counted zero',
+      `TEST-START | ${A}\nPassed: 0\nFailed: 0`,
+      [A],
+      'no-tests',
+    ],
+    [
+      'a test printed b as started',
+      `TEST_START: ${A}\nconsole.log: TEST_START: ${B}\nTEST_END: Test OK\n${SUMMARY}`,
+      [A, B],
+      'test-failures',
+    ],
+    [
+      'a test printed a skip line for b',
+      `TEST_START: ${A}\n 0:01.00 GECKO(12) TEST-SKIP | ${B}\nTEST_END: Test OK\n${SUMMARY}`,
+      [A, B],
+      'test-failures',
+    ],
+  ])('fails when %s', (_name, output, paths, reason) => {
+    expect(text(0, output, paths)).toContain(`FAIL reason=${reason}`);
+  });
+
+  it('names the file a test printed as started, because it never ran', () => {
+    expect(
+      text(0, `TEST_START: ${A}\nconsole.log: TEST_START: ${B}\nTEST_END: Test OK\n${SUMMARY}`, [
+        A,
+        B,
+      ])
+    ).toContain(`first-unstarted=${B}`);
+  });
+
+  it('reads no failure from a test that prints failure-shaped text', () => {
+    const output = `TEST_START: ${A}\n 0:01.00 console.log: Failed: 2\nconsole.log: Unexpected results: 3\nTEST_END: Test OK\n${SUMMARY}`;
+    expect(text(0, output, [A])).toContain('PASS checks=2 unexpected=0');
+  });
+
+  it('does not take a test that prints a summary for one', () => {
+    const output = `TEST_START: ${A}\nconsole.log: Ran 5 checks\nconsole.log: Unexpected results: 0\nconsole.log: SUITE_END`;
+    expect(text(0, output, [A])).toContain('FAIL reason=crash');
+  });
+
+  it.each([
+    [
+      'b started and never ended',
+      [A, B],
+      [SUITE_OPEN, started(A), ended(A), started(B), SUITE_CLOSE],
+      'unfinished=1',
+    ],
+    [
+      'a status failed under a green text summary',
+      [A],
+      [
+        SUITE_OPEN,
+        started(A),
+        { action: 'test_status', test: A, subtest: 's', status: 'FAIL', expected: 'PASS' },
+        ended(A),
+        SUITE_CLOSE,
+      ],
+      'unexpected=1',
+    ],
+    [
+      'the file ended unexpectedly',
+      [A],
+      [SUITE_OPEN, started(A), { ...ended(A, 'TIMEOUT'), expected: 'PASS' }, SUITE_CLOSE],
+      'unexpected=1',
+    ],
+    [
+      'another file ran',
+      [A],
+      [SUITE_OPEN, started(B), ended(B), SUITE_CLOSE],
+      `first-unstarted=${A}`,
+    ],
+    [
+      'a directory ran nothing under it',
+      ['browser/y/test'],
+      [SUITE_OPEN, started(A), ended(A), SUITE_CLOSE],
+      'first-unstarted=browser/y/test',
+    ],
+    ['the suite never closed', [A], [SUITE_OPEN, started(A), ended(A)], 'reason=crash'],
+    ['it recorded nothing', [A], [], `first-unstarted=${A}`],
+  ])('with a raw log, fails when %s, whatever the text says', (_name, paths, records, marker) => {
+    const verdict = raw(`TEST_START: ${A}\nTEST_END: Test OK\n${SUMMARY}`, paths, records);
+    expect(verdict).toContain('FAIL');
+    expect(verdict).toContain(marker);
+  });
+
+  it('with a raw log, passes a complete run whatever the text kept', () => {
+    const records = [
+      SUITE_OPEN,
+      started(A),
+      ended(A),
+      started(B),
+      { ...ended(B), status: 'SKIP' },
+      SUITE_CLOSE,
+    ];
+    expect(raw('', [A, B], records)).toContain('PASS');
+    expect(raw('', ['browser/x/test'], records)).toContain('PASS');
+    expect(raw('', ['browser/x/test/browser.toml'], records)).toContain('PASS');
+    expect(raw('', [], records)).toContain('PASS');
+  });
+
+  it('with a raw log, a status listed as a known intermittent is not unexpected', () => {
+    const records = [
+      SUITE_OPEN,
+      started(A),
+      {
+        action: 'test_status',
+        test: A,
+        subtest: 's',
+        status: 'FAIL',
+        expected: 'PASS',
+        known_intermittent: ['FAIL'],
+      },
+      ended(A),
+      SUITE_CLOSE,
+    ];
+    expect(raw('', [A], records)).toContain('PASS');
   });
 });

@@ -93,7 +93,7 @@ describe('furnace stale-lock doctor check', () => {
     const check = await runLockCheck(projectRoot, true);
 
     expect(check.severity).toBe('warning');
-    expect(check.message).toMatch(/Removed stale furnace lock/);
+    expect(check.message).toMatch(/Recovered stale furnace lock/);
     await expect(pathExists(lockPath)).resolves.toBe(false);
   });
 

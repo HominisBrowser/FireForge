@@ -15,22 +15,20 @@
 
 import type { ChildProcess } from 'node:child_process';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { toError } from '../utils/errors.js';
 import { pathExists } from '../utils/fs.js';
-import { info, verbose, warn } from '../utils/logger.js';
+import { info, warn } from '../utils/logger.js';
 import { installGracefulShutdownForwarder, trackChildClosure } from '../utils/process.js';
-import { killProcessTree, sweepProcessGroup } from '../utils/process-group.js';
+import { type ChildLifetime, trackChildLifetime } from '../utils/process-lifecycle.js';
 import { sleep } from '../utils/sleep.js';
 import { ensureMach } from './mach.js';
 import { getPython } from './mach-python.js';
-
-/** Marionette's default TCP port when the browser is launched with `--marionette`. */
-const MARIONETTE_PORT = 2828;
+import { probeMarionettePort } from './marionette-port.js';
 
 /** Overall budget for the preflight (browser boot + socket handshake). */
 const DEFAULT_PREFLIGHT_TIMEOUT_MS = 30_000;
@@ -79,7 +77,7 @@ export interface MarionettePreflightResult {
 export interface MarionettePreflightOptions {
   /** Total budget in ms. Defaults to 30 seconds. */
   timeoutMs?: number;
-  /** Overrides marionette TCP port. Primarily used in tests. */
+  /** Marionette TCP port. Defaults to a free port chosen by the OS. */
   port?: number;
   /**
    * Grace window after spawn() before the browser is considered "running
@@ -91,13 +89,16 @@ export interface MarionettePreflightOptions {
   /** Test seam: spawn and socket connect factories. */
   spawner?: typeof spawn;
   connect?: typeof net.createConnection;
+  /** Test seam: finds the listener on a port, as {@link probeMarionettePort} does. */
+  probeListener?: (port: number) => Promise<{ holder?: { pid: number } }>;
 }
 
 /**
  * Runs the marionette preflight. Returns PASS on first byte read from the
- * marionette socket within the budget, and FAIL otherwise, with a
- * diagnostic identifying which layer of the cascade broke. Always tears
- * down the spawned browser before returning.
+ * marionette socket within the budget when the listener belongs to the browser
+ * this probe launched, and FAIL otherwise, with a diagnostic identifying which
+ * layer of the cascade broke. Always tears down the spawned browser before
+ * returning.
  */
 export async function runMarionettePreflight(
   engineDir: string,
@@ -105,7 +106,6 @@ export async function runMarionettePreflight(
 ): Promise<MarionettePreflightResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_PREFLIGHT_TIMEOUT_MS;
   const spawnSettleMs = options.spawnSettleMs ?? SPAWN_SETTLE_MS;
-  const port = options.port ?? MARIONETTE_PORT;
   const spawnerFn = options.spawner ?? spawn;
   const connectFn = options.connect ?? net.createConnection;
 
@@ -156,21 +156,37 @@ export async function runMarionettePreflight(
     );
   }
 
+  // The port is the probe's own, so a peer's browser cannot answer for this
+  // one. `mach run` ignores `--setpref` when a profile is passed, so it goes in
+  // the profile.
+  let port: number;
+  try {
+    port = options.port ?? (await pickFreePort());
+    await writeFile(join(profileDir, 'user.js'), `user_pref("marionette.port", ${port});\n`);
+  } catch (error: unknown) {
+    await rm(profileDir, { recursive: true, force: true }).catch(() => undefined);
+    return fail(
+      'profile-creatable',
+      `Could not prepare the throwaway browser profile: ${toError(error).message}`,
+      elapsed()
+    );
+  }
+
   let child: ChildProcess | undefined;
   let stderrTail = '';
   // Shutdown contract for a child spawned outside the exec layer.
   //
-  // This is the one raw `spawn` in the repo. The preflight needs the live
-  // `ChildProcess` mid-run (`hasChildExited` gates the socket poll),
-  // returns while the browser is still running, and aborts on a TCP byte
-  // rather than on a deadline. No wrapper in utils/process can express
-  // that. It still has to honour the contract every wrapper applies to a
-  // detached child: register the closure so the bin signal handler waits
-  // for it, and forward the parent's SIGINT/SIGTERM to the group. Without
-  // both, Ctrl+C during `fireforge test --doctor` left the whole
-  // mach → Firefox tree running.
+  // The preflight needs the live `ChildProcess` mid-run (`hasChildExited`
+  // gates the socket poll), returns while the browser is still running, and
+  // aborts on a TCP byte rather than on a deadline. No wrapper in utils/process
+  // can express that. It still has to honour the contract every wrapper applies
+  // to a detached child: register the closure so the bin signal handler waits
+  // for it, and forward the parent's SIGINT/SIGTERM to the group. Without both,
+  // Ctrl+C during `fireforge test --doctor` left the whole mach → Firefox tree
+  // running.
   let closure: { settle: () => void } | undefined;
   let forwarder: { dispose: () => void } | undefined;
+  let lifetime: ChildLifetime | undefined;
 
   try {
     // Layer 5: browser spawns and does not crash within the settle window.
@@ -211,9 +227,13 @@ export async function runMarionettePreflight(
 
     const spawnedChild = child;
     closure = trackChildClosure();
-    forwarder = installGracefulShutdownForwarder(spawnedChild, 500, (signal) => {
-      killProcessTree(spawnedChild, signal, process.platform !== 'win32');
+    lifetime = trackChildLifetime(spawnedChild, {
+      processGroup: process.platform !== 'win32',
+      graceMs: 500,
     });
+    // The probe may spend its socket budget before finally joins a failed child.
+    void lifetime.completion.catch(() => undefined);
+    forwarder = installGracefulShutdownForwarder(spawnedChild, 500, lifetime.signal);
 
     child.stderr?.on('data', (data: Buffer) => {
       const chunk = data.toString();
@@ -247,6 +267,14 @@ export async function runMarionettePreflight(
     });
 
     if (socketResult.ok) {
+      const stray = await foreignListenerPid(port, lifetime, options.probeListener);
+      if (stray !== undefined) {
+        return fail(
+          'marionette-handshake',
+          `The listener on 127.0.0.1:${port} is PID ${stray}, which is not part of the browser this probe launched.`,
+          elapsed()
+        );
+      }
       return {
         ok: true,
         durationMs: elapsed(),
@@ -272,7 +300,7 @@ export async function runMarionettePreflight(
       elapsed()
     );
   } finally {
-    await teardownPreflightChild(child, forwarder, closure, profileDir);
+    await teardownPreflightChild(child, lifetime, forwarder, closure, profileDir);
   }
 }
 
@@ -284,12 +312,14 @@ export async function runMarionettePreflight(
  * (forwarder + closure tracking + group sweep) and the kill escalation.
  *
  * @param child - The spawned child, if the spawn got that far
+ * @param lifetime - The child's tracked lifetime
  * @param forwarder - Parent-signal forwarder to dispose
  * @param closure - Closure registration to settle
  * @param profileDir - Temporary profile directory to remove
  */
 async function teardownPreflightChild(
   child: ChildProcess | undefined,
+  lifetime: ChildLifetime | undefined,
   forwarder: { dispose: () => void } | undefined,
   closure: { settle: () => void } | undefined,
   profileDir: string
@@ -297,41 +327,55 @@ async function teardownPreflightChild(
   // Dispose before killing: the forwarder's own escalation timer must not
   // race the deterministic teardown below.
   forwarder?.dispose();
-  const groupPid = child?.pid;
-  if (child && !hasChildExited(child)) {
-    killProcessTree(child, 'SIGTERM', process.platform !== 'win32');
-    // Small escalation: if the child doesn't honour SIGTERM quickly, SIGKILL
-    // so we don't leave a ghost mach process around after a failed probe.
-    // Ref'd: an unref'd wait between a SIGTERM and its escalation lets Node
-    // exit mid-grace and skip the escalation.
-    await sleep(500);
-    if (!hasChildExited(child)) {
-      killProcessTree(child, 'SIGKILL', process.platform !== 'win32');
+  try {
+    lifetime?.signal('SIGTERM');
+    if (child && !hasChildExited(child)) {
+      await sleep(500);
+      lifetime?.signal('SIGKILL');
     }
+    // A failed spawn has already been reported by the layer that saw it.
+    await lifetime?.completion.catch(() => undefined);
+  } finally {
+    closure?.settle();
+    child?.stderr?.destroy();
   }
-  // Reap anything that outlived the group signal. The file's own comments
-  // worry about exactly this case (Firefox grandchildren surviving the
-  // Python mach wrapper), and every exec-layer wrapper sweeps for it.
-  if (groupPid !== undefined && process.platform !== 'win32') {
-    try {
-      await sweepProcessGroup(groupPid);
-    } catch (error: unknown) {
-      verbose(`Marionette preflight group sweep failed: ${toError(error).message}`);
-    }
-  }
-  closure?.settle();
-  // Destroy the stderr pipe explicitly. Firefox (a grandchild of the Python
-  // mach wrapper we spawned) can inherit and hold the stderr FD even after
-  // its direct parent exits. Until the pipe closes, Node's readable stream
-  // stays attached and `uv__io_poll` keeps the event loop alive.
-  // `destroy()` closes the local end regardless, so `fireforge test
-  // --doctor` exits cleanly after a passing preflight.
-  child?.stderr?.destroy();
   try {
     await rm(profileDir, { recursive: true, force: true });
   } catch (error: unknown) {
     warn(`Could not clean up marionette preflight profile: ${toError(error).message}`);
   }
+}
+
+/** Asks the OS for a free loopback port. */
+async function pickFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address !== null ? address.port : 0;
+      server.close(() => {
+        if (port > 0) resolve(port);
+        else reject(new Error('The OS assigned no port'));
+      });
+    });
+  });
+}
+
+/**
+ * The listener's PID when it is provably not in the probe's own tree. A host
+ * without `lsof`, or a platform with no owned tree, cannot tell, and the port
+ * being the probe's own has to do.
+ */
+async function foreignListenerPid(
+  port: number,
+  lifetime: ChildLifetime,
+  probeListener: MarionettePreflightOptions['probeListener']
+): Promise<number | undefined> {
+  if (lifetime.owner === undefined) return undefined;
+  const { holder } = await (probeListener ?? probeMarionettePort)(port);
+  if (holder === undefined) return undefined;
+  return (await lifetime.owner.owns(holder.pid)) ? undefined : holder.pid;
 }
 
 function fail(layer: LayerName, message: string, durationMs: number): MarionettePreflightResult {

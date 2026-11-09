@@ -14,7 +14,7 @@
  * anything that is not valid UTF-8. This module is the single place that
  * decision is made.
  */
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,7 +22,8 @@ import { isBinaryFile } from './git-file-ops.js';
 
 /** How a new file is carried in a patch, plus its text when it is text. */
 export type NewFileContent =
-  { readonly binary: true } | { readonly binary: false; readonly content: string };
+  | { readonly binary: true }
+  | { readonly binary: false; readonly content: string; readonly gitMode?: '100755' | '120000' };
 
 // `ignoreBOM: true` keeps a leading U+FEFF in the output instead of silently
 // consuming it, matching `readFile(path, 'utf-8')`, so a BOM-prefixed file
@@ -58,6 +59,15 @@ export async function readNewFileContent(
   repoDir: string,
   filePath: string
 ): Promise<NewFileContent> {
+  const info = await lstat(join(repoDir, filePath));
+  if (info.isSymbolicLink()) {
+    const target = decodeStrictUtf8(
+      await readlink(join(repoDir, filePath), { encoding: 'buffer' })
+    );
+    return target === undefined
+      ? { binary: true }
+      : { binary: false, content: target, gitMode: '120000' };
+  }
   if (await isBinaryFile(repoDir, filePath)) {
     return { binary: true };
   }
@@ -65,7 +75,11 @@ export async function readNewFileContent(
   if (content === undefined) {
     return { binary: true };
   }
-  return { binary: false, content };
+  return {
+    binary: false,
+    content,
+    ...((info.mode & 0o111) !== 0 ? { gitMode: '100755' as const } : {}),
+  };
 }
 
 /**

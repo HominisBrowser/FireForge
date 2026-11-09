@@ -74,9 +74,19 @@ export const buildPrepareMock = (): Partial<typeof import('../../core/build-prep
   ),
 });
 
+/**
+ * A successful build's record, as a build-less run needs one: with none, the
+ * stale gate refuses (`no-build-baseline`) before anything is dispatched.
+ */
+export const RECORDED_BUILD_BASELINE: import('../../core/build-baseline-types.js').BuildBaseline = {
+  engineHeadSha: 'recorded-head',
+  builtAt: '2026-01-01T00:00:00.000Z',
+  binaryName: 'mybrowser',
+};
+
 /** `vi.mock` factory for `../../core/build-baseline.js`. */
 export const buildBaselineMock = (): Partial<typeof import('../../core/build-baseline.js')> => ({
-  readBuildBaseline: vi.fn(() => Promise.resolve(undefined)),
+  readBuildBaseline: vi.fn(() => Promise.resolve(RECORDED_BUILD_BASELINE)),
   writeBuildBaseline: vi.fn(() => Promise.resolve()),
 });
 
@@ -206,7 +216,12 @@ export const testStaleCheckMock = async (
   return {
     ...actual,
     checkStaleBuildForTest: vi.fn(() =>
-      Promise.resolve({ stale: false, changedPaths: [], truncated: 0, baseline: undefined })
+      Promise.resolve({
+        stale: false,
+        changedPaths: [],
+        truncated: 0,
+        baseline: RECORDED_BUILD_BASELINE,
+      })
     ),
     checkStaticComponentsStale: vi.fn(() =>
       Promise.resolve({ stale: false, changedManifests: [] })
@@ -214,6 +229,22 @@ export const testStaleCheckMock = async (
     formatStaleBuildWarning: vi.fn(() => 'stale warning'),
   };
 };
+
+/**
+ * `vi.mock` factory for `../../core/test-host-state.js`: a fixed host, real
+ * attribute merging. `sampleTestHost` is the one probe that spawns anything.
+ */
+export const testHostStateMock = async (
+  importOriginal: ImportOriginal
+): Promise<Partial<typeof import('../../core/test-host-state.js')>> => ({
+  ...(await importOriginal<typeof import('../../core/test-host-state.js')>()),
+  sampleTestHost: vi.fn(() =>
+    Promise.resolve({ load: 0, power: 'unknown' as const, display: 'unknown' as const })
+  ),
+  stampPerfHost: vi.fn(() => Promise.resolve(false)),
+  // The real watch reads this host's load, which no expected verdict line can name.
+  watchHostLoad: vi.fn(() => () => undefined),
+});
 
 /** `vi.mock` factory for `../../core/xpcshell-appdir.js`. */
 export const xpcshellAppdirMock = (): Partial<typeof import('../../core/xpcshell-appdir.js')> => ({

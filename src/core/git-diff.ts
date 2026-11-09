@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { stat } from 'node:fs/promises';
+import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { GitError } from '../errors/git.js';
-import { toError } from '../utils/errors.js';
-import { pathExists } from '../utils/fs.js';
+import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { chunkPathspecs, git } from './git-base.js';
 import type { NewFileContent } from './git-diff-new-file.js';
@@ -110,7 +109,7 @@ function buildNewFileDiffBody(filePath: string, content: string, blobHash: strin
  * @param filePath - Path to the file (relative to repo)
  */
 async function rejectDirectory(repoDir: string, filePath: string): Promise<void> {
-  const fileStat = await stat(join(repoDir, filePath));
+  const fileStat = await lstat(join(repoDir, filePath));
   if (fileStat.isDirectory()) {
     throw new GitError(
       `expected a file but found a directory at '${filePath}' — caller must expand directory entries before diffing`,
@@ -133,9 +132,8 @@ export async function generateNewFileDiff(repoDir: string, filePath: string): Pr
   await rejectDirectory(repoDir, filePath);
 
   const file = await readNewFileContent(repoDir, filePath);
-  if (file.binary) {
-    return generateBinaryFilePatch(repoDir, filePath);
-  }
+  if (file.binary) return generateBinaryFilePatch(repoDir, filePath);
+  if (needsNativeNewFileDiff(filePath, file)) return generatePrivateNewFilePatch(repoDir, filePath);
 
   // Compute the abbreviated git blob hash for the index line
   let blobHash = '0000000000';
@@ -209,7 +207,10 @@ export async function getAllDiff(repoDir: string): Promise<string> {
   const textHashes = await hashObjectBatch(
     repoDir,
     untrackedFiles
-      .filter((file) => classified.get(file)?.binary === false)
+      .filter((file) => {
+        const image = classified.get(file);
+        return image !== undefined && !image.binary && !needsNativeNewFileDiff(file, image);
+      })
       .map((file) => join(repoDir, file))
   );
 
@@ -217,15 +218,16 @@ export async function getAllDiff(repoDir: string): Promise<string> {
   // are pure formatting over the already-batched hashes.
   const binaryDiffs = new Map<string, string>();
   for (const file of untrackedFiles) {
-    if (classified.get(file)?.binary === true) {
-      binaryDiffs.set(file, await generateBinaryFilePatch(repoDir, file));
-    }
+    const image = classified.get(file);
+    if (image?.binary) binaryDiffs.set(file, await generateBinaryFilePatch(repoDir, file));
+    else if (image && needsNativeNewFileDiff(file, image))
+      binaryDiffs.set(file, await generatePrivateNewFilePatch(repoDir, file));
   }
 
   const untrackedDiffs: string[] = [];
   for (const file of untrackedFiles) {
     const entry = classified.get(file);
-    if (entry === undefined || entry.binary) {
+    if (entry === undefined || entry.binary || needsNativeNewFileDiff(file, entry)) {
       const binary = binaryDiffs.get(file);
       if (binary !== undefined) untrackedDiffs.push(binary);
       continue;
@@ -397,8 +399,12 @@ export async function getDiffForFilesAgainstHead(
     if (tracked.has(file)) continue;
 
     const fullPath = join(repoDir, file);
-    if (!(await pathExists(fullPath))) {
-      continue;
+    let fileStat;
+    try {
+      fileStat = await lstat(fullPath);
+    } catch (error) {
+      if (getNodeErrorCode(error) === 'ENOENT') continue;
+      throw error;
     }
 
     // Second defence against EISDIR: a non-HEAD path that exists on disk is
@@ -408,7 +414,6 @@ export async function getDiffForFilesAgainstHead(
     // by-dir). Expand it via the same helper used by the slash branch and
     // recurse so each contained file is diffed individually. Fail loud when
     // the directory has no readable content rather than silently skipping it.
-    const fileStat = await stat(fullPath);
     if (fileStat.isDirectory()) {
       const innerFiles = await getUntrackedFilesInDir(repoDir, file);
       if (innerFiles.length === 0) {
@@ -425,8 +430,10 @@ export async function getDiffForFilesAgainstHead(
     // Binary (by git's NUL heuristic or because the bytes are not valid
     // UTF-8) takes the byte-faithful binary-patch arm.
     const newFile = await readNewFileContent(repoDir, file);
-    if (newFile.binary) {
-      const diff = await generateBinaryFilePatch(repoDir, file);
+    if (newFile.binary || needsNativeNewFileDiff(file, newFile)) {
+      const diff = newFile.binary
+        ? await generateBinaryFilePatch(repoDir, file)
+        : await generatePrivateNewFilePatch(repoDir, file);
       if (diff.trim()) sectionByFile.set(file, diff);
       continue;
     }
@@ -483,26 +490,6 @@ export async function getStagedDiffForFiles(repoDir: string, files: string[]): P
 }
 
 /**
- * Serializes the index-mutating untracked-binary path. The bounded per-patch
- * lint pool can call {@link getDiffForFilesAgainstHead} (and thus this) for
- * several patches at once. Two concurrent `git add --intent-to-add` / `git
- * reset` sequences would collide on `.git/index.lock` (a hard failure) or
- * interleave one file's stage with another's unstage. This process-level
- * promise chain runs the staging sequences one at a time. Read-only callers
- * (`git diff --binary HEAD`) do not need it. Binary patches are rare, so the
- * serialization cost is negligible.
- */
-let binaryStagingLock: Promise<unknown> = Promise.resolve();
-function runWithBinaryStagingLock<T>(task: () => Promise<T>): Promise<T> {
-  const result = binaryStagingLock.then(task, task);
-  binaryStagingLock = result.then(
-    () => undefined,
-    () => undefined
-  );
-  return result;
-}
-
-/**
  * Generates a GIT binary patch for a binary file.
  * For tracked files, uses `git diff --binary HEAD`.
  * For untracked files, temporarily stages with `--intent-to-add` to produce a diff.
@@ -537,84 +524,35 @@ async function generateBinaryFilePatchWithConfig(
   // Try tracked file diff first (read-only, so no index lock needed)
   const tracked = await git(
     [...gitConfigArgs, 'diff', '--binary', 'HEAD', '--', filePath],
-    repoDir
+    repoDir,
+    { env: { GIT_OPTIONAL_LOCKS: '0' } }
   );
   if (tracked.trim()) return tracked;
 
-  // The diff for an untracked file has to come from an index entry, so one
-  // has to be written. Writing it to a private index is what keeps that
-  // write invisible: the primary `.git/index` never moves, so a concurrent
-  // `fireforge test` fingerprinting `engine/` with `git status` cannot
-  // observe the transient `--intent-to-add` entry and void its own verdict
-  // on our bookkeeping. That was a real failure mode: parallel gate lanes
-  // killed three runs with `FAIL reason=inconclusive` on branding PNGs
-  // flapping between `A` and `??`.
-  //
-  // Nothing is restored afterwards because nothing shared was changed, and
-  // no lock is taken because two concurrent callers get two indexes. Both
-  // the restore dance and the in-process lock survive below purely for the
-  // fallback, where the primary index really is the one being written.
-  const disposable = await mintDisposableGitIndex(repoDir);
-  if (disposable !== undefined) {
-    try {
-      await git(['add', '--intent-to-add', '--', filePath], repoDir, { env: disposable.env });
-      return await git([...gitConfigArgs, 'diff', '--binary', '--', filePath], repoDir, {
-        env: disposable.env,
-      });
-    } finally {
-      await disposable.dispose();
-    }
-  }
-
-  // Fallback: no private index could be minted (a non-git directory, an
-  // unreadable index, no writable tmpdir). Degrading to the shared index is
-  // the pre-existing behaviour rather than a new risk, and refusing instead
-  // would fail an export over an optimisation. The stage/unstage pair
-  // mutates the index, so it must not interleave with another concurrent
-  // binary patch (see runWithBinaryStagingLock).
-  verbose(`Binary patch for ${filePath} is staging on the shared index (no private index).`);
-  return runWithBinaryStagingLock(async () => {
-    // Snapshot the path's exact index entry before touching it. A blanket
-    // `git reset HEAD -- <file>` cleanup restores the path to its HEAD state.
-    // For a path absent from HEAD that means *removing* whatever entry the
-    // index carried, silently discarding any staged state that arrived
-    // between the read-only diff above and this staging block (a concurrent
-    // writer, or a staged-add whose worktree file was deleted). Restoring
-    // the captured entry is exact regardless of how the entry got there.
-    const priorEntry = await git(['ls-files', '--stage', '--', filePath], repoDir);
-    try {
-      await git(['add', '--intent-to-add', '--', filePath], repoDir);
-      return await git([...gitConfigArgs, 'diff', '--binary', '--', filePath], repoDir);
-    } finally {
-      await restoreIndexEntry(repoDir, filePath, priorEntry);
-    }
-  });
+  return generatePrivateNewFilePatch(repoDir, filePath, gitConfigArgs);
 }
 
-/**
- * Restores a path's index entry to a previously captured `ls-files --stage`
- * snapshot after a temporary `--intent-to-add` staging. No prior entry means
- * the temporary entry is dropped via `reset HEAD` (the path's HEAD state is
- * "absent", and this branch only runs for files untracked in HEAD). A prior
- * stage-0 entry is re-pointed at its recorded mode and blob. Unmerged entries
- * (stages 1 to 3) cannot be rebuilt through `--cacheinfo`. That degenerate
- * state falls back to the reset-to-HEAD restore rather than corrupting the
- * conflict.
- * @param repoDir - Repository directory
- * @param filePath - File path (relative to repo root)
- * @param priorEntry - Raw `git ls-files --stage -- <file>` output from before staging
- */
-async function restoreIndexEntry(
+/** New-file modes, quoted names and bytes are rendered by Git without ever staging the shared index. */
+async function generatePrivateNewFilePatch(
   repoDir: string,
   filePath: string,
-  priorEntry: string
-): Promise<void> {
-  const entryMatch = /^(\d{6}) ([0-9a-f]{4,64}) 0\t/.exec(priorEntry.trim());
-  const mode = entryMatch?.[1];
-  const oid = entryMatch?.[2];
-  if (mode === undefined || oid === undefined) {
-    await git(['reset', 'HEAD', '--', filePath], repoDir);
-    return;
+  gitConfigArgs: readonly string[] = []
+): Promise<string> {
+  const disposable = await mintDisposableGitIndex(repoDir);
+  if (disposable === undefined)
+    throw new GitError(
+      `Cannot create a private index for ${filePath}; refusing to stage the shared index`,
+      'private-index'
+    );
+  try {
+    await git(['add', '--intent-to-add', '--', filePath], repoDir, { env: disposable.env });
+    return await git([...gitConfigArgs, 'diff', '--binary', '--', filePath], repoDir, {
+      env: disposable.env,
+    });
+  } finally {
+    await disposable.dispose();
   }
-  await git(['update-index', '--add', '--cacheinfo', `${mode},${oid},${filePath}`], repoDir);
+}
+function needsNativeNewFileDiff(path: string, file: NewFileContent): boolean {
+  return (!file.binary && file.gitMode !== undefined) || /[^\x21-\x7e]|["\\]/.test(path);
 }

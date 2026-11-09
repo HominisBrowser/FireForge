@@ -125,18 +125,30 @@ export async function assertDeployOverwritesOwnedBy(args: {
   root: string;
   config: FurnaceConfig;
   names: readonly string[];
-  owner: string;
+  owner: string | readonly string[];
 }): Promise<void> {
   const { root, config, names } = args;
-  const { filename, claims } = await resolveOwner(root, args.owner);
+  const owners = typeof args.owner === 'string' ? [args.owner] : [...args.owner];
+  if (owners.length === 0)
+    throw new FurnaceError('--owner requires at least one patch identifier.');
+  const resolved = await Promise.all(owners.map((owner) => resolveOwner(root, owner)));
+  const filenames = new Set(resolved.map((owner) => owner.filename));
+  const first = resolved[0];
+  if (first === undefined) throw new FurnaceError('--owner requires a resolved patch.');
+  const claims = first.claims;
   const foreign: PatchOwnedOverwriteWarning[] = [];
   for (const name of componentsInScope(config, names)) {
     const found = await probeComponent(root, config, name, claims);
-    foreign.push(...found.filter((entry) => !entry.owners.includes(filename)));
+    foreign.push(...found.filter((entry) => !entry.owners.some((owner) => filenames.has(owner))));
   }
   if (foreign.length > 0) {
-    throw new FurnaceError(formatForeignOverwrites(filename, foreign), undefined, undefined, {
-      omitValidateAdvice: true,
-    });
+    throw new FurnaceError(
+      formatForeignOverwrites([...filenames].join(', '), foreign),
+      undefined,
+      undefined,
+      {
+        omitValidateAdvice: true,
+      }
+    );
   }
 }

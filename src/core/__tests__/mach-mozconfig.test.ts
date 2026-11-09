@@ -23,6 +23,7 @@ import {
   extractMozObjdirName,
   extractWithBrandingPath,
   generateMozconfig,
+  replaceMozconfigVariables,
 } from '../mach-mozconfig.js';
 
 const mockPathExists = vi.mocked(pathExists);
@@ -272,8 +273,10 @@ describe('extractMozObjdirName', () => {
     expect(extractMozObjdirName(body)).toBe('obj-second');
   });
 
-  it('reduces an absolute path to its trailing segment', () => {
-    expect(extractMozObjdirName('MOZ_OBJDIR=/elsewhere/builds/obj-x')).toBe('obj-x');
+  it('preserves an absolute path instead of matching an unrelated basename', () => {
+    expect(extractMozObjdirName('MOZ_OBJDIR=/elsewhere/builds/obj-x')).toBe(
+      '/elsewhere/builds/obj-x'
+    );
   });
 
   it('tolerates a trailing slash', () => {
@@ -282,5 +285,47 @@ describe('extractMozObjdirName', () => {
 
   it('returns undefined when nothing is declared', () => {
     expect(extractMozObjdirName('ac_add_options --enable-release\n')).toBeUndefined();
+  });
+});
+
+describe('replaceMozconfigVariables', () => {
+  it('inserts values literally, including replacement-pattern sequences', () => {
+    const rendered = replaceMozconfigVariables('# ${name} by ${vendor}', {
+      name: "Cost $& $1 $$ $'",
+      vendor: 'V',
+      appId: 'a.b',
+      binaryName: 'b',
+    });
+    expect(rendered).toBe("# Cost $& $1 $$ $' by V");
+  });
+
+  it('renders the shipped templates into syntactically valid shell', async () => {
+    const { execFile } = await import('node:child_process');
+    const { mkdtemp, readFile, rm, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { promisify } = await import('node:util');
+    const dir = await mkdtemp(join(tmpdir(), 'ff-mozconfig-'));
+    try {
+      for (const file of ['common', 'darwin', 'linux', 'win32']) {
+        const template = await readFile(
+          join(import.meta.dirname, '../../../templates/configs', `${file}.mozconfig`),
+          'utf8'
+        );
+        const out = join(dir, `${file}.sh`);
+        await writeFile(
+          out,
+          replaceMozconfigVariables(template, {
+            name: 'Test Browser',
+            vendor: 'Test Vendor',
+            appId: 'org.test.browser',
+            binaryName: 'testbrowser',
+          })
+        );
+        await expect(promisify(execFile)('bash', ['-n', out])).resolves.toBeDefined();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

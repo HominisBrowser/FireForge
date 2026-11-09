@@ -12,7 +12,19 @@ import type { BuildPreparation } from '../core/build-prepare.js';
 import { listStaleFurnaceComponents } from '../core/furnace-staleness.js';
 import { toError } from '../utils/errors.js';
 import { notice, verbose } from '../utils/logger.js';
-import { setVerdictRunAttribute } from './test-verdict.js';
+import { getVerdictRunAttribute, setVerdictRunAttribute } from './test-verdict.js';
+
+/** Repeat skipped undeployed components beside a failure, without attributing its cause. */
+export function skippedFurnaceFailureHint(): string | undefined {
+  const skipped = getVerdictRunAttribute('furnace-skipped');
+  if (!skipped) return undefined;
+  return (
+    `This failed run skipped Furnace components with undeployed edits: ${skipped.split(',').join(', ')}. ` +
+    'Their existing deployed copies were tested. Inspect those components and deploy the required names ' +
+    'with "fireforge furnace deploy <names>" before retrying, or use --furnace-apply all with --build. ' +
+    'The skipped list does not establish the cause of the failure.'
+  );
+}
 
 /**
  * Reports the pre-test build's Furnace step: the components it deployed

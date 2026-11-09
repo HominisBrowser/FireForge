@@ -4,9 +4,9 @@ import { join } from 'node:path';
 
 import {
   isUnavailableGenerationToken,
-  snapshotEngineGeneration,
   unavailableGenerationReason,
 } from '../core/engine-session-lock.js';
+import { refreshEngineGeneration } from '../core/engine-state.js';
 import { createSiblingLockPath, withFileLock } from '../core/file-lock.js';
 import { formatPatchNotFoundError } from '../core/patch-identifier-suggest.js';
 import { resolvePatchIdentifier } from '../core/patch-manifest.js';
@@ -153,7 +153,7 @@ async function fingerprintDryRunState(
   patchesDir: string
 ): Promise<Map<string, string>> {
   const fingerprint = new Map<string, string>();
-  const generation = await snapshotEngineGeneration(engineDir);
+  const generation = await refreshEngineGeneration(engineDir);
   if (isUnavailableGenerationToken(generation)) {
     // A failed probe measured nothing. Hashing the failure token would let
     // two identical failures compare "unchanged" (vouching for unmeasured
@@ -231,10 +231,9 @@ async function fingerprintDryRunState(
 /**
  * Runtime enforcement of the dry-run purity contract: fingerprints the engine
  * tree and every patch artifact before and after `operation`, and throws when
- * a dry-run changed anything it promised only to inspect. That turns a
- * "dry-run reverted a just-written export" incident into a hard, named
- * failure instead of silent data loss discovered only when a later gate
- * fails. The post-fingerprint runs whether `operation` resolves or rejects,
+ * a dry-run changed anything it promised only to inspect. A purity
+ * violation is a hard, named failure rather than silent data loss discovered
+ * only when a later gate fails. The post-fingerprint runs whether `operation` resolves or rejects,
  * because a dry-run that mutates state and then fails is exactly the case
  * where a rollback defect must not go unreported. A rejection with a purity
  * violation surfaces the violation with the original error as `cause`.

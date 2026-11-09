@@ -39,6 +39,15 @@ describe('validatePatchesManifest', () => {
     });
   });
 
+  it('keeps the source snapshot of an exported queue and refuses a malformed one', () => {
+    expect(
+      validatePatchesManifest({ version: 1, source: { snapshot: 'abc' }, patches: [] })
+    ).toEqual({ version: 1, patches: [], source: { snapshot: 'abc' } });
+    expect(() => validatePatchesManifest({ version: 1, source: {}, patches: [] })).toThrow(
+      /snapshot/
+    );
+  });
+
   it('accepts legacy sourceEsrVersion-only metadata and exposes sourceVersion fallback', () => {
     const manifest = validatePatchesManifest({
       version: 1,

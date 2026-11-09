@@ -58,10 +58,9 @@ function formatWaitProgressLine(
  * is held, so an unlocked caller silently reintroduces the interleaving the
  * lock exists to prevent.
  *
- * Fail-open on an unreadable owner record, on purpose: `withFileLock`
- * treats writing that record as non-fatal, so a live holder can legitimately
- * have no readable PID and asserting on its presence would fire on a lock we
- * really do hold.
+ * Fail-open on an unreadable owner record, on purpose: this is an assertion
+ * about our own lock, and a transient read error must not abort a holder that
+ * really does hold it.
  *
  * @param patchesDir - The patches directory whose lock must be held
  * @param context - What is about to be done, for the failure message

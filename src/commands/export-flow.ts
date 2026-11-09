@@ -16,6 +16,8 @@ import {
   findAllPatchesForFilesWithDetails,
   patchNameSlug,
   planExport,
+  restoreFileText,
+  snapshotFileText,
 } from '../core/patch-export.js';
 import { buildPatchQueueContext, lintPatchQueue } from '../core/patch-lint.js';
 import { formatLintIgnoreList } from '../core/patch-lint-ignore.js';
@@ -39,7 +41,7 @@ import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import type { ExportOptions, PatchCategory, PatchMetadata } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
 import { toError } from '../utils/errors.js';
-import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
+import { pathExists, removeFile, writeText } from '../utils/fs.js';
 import { info, warn } from '../utils/logger.js';
 import { describePlacementAdvice } from './export-adopt-check.js';
 import { groupProjectedPlacementErrors } from './export-placement-conflicts.js';
@@ -404,6 +406,8 @@ export async function commitPlacementExport(
     }
 
     const originalManifest = await loadPatchesManifestForWrite(input.patchesDir);
+    const manifestPath = join(input.patchesDir, 'patches.json');
+    const originalManifestText = await snapshotFileText(manifestPath);
     if (input.config !== undefined) {
       const renamed =
         originalManifest !== null
@@ -425,15 +429,16 @@ export async function commitPlacementExport(
     }
 
     // Snapshot pre-mutation state so we can best-effort restore the queue
-    // if any of the three steps below fail mid-flight. Mirrors the
-    // rollback shape in commitExportedPatch (src/core/patch-export.ts), but
-    // inlined because the two rollbacks operate on different state shapes
-    // (rename map vs. supersede set) and sharing a helper would be forced.
+    // if any of the three steps below fail mid-flight.
     const patchPath = join(input.patchesDir, currentPlan.newFilename);
-    const originalNewPatchContent = (await pathExists(patchPath))
-      ? await readText(patchPath)
-      : null;
+    const originalNewPatchContent = await snapshotFileText(patchPath);
+    if (originalNewPatchContent !== null && !currentPlan.renameMap.has(currentPlan.newFilename))
+      throw new InvalidArgumentError(
+        'Export target already exists outside the planned renumber; choose another name before retrying.',
+        'name'
+      );
     let renumberApplied = false;
+    let newFileWriteStarted = false;
 
     try {
       if (currentPlan.renameMap.size > 0) {
@@ -442,6 +447,7 @@ export async function commitPlacementExport(
       }
       // Normalize identically to commitExportedPatch: the two export
       // paths must produce one artifact contract for the same diff.
+      newFileWriteStarted = true;
       await writeText(patchPath, input.diff);
       await addPatchToManifest(input.patchesDir, {
         ...input.metadata,
@@ -463,55 +469,33 @@ export async function commitPlacementExport(
       }
       return currentPlan;
     } catch (error: unknown) {
-      // Best-effort rollback. Each restoration step gets its own nested
-      // try/catch so a secondary failure warns without masking the
-      // original error we are about to rethrow.
-      try {
-        if (originalNewPatchContent === null) {
-          if (await pathExists(patchPath)) {
-            await removeFile(patchPath);
-          }
-        } else {
-          await writeText(patchPath, originalNewPatchContent);
-        }
-      } catch (rollbackError: unknown) {
-        warn(
-          `Rollback warning: could not restore new patch file: ${toError(rollbackError).message}`
-        );
-      }
-
-      if (renumberApplied) {
-        // Invert the forward rename map and re-apply through the same
-        // two-phase staging renumber. The oldFilename encodes its
-        // original order in the leading digits, so parsing them back
-        // avoids tracking a second map during the forward pass.
-        const inverseMap = new Map<string, PatchRenameEntry>();
-        for (const [oldFilename, entry] of currentPlan.renameMap) {
-          const oldOrder = requirePatchOrder(oldFilename);
-          inverseMap.set(entry.newFilename, {
-            newOrder: oldOrder,
-            newFilename: oldFilename,
-          });
-        }
+      if (renumberApplied || newFileWriteStarted) {
         try {
-          await renumberPatchesInManifest(input.patchesDir, inverseMap);
+          // The old occupant, if any, lives at its shifted filename. Vacate
+          // only this attempt's new slot before reversing that rename.
+          if (await pathExists(patchPath)) await removeFile(patchPath);
+          if (renumberApplied) {
+            // addPatchToManifest may have persisted its new row before failing.
+            // Reconcile the still-forward layout before validating its inverse.
+            if (originalManifest)
+              await savePatchesManifest(
+                input.patchesDir,
+                applyRenameMapToManifest(originalManifest, currentPlan.renameMap)
+              );
+            const inverseMap = new Map<string, PatchRenameEntry>();
+            for (const [oldFilename, entry] of currentPlan.renameMap)
+              inverseMap.set(entry.newFilename, {
+                newOrder: requirePatchOrder(oldFilename),
+                newFilename: oldFilename,
+              });
+            await renumberPatchesInManifest(input.patchesDir, inverseMap);
+          }
+          // Restore the old manifest only after its filenames are restored.
+          await restoreFileText(manifestPath, originalManifestText);
         } catch (rollbackError: unknown) {
           warn(
-            `Rollback warning: could not invert placement renumber: ${toError(rollbackError).message}`
+            `Rollback incomplete; inspect the retained queue before further writes: ${toError(rollbackError).message}`
           );
-        }
-      }
-
-      // Belt-and-braces: overwrite the manifest with the original
-      // snapshot so a partial addPatchToManifest write (new entry
-      // appended but inverse renumber skipped or incomplete) is erased.
-      // Safe because by this point the disk filenames should match the
-      // original manifest's filenames.
-      if (originalManifest) {
-        try {
-          await savePatchesManifest(input.patchesDir, originalManifest);
-        } catch (rollbackError: unknown) {
-          warn(`Rollback warning: could not restore manifest: ${toError(rollbackError).message}`);
         }
       }
 

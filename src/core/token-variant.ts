@@ -11,8 +11,13 @@
  * it, keeping all token authoring in the CLI.
  */
 
+import { escapeRegex } from '../utils/regex.js';
 import type { TokenDeclarationLocation } from './token-category.js';
-import { findBlockCloseIndex, stripBlockCommentsInLines } from './token-dark-mode.js';
+import {
+  findBlockCloseIndex,
+  isolateBlockClose,
+  stripBlockCommentsInLines,
+} from './token-dark-mode.js';
 
 /**
  * Outcome of {@link validateVariantSelector}. `ok: true` carries the
@@ -166,22 +171,16 @@ interface RootSelectorParts {
  * per group.
  *
  * It consumes consecutive `[…]` groups and stops at the first character that
- * is not `[`. The previous implementation instead sliced to the last `]`
- * before the brace, which kept multi-attribute selectors comparing as a
- * whole (that property is preserved here, since consecutive groups are all
- * consumed) but it also swallowed a pseudo-class tail. On
- * `:root[data-theme="light"]:not([data-private]) {` the last `]` is the one
- * inside `:not(…)`, so the computed fragment was
- * `:root[data-theme="light"]:not([data-private]` and the canonical
- * comparison could never match. The unqualified
- * `:root[data-theme="dark"] { }` beside it matched fine, and that asymmetry
- * was the bug: an override add mirrored itself into the dark block and
- * silently skipped the light one, the half-finished themed edit
- * `THEME_ATTRIBUTE_VARIANTS` exists to prevent.
+ * is not `[`, so a multi-attribute selector compares as a whole and a
+ * pseudo-class tail such as `:not([data-private])` is the qualifier rather
+ * than part of the attribute run. A qualified block
+ * (`:root[data-theme="light"]:not([data-private]) {`) and its unqualified
+ * sibling therefore both match, which keeps a themed override from landing
+ * in one block and skipping the other.
  */
 function rootAttributeSelector(line: string): RootSelectorParts | undefined {
   const start = line.indexOf(':root[');
-  if (start === -1) return undefined;
+  if (start === -1 || line.slice(0, start).trim() !== '') return undefined;
   const brace = line.indexOf('{', start);
   const limit = brace === -1 ? line.length : brace;
 
@@ -209,6 +208,20 @@ interface VariantBlock {
   qualifier: string;
 }
 
+/** Blank quoted values for structural brace and declaration scans. */
+function structureLines(lines: string[]): string[] {
+  return lines.map((line) =>
+    line.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, (match) => ' '.repeat(match.length))
+  );
+}
+
+/** Count structural braces in an already masked line. */
+function braceDelta(line: string): number {
+  let delta = 0;
+  for (const ch of line) delta += ch === '{' ? 1 : ch === '}' ? -1 : 0;
+  return delta;
+}
+
 /**
  * Finds the top-level `:root<variant>` block whose attribute selector
  * matches `variant` (compared canonically). Returns the opening-brace and
@@ -218,8 +231,13 @@ interface VariantBlock {
  * not offset the depth counter. The returned indices line up with the
  * original array.
  */
-function findVariantBlock(lines: string[], variant: string): VariantBlock | undefined {
+function findVariantBlock(
+  lines: string[],
+  variant: string,
+  anyQualifier = false
+): VariantBlock | undefined {
   const stripped = stripBlockCommentsInLines(lines);
+  const structure = structureLines(stripped);
   // The request goes through the same parse as the candidate lines, so a
   // variant carrying its own `:not(…)` tail is compared tail-to-tail rather
   // than being folded into the attribute run, where it would match nothing
@@ -228,29 +246,32 @@ function findVariantBlock(lines: string[], variant: string): VariantBlock | unde
   const want = canonicalSelector(requested?.attributes ?? `:root${variant}`);
   const wantQualifier = canonicalSelector(requested?.qualifier ?? '');
 
+  let depth = 0;
   for (const [i, line] of stripped.entries()) {
+    const topLevel = depth === 0;
+    depth += braceDelta(structure[i] ?? '');
+    if (!topLevel) continue;
     const selector = rootAttributeSelector(line);
     if (selector === undefined || canonicalSelector(selector.attributes) !== want) continue;
-    // An unqualified request still matches a qualified block: that is the
-    // behaviour `variantBlockQualifier` exists to report, since
-    // silently skipping the block is the worse failure. A request that names
-    // a qualifier, though, means it, so it must match.
-    if (wantQualifier !== '' && canonicalSelector(selector.qualifier) !== wantQualifier) continue;
+    if (
+      !validateVariantSelector(`${selector.attributes.slice(':root'.length)}${selector.qualifier}`)
+        .ok
+    )
+      continue;
+    if (!anyQualifier && canonicalSelector(selector.qualifier) !== wantQualifier) continue;
 
     let openLine = /\{/.test(line) ? i : -1;
     if (openLine === -1) {
       for (let j = i + 1; j < stripped.length; j++) {
         const next = stripped[j] ?? '';
-        if (/\{/.test(next)) {
-          openLine = j;
-          break;
-        }
-        if (/[};]/.test(next)) break;
+        if (next.trim() === '') continue;
+        if (/^\s*\{/.test(next)) openLine = j;
+        break;
       }
     }
     if (openLine === -1) continue;
 
-    const close = findBlockCloseIndex(stripped, openLine);
+    const close = findBlockCloseIndex(structure, openLine);
     if (close === -1) continue;
     return { open: openLine, close, qualifier: selector.qualifier };
   }
@@ -265,11 +286,14 @@ function findVariantBlock(lines: string[], variant: string): VariantBlock | unde
  */
 function findVariantBlockInsertionPoint(lines: string[]): number {
   const stripped = stripBlockCommentsInLines(lines);
+  const structure = structureLines(stripped);
+  let depth = 0;
   for (const [i, line] of stripped.entries()) {
-    if (/^\s*:root\s*\{/.test(line)) {
-      const close = findBlockCloseIndex(stripped, i);
+    if (depth === 0 && /^\s*:root\s*\{/.test(line)) {
+      const close = findBlockCloseIndex(structure, i);
       if (close !== -1) return close + 1;
     }
+    depth += braceDelta(structure[i] ?? '');
   }
   return lines.length;
 }
@@ -288,20 +312,16 @@ export function variantBlockExists(lines: string[], variant: string): boolean {
  * The pseudo-class qualifier on the matched `:root<variant>` block, or
  * `undefined` when no block matched. `''` for an unqualified block.
  *
- * A qualifier such as `:not([data-private])` is load-bearing: writing into
- * that block scopes the declaration to the qualified case, and that may not
- * be what the operator meant. Matching it is still the right call, since
- * silently skipping it is the worse failure and the one that shipped, but
- * the override path uses this to say out loud which selector it wrote
- * through, so the narrowing is a visible decision rather than a theme bug
- * discovered later.
+ * This diagnostic lookup may find a qualified block for an unqualified request.
+ * Writers must explicitly include the returned qualifier to select that block;
+ * ordinary variant insertion and existence checks require an exact qualifier.
  *
  * @param lines - Tokens CSS split into lines
  * @param variant - Attribute selector fragment, e.g. `[data-theme="light"]`
  * @returns The qualifier, or undefined when no block matched
  */
 export function variantBlockQualifier(lines: string[], variant: string): string | undefined {
-  return findVariantBlock(lines, variant)?.qualifier;
+  return findVariantBlock(lines, variant, true)?.qualifier;
 }
 
 /** True when the `:root<variant>` block already declares `tokenName`. */
@@ -316,8 +336,7 @@ export function variantBlockHasToken(lines: string[], variant: string, tokenName
  *
  * The located form of {@link variantBlockHasToken}: the variant add path
  * reports a skip the way the base path does, naming the block and the
- * line, instead of returning a bare boolean that leaves a no-op re-run
- * indistinguishable from a write.
+ * line, so a no-op re-run is distinguishable from a write.
  *
  * @param lines - Tokens CSS split into lines
  * @param variant - Attribute selector fragment
@@ -331,9 +350,8 @@ export function findVariantBlockDeclaration(
 ): TokenDeclarationLocation | undefined {
   const block = findVariantBlock(lines, variant);
   if (!block) return undefined;
-  // Comments are stripped across the whole block before scanning, matching
-  // what the boolean form always did: a `/* … */` spanning several lines
-  // must not leave its tail looking like a declaration.
+  // Comments are stripped across the whole block before scanning, so the
+  // tail of a `/* … */` spanning several lines never looks like a declaration.
   const blockLines = lines.slice(block.open, block.close + 1);
   // Blank the comment's characters rather than deleting it: removing a
   // multi-line comment outright collapses its lines and shifts every line
@@ -342,8 +360,15 @@ export function findVariantBlockDeclaration(
     .join('\n')
     .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, ' '))
     .split('\n');
-  for (const [i, line] of stripped.entries()) {
-    if (line.includes(`${tokenName}:`)) return { line: block.open + i + 1 };
+  const structure = structureLines(stripped);
+  const declaration = new RegExp(`(?:^|[;{])\\s*${escapeRegex(tokenName)}\\s*:`, 'g');
+  let depth = 0;
+  for (const [i, line] of structure.entries()) {
+    for (const match of line.matchAll(declaration)) {
+      const before = line.slice(0, match.index + match[0].length);
+      if (depth + braceDelta(before) === 1) return { line: block.open + i + 1 };
+    }
+    depth += braceDelta(line);
   }
   return undefined;
 }
@@ -356,8 +381,9 @@ export function findVariantBlockDeclaration(
 export function insertVariantDeclaration(lines: string[], variant: string, declLine: string): void {
   const block = findVariantBlock(lines, variant);
   if (block) {
-    let insertIndex = block.close;
-    for (let i = block.close - 1; i > block.open; i--) {
+    const close = isolateBlockClose(lines, block.close);
+    let insertIndex = close;
+    for (let i = close - 1; i > block.open; i--) {
       if ((lines[i] ?? '').trim()) {
         insertIndex = i + 1;
         break;

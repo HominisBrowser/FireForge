@@ -8,11 +8,6 @@ import { getFurnacePaths } from '../../core/furnace-config.js';
 import { isComponentSourceFile } from '../../core/furnace-constants.js';
 import { runFurnaceMutation, waitLockMutationOptions } from '../../core/furnace-operation.js';
 import { assertFurnaceReady } from '../../core/furnace-precondition.js';
-import {
-  getPersistableAppliedEntry,
-  persistSingleComponentState,
-  shouldPersistSingleComponentState,
-} from '../../core/furnace-state-persist.js';
 import { countEntriesWithBlockingStepErrors } from '../../core/furnace-step-errors.js';
 import {
   findOverrideBaseVersionDrift,
@@ -57,8 +52,7 @@ function checksumMapsEqual(a: Map<string, string>, b: Map<string, string>): bool
 /**
  * Builds a watch-loop apply-failure message tailored to the error class so
  * transient filesystem errors (EACCES, ENOSPC, lock timeout) look different
- * from genuine apply-level failures. The previous generic "Apply failed: ..."
- * collapsed all causes into one string and made diagnosis difficult.
+ * from genuine apply-level failures.
  */
 function classifyWatchApplyError(err: unknown): string {
   const message = toError(err).message;
@@ -315,31 +309,13 @@ export async function furnaceApplyCommand(
   const result = await runFurnaceMutation(
     projectRoot,
     'apply-rollback',
-    async (ctx) => {
-      // `persistState: false` for a named apply matters: the batch persist
-      // path replaces `appliedChecksums` wholesale with only this run's
-      // entries, and the batch loops filter to the named component, so
-      // routing a named apply through it persists a state file containing
-      // only that component and wipes every other component's checksums.
-      // Orphan detection and deleted-file undeploy both key on that state,
-      // so the wiped components' stale engine files become invisible to
-      // apply and to `furnace validate`. Named apply merges per-component
-      // state below, exactly like `furnace deploy <name>`.
-      const applyResult = await applyAllComponents(projectRoot, dryRun, {
+    (ctx) =>
+      // A named apply merges its own component's checksums into the state
+      // file; a full apply replaces them.
+      applyAllComponents(projectRoot, dryRun, {
         operationContext: ctx,
-        ...(name !== undefined ? { componentName: name, persistState: false } : {}),
-      });
-
-      if (name !== undefined && shouldPersistSingleComponentState(applyResult, dryRun)) {
-        await persistSingleComponentState(
-          projectRoot,
-          getPersistableAppliedEntry('Apply', name, applyResult.applied[0]),
-          getFurnacePaths(projectRoot)
-        );
-      }
-
-      return applyResult;
-    },
+        ...(name !== undefined ? { componentName: name } : {}),
+      }),
     { dryRun, ...waitLockMutationOptions(options.waitLockSeconds) }
   );
 

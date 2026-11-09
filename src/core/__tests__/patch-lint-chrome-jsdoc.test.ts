@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { describe, expect, it } from 'vitest';
 
-import { validateChromeScriptJsDoc } from '../patch-lint-chrome-jsdoc.js';
+import {
+  lintChromeScriptJsDocForFile,
+  validateChromeScriptJsDoc,
+} from '../patch-lint-chrome-jsdoc.js';
 
 describe('validateChromeScriptJsDoc', () => {
   // ── Top-level class declarations ──────────────────────────────────────
@@ -118,5 +121,28 @@ describe('validateChromeScriptJsDoc', () => {
     const messages = missing.map((i) => i.message).join('\n');
     expect(messages).toContain('Dock');
     expect(messages).toContain('tile');
+  });
+});
+
+describe('lintChromeScriptJsDocForFile', () => {
+  it('reports a notice when an owned chrome script does not parse', () => {
+    const issues = lintChromeScriptJsDocForFile(
+      'browser/base/content/dock.js',
+      'function broken( {\n',
+      true,
+      'error'
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ check: 'chrome-jsdoc-unparseable', severity: 'notice' });
+  });
+
+  it('reports nothing extra for a parseable script', () => {
+    const issues = lintChromeScriptJsDocForFile(
+      'browser/base/content/dock.js',
+      '/** Tile. */\nfunction tile(host) { return host; }\n',
+      true,
+      'error'
+    );
+    expect(issues.some((issue) => issue.check === 'chrome-jsdoc-unparseable')).toBe(false);
   });
 });

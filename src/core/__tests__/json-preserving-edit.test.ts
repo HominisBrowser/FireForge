@@ -136,4 +136,11 @@ describe('rewriteJsonPreservingFormat', () => {
   it('defaults to two-space indentation for a one-line document', () => {
     expect(rewrite('{}', (doc) => (doc['a'] = 1))).toBe('{ "a": 1 }');
   });
+
+  it('keeps keys named like Object.prototype members instead of duplicating them', () => {
+    const text = '{\n  "constructor": 1,\n  "prototype": { "a": 1 },\n  "name": "x"\n}\n';
+    expect(rewrite(text, (doc) => (doc['name'] = 'y'))).toBe(
+      '{\n  "constructor": 1,\n  "prototype": { "a": 1 },\n  "name": "y"\n}\n'
+    );
+  });
 });

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { Command } from 'commander';
 
+import { lintAuthoredSource } from '../core/authored-gates.js';
 import { isBrandingManagedPath } from '../core/branding.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { assertEngineGitReady } from '../core/engine-precondition.js';
@@ -29,7 +30,11 @@ import {
   type PatchSizeMeasurement,
 } from '../core/patch-lint.js';
 import { clearPerPatchLintCache } from '../core/patch-lint-cache.js';
-import { collectDiffFilePaths, tagLintIssues } from '../core/patch-lint-diff-tag.js';
+import {
+  collectDiffFilePaths,
+  resolveSinceRevision,
+  tagLintIssues,
+} from '../core/patch-lint-diff-tag.js';
 import {
   buildLintIgnoreChecks,
   filterLintIgnoredByOwners,
@@ -43,6 +48,7 @@ import { pathExists } from '../utils/fs.js';
 import { info, intro, outro, success, warn } from '../utils/logger.js';
 import { addAcceptedWaitLockOption } from '../utils/options.js';
 import { stripEnginePrefix } from '../utils/paths.js';
+import { validateLintFlags } from './lint-flags.js';
 import { lintPerPatch } from './lint-per-patch.js';
 
 /**
@@ -254,44 +260,6 @@ export function applyAggregateLintIgnoreSuppression(
  * result. Positional arguments in per-patch mode are patch selectors
  * and are validated downstream by `selectPatchSubset`.
  */
-function validateLintFlags(options: LintCommandOptions): void {
-  // `--only-introduced` scopes the exit code to `--since`-tagged issues, so
-  // without a revision to anchor the diff there is no "introduced" subset
-  // to scope to. Reject the combination up-front so a misconfigured CI
-  // invocation fails loud instead of silently treating every error as
-  // cumulative and passing.
-  if (options.onlyIntroduced && !options.since) {
-    throw new GeneralError(
-      '--only-introduced requires --since <git-rev> so introduced-vs-cumulative can be distinguished.'
-    );
-  }
-
-  if (
-    options.maxWarnings !== undefined &&
-    (!Number.isInteger(options.maxWarnings) || options.maxWarnings < 0)
-  ) {
-    throw new InvalidArgumentError(
-      '--max-warnings must be a non-negative integer.',
-      '--max-warnings'
-    );
-  }
-
-  // `--patches` only means something in per-patch mode, where it filters
-  // the queue. In aggregate/file-list mode there is no patch loop to narrow.
-  if (options.patches !== undefined && !options.perPatch) {
-    throw new InvalidArgumentError('--patches requires --per-patch.', '--patches');
-  }
-
-  // The JSON report is a per-patch artifact (per-patch size metrics and
-  // suppressed issues). Aggregate mode has no per-patch rows to report.
-  if (options.report !== undefined && !options.perPatch) {
-    throw new InvalidArgumentError('--report requires --per-patch.', '--report');
-  }
-
-  if (options.notices !== undefined && !options.perPatch) {
-    throw new InvalidArgumentError('--notices requires --per-patch.', '--notices');
-  }
-}
 
 /**
  * Aggregate-mode patch-size softening: when the linted diff is every
@@ -512,7 +480,27 @@ export async function lintCommand(
 
   const paths = getProjectPaths(projectRoot);
 
+  const sourceConfig = await loadConfig(projectRoot);
+  if (sourceConfig.sources) {
+    if (options.patches?.length || options.since || options.onlyIntroduced) {
+      throw new GeneralError(
+        'Authored lint scopes use source paths and exact captured snapshots, not patch aliases or live diff filters.'
+      );
+    }
+    if (options.perPatch || options.report !== undefined || options.notices !== undefined) {
+      throw new InvalidArgumentError(
+        'Authored lint has no per-patch rows: --per-patch, --report and --notices are not available.',
+        options.perPatch ? '--per-patch' : options.report !== undefined ? '--report' : '--notices'
+      );
+    }
+    const issues = await lintAuthoredSource(projectRoot, files);
+    await reportLintOutcome(paths.engine, issues, options);
+    return;
+  }
+
   await assertEngineGitReady(paths.engine);
+  // A `--since` that names nothing fails before any rule runs, clean tree or not.
+  if (options.since !== undefined) await resolveSinceRevision(paths.engine, options.since);
 
   if (options.perPatch) {
     // Positional arguments in per-patch mode select patches through the

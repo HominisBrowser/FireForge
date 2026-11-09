@@ -2232,7 +2232,7 @@ describe('hasBrowserChromeAssertion', () => {
     ['myok(1);', 'myok('],
     ['foo.is(1);', 'unknown namespace .is('],
     ['SpecialPowers.ok(1);', 'API surface, not an assertion'],
-    ['thing-is(1);', 'hyphenated identifier'],
+    ['thing-is(1', 'hyphenated identifier (unparseable, textual match)'],
     ['registerCleanupFunction(() => {});', 'no assertion at all'],
     ['info("just logging");', 'smoke-only test body'],
     ['await BrowserTestUtils.browserLoaded(tab);', 'harness call only'],
@@ -2250,6 +2250,18 @@ describe('hasBrowserChromeAssertion', () => {
     ['foo.window.ok(1);', 'window as a property, not the global'],
   ])('rejects %s (%s)', (source) => {
     expect(hasBrowserChromeAssertion(source)).toBe(false);
+  });
+
+  it('rejects a string or helper declaration that only spells an assertion call', () => {
+    expect(hasBrowserChromeAssertion('info("the tab is (not) loaded");')).toBe(false);
+    expect(hasBrowserChromeAssertion('function is(a) { return a; }\ninfo("x");')).toBe(false);
+    expect(hasBrowserChromeAssertion('function is(a) { return a; }\nis(1);')).toBe(false);
+    expect(hasBrowserChromeAssertion('const s = `ok(x)`;')).toBe(false);
+  });
+
+  it('falls back to the textual match when the source does not parse', () => {
+    expect(hasBrowserChromeAssertion('add_task(async () => { ok(true) ')).toBe(true);
+    expect(hasBrowserChromeAssertion('add_task(async () => { info("x") ')).toBe(false);
   });
 
   it('rejects a mochikit smoke test whose only SimpleTest calls are harness plumbing', () => {

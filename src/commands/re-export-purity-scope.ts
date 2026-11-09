@@ -2,8 +2,9 @@
 /**
  * The scoped half of the `re-export --dry-run` purity guard.
  *
- * A dry run takes no engine-session lock, so peers keep writing while it
- * runs. A whole-tree fingerprint would report every peer's write as
+ * The CLI holds a shared engine-session lock, excluding coordinated builds
+ * and controls. Direct edits and uncoordinated writers can still race it.
+ * A whole-tree fingerprint would report every peer's write as
  * "invariant violated … This is a FireForge bug". The scoped fingerprint covers only what the
  * dry run could touch: the selected patches' bodies and manifest rows, the
  * engine files they own, the engine HEAD and the engine index. A mismatch

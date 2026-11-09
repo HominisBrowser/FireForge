@@ -19,11 +19,11 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { FurnaceError } from '../errors/furnace.js';
 import type { FurnaceConfig } from '../types/furnace.js';
 import { pathExists, readText } from '../utils/fs.js';
 import { sha256Hex } from '../utils/hash.js';
 import { normalizePathSlashes } from '../utils/paths.js';
-import { isOverrideCopyCandidate } from './furnace-apply-helpers.js';
 import { extractComponentChecksums, normalizeForChecksum } from './furnace-checksum-utils.js';
 import {
   furnaceConfigExists,
@@ -38,6 +38,7 @@ import {
   stripExpandedFragments,
 } from './furnace-css-fragments.js';
 import { isRegularFile } from './furnace-dir-entry.js';
+import { isOverrideCopyCandidate } from './furnace-source-files.js';
 
 /**
  * Composes one component source into the bytes apply deploys: a stylesheet
@@ -81,46 +82,81 @@ export interface FurnaceDeployedSource {
  */
 export async function mapDeployedComponentSources(
   root: string,
-  config: FurnaceConfig
+  config: FurnaceConfig,
+  options: { refuseCollisions?: boolean } = {}
 ): Promise<Map<string, FurnaceDeployedSource>> {
   const furnacePaths = getFurnacePaths(root);
   const ftlDir = resolveFtlDir(config.ftlBasePath);
   const sources = new Map<string, FurnaceDeployedSource>();
 
-  for (const [component, custom] of Object.entries(config.custom)) {
-    const componentDir = join(furnacePaths.customDir, component);
-    for (const fileName of await listSourceFiles(componentDir)) {
-      let engineRel: string | undefined;
-      if (fileName.endsWith('.mjs') || fileName.endsWith('.css')) {
-        engineRel = normalizePathSlashes(join(custom.targetPath, fileName));
-      } else if (fileName === `${component}.ftl` && custom.localized && !custom.sharedFtl) {
-        engineRel = normalizePathSlashes(join(ftlDir, fileName));
+  for (const [type, entries] of [
+    ['custom', Object.keys(config.custom)],
+    ['override', Object.keys(config.overrides)],
+  ] as const) {
+    for (const component of entries) {
+      const componentDir = join(
+        type === 'custom' ? furnacePaths.customDir : furnacePaths.overridesDir,
+        component
+      );
+      for (const fileName of await listSourceFiles(componentDir)) {
+        const engineRel = componentFileTarget(config, type, component, fileName, ftlDir);
+        if (engineRel === undefined) continue;
+        if (options.refuseCollisions && sources.has(engineRel))
+          throw new FurnaceError(`Generated source ownership overlaps at ${engineRel}`);
+        sources.set(engineRel, {
+          type,
+          component,
+          fileName,
+          sourcePath: join(componentDir, fileName),
+        });
       }
-      if (engineRel === undefined) continue;
-      sources.set(engineRel, {
-        type: 'custom',
-        component,
-        fileName,
-        sourcePath: join(componentDir, fileName),
-      });
-    }
-  }
-
-  for (const [component, override] of Object.entries(config.overrides)) {
-    const componentDir = join(furnacePaths.overridesDir, component);
-    for (const fileName of await listSourceFiles(componentDir)) {
-      if (!isOverrideCopyCandidate(fileName, override.type)) continue;
-      // Same target rule as `getOverrideEngineTargetPath`, engine-relative.
-      const base = fileName.endsWith('.ftl') ? ftlDir : override.basePath;
-      sources.set(normalizePathSlashes(join(base, fileName)), {
-        type: 'override',
-        component,
-        fileName,
-        sourcePath: join(componentDir, fileName),
-      });
     }
   }
   return sources;
+}
+
+/**
+ * The engine path `furnace apply` writes one component file to: custom
+ * `.mjs`/`.css` into `targetPath`, a custom component's own `.ftl` into the
+ * Fluent tree (never for `sharedFtl`), and each override copy candidate onto
+ * its engine target. Undefined when apply deploys the file nowhere.
+ */
+function componentFileTarget(
+  config: FurnaceConfig,
+  type: FurnaceDeployedSource['type'],
+  component: string,
+  fileName: string,
+  ftlDir: string
+): string | undefined {
+  if (type === 'custom') {
+    const custom = config.custom[component];
+    if (custom === undefined) return undefined;
+    if (fileName.endsWith('.mjs') || fileName.endsWith('.css'))
+      return normalizePathSlashes(join(custom.targetPath, fileName));
+    if (fileName === `${component}.ftl` && custom.localized && !custom.sharedFtl)
+      return normalizePathSlashes(join(ftlDir, fileName));
+    return undefined;
+  }
+  const override = config.overrides[component];
+  if (override === undefined || !isOverrideCopyCandidate(fileName, override.type)) return undefined;
+  // Same target rule as `getOverrideEngineTargetPath`, engine-relative.
+  return normalizePathSlashes(
+    join(fileName.endsWith('.ftl') ? ftlDir : override.basePath, fileName)
+  );
+}
+
+/**
+ * The engine path `furnace apply` deploys a project-relative
+ * `components/custom|overrides/<name>/<file>` path to, or undefined when it
+ * deploys that path nowhere.
+ */
+export function deployedComponentPath(path: string, config: FurnaceConfig): string | undefined {
+  const [top, kind, component, fileName, ...rest] = path.split('/');
+  if (top !== 'components' || component === undefined || fileName === undefined || rest.length > 0)
+    return undefined;
+  const type = kind === 'custom' ? 'custom' : kind === 'overrides' ? 'override' : undefined;
+  if (type === undefined) return undefined;
+  return componentFileTarget(config, type, component, fileName, resolveFtlDir(config.ftlBasePath));
 }
 
 async function listSourceFiles(componentDir: string): Promise<string[]> {

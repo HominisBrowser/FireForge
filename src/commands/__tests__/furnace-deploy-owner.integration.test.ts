@@ -10,6 +10,8 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { applyAllComponents } from '../../core/furnace-apply.js';
+import { loadFurnaceState } from '../../core/furnace-config.js';
 import {
   createTempProject,
   initCommittedRepo,
@@ -143,6 +145,29 @@ describe('furnace deploy --owner (integration)', () => {
   it('deploys when every overwritten file is the owner patch’s', async () => {
     await furnaceDeployCommand(projectRoot, 'moz-a', { owner: '001', skipValidate: true });
     await expect(engineText(`${A}/moz-a.mjs`)).resolves.toContain('mine()');
+  });
+
+  it('deploys a split-owner component only when every overwritten owner is named', async () => {
+    await furnaceDeployCommand(projectRoot, 'moz-w', { owner: ['001', '002'], skipValidate: true });
+    await expect(engineText(`${W}/moz-w.mjs`)).resolves.toContain('mine()');
+    await expect(engineText(`${W}/moz-w.css`)).resolves.toContain('peer');
+  });
+
+  it('a filtered pre-build apply preserves every other component deployment record', async () => {
+    const before = await loadFurnaceState(projectRoot);
+    const untouched = Object.entries(before.appliedChecksums ?? {}).filter(([key]) =>
+      key.startsWith('custom/moz-a/')
+    );
+    expect(untouched.length).toBeGreaterThan(0);
+    await applyAllComponents(projectRoot, false, { componentName: 'moz-w' });
+    const after = await loadFurnaceState(projectRoot);
+    for (const [key, checksum] of untouched) {
+      expect(after.appliedChecksums?.[key]).toBe(checksum);
+      expect(after.engineChecksums?.[key]).toBe(checksum);
+    }
+    expect(after.appliedChecksums?.['custom/moz-w/moz-w.css']).not.toBe(
+      before.appliedChecksums?.['custom/moz-w/moz-w.css']
+    );
   });
 
   it('refuses an --owner that names no patch in the queue', async () => {

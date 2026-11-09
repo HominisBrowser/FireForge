@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+import { authoredGateContext, checkAuthoredTypes } from '../core/authored-gates.js';
 import {
   findUnownedSupportHeads,
   formatUnownedSupportHeadNotice,
 } from '../core/checkjs-support-heads.js';
+import { listTrackedInHead } from '../core/git-file-ops.js';
 import { buildPatchQueueContext } from '../core/patch-lint.js';
 import { runCheckJsTestFilesGrouped } from '../core/patch-lint-checkjs.js';
 import { isTestScriptFile, resolvableModulesForTests } from '../core/patch-lint-ownership.js';
@@ -18,6 +23,13 @@ export async function checkRequestedTestTypes(
   config: FireForgeConfig,
   requested: string[]
 ): Promise<void> {
+  if (config.sources !== undefined) {
+    const issues = await checkAuthoredTypes(await authoredGateContext(paths.root));
+    for (const issue of issues) notice(`Pre-build source checkJs: ${issue.file}: ${issue.message}`);
+    if (issues.some((issue) => issue.severity === 'error'))
+      throw new GeneralError('Captured authored source failed strict typechecking before build.');
+    return;
+  }
   if (
     config.patchLint?.checkJs !== true ||
     config.patchLint.checkJsTestFiles !== true ||
@@ -30,6 +42,21 @@ export async function checkRequestedTestTypes(
   );
   const scopes = await analyzeTestPathScopes(paths.engine, requested);
   const selected = new Set(scopes.flatMap((scope) => scope.dispatchPaths.filter(isTestScriptFile)));
+  let upstream = new Set<string>();
+  try {
+    upstream = await listTrackedInHead(paths.engine, [...selected]);
+  } catch {
+    // An unknown baseline cannot establish an upstream exemption; retain strict checking.
+  }
+  for (const file of upstream) {
+    const content = await readFile(join(paths.engine, file), 'utf8');
+    if (/@ts-check\b/.test(content)) continue;
+    selected.delete(file);
+    notice(
+      `Pre-build checkJs: ${file} is an untyped upstream test; the patch-created-test pass does not redefine its typing contract. Configured project typechecks still apply.`
+    );
+  }
+  if (selected.size === 0) return;
   for (const file of selected) owned.add(file);
   // A support head a named test brings into scope joins the pass even
   // before any patch owns it, or every name it declares reads as undefined.

@@ -27,17 +27,40 @@ export interface HarnessCrashSignature {
    * came up. Unset: `reason=crash`.
    */
   verdictReason?: 'server-startup';
+  /**
+   * The harness's own port and browser-wait lines printed before a startup
+   * timeout, so the operator can see which ports the run held when it hung.
+   */
+  harnessLines?: string[];
+}
+
+/** Start and skip marker names seen in a run's output. */
+export interface StartMarkers {
+  started: string[];
+  skipped: string[];
+}
+
+/** The two facts the classifier needs from a dispatch's raw log. */
+export interface RawRunSummary {
+  /** How many tests have a `test_end` record. */
+  testsEnded: number;
+  /** A `suite_end` closed every `suite_start`. */
+  suiteCompleted: boolean;
 }
 
 /**
  * The verdict line's `started=<n>/<m> first-unstarted=<path>
- * [started-source=<src>]` keys, or nothing when every file started.
+ * [started-source=<src>]`, `unfinished=<n>` and `app-exit=<signal>` keys, or
+ * nothing when none applies.
  */
 export function formatIncompleteSuffix(evidence: IncompleteRunEvidence | undefined): string {
-  if (evidence?.firstUnstarted === undefined) return '';
+  const unfinished =
+    evidence?.unfinished === undefined ? '' : ` unfinished=${evidence.unfinished.length}`;
+  const exit = `${unfinished}${evidence?.appExit === undefined ? '' : ` app-exit=${evidence.appExit}`}`;
+  if (evidence?.firstUnstarted === undefined) return exit;
   const source =
     evidence.startedSource === undefined ? '' : ` started-source=${evidence.startedSource}`;
-  return ` started=${evidence.started}/${evidence.requested} first-unstarted=${evidence.firstUnstarted}${source}`;
+  return ` started=${evidence.started}/${evidence.requested} first-unstarted=${evidence.firstUnstarted}${source}${exit}`;
 }
 
 /** The verdict line's `shards=<p>/<t> [failed-shards=<labels>]` keys of a sharded run. */
@@ -67,6 +90,22 @@ export interface IncompleteRunEvidence {
   startedSource?: 'raw' | 'stream' | 'capture';
   /** The harness's "shut down in the middle of a test" line, when present. */
   shutdownLine?: string;
-  /** The summary's non-zero `Unexpected results:` count, when it printed one. */
+  /** The non-zero unexpected count, from the raw log when the run wrote one. */
   unexpected?: number;
+  /** Tests the raw log started and never ended. */
+  unfinished?: string[];
+  /** Browser termination signal explicitly reported by the harness. */
+  appExit?: string;
+}
+
+/** Why a green-looking embedded summary was not trusted. */
+export interface GreenSummaryRejection {
+  /** Crash-marker evidence line (mozcrash / signal kill), if any. */
+  crashLine?: string;
+  /** Why the non-zero exit cannot be blamed on harness noise, if it cannot. */
+  exitEvidence?: string;
+  /** Requested test files with no `TEST_START`/`TEST-START` line at all. */
+  neverStarted: string[];
+  /** Files whose `TEST_START` has no matching end marker. */
+  neverEnded: string[];
 }

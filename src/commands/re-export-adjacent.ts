@@ -54,6 +54,8 @@ export interface AdjacentUnmanagedContext {
    * refuses, so a peer's neighbour is not admitted with them.
    */
   expectedNew: ReadonlySet<string>;
+  /** Explicit scan-file adoptions across this transaction, separate from --expect-new. */
+  plannedScanFiles?: ReadonlySet<string>;
   /** `--expect-new` paths actually met this run. */
   expectedNewSeen: Set<string>;
   /**
@@ -80,7 +82,8 @@ export interface AdjacentUnmanagedContext {
 export function buildAdjacentUnmanagedContext(
   options: ReExportOptions,
   binaryName: string,
-  furnacePrefixes: ReadonlySet<string>
+  furnacePrefixes: ReadonlySet<string>,
+  plannedScanFiles: readonly string[] = []
 ): AdjacentUnmanagedContext {
   const normalized = (flag: string, values: readonly string[] | undefined): string[] =>
     (values ?? []).map((value) => normalizeEngineRelativeInput(value, flag));
@@ -91,6 +94,7 @@ export function buildAdjacentUnmanagedContext(
     approvedUnmanaged: new Set(normalized('--expect-unmanaged', options.expectUnmanaged)),
     approvedSeen: new Set(),
     expectedNew: new Set(normalized('--expect-new', options.expectNew)),
+    plannedScanFiles: new Set(normalized('--scan-file', plannedScanFiles)),
     expectedNewSeen: new Set(),
     adjacentIgnore: normalized('--adjacent-ignore', options.adjacentIgnore),
     adjacentIgnoreSeen: new Set(),
@@ -230,7 +234,7 @@ async function findAdjacentUnmanagedFiles(args: {
 }
 
 /** Which carve-out admitted an adjacent file, or `refusing` for none. */
-type AdjacentDisposition = 'refusing' | 'approved' | 'expected-new' | 'ignored';
+type AdjacentDisposition = 'refusing' | 'approved' | 'expected-new' | 'planned-scan' | 'ignored';
 
 function dispositionOf(file: string, ctx: AdjacentUnmanagedContext): AdjacentDisposition {
   if (ctx.approvedUnmanaged.has(file)) {
@@ -241,6 +245,7 @@ function dispositionOf(file: string, ctx: AdjacentUnmanagedContext): AdjacentDis
     ctx.expectedNewSeen.add(file);
     return 'expected-new';
   }
+  if (ctx.plannedScanFiles?.has(file)) return 'planned-scan';
   const ignore = ctx.adjacentIgnore.find((entry) => matchesIgnoreEntry(entry, file));
   if (ignore !== undefined) {
     ctx.adjacentIgnoreSeen.add(ignore);
@@ -264,6 +269,7 @@ function partitionApproved(
     refusing: [],
     approved: [],
     'expected-new': [],
+    'planned-scan': [],
     ignored: [],
   };
   for (const entry of files) groups[dispositionOf(entry.file, ctx)].push(entry);
@@ -309,6 +315,7 @@ function reportAdmitted(
   const notices: [AdjacentUnmanagedFile[], string][] = [
     [groups.approved, 'admitted by --expect-unmanaged'],
     [groups['expected-new'], 'expected by --expect-new'],
+    [groups['planned-scan'], 'assigned for adoption by --scan-file'],
     [groups.ignored, 'ignored by --adjacent-ignore'],
   ];
   for (const [entries, how] of notices) {

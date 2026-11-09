@@ -17,6 +17,13 @@ const BASE = {
 const ANCHOR = { engineHeadSha: 'abc', mozconfigHash: HASH, fingerprints: { 'a/b.js': HASH } };
 
 describe('isBuildBaseline per-path coverage fields', () => {
+  it('accepts historical kinds and validates the explicit successful build kind', () => {
+    for (const buildKind of [undefined, 'full', 'faster'])
+      expect(isBuildBaseline({ ...BASE, buildKind })).toBe(true);
+    expect(findBuildBaselineProblem({ ...BASE, buildKind: 'pretend-full' })?.field).toBe(
+      'buildKind'
+    );
+  });
   it('accepts well-formed records and a carried full anchor', () => {
     expect(
       isBuildBaseline({

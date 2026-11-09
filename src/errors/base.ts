@@ -100,7 +100,7 @@ export class PreflightRefusalError extends GeneralError {
  * Assertions exist so that a violated invariant stops the run at the
  * first inconsistency instead of continuing to write. In the mutating
  * paths that means the surrounding rollback journal restores the engine
- * before this reaches the operator. See `docs/lifecycle-invariants.md`.
+ * before this reaches the operator. See `contributing/lifecycle-invariants.md`.
  */
 export class InternalInvariantError extends FireForgeError {
   readonly code = ExitCode.INTERNAL_ERROR;

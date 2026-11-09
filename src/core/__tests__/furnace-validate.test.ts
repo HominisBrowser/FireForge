@@ -34,6 +34,16 @@ vi.mock('../config.js', () => ({
   ),
 }));
 
+vi.mock('../authored/provider.js', async (original) => ({
+  ...(await original<typeof import('../authored/provider.js')>()),
+  readPristineEntry: vi.fn(),
+}));
+vi.mock('../authored/git.js', async (original) => ({
+  ...(await original<typeof import('../authored/git.js')>()),
+  pristineRepositoryFor: vi.fn(() => '/pristine'),
+  readSourceBlob: vi.fn(),
+}));
+
 vi.mock('../furnace-config.js', () => ({
   getFurnacePaths: vi.fn(() => ({
     configPath: nativePath('/project/furnace.json'),
@@ -46,12 +56,16 @@ vi.mock('../furnace-config.js', () => ({
 
 import type { FurnaceConfig } from '../../types/furnace.js';
 import { pathExists, readText } from '../../utils/fs.js';
+import { readSourceBlob } from '../authored/git.js';
+import { readPristineEntry } from '../authored/provider.js';
 
 const mockPathExists = vi.mocked(pathExists);
 const mockReadText = vi.mocked(readText);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(readPristineEntry).mockResolvedValue(undefined);
+  vi.mocked(readSourceBlob).mockResolvedValue(Buffer.alloc(0));
 });
 
 describe('validateAccessibility', () => {
@@ -597,12 +611,21 @@ describe('validateCompatibility', () => {
         description: 'Override card styles',
         basePath: 'toolkit/content/widgets/moz-card',
         baseVersion: '145.0',
+        baseCommit: 'a'.repeat(40),
       },
     },
     custom: {},
   };
 
   it('allows stock token references that already exist in the original override CSS', async () => {
+    vi.mocked(readPristineEntry).mockResolvedValue({
+      path: 'toolkit/content/widgets/moz-card/moz-card.css',
+      blob: 'b'.repeat(40),
+      mode: '100644',
+    });
+    vi.mocked(readSourceBlob).mockResolvedValue(
+      Buffer.from(':host { border: var(--card-border); }')
+    );
     mockPathExists.mockImplementation((path: string) =>
       Promise.resolve(
         path === nativePath('/components/overrides/moz-card/moz-card.css') ||

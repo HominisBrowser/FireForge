@@ -67,6 +67,12 @@ export function formatForwardImportRemedy(input: ForwardImportRemedyInput): stri
     )
     .filter((order): order is number => order !== undefined);
   const latestOwner = ownerOrders.length > 0 ? Math.max(...ownerOrders) : undefined;
+  // The earliest existing patch that satisfies every importer is the latest
+  // creator itself: files that live beside what they import add no forward edge.
+  const latestOwnerPatch =
+    latestOwner !== undefined
+      ? input.manifest?.patches.find((patch) => patch.order === latestOwner)
+      : undefined;
   const legalOrder =
     latestOwner !== undefined && input.manifest !== null && input.category !== undefined
       ? earliestLegalOrderAfter(input.config ?? {}, input.manifest, input.category, latestOwner)
@@ -84,6 +90,13 @@ export function formatForwardImportRemedy(input: ForwardImportRemedyInput): stri
       `"fireforge patch staged-dependency --add" before ${input.reRunHint}` +
       (declarations.length > 0 ? ':' : '.'),
   ];
+  if (latestOwnerPatch !== undefined) {
+    lines.push(
+      `Or keep them beside what they import: ${latestOwnerPatch.filename} ` +
+        `(order ${formatPatchOrder(latestOwnerPatch.order)}) is the earliest existing patch ` +
+        'that creates every module they import, so files placed in it add no forward edge.'
+    );
+  }
   const seen = new Set<string>();
   for (const declaration of declarations) {
     const command = declarationCommand(declaration);

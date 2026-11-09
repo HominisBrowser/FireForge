@@ -128,7 +128,7 @@ export function applyHunksByContext(
   reverse: boolean,
   file: string
 ): string {
-  const endsWithNewline = content.endsWith('\n') || content === '';
+  let endsWithNewline = content.endsWith('\n') || content === '';
   const lines = content === '' ? [] : content.replace(/\n$/, '').split('\n');
   let offset = 0;
   let floor = 0;
@@ -137,6 +137,23 @@ export function applyHunksByContext(
     const start = (reverse ? hunk.newStart : hunk.oldStart) - (from.length === 0 ? 0 : 1);
     const expected = Math.max(0, start + offset);
     const at = from.length === 0 ? expected : findBlock(lines, from, expected, floor);
+    if (!reverse && to.length > 0) {
+      const already = findBlock(lines, to, expected, floor);
+      const targetEofMatches =
+        already !== undefined &&
+        (already + to.length === lines.length
+          ? endsWithNewline === !hunk.noNewlineAtEndNew
+          : !hunk.noNewlineAtEndNew);
+      if (
+        already !== undefined &&
+        targetEofMatches &&
+        (already === at || already === expected || at === undefined)
+      ) {
+        throw new PatchError(
+          `The selected hunk's new side is already present in ${file}. The patch body changed since this diff was taken; regenerate --hunks-from against the current patch body instead of exporting the edit twice.`
+        );
+      }
+    }
     if (at === undefined) {
       throw new PatchError(
         `The hunk @@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@ ` +
@@ -144,7 +161,18 @@ export function applyHunksByContext(
           `its ${reverse ? 'new' : 'old'}-side lines were not found.`
       );
     }
+    const sourceNoNewline = reverse ? hunk.noNewlineAtEndNew : hunk.noNewlineAtEndOld;
+    if (
+      from.length > 0 &&
+      ((sourceNoNewline && at + from.length !== lines.length) ||
+        (at + from.length === lines.length && endsWithNewline !== !sourceNoNewline))
+    )
+      throw new PatchError(
+        `The selected hunk's EOF newline does not match ${file}; regenerate the hunk selection.`
+      );
+    const reachesEnd = at + from.length === lines.length;
     lines.splice(at, from.length, ...to);
+    if (reachesEnd) endsWithNewline = !(reverse ? hunk.noNewlineAtEndOld : hunk.noNewlineAtEndNew);
     offset += to.length - from.length + (at - expected);
     floor = at + to.length;
   }

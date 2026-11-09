@@ -141,9 +141,7 @@ export async function copyFile(src: string, dest: string): Promise<void> {
  */
 export async function readJson<T>(path: string): Promise<T> {
   const content = await readFile(path, 'utf-8');
-  return JSON.parse(content, (key, value: unknown) =>
-    key === '__proto__' || key === 'constructor' || key === 'prototype' ? undefined : value
-  ) as T;
+  return JSON.parse(content) as T;
 }
 
 /**

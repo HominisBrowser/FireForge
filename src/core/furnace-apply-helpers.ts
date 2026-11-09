@@ -37,20 +37,8 @@ import { fileExistsInHead, restoreTrackedPath } from './git-file-ops.js';
  * using the same file set: the "files to restore" set is defined as the
  * inverse of the "files apply would have written" set.
  */
-export function isOverrideCopyCandidate(
-  entryName: string,
-  type: OverrideComponentConfig['type']
-): boolean {
-  if (entryName === 'override.json') {
-    return false;
-  }
-
-  if (type === 'css-only') {
-    return entryName.endsWith('.css');
-  }
-
-  return entryName.endsWith('.mjs') || entryName.endsWith('.css') || entryName.endsWith('.ftl');
-}
+export { isOverrideCopyCandidate } from './furnace-source-files.js';
+import { isOverrideCopyCandidate } from './furnace-source-files.js';
 
 /** Resolves the engine destination path for a single override-managed file. */
 export function getOverrideEngineTargetPath(

@@ -20,6 +20,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
+import { loadFurnaceConfig } from '../core/furnace-config.js';
 import { listStaleFurnaceComponents } from '../core/furnace-staleness.js';
 import type { TestOptions } from '../types/commands/index.js';
 import type { FireForgeConfig } from '../types/config.js';
@@ -91,6 +92,61 @@ async function reachFiles(engineDir: string, testPaths: readonly string[]): Prom
   return [...new Set(files)];
 }
 
+/** Static chrome ids are component aliases; tests often address an existing element rather than its tag. */
+async function componentIds(
+  engineDir: string,
+  stale: readonly string[]
+): Promise<Map<string, string[]>> {
+  const aliases = new Map<string, string[]>();
+  for (const directory of ['browser/base/content', 'toolkit/content']) {
+    let entries: string[];
+    try {
+      entries = await readdir(join(engineDir, directory));
+    } catch {
+      continue;
+    }
+    for (const entry of entries
+      .filter((name) => /\.(?:xhtml|html|xul)$/.test(name))
+      .slice(0, MAX_SCANNED_FILES)) {
+      const document = await readFile(join(engineDir, directory, entry), 'utf8');
+      for (const match of document.matchAll(/<([\w-]+)\b([^>]*)>/g)) {
+        const tag = match[1];
+        const id = /\bid\s*=\s*["']([^"']+)["']/.exec(match[2] ?? '')?.[1];
+        if (tag !== undefined && id !== undefined && stale.includes(tag))
+          aliases.set(tag, [...(aliases.get(tag) ?? []), id]);
+      }
+    }
+  }
+  return aliases;
+}
+
+/**
+ * A reached widget runs the modules it `composes`, so a stale component in
+ * its composition closure is reached too. Mutates `names`. A broken config
+ * leaves the textual result untouched.
+ */
+async function addComposedDependencies(
+  projectRoot: string,
+  stale: readonly string[],
+  names: Set<string>
+): Promise<void> {
+  let custom: Record<string, { composes?: string[] | undefined }>;
+  try {
+    custom = (await loadFurnaceConfig(projectRoot)).custom;
+  } catch {
+    return;
+  }
+  const pending = [...names];
+  for (let name = pending.pop(); name !== undefined; name = pending.pop()) {
+    for (const dependency of custom[name]?.composes ?? []) {
+      if (stale.includes(dependency) && !names.has(dependency)) {
+        names.add(dependency);
+        pending.push(dependency);
+      }
+    }
+  }
+}
+
 /**
  * The stale components a request reaches, and the stale ones it does not.
  *
@@ -111,6 +167,7 @@ export async function partitionReachedComponents(
     return { reached: [], skipped: [] };
   }
   if (stale.length === 0) return { reached: [], skipped: [] };
+  const aliases = await componentIds(engineDir, stale);
   const names = new Set<string>();
   for (const path of testPaths) {
     for (const name of stale) if (path.includes(name)) names.add(name);
@@ -124,9 +181,15 @@ export async function partitionReachedComponents(
       continue;
     }
     for (const name of stale) {
-      if (text.includes(name) || basename(file).includes(name)) names.add(name);
+      if (
+        text.includes(name) ||
+        basename(file).includes(name) ||
+        (aliases.get(name) ?? []).some((id) => text.includes(id))
+      )
+        names.add(name);
     }
   }
+  await addComposedDependencies(projectRoot, stale, names);
   return {
     reached: stale.filter((name) => names.has(name)),
     skipped: stale.filter((name) => !names.has(name)),

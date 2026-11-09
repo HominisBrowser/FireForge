@@ -3,39 +3,27 @@
  * Preflight census of orphaned test-harness helper processes.
  *
  * Stopping a long mochitest run mid-flight does not necessarily take its
- * helpers with it. A downstream incident left `xpcshell` (the harness
- * httpd, pegged at 100% CPU), `pywebsocket`, `ssltunnel` and `moz-http2`
- * alive for an hour. Every subsequent run crawled: a three-second suite
- * took six minutes of wall clock and audio-start waits timed out. Nothing
- * in FireForge's output connected the slowness to the survivors.
- * The hour was spent mis-attributing it to the change under test.
+ * helpers with it. A surviving `xpcshell` (the harness httpd, pegged at 100%
+ * CPU), `pywebsocket`, `ssltunnel` or `moz-http2` slows every later run without
+ * appearing in its output, and a second checkout's live harness competes the
+ * same way, so this census names both at the start of a run.
  *
- * Visibility alone would have collapsed that hour, which is why the census
- * runs by default and the kill does not. Two rules keep it honest:
- *
- *  - The census runs at preflight, before this run spawns anything, so
- *    every matching process must be a survivor of an earlier run. No age
- *    heuristic is needed, and none is used.
- *  - A match must be anchored to a Firefox OBJDIR. `xpcshell` and
- *    `server.js` are far too generic on their own. The same rule
- *    `mochitest-server-port.ts` applies to the httpd holder applies here,
- *    for the same reason. FireForge has no business reporting, let alone
- *    terminating, a process it cannot attribute to the harness.
- *
- * `--reap-orphans` (or `test.reapOrphans: "reap"` in `fireforge.json`) opts
- * into termination. Without it the census is report-only, exactly like the
- * `Orphaned harness workers` doctor check (which covers a different shape:
- * reparented Python multiprocessing workers, matched on PPID 1 and
- * accumulated CPU time).
+ * A path-shaped process is a diagnostic candidate, never proof of an
+ * orphan. Another live run can use the same objdir, or a sibling checkout.
+ * The census therefore reports processes and never signals them, whatever the
+ * `reapOrphans` posture says. Termination belongs to the run that recorded the
+ * process as its own, or under a reap posture to the next run once the recording
+ * run is gone (`harness-helper-pids.ts`).
  *
  * The anchoring and termination primitives are exported for the teardown
  * reaper in `harness-helper-pids.ts`, which applies the same objdir rule to
  * the helpers THIS run launched, after mach has exited.
  */
 
-import { toError } from '../utils/errors.js';
+import { isProcessAlive, toError } from '../utils/errors.js';
 import { info, verbose, warn } from '../utils/logger.js';
-import { exec } from '../utils/process.js';
+import { listProcessText } from '../utils/process-list.js';
+import { commandNamesRoot, parseProcessListing } from '../utils/process-listing.js';
 import { parsePsDuration } from '../utils/ps-duration.js';
 import { sleep } from '../utils/sleep.js';
 
@@ -77,8 +65,7 @@ function basename(token: string): string {
  * line is right for the httpd (`xpcshell -g … -f …/server.js`) and wrong for
  * everything that merely mentions such a path: an editor opened on
  * `server.js`, a shell whose command text quotes it, a `grep` over the
- * objdir. Report-only, that would print a misleading `kill`; under the reap
- * posture it would terminate the operator's shell.
+ * objdir, and report it as a leftover harness helper.
  */
 export function matchesHarnessHelper(command: string): boolean {
   const [exe, first] = command.trim().split(/\s+/);
@@ -88,11 +75,14 @@ export function matchesHarnessHelper(command: string): boolean {
   return HELPER_SCRIPT.test(first);
 }
 
-/** Objdir provenance: an explicit objdir path, a `obj-…` path segment, or `_tests/`. */
+/** Exact configured objdir provenance; a generic obj-* path proves no ownership. */
 export function isObjdirAnchored(command: string, objDir: string | undefined): boolean {
-  if (objDir !== undefined && objDir.length > 0 && command.includes(objDir)) return true;
-  if (/[/\\]obj-[^/\\\s]*[/\\]/.test(command)) return true;
-  return /[/\\]_tests[/\\]/.test(command);
+  return commandNamesRoot(command, objDir);
+}
+
+/** Broad attribution is used for visibility only, including foreign checkout candidates. */
+function hasObjdirShape(command: string): boolean {
+  return /[/\\]obj-[^/\\\s]*[/\\]/.test(command) || /[/\\]_tests[/\\]/.test(command);
 }
 
 /** Pids of `selfPid` and every ancestor of it, as far as the listing reaches. */
@@ -125,23 +115,13 @@ export function findOrphanedHarnessProcesses(
   objDir?: string,
   selfPid: number = process.pid
 ): OrphanedHarnessProcess[] {
-  const rows: { pid: number; ppid: number; elapsed: string; command: string }[] = [];
-  for (const line of psOutput.split('\n')) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/.exec(line);
-    if (!match) continue;
-    rows.push({
-      pid: Number(match[1]),
-      ppid: Number(match[2]),
-      elapsed: match[3] ?? '',
-      command: (match[4] ?? '').trim(),
-    });
-  }
+  const rows = parseProcessListing(psOutput, ['pid', 'ppid', 'etime', 'command'] as const);
   const excluded = ancestorsOf(rows, selfPid);
   const found: OrphanedHarnessProcess[] = [];
-  for (const { pid, ppid, elapsed, command } of rows) {
+  for (const { pid, ppid, etime: elapsed, command } of rows) {
     if (excluded.has(pid) || ppid === selfPid) continue;
     if (!matchesHarnessHelper(command)) continue;
-    if (!isObjdirAnchored(command, objDir)) continue;
+    if (!isObjdirAnchored(command, objDir) && !hasObjdirShape(command)) continue;
     const elapsedSeconds = parsePsDuration(elapsed);
     found.push({
       pid,
@@ -172,25 +152,12 @@ export function formatOrphanReport(orphans: readonly OrphanedHarnessProcess[]): 
   const rows = orphans
     .map((p) => `  PID ${p.pid} (up ${p.elapsed}): ${p.command.slice(0, COMMAND_EXCERPT_LIMIT)}`)
     .join('\n');
-  const pids = orphans.map((p) => String(p.pid)).join(' ');
   return (
-    `${orphans.length} harness helper process(es) from an EARLIER run are still alive ` +
-    `(this preflight runs before the current run spawns anything, so none of these belong to ` +
-    `it):\n${rows}\n` +
-    `Survivors like these slow every later run without appearing anywhere in its output — a ` +
-    `three-second suite taking minutes of wall clock is the usual symptom. Terminate them with ` +
-    `"kill ${pids}", re-run with --reap-orphans, or set test.reapOrphans to "reap" in ` +
-    `fireforge.json to have FireForge do it at every preflight.`
+    `${orphans.length} other harness helper process(es) are alive:\n${rows}\n` +
+    'These may belong to active runs in this or another checkout. Path and age do not establish ' +
+    'run ownership; no kill command is suggested and no unknown process will be reaped. ' +
+    'Inspect the owning run before diagnosing a survivor.'
   );
-}
-
-/** Thin exec wrapper for the process listing (tests mock `exec` instead). */
-async function listSystemProcesses(): Promise<string> {
-  const result = await exec('ps', ['-axo', 'pid=,ppid=,etime=,command='], { timeout: 10000 });
-  if (result.exitCode !== 0) {
-    throw new Error(`ps exited ${result.exitCode}`);
-  }
-  return result.stdout;
 }
 
 /**
@@ -204,100 +171,93 @@ async function listSystemProcesses(): Promise<string> {
  * so the correct response is to say so loudly rather than to stop.
  *
  * @param objDir - Absolute objdir of this project, when known
- * @param options - `reap` terminates each recognized survivor (SIGTERM,
- *   then SIGKILL for anything that stays)
- * @returns The census (empty when nothing was found or nothing could be
- *   probed) and how many of them are confirmed gone after reaping (0 in
- *   report-only mode)
+ * @param options - `reap` is the `reapOrphans` posture. The census reports and
+ *   never signals, so it says why a reap left these alone.
+ * @returns The survivors (empty when nothing was found or nothing could be probed)
  */
 export async function reportOrphanedHarnessProcesses(
   objDir: string | undefined,
   options: { reap?: boolean } = {}
-): Promise<OrphanCensus> {
-  if (process.platform === 'win32') return { orphans: [], reaped: 0 };
+): Promise<OrphanedHarnessProcess[]> {
+  if (process.platform === 'win32') return [];
   let psOutput: string;
   try {
-    psOutput = await listSystemProcesses();
+    psOutput = await listProcessText(['pid', 'ppid', 'etime', 'command']);
   } catch (error: unknown) {
     verbose(`Orphan preflight: could not scan processes (${toError(error).message}); skipping.`);
-    return { orphans: [], reaped: 0 };
+    return [];
   }
 
   const orphans = findOrphanedHarnessProcesses(psOutput, objDir);
   if (orphans.length === 0) {
     verbose('Orphan preflight: no surviving harness helper processes.');
-    return { orphans: [], reaped: 0 };
+    return [];
   }
 
   warn(formatOrphanReport(orphans));
-  const reaped =
-    options.reap === true ? await terminateHarnessProcesses(orphans, '--reap-orphans') : 0;
-  return { orphans, reaped };
-}
-
-/** Result of {@link reportOrphanedHarnessProcesses}. */
-export interface OrphanCensus {
-  orphans: OrphanedHarnessProcess[];
-  /** Survivors confirmed gone after the reap. Always 0 in report-only mode. */
-  reaped: number;
-}
-
-/** Liveness probe: `kill(pid, 0)` throws for a pid that is gone. */
-export function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
+  if (options.reap === true) {
+    warn(
+      'test.reapOrphans / --reap-orphans terminates only helpers a FireForge run on this objdir ' +
+        'recorded before it died. No such record names these, so they were left alone.'
+    );
   }
+  return orphans;
 }
 
 /**
- * Terminates each entry: SIGTERM first, then SIGKILL for anything still
- * alive after the grace period. Failures are reported, never thrown. A
- * process that exited between the listing and the signal is the common case
- * rather than an error.
+ * Terminates each entry: SIGTERM to all of them, one grace period, then SIGKILL
+ * for anything still alive. Failures are reported, never thrown. A process that
+ * exited between the listing and the signal is the common case rather than an
+ * error.
  *
- * @param targets - Processes to terminate, already attributed to the harness
- *   by the caller (objdir anchor rule)
+ * @param targets - Candidate processes from this run's positive ownership records
  * @param label - Prefix for the log lines, naming which path is reaping
- *   (`--reap-orphans` at preflight, `teardown` after mach exits)
+ *   (`teardown` after mach exits)
+ * @param stillOwned - Revalidates the captured PID/start identity before every signal
  * @returns How many targets are confirmed gone afterwards
  */
 export async function terminateHarnessProcesses(
   targets: readonly Pick<OrphanedHarnessProcess, 'pid'>[],
-  label: string
+  label: string,
+  stillOwned: (pid: number) => boolean
 ): Promise<number> {
-  let reaped = 0;
-  for (const target of targets) {
+  const signal = (pid: number, value: NodeJS.Signals): boolean => {
     try {
-      process.kill(target.pid, 'SIGTERM');
+      process.kill(pid, value);
+      return true;
     } catch (error: unknown) {
-      verbose(`${label}: SIGTERM to ${target.pid} failed (${toError(error).message}).`);
-      continue;
+      verbose(`${label}: ${value} to ${pid} failed (${toError(error).message}).`);
+      return false;
     }
-    // Grace period before escalating: the httpd shape in the field
-    // incident ignored SIGTERM while spinning, but an ordinary helper exits
-    // promptly and must not be SIGKILLed for being slow by a millisecond.
-    await sleep(REAP_GRACE_MS);
-    if (isPidAlive(target.pid)) {
-      try {
-        process.kill(target.pid, 'SIGKILL');
-      } catch (error: unknown) {
-        verbose(`${label}: SIGKILL to ${target.pid} failed (${toError(error).message}).`);
-      }
-      // A killed process answers kill(0) until its parent (launchd, for a
-      // reparented survivor) has collected it, which takes a moment.
-      await sleep(KILL_SETTLE_MS);
-    }
-    // Counted only when the probe agrees: the verdict line will carry this
-    // number, and a SIGKILL that was sent is not the same as a process that
-    // is gone.
-    if (isPidAlive(target.pid)) {
-      warn(`${label}: PID ${target.pid} is still alive after SIGKILL; inspect it by hand.`);
-    } else {
+  };
+  const terminating = targets
+    .map((target) => target.pid)
+    .filter((pid) => stillOwned(pid) && signal(pid, 'SIGTERM'));
+  if (terminating.length === 0) return 0;
+
+  // One grace period for the batch: a spinning httpd ignores SIGTERM, but an
+  // ordinary helper exits promptly and must not be SIGKILLed for being slow by
+  // a millisecond.
+  await sleep(REAP_GRACE_MS);
+  const escalated = terminating.filter(isProcessAlive).filter((pid) => {
+    if (stillOwned(pid)) return signal(pid, 'SIGKILL');
+    warn(`${label}: PID ${pid} changed ownership before escalation; left alone.`);
+    return false;
+  });
+  // A killed process answers kill(0) until its parent (launchd, for a
+  // reparented survivor) has collected it, which takes a moment.
+  if (escalated.length > 0) await sleep(KILL_SETTLE_MS);
+
+  // Counted only when the probe agrees: the verdict line will carry this
+  // number, and a SIGKILL that was sent is not the same as a process that is
+  // gone. A PID that changed ownership and was left alone is not counted.
+  let reaped = 0;
+  for (const pid of terminating) {
+    if (!isProcessAlive(pid)) {
       reaped += 1;
-      info(`${label}: terminated PID ${target.pid}.`);
+      info(`${label}: terminated PID ${pid}.`);
+    } else if (stillOwned(pid)) {
+      warn(`${label}: PID ${pid} is still alive after SIGKILL; inspect it by hand.`);
     }
   }
   return reaped;

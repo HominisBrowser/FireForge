@@ -27,9 +27,9 @@ import {
   type CoverageRecord,
   DELETED_FILE_FINGERPRINT,
 } from './build-baseline-types.js';
+import { readEngineInventory } from './engine-state.js';
 import { getHead, isMissingHeadError } from './git.js';
 import { git } from './git-base.js';
-import { getUntrackedFiles } from './git-status.js';
 
 /**
  * Basenames of the test manifests whose entries decide what a packaged test
@@ -115,14 +115,8 @@ export async function readEngineContentState(engineDir: string): Promise<EngineC
   } catch (error: unknown) {
     if (!isMissingHeadError(error)) throw error;
   }
-  const dirty = new Set<string>();
-  if (head !== undefined) {
-    for (const line of (await git(['diff', '--name-only', 'HEAD'], engineDir)).split('\n')) {
-      if (line.trim()) dirty.add(line.trim());
-    }
-  }
-  for (const file of await getUntrackedFiles(engineDir)) dirty.add(file);
-  return { engineDir, head, dirty, hashes: new Map(), diffs: new Map() };
+  const { paths } = await readEngineInventory(engineDir);
+  return { engineDir, head, dirty: new Set(paths), hashes: new Map(), diffs: new Map() };
 }
 
 function liveHash(state: EngineContentState, path: string): Promise<string | undefined> {

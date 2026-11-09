@@ -15,8 +15,7 @@ import { join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
 import { readText, writeText } from '../utils/fs.js';
-import { exec } from '../utils/process.js';
-import { ensureGit } from './git-base.js';
+import { gitResult } from './git-base.js';
 import { getFileContentAtRef } from './git-file-ops.js';
 
 export interface RefreshFileResult {
@@ -59,8 +58,6 @@ async function threeWayMergeFile(
   label: { base: string; ours: string; theirs: string },
   strategy?: 'ours' | 'theirs'
 ): Promise<{ merged: string; conflicts: number }> {
-  await ensureGit();
-
   // Write all three versions to temp files for git merge-file.
   // Use crypto.randomUUID() for unique, unpredictable temp file names.
   const id = randomUUID();
@@ -89,7 +86,7 @@ async function threeWayMergeFile(
       tempBase,
       tempTheirs,
     ];
-    const result = await exec('git', mergeArgs);
+    const result = await gitResult(mergeArgs, tmpdir());
     const conflicts = classifyMergeFileResult(result);
     const merged = await readText(tempOurs);
 

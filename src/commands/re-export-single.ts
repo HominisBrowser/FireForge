@@ -355,7 +355,7 @@ async function commitPreparedPatch(
       manifest,
       patch,
       currentFilesAffected,
-      adjacentCtx.expectedNew
+      new Set([...adjacentCtx.expectedNew, ...(adjacentCtx.plannedScanFiles ?? [])])
     )
   );
   if (stalePlan !== undefined) reportStaleRegistrationDrop(patch.filename, stalePlan, isDryRun);
@@ -385,6 +385,7 @@ async function commitPreparedPatch(
     projectedMetadata,
     existingFiles,
     diffContent,
+    syntheticInput: options.hunksFrom !== undefined || options.excludeHunks !== undefined,
     ...(options.skipLint !== undefined ? { skipLint: options.skipLint } : {}),
     ...(ignoreChecks !== undefined ? { ignoreChecks } : {}),
     ...(effectiveTier !== undefined ? { patchTier: effectiveTier } : {}),

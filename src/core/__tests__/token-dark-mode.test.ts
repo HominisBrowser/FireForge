@@ -35,6 +35,18 @@ describe('stripBlockCommentsInLines', () => {
 });
 
 describe('findDarkRootInsertionIndex', () => {
+  it('does not take a top-level :root block after the media block as the nested one', () => {
+    const lines = [
+      '@media (prefers-color-scheme: dark) {',
+      '  .scrim { color: black; }',
+      '}',
+      ':root[data-theme="dark"] {',
+      '  --a: 1;',
+      '}',
+    ];
+    expect(findDarkRootInsertionIndex(lines)).toBe(-1);
+  });
+
   it('returns null when no @media (prefers-color-scheme: dark) block exists', () => {
     expect(findDarkRootInsertionIndex([':root { --a: 1; }'])).toBeNull();
   });

@@ -10,9 +10,9 @@ import MagicString from 'magic-string';
 
 import { GeneralError } from '../errors/base.js';
 import { BuildError } from '../errors/build.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { escapeRegex } from '../utils/regex.js';
 import { asEstree, detectIndent, parseScript } from './ast-utils.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
 import { isInternalInvariantFailure, withParserFallback } from './parser-fallback.js';
 import {
   assertBraceBalancePreserved,
@@ -20,7 +20,7 @@ import {
   extractNameFromExpression,
   findMethodBody,
   findMethodBraceIndex,
-  validateWireName,
+  validateWireExpression,
 } from './wire-utils.js';
 
 const BROWSER_INIT_JS = 'browser/base/content/browser-init.js';
@@ -141,7 +141,7 @@ export async function addDestroyToBrowserInit(
   expression: string,
   marker: string = DEFAULT_MARKER
 ): Promise<boolean> {
-  validateWireName(expression, 'destroy expression');
+  validateWireExpression(expression, 'destroy expression');
   const filePath = join(engineDir, BROWSER_INIT_JS);
 
   if (!(await pathExists(filePath))) {

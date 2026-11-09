@@ -16,11 +16,12 @@
  * claimed files, and the plain git mechanics for unmanaged ones.
  */
 
-import { join } from 'node:path';
+import { readdir, rmdir } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
-import { readText, removeFile, writeText } from '../utils/fs.js';
+import { pathExists, readText, removeFile, writeText } from '../utils/fs.js';
 import type { GitStatusEntry } from './git-base.js';
 import {
   discardStatusEntry,
@@ -30,6 +31,10 @@ import {
   unstageFiles,
 } from './git-file-ops.js';
 import { createPatchedContentContext } from './patch-apply.js';
+import {
+  type PatchManifestConsistencyIssue,
+  validatePatchesManifestConsistency,
+} from './patch-manifest-consistency.js';
 import { loadPatchesManifestState } from './patch-manifest-io.js';
 import { type DiffSection, parseDiffSections } from './patch-parse.js';
 import { buildPatchClaims } from './status-classify.js';
@@ -94,6 +99,28 @@ export async function planDiscardBaselines(
   );
   if (claimedEntries.length === 0) {
     return planUpstreamDiscards(entries);
+  }
+
+  // Ownership comes from each row's `filesAffected`. A row that omits a file its
+  // body touches would read that file as unmanaged and restore it to upstream,
+  // dropping the patch's change.
+  let consistency: PatchManifestConsistencyIssue[];
+  try {
+    consistency = await validatePatchesManifestConsistency(patchesDir);
+  } catch (error: unknown) {
+    throw new GeneralError(
+      `Cannot read the patch bodies to check ownership (${toError(error).message}). ` +
+        'Fix the owning patch, or pass --to-upstream to explicitly revert to pristine ' +
+        'upstream (HEAD).'
+    );
+  }
+  const drifted = consistency.filter((issue) => (issue.undeclaredFiles?.length ?? 0) > 0);
+  if (drifted.length > 0) {
+    throw new GeneralError(
+      `${drifted.map((issue) => issue.message).join(' ')} Refusing to discard while patch ` +
+        'ownership disagrees with the patch bodies. Run "fireforge doctor --repair-files-affected", ' +
+        'or pass --to-upstream to explicitly revert to pristine upstream (HEAD).'
+    );
   }
 
   const { computePatched, prefetchBase } = await createPatchedContentContext(patchesDir, engineDir);
@@ -216,6 +243,39 @@ export async function applyDiscardBaseline(
   engineDir: string,
   plan: DiscardBaselinePlan
 ): Promise<void> {
+  await applyBaseline(engineDir, plan);
+  // Deleting a directory's last file leaves the directory behind; prune every
+  // side of the entry that no longer exists, up to the first non-empty parent.
+  const { entry } = plan;
+  for (const path of [entry.file, entry.originalPath]) {
+    if (path !== undefined) await pruneEmptyParents(engineDir, path);
+  }
+}
+
+/**
+ * Removes the empty directories above `relativePath` (engine-relative), nearest
+ * first, stopping at the first that still has content or at `engineDir`. A path
+ * that still exists is left alone, so the prune never touches a restored file.
+ */
+async function pruneEmptyParents(engineDir: string, relativePath: string): Promise<void> {
+  if (await pathExists(join(engineDir, relativePath))) return;
+  let current = dirname(relativePath);
+  while (current !== '.' && current !== '/' && current !== '') {
+    const absolute = join(engineDir, current);
+    let remaining: string[];
+    try {
+      remaining = await readdir(absolute);
+    } catch {
+      return;
+    }
+    if (remaining.length > 0) return;
+    await rmdir(absolute);
+    current = dirname(current);
+  }
+}
+
+/** Restores one plan's files without pruning directories. */
+async function applyBaseline(engineDir: string, plan: DiscardBaselinePlan): Promise<void> {
   if (plan.kind === 'unmanaged') {
     await discardStatusEntry(engineDir, plan.entry);
     return;

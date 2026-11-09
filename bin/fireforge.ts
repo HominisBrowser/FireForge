@@ -5,7 +5,7 @@
  * Library code propagates errors via CommandError or FireForgeError instead.
  *
  * The signal pipeline below composes several lifecycle modules. See
- * docs/lifecycle-invariants.md for who owns what.
+ * contributing/lifecycle-invariants.md for who owns what.
  */
 
 import { installBrokenPipeHandler, main } from '../src/cli.js';
@@ -17,12 +17,14 @@ import {
   isSignalRollbackInFlight,
   rollbackActiveOperationsForSignal,
 } from '../src/core/furnace-operation.js';
+import { reportExecutorCleanupUncertainty } from '../src/core/jobs/guard.js';
 import { restoreActiveNegativeControlsForSignal } from '../src/core/negative-control.js';
 import { closeActiveRunLog } from '../src/core/run-log.js';
 import { removeActiveRunProfiles } from '../src/core/run-profile.js';
 import { waitForActiveCriticalSections } from '../src/core/signal-critical.js';
 import { CommandError } from '../src/errors/base.js';
 import { waitForActiveChildShutdown } from '../src/utils/process.js';
+import { setProcessCleanupReporter } from '../src/utils/process-cleanup.js';
 import { waitForStdioDrain } from '../src/utils/stdio-drain.js';
 
 /**
@@ -64,6 +66,7 @@ function exitAfterStdioFlush(code: number): void {
 }
 
 installBrokenPipeHandler();
+setProcessCleanupReporter(reportExecutorCleanupUncertainty);
 
 process.on('unhandledRejection', (reason: unknown) => {
   console.error(

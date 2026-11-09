@@ -6,15 +6,17 @@
  * `FIREFORGE-VERDICT:` line over a per-step table (or one JSON document
  * under `--json`).
  *
- * Each step is the real command in a child process (see check-steps.ts for
+ * Each step is the real command in a child process (see core/check/steps.ts for
  * why), so a step behaves exactly as it does when run on its own.
  */
 import { availableParallelism } from 'node:os';
 
 import { Command } from 'commander';
 
+import { buildCheckPlan, type CheckStepPlan } from '../core/check/steps.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
 import { furnaceConfigExists } from '../core/furnace-config.js';
+import { beginOwnedCheck } from '../core/jobs/check-runtime.js';
 import { loadPatchesManifest } from '../core/patch-manifest.js';
 import { selectPatchSubset } from '../core/patch-subset.js';
 import { GeneralError, InvalidArgumentError, LockContentionError } from '../errors/base.js';
@@ -37,7 +39,6 @@ import {
   writeCheckVerdictLine,
 } from './check-report.js';
 import { runCheckSteps } from './check-run.js';
-import { buildCheckPlan, type CheckStepPlan } from './check-steps.js';
 import { resolveStatusCheckPolicy } from './status-check.js';
 
 /** Options Commander forwards from `fireforge check`. */
@@ -85,9 +86,15 @@ export function selectCheckSteps(
       );
     }
   }
-  return plan.filter(
+  const selected = plan.filter(
     (step) => (only === undefined || only.includes(step.name)) && skip?.includes(step.name) !== true
   );
+  if (!selected.length || selected.every((step) => step.skipReason !== undefined))
+    throw new InvalidArgumentError(
+      'Check selection contains no executable steps.',
+      '--only/--skip'
+    );
+  return selected;
 }
 
 /** Parses `--jobs`: a positive integer. Defaults to one slot per CPU. */
@@ -161,6 +168,9 @@ async function runCheck(projectRoot: string, options: CheckCommandOptions): Prom
   const jobs = parseCheckJobs(options.jobs);
   const config = await loadConfig(projectRoot);
   assertStatusPolicy(config);
+  if (config.sources && options.patches?.length) {
+    throw new GeneralError('Authored checks use source snapshots, not patch aliases.');
+  }
   const patches = await resolvePatchScope(getProjectPaths(projectRoot).patches, options.patches);
 
   const plan = selectCheckSteps(
@@ -177,8 +187,13 @@ async function runCheck(projectRoot: string, options: CheckCommandOptions): Prom
     `Running ${runnable} step(s), up to ${Math.min(jobs, Math.max(1, runnable))} at once${patches ? `, judging ${patches.join(', ')}` : ''}.`
   );
 
-  const results = await runCheckSteps(plan, jobs);
-  const verdict = judgeCheck(results, { failOnSkipped: config.check?.failOnSkipped });
+  const capture = await beginOwnedCheck(projectRoot, plan, jobs);
+  const results = await runCheckSteps(plan, jobs, undefined, undefined, capture?.recorder);
+  const verdict = judgeCheck(results, {
+    failOnSkipped: config.check?.failOnSkipped,
+    narrowed: options.only !== undefined || options.skip !== undefined,
+  });
+  await capture?.finish(results, verdict);
 
   if (options.json === true) {
     writeCheckJson(results, verdict);

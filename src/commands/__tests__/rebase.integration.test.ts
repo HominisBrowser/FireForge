@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadState } from '../../core/config.js';
-import { loadPatchesManifest } from '../../core/patch-manifest.js';
+import { loadPatchesManifest, savePatchesManifest } from '../../core/patch-manifest.js';
 import { getRebaseSessionPath, readRebaseSession } from '../../core/rebase-session.js';
 import { FIREFOX_WORKFLOW_SETUP_OPTIONS } from '../../test-utils/firefox-workflow-fixtures.js';
 import {
@@ -16,6 +17,7 @@ import {
   writeFireForgeConfig,
 } from '../../test-utils/index.js';
 import { pathExists } from '../../utils/fs.js';
+import * as logger from '../../utils/logger.js';
 import { escapeRegex } from '../../utils/regex.js';
 import { exportCommand } from '../export.js';
 import { rebaseCommand } from '../rebase/index.js';
@@ -261,6 +263,49 @@ describe('rebase integration', () => {
     // Patch should be re-exported with new version
     const manifest = await loadPatchesManifest(join(projectRoot, 'patches'));
     expect(manifest?.patches[0]?.sourceEsrVersion).toBe('141.0esr');
+  });
+
+  it('--continue does not rewrite a failed patch whose file another patch also lists', async () => {
+    const engineDir = join(projectRoot, 'engine');
+    const patchesDir = join(projectRoot, 'patches');
+    const file = 'browser/base/content/browser.js';
+    await initCommittedRepo(engineDir, { [file]: 'export const title = "baseline";\n' });
+    await writeFiles(engineDir, { [file]: 'export const title = "patched";\n' });
+    await exportCommand(projectRoot, [file], {
+      name: 'title-patch',
+      category: 'ui',
+      description: 'Change title',
+    });
+    const manifest = await loadPatchesManifest(patchesDir);
+    const first = manifest?.patches[0];
+    if (!manifest || !first) throw new Error('expected an exported patch');
+    // A second patch claiming the same file, as an `--allow-overlap` queue has.
+    await writeFile(
+      join(patchesDir, '002-ui-other.patch'),
+      await readFile(join(patchesDir, first.filename))
+    );
+    await savePatchesManifest(patchesDir, {
+      ...manifest,
+      patches: [...manifest.patches, { ...first, filename: '002-ui-other.patch', order: 2 }],
+    });
+    await runGit(engineDir, ['checkout', '--', file]);
+    await writeFiles(engineDir, { [file]: 'export const title = "upstream-changed";\n' });
+    await runGit(engineDir, ['add', '-A']);
+    await runGit(engineDir, ['commit', '-m', 'upstream change']);
+    await writeFireForgeConfig(projectRoot, {
+      firefox: { version: '141.0esr', product: 'firefox-esr' },
+    });
+    await rebaseCommand(projectRoot, { yes: true });
+    const bodyBefore = await readFile(join(patchesDir, first.filename), 'utf8');
+    await writeFiles(engineDir, { [file]: 'export const title = "patched";\n' });
+
+    // The second patch cannot apply on top of the manual fix, so the run may stop there.
+    await rebaseCommand(projectRoot, { continue: true }).catch(() => undefined);
+
+    await expect(readFile(join(patchesDir, first.filename), 'utf8')).resolves.toBe(bodyBefore);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(`Not rewriting ${first.filename}`)
+    );
   });
 
   it('aborts a rebase with --abort --yes and restores engine state', async () => {

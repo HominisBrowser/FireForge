@@ -33,3 +33,23 @@ export function hasBlockingStepErrors(entry: HasStepErrors): boolean {
 export function countEntriesWithBlockingStepErrors(entries: readonly HasStepErrors[]): number {
   return entries.filter((entry) => hasBlockingStepErrors(entry)).length;
 }
+
+/** Failures of one apply run: collected errors plus applied entries with blocking step errors. */
+export function countApplyFailures(result: {
+  errors: readonly unknown[];
+  applied: readonly HasStepErrors[];
+}): number {
+  return result.errors.length + countEntriesWithBlockingStepErrors(result.applied);
+}
+
+/**
+ * True when a real apply produced at least one applied entry and nothing
+ * failed: the condition under which a unit's state was persisted and, in a
+ * named deploy, its includers are refreshed.
+ */
+export function appliedCleanly(result: {
+  errors: readonly unknown[];
+  applied: readonly HasStepErrors[];
+}): boolean {
+  return countApplyFailures(result) === 0 && result.applied.length > 0;
+}

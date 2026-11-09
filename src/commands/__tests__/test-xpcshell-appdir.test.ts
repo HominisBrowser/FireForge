@@ -124,7 +124,8 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
     });
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -255,7 +256,8 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
       })
       .mockResolvedValueOnce({
         exitCode: 0,
-        stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+        stdout:
+          'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
         stderr: '',
       });
 
@@ -285,7 +287,8 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
       })
       .mockResolvedValueOnce({
         exitCode: 0,
-        stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+        stdout:
+          'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
         stderr: '',
       });
 
@@ -344,7 +347,8 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
   it('forwards --mach-arg values verbatim to the mach test dispatch after --headless', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
 
@@ -367,7 +371,8 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
   it('filters redundant --flavor=xpcshell when xpcshell is inferred from the manifest', async () => {
     vi.mocked(runMachTestSuite).mockResolvedValue({
       exitCode: 0,
-      stdout: 'TEST-START | requested-test\nTEST-OK | requested-test',
+      stdout:
+        'TEST-START | requested-test\nTEST-OK | requested-test\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
       stderr: '',
     });
     vi.mocked(findNearestXpcshellManifest).mockResolvedValue(
@@ -404,7 +409,7 @@ describe('testCommand xpcshell and mochitest failure hints', () => {
       );
       vi.mocked(runMachTestSuite).mockResolvedValue({
         exitCode: 0,
-        stdout: 'TEST-START | t\nTEST-OK | t',
+        stdout: 'TEST-START | t\nTEST-OK | t\nRan 1 checks\nUnexpected results: 0\nSUITE_END\n',
         stderr: '',
       });
 

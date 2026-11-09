@@ -13,9 +13,9 @@ vi.mock('../../utils/logger.js', () => createLoggerMock());
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '__fixtures__', 'typecheck');
 
-/** The checked-in fixtures are read-only: build info never lands next to them. */
+/** The checked-in fixtures are read-only: a run writes nothing next to them. */
 function typecheckFixtures(cfg: TypecheckConfig): Promise<TypecheckProjectResult[]> {
-  return runTypecheck(FIXTURES, cfg, { noCache: true });
+  return runTypecheck(FIXTURES, cfg);
 }
 
 /**
@@ -161,6 +161,47 @@ describe('runTypecheck', () => {
     // the meaningful contract.
     const errors = result.issues.filter((i) => i.category === 'error');
     expect(errors).toHaveLength(0);
+  });
+
+  it('reports a missing export from a `paths`-resolved module', async () => {
+    const { mkdtemp, writeFile, mkdir, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const root = await mkdtemp(join(tmpdir(), 'ff-typecheck-missing-export-'));
+    try {
+      await mkdir(join(root, 'p', 'lib'), { recursive: true });
+      await writeFile(
+        join(root, 'p', 'jsconfig.json'),
+        JSON.stringify({
+          compilerOptions: {
+            target: 'ES2022',
+            module: 'ES2022',
+            moduleResolution: 'Bundler',
+            allowJs: true,
+            checkJs: true,
+            noEmit: true,
+            skipLibCheck: true,
+            paths: { '@mybrowser/*': ['./lib/*'] },
+          },
+          include: ['use.mjs', 'lib/**/*.js'],
+        })
+      );
+      await writeFile(join(root, 'p', 'lib', 'greet.js'), 'export const present = 1;\n');
+      await writeFile(
+        join(root, 'p', 'use.mjs'),
+        [
+          "import { missing, present } from '@mybrowser/greet.js';",
+          "import { other } from 'resource://gre/modules/Other.sys.mjs';",
+          'export const value = [missing, present, other];',
+          '',
+        ].join('\n')
+      );
+      const [result] = await runTypecheck(root, { projects: ['p/jsconfig.json'] });
+      const messages = (result?.issues ?? []).map((i) => i.message);
+      expect(messages.some((m) => m.includes("no exported member 'missing'"))).toBe(true);
+      expect(messages.some((m) => m.includes('other'))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('returns one result per project, in declared order', async () => {
@@ -377,15 +418,11 @@ describe('runTypecheck', () => {
       await writeShimProject(root, 'b', mkdir, writeFile);
 
       for (const spelling of ['./b/jsconfig.json', join(root, 'b', 'jsconfig.json')]) {
-        const [b] = await runTypecheck(
-          root,
-          {
-            projects: [spelling],
-            extraShim: 'hub.d.ts',
-            projectOverrides: { 'b/jsconfig.json': 'b-only.d.ts' },
-          },
-          { noCache: true }
-        );
+        const [b] = await runTypecheck(root, {
+          projects: [spelling],
+          extraShim: 'hub.d.ts',
+          projectOverrides: { 'b/jsconfig.json': 'b-only.d.ts' },
+        });
         expect(
           b?.issues.filter((i) => i.category === 'error'),
           spelling
@@ -397,7 +434,7 @@ describe('runTypecheck', () => {
   });
 });
 
-describe('runTypecheck incremental build info', () => {
+describe('runTypecheck repeated runs', () => {
   const JSCONFIG = JSON.stringify({
     compilerOptions: {
       target: 'ES2022',
@@ -411,7 +448,7 @@ describe('runTypecheck incremental build info', () => {
     include: ['*.mjs'],
   });
 
-  async function makeProject(): Promise<{ root: string; cacheDir: string }> {
+  async function makeProject(): Promise<{ root: string }> {
     const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const root = await mkdtemp(join(tmpdir(), 'ff-typecheck-incremental-'));
@@ -423,45 +460,24 @@ describe('runTypecheck incremental build info', () => {
       'export function f() {\n  new HubBase().tag("y");\n}\n'
     );
     await writeFile(join(root, 'p', 'fine.mjs'), 'export const ok = 1;\n');
-    return { root, cacheDir: join(root, 'cache') };
+    return { root };
   }
 
   const errorsOf = (results: TypecheckProjectResult[]): string[] =>
     results.flatMap((r) => r.issues.filter((i) => i.category === 'error').map((i) => i.message));
 
-  it('writes build info and reports the same diagnostics warm as cold', async () => {
-    const { readdir, readFile, rm } = await import('node:fs/promises');
-    const { root, cacheDir } = await makeProject();
-    try {
-      const cfg = { projects: ['p/jsconfig.json'], extraShim: 'hub.d.ts' };
-      const cold = await runTypecheck(root, cfg, { cacheDir });
-      const files = await readdir(cacheDir);
-      expect(files).toHaveLength(1);
-      expect(files[0]).toMatch(/^p_jsconfig\.json-[0-9a-f]{16}\.tsbuildinfo$/);
-      // The builder stored per-file semantic results, which a warm run reuses.
-      const info = await readFile(join(cacheDir, files[0] ?? ''), 'utf8');
-      expect(info).toContain('semanticDiagnosticsPerFile');
-
-      const warm = await runTypecheck(root, cfg, { cacheDir });
-      expect(warm).toEqual(cold);
-      expect(errorsOf(cold)).toHaveLength(1);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   it('re-checks a file edited between runs', async () => {
     const { writeFile, rm } = await import('node:fs/promises');
-    const { root, cacheDir } = await makeProject();
+    const { root } = await makeProject();
     try {
       const cfg = { projects: ['p/jsconfig.json'], extraShim: 'hub.d.ts' };
-      await runTypecheck(root, cfg, { cacheDir });
+      await runTypecheck(root, cfg);
       await writeFile(
         join(root, 'p', 'fine.mjs'),
         '/** @type {number} */\nexport const ok = "no";\n'
       );
 
-      const after = await runTypecheck(root, cfg, { cacheDir });
+      const after = await runTypecheck(root, cfg);
 
       expect(errorsOf(after)).toHaveLength(2);
     } finally {
@@ -469,38 +485,18 @@ describe('runTypecheck incremental build info', () => {
     }
   });
 
-  it('never replays a verdict across a shim change', async () => {
+  it('reflects a shim change and leaves no build info behind', async () => {
     const { readdir, writeFile, rm } = await import('node:fs/promises');
-    const { root, cacheDir } = await makeProject();
+    const { root } = await makeProject();
     try {
       const cfg = { projects: ['p/jsconfig.json'], extraShim: 'hub.d.ts' };
-      await runTypecheck(root, cfg, { cacheDir });
-      const [before] = await readdir(cacheDir);
+      expect(errorsOf(await runTypecheck(root, cfg))).toHaveLength(1);
       // The shim now accepts "y": the error must go away, not be replayed.
       await writeFile(join(root, 'hub.d.ts'), 'declare class HubBase { tag(mode: "y"): void; }\n');
 
-      const after = await runTypecheck(root, cfg, { cacheDir });
-
-      expect(errorsOf(after)).toHaveLength(0);
-      const files = await readdir(cacheDir);
-      expect(files).toHaveLength(1);
-      expect(files[0]).not.toBe(before);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('writes nothing with noCache', async () => {
-    const { rm } = await import('node:fs/promises');
-    const { existsSync } = await import('node:fs');
-    const { root, cacheDir } = await makeProject();
-    try {
-      await runTypecheck(
-        root,
-        { projects: ['p/jsconfig.json'], extraShim: 'hub.d.ts' },
-        { cacheDir, noCache: true }
-      );
-      expect(existsSync(cacheDir)).toBe(false);
+      expect(errorsOf(await runTypecheck(root, cfg))).toHaveLength(0);
+      const entries = await readdir(root, { recursive: true });
+      expect(entries.filter((entry) => /tsbuildinfo|typecheck/.test(entry))).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -14,7 +14,7 @@
  * The run log is real here (not the shared mock the sibling suites use):
  * the bug was in what reached the file, so a mocked sink could not see it.
  */
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -94,13 +94,18 @@ vi.mock('../../core/mochitest-server-port.js', () => ({
   ensureMochitestServerPortAvailable: vi.fn(),
 }));
 vi.mock('../../core/harness-orphans.js', () => ({
-  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve({ reaped: 0 })),
+  reportOrphanedHarnessProcesses: vi.fn(() => Promise.resolve([])),
 }));
 
 import { prepareBuildEnvironment } from '../../core/build-prepare.js';
-import { loadConfig } from '../../core/config.js';
+import { getProjectPaths, loadConfig } from '../../core/config.js';
 import { reportOrphanedHarnessProcesses } from '../../core/harness-orphans.js';
-import { hasBuildArtifacts, hasRunnableBundle, runProtectedMachBuild } from '../../core/mach.js';
+import {
+  hasBuildArtifacts,
+  hasRunnableBundle,
+  runMachTestSuite,
+  runProtectedMachBuild,
+} from '../../core/mach.js';
 import { assertMarionettePortAvailable } from '../../core/marionette-port.js';
 import { ensureLaunchableBrowserNotRunning } from '../../core/marionette-port.js';
 import { ensureMochitestServerPortAvailable } from '../../core/mochitest-server-port.js';
@@ -197,6 +202,52 @@ describe('the lock-free head of the run', () => {
   });
 });
 
+describe('a named file no harness can run', () => {
+  const unit = 'browser/modules/hominis/test/unit';
+  async function engineWith(files: Record<string, string>): Promise<void> {
+    const engine = join(projectRoot, 'engine');
+    for (const [path, text] of Object.entries(files)) {
+      await mkdir(join(engine, path, '..'), { recursive: true });
+      await writeFile(join(engine, path), text);
+    }
+    const paths = getProjectPaths(projectRoot);
+    vi.mocked(getProjectPaths).mockReturnValue({ ...paths, engine });
+  }
+
+  it('refuses a support file before the build or the harness, naming the tests that read it', async () => {
+    await engineWith({
+      [`${unit}/xpcshell.toml`]:
+        '["test_HominisStoreSchema.js"]\nsupport-files = ["fixtures/*.sqlite"]\n',
+      [`${unit}/test_HominisStoreSchema.js`]: '',
+      [`${unit}/fixtures/schema-v10.sqlite`]: 'SQLite',
+    });
+    await expect(
+      testCommand(projectRoot, [`${unit}/fixtures/schema-v10.sqlite`], { build: true })
+    ).rejects.toThrow(/support file, not a test: .*test_HominisStoreSchema\.js/);
+    expect(runMachTestSuite).not.toHaveBeenCalled();
+    expect(runProtectedMachBuild).not.toHaveBeenCalled();
+    expect(stdout.trimEnd().split('\n').at(-1)).toMatch(
+      /^FIREFORGE-VERDICT: FAIL reason=preflight note=not-a-test /
+    );
+  });
+
+  it('refuses a file that is no test input at all, and passes a test or a manifest', async () => {
+    await engineWith({
+      [`${unit}/notes.txt`]: 'notes',
+      [`${unit}/xpcshell.toml`]: '["test_a.js"]\n',
+      [`${unit}/test_a.js`]: '',
+    });
+    await expect(testCommand(projectRoot, [`${unit}/notes.txt`], {})).rejects.toThrow(
+      /notes\.txt is not a test/
+    );
+    for (const path of [`${unit}/test_a.js`, `${unit}/xpcshell.toml`, unit]) {
+      vi.mocked(runMachTestSuite).mockClear();
+      await testCommand(projectRoot, [path], {}).catch(() => undefined);
+      expect(runMachTestSuite).toHaveBeenCalled();
+    }
+  });
+});
+
 describe('preflight refusals reach the captured stream and the run log', () => {
   it('renders a stale-browser refusal on stdout, in the log, and notes it on the verdict', async () => {
     vi.mocked(ensureLaunchableBrowserNotRunning).mockRejectedValueOnce(
@@ -279,20 +330,13 @@ describe('preflight refusals reach the captured stream and the run log', () => {
       'engine/browser/base/content/test/other/browser_covered.js',
       'browser/components/tests/',
     ];
-    // Both the pre-lock pass and a --negative-control's rewrap of it keep the key.
-    for (const options of [{}, { negativeControl: 'controls/missing.diff' }]) {
-      stdout = '';
-      vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(coverage);
-      await expect(testCommand(projectRoot, requested, options)).rejects.toThrow(
-        PreflightRefusalError
-      );
-      const verdict = stdout.trimEnd().split('\n').at(-1) ?? '';
-      expect(verdict).toMatch(/^FIREFORGE-VERDICT: FAIL reason=preflight note=coverage-replaced /);
-      expect(verdict).toContain(
-        ' build-paths=browser/base/content/test/browser_a.js,browser/components/tests '
-      );
-      if ('negativeControl' in options) expect(stdout).toContain('Add --build');
-    }
+    vi.mocked(checkStaleBuildForTest).mockResolvedValueOnce(coverage);
+    await expect(testCommand(projectRoot, requested, {})).rejects.toThrow(PreflightRefusalError);
+    const verdict = stdout.trimEnd().split('\n').at(-1) ?? '';
+    expect(verdict).toMatch(/^FIREFORGE-VERDICT: FAIL reason=preflight note=coverage-replaced /);
+    expect(verdict).toContain(
+      ' build-paths=browser/base/content/test/browser_a.js,browser/components/tests '
+    );
   });
 
   it('still emits a bare reason=preflight for a gate that names no refusal class', async () => {

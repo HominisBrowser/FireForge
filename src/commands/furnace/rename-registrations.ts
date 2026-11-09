@@ -5,11 +5,12 @@
  * toolkit/content/jar.mn widget lines, the deployed `.ftl`, and the locale
  * jar.mn line (re-pointed only when one existed, never for `sharedFtl`).
  */
-
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { pathExists, readText, writeText } from '../../core/authored/fs.js';
 import { loadConfig } from '../../core/config.js';
+import { removeAuthoringFile } from '../../core/furnace-authored-lifecycle.js';
 import {
   resolveFtlChromeSubPath,
   resolveFtlLocaleJarMnPath,
@@ -26,7 +27,6 @@ import {
 import { renameJarMnEntriesInPlace } from '../../core/furnace-registration-jar-inplace.js';
 import { type RollbackJournal, snapshotFile } from '../../core/furnace-rollback.js';
 import type { CustomComponentConfig } from '../../types/furnace.js';
-import { pathExists, readText, removeFile, writeText } from '../../utils/fs.js';
 import { renameComponentFileName } from './rename-helpers.js';
 
 /**
@@ -77,7 +77,7 @@ export async function updateEngineRegistrations(
   const customElementsPath = join(engineDir, 'toolkit/content/customElements.js');
   const jarMnPath = join(engineDir, 'toolkit/content/jar.mn');
 
-  if (await pathExists(customElementsPath)) {
+  if (componentConfig.register && (await pathExists(customElementsPath))) {
     await snapshotFile(journal, customElementsPath);
     // Rewrite the existing entry in place: it keeps its position, layout and
     // trailing `// <MARKER>:` comments. Only when there is no entry to
@@ -119,7 +119,7 @@ export async function updateEngineRegistrations(
     await snapshotFile(journal, newFtlPath);
     const ftlContent = await readText(oldFtlPath);
     await writeText(newFtlPath, ftlContent);
-    await removeFile(oldFtlPath);
+    await removeAuthoringFile(oldFtlPath, journal);
   }
 
   // Re-point the locale jar.mn chrome registration when the component is

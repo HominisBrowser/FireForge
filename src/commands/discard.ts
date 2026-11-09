@@ -18,13 +18,15 @@ import { assertEngineGitReady } from '../core/engine-precondition.js';
 import { collectFurnaceManagedPrefixes } from '../core/furnace-config.js';
 import type { GitStatusEntry } from '../core/git-base.js';
 import { expandUntrackedDirectoryEntries, getWorkingTreeStatus } from '../core/git-status.js';
+import { takeRecoverySnapshot } from '../core/recovery-snapshot.js';
 import { GeneralError, InvalidArgumentError } from '../errors/base.js';
 import { GitError } from '../errors/git.js';
 import type { CommandContext } from '../types/cli.js';
 import type { DiscardOptions } from '../types/commands/index.js';
 import { toError } from '../utils/errors.js';
 import { info, intro, isCancel, outro, spinner, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
+import { addWaitLockOption, pickDefined } from '../utils/options.js';
+import { runUnderEngineLock } from './with-engine-lock.js';
 
 /**
  * Shared interactive confirmation for the single-file and directory paths.
@@ -76,28 +78,36 @@ function dryRunLabel(plan: DiscardBaselinePlan): string {
   return `${target} (${describeDiscardBaseline(plan)})`;
 }
 
+/** How a batch of status entries was selected, for messages and the Furnace check. */
+interface DiscardScope {
+  /** Phrase completing "N file(s) ...", e.g. `under src/` or `across 3 paths`. */
+  phrase: string;
+  /** Engine-relative roots (`dir/` or file paths) the Furnace-prefix check compares. */
+  roots: readonly string[];
+  /** Usage hint when the run would prompt without a TTY. */
+  hint: string;
+}
+
 /**
- * Discards every status entry whose path lives under `dirPath`. Used by
- * `discardCommand` as a directory-recursion fallback when the operator
- * passed a directory path that contains modified or untracked entries
- * but is not itself a status entry.
+ * Discards a batch of status entries selected by one or more directory or
+ * file arguments, from one status scan and one baseline plan.
  *
  * Mirrors the single-file path's confirmation, dry-run, and Furnace-aware
  * warning behaviour so the contract stays consistent. Each per-entry
  * discard runs sequentially under its own try/catch so a failure on one
  * file is reported but does not block the remaining files in the batch.
  */
-async function discardDirectoryEntries(
+async function discardEntries(
   projectRoot: string,
   engineDir: string,
   patchesDir: string,
-  dirPath: string,
+  scope: DiscardScope,
   entries: ReadonlyArray<GitStatusEntry>,
   options: DiscardOptions
 ): Promise<void> {
   const proceed = await confirmDiscard(
-    `Discard changes to ${entries.length} file${entries.length === 1 ? '' : 's'} under ${dirPath}/?`,
-    'Use: fireforge discard <directory> --yes',
+    `Discard changes to ${entries.length} file${entries.length === 1 ? '' : 's'} ${scope.phrase}?`,
+    scope.hint,
     options
   );
   if (!proceed) return;
@@ -105,7 +115,7 @@ async function discardDirectoryEntries(
   const plans = await planDiscards(patchesDir, engineDir, entries, options);
 
   if (options.dryRun) {
-    info(`Would discard changes to ${entries.length} file(s) under ${dirPath}/:`);
+    info(`Would discard changes to ${entries.length} file(s) ${scope.phrase}:`);
     for (const plan of plans) {
       info(`  ${dryRunLabel(plan)}`);
     }
@@ -113,7 +123,9 @@ async function discardDirectoryEntries(
     return;
   }
 
-  const s = spinner(`Discarding ${entries.length} file(s) under ${dirPath}/...`);
+  await takeRecoverySnapshot(engineDir, 'discard', entryPaths(entries));
+
+  const s = spinner(`Discarding ${entries.length} file(s) ${scope.phrase}...`);
   let succeeded = 0;
   const failures: string[] = [];
   const appliedPlans: DiscardBaselinePlan[] = [];
@@ -128,7 +140,7 @@ async function discardDirectoryEntries(
       }
     }
     s.stop(
-      `Discarded ${succeeded} of ${entries.length} file(s) under ${dirPath}/${
+      `Discarded ${succeeded} of ${entries.length} file(s) ${scope.phrase}${
         failures.length > 0 ? ` (${failures.length} failed)` : ''
       }`
     );
@@ -141,10 +153,10 @@ async function discardDirectoryEntries(
 
     try {
       const furnacePrefixes = await collectFurnaceManagedPrefixes(projectRoot);
-      const dirIsFurnace = [...furnacePrefixes].some(
-        (prefix) => `${dirPath}/`.startsWith(prefix) || prefix.startsWith(`${dirPath}/`)
+      const touchesFurnace = [...furnacePrefixes].some((prefix) =>
+        scope.roots.some((root) => root.startsWith(prefix) || prefix.startsWith(root))
       );
-      if (dirIsFurnace) {
+      if (touchesFurnace) {
         warn(
           'These paths are managed by Furnace. Run "fireforge furnace apply" to redeploy components if needed.'
         );
@@ -155,7 +167,7 @@ async function discardDirectoryEntries(
 
     if (failures.length > 0) {
       throw new GeneralError(
-        `Failed to discard ${failures.length} file(s) under ${dirPath}/. See warnings above.`
+        `Failed to discard ${failures.length} file(s) ${scope.phrase}. See warnings above.`
       );
     }
 
@@ -168,61 +180,105 @@ async function discardDirectoryEntries(
   }
 }
 
+/** Every engine path a set of status entries touches, rename sources included. */
+function entryPaths(entries: ReadonlyArray<GitStatusEntry>): string[] {
+  return [
+    ...new Set(
+      entries.flatMap((entry) => [entry.file, ...(entry.originalPath ? [entry.originalPath] : [])])
+    ),
+  ];
+}
+
 /**
- * Runs the discard command to revert changes to a specific file.
+ * Resolves each argument against the one status scan: an exact status entry
+ * (either side of a rename), else every entry beneath it as a directory. The
+ * `matched` entries are unique, in first-seen order; `unmatched` lists the
+ * arguments that selected nothing.
+ */
+function selectEntries(
+  statusEntries: ReadonlyArray<GitStatusEntry>,
+  requested: readonly string[]
+): { matched: GitStatusEntry[]; unmatched: string[] } {
+  const matched = new Map<string, GitStatusEntry>();
+  const unmatched: string[] = [];
+  for (const arg of requested) {
+    const exact = statusEntries.find((entry) => entry.file === arg || entry.originalPath === arg);
+    // Normalize once: `discard foo/` (or `foo//`) must not produce doubled
+    // slashes. The trailing-slash prefix keeps `foo/bar` from matching `foo/bar2/file`.
+    const dirPrefix = `${arg.replace(/\/+$/, '')}/`;
+    const selected =
+      exact !== undefined
+        ? [exact]
+        : statusEntries.filter(
+            (entry) => entry.file.startsWith(dirPrefix) || entry.originalPath?.startsWith(dirPrefix)
+          );
+    if (selected.length === 0) unmatched.push(arg);
+    for (const entry of selected) matched.set(entry.file, entry);
+  }
+  return { matched: [...matched.values()], unmatched };
+}
+
+/**
+ * Runs the discard command to revert changes to files or directories.
  * @param projectRoot - Root directory of the project
- * @param file - File path to discard (relative to engine/)
+ * @param requested - Paths to discard (relative to engine/); one status scan serves them all
  * @param options - Discard options
  */
 export async function discardCommand(
   projectRoot: string,
-  file: string,
+  requested: string | readonly string[],
   options: DiscardOptions = {}
 ): Promise<void> {
   intro('FireForge Discard');
+  const args = typeof requested === 'string' ? [requested] : [...requested];
 
   const paths = getProjectPaths(projectRoot);
 
   await assertEngineGitReady(paths.engine);
 
-  // Check if the file has changes
   const statusEntries = await expandUntrackedDirectoryEntries(
     paths.engine,
     await getWorkingTreeStatus(paths.engine)
   );
-  const statusEntry = statusEntries.find(
-    (entry) => entry.file === file || entry.originalPath === file
-  );
-
-  // Directory recursion fallback: when the explicit path does not match a
-  // single status entry but does correspond to one or more entries below it,
-  // treat the input as a directory and discard everything inside. Otherwise
-  // `discard <dir> --yes` fails with "no changes to discard" even though
-  // `status --unmanaged` lists files under that directory, forcing the
-  // operator to discard each file individually. Match against the
-  // directory-with-trailing-slash form so a path like `foo/bar` does not
-  // accidentally match `foo/bar2/file`.
-  if (!statusEntry) {
-    // Normalize the operator's input once: `discard foo/` (or `foo//`) must
-    // not produce doubled slashes in the messages and prefix comparisons
-    // below, which all append `/` themselves.
-    const dirPath = file.replace(/\/+$/, '');
-    const dirPrefix = `${dirPath}/`;
-    const dirEntries = statusEntries.filter(
-      (entry) => entry.file.startsWith(dirPrefix) || entry.originalPath?.startsWith(dirPrefix)
+  const { matched, unmatched } = selectEntries(statusEntries, args);
+  if (unmatched.length > 0) {
+    throw new GeneralError(
+      args.length === 1
+        ? `File "${unmatched[0]}" has no changes to discard.`
+        : `No changes to discard for: ${unmatched.join(', ')}. Nothing was discarded.`
     );
-    if (dirEntries.length > 0) {
-      await discardDirectoryEntries(
-        projectRoot,
-        paths.engine,
-        paths.patches,
-        dirPath,
-        dirEntries,
-        options
-      );
-      return;
-    }
-    throw new GeneralError(`File "${file}" has no changes to discard.`);
+  }
+
+  const [file = ''] = args;
+  const [statusEntry] = matched;
+  const singleFile =
+    args.length === 1 &&
+    statusEntry !== undefined &&
+    matched.length === 1 &&
+    (statusEntry.file === file || statusEntry.originalPath === file);
+
+  if (!singleFile) {
+    // A lone directory keeps its own phrasing; anything else counts paths.
+    const dirPath = args.length === 1 ? file.replace(/\/+$/, '') : undefined;
+    await discardEntries(
+      projectRoot,
+      paths.engine,
+      paths.patches,
+      dirPath !== undefined
+        ? {
+            phrase: `under ${dirPath}/`,
+            roots: [`${dirPath}/`],
+            hint: 'Use: fireforge discard <directory> --yes',
+          }
+        : {
+            phrase: `across ${args.length} paths`,
+            roots: matched.map((entry) => entry.file),
+            hint: 'Use: fireforge discard <path>... --yes',
+          },
+      matched,
+      options
+    );
+    return;
   }
 
   const proceed = await confirmDiscard(
@@ -245,6 +301,8 @@ export async function discardCommand(
     outro('Dry run complete — no changes made');
     return;
   }
+
+  await takeRecoverySnapshot(paths.engine, 'discard', entryPaths([statusEntry]));
 
   const s = spinner(`Discarding changes to ${file}...`);
 
@@ -293,25 +351,33 @@ export function registerDiscard(
   program: Command,
   { getProjectRoot, withErrorHandling }: CommandContext
 ): void {
-  program
-    .command('discard <file>')
+  const command = program
+    .command('discard <paths...>')
     .description(
-      'Discard changes to a specific file, restoring patch-claimed paths to their patch-applied baseline (unmanaged untracked files are deleted). Pass a directory path to discard every modified or untracked file beneath it; the operation walks the status output and reverts each match individually.'
+      'Discard changes to files, restoring patch-claimed paths to their patch-applied baseline (unmanaged untracked files are deleted, emptied directories pruned). Pass several paths to discard them from one status scan. A directory path discards every modified or untracked file beneath it. A recovery snapshot is saved first.'
     )
     .option('--dry-run', 'Show what would be discarded without doing it')
     .option(
       '--to-upstream',
       'Restore to pristine upstream (HEAD) instead of the patch-applied baseline; deletes patch-created files'
     )
-    .option('-y, --yes', 'Skip confirmation prompt')
-    .action(
-      withErrorHandling(
-        async (
-          file: string,
-          options: { dryRun?: boolean; toUpstream?: boolean; yes?: boolean }
-        ) => {
-          await discardCommand(getProjectRoot(), file, pickDefined(options));
+    .option('-y, --yes', 'Skip confirmation prompt');
+  addWaitLockOption(command).action(
+    withErrorHandling(
+      async (
+        files: string[],
+        options: {
+          dryRun?: boolean;
+          toUpstream?: boolean;
+          yes?: boolean;
+          waitLock?: boolean | number;
         }
-      )
-    );
+      ) => {
+        const projectRoot = getProjectRoot();
+        await runUnderEngineLock(projectRoot, 'discard', options, () =>
+          discardCommand(projectRoot, files, pickDefined(options))
+        );
+      }
+    )
+  );
 }

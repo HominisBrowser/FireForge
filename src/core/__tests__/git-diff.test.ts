@@ -8,7 +8,7 @@ import { createFsMock } from '../../test-utils/module-mocks.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, stat: vi.fn() };
+  return { ...actual, lstat: vi.fn() };
 });
 
 vi.mock('../../utils/process.js', () => ({
@@ -62,7 +62,7 @@ vi.mock('../git-readonly-index.js', () => ({
   mintDisposableGitIndex: vi.fn(() => Promise.resolve(undefined)),
 }));
 
-import { stat } from 'node:fs/promises';
+import { lstat } from 'node:fs/promises';
 
 import { pathExists, readText } from '../../utils/fs.js';
 import { exec } from '../../utils/process.js';
@@ -96,12 +96,16 @@ const mockListTrackedInHead = vi.mocked(listTrackedInHead);
 const mockHashObjectBatch = vi.mocked(hashObjectBatch);
 const mockGetUntrackedFiles = vi.mocked(getUntrackedFiles);
 const mockGetUntrackedFilesInDir = vi.mocked(getUntrackedFilesInDir);
-const mockStat = vi.mocked(stat);
+const mockStat = vi.mocked(lstat);
 
 const makeStat = (isDir: boolean): Stats => ({ isDirectory: () => isDir }) as unknown as Stats;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(mintDisposableGitIndex).mockResolvedValue({
+    env: { GIT_INDEX_FILE: '/tmp/private/index' },
+    dispose: () => Promise.resolve(),
+  });
   // Default: every `stat` lookup reports a regular file. The two tests
   // that exercise the directory-detection paths override this.
   mockStat.mockResolvedValue(makeStat(false));
@@ -390,13 +394,14 @@ describe('getDiffForFilesAgainstHead', () => {
     expect(mockReadText).not.toHaveBeenCalled();
     expect(mockGit).toHaveBeenCalledWith(
       ['add', '--intent-to-add', '--', 'brand/icon.png'],
-      '/repo'
+      '/repo',
+      { env: { GIT_INDEX_FILE: '/tmp/private/index' } }
     );
   });
 
   it('skips files that do not exist on disk', async () => {
     mockListTrackedInHead.mockResolvedValue(new Set());
-    mockPathExists.mockResolvedValue(false);
+    mockStat.mockRejectedValueOnce(Object.assign(new Error('missing'), { code: 'ENOENT' }));
 
     const result = await getDiffForFilesAgainstHead('/repo', ['gone.txt']);
     expect(result).toBe('');
@@ -541,7 +546,9 @@ describe('generateBinaryFilePatch', () => {
 
     const result = await generateBinaryFilePatch('/repo', 'image.png');
     expect(result).toBe('binary diff\n');
-    expect(mockGit).toHaveBeenCalledWith(['diff', '--binary', 'HEAD', '--', 'image.png'], '/repo');
+    expect(mockGit).toHaveBeenCalledWith(['diff', '--binary', 'HEAD', '--', 'image.png'], '/repo', {
+      env: { GIT_OPTIONAL_LOCKS: '0' },
+    });
   });
 
   it('stages into a PRIVATE index when one can be minted, and restores nothing', async () => {
@@ -588,79 +595,16 @@ describe('generateBinaryFilePatch', () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it('stages untracked file with intent-to-add and cleans up (shared-index fallback)', async () => {
-    // First call: tracked diff returns empty
-    mockGit
-      .mockResolvedValueOnce('')
-      // Second call: git ls-files --stage (no prior index entry)
-      .mockResolvedValueOnce('')
-      // Third call: git add --intent-to-add
-      .mockResolvedValueOnce('')
-      // Fourth call: git diff --binary (untracked)
-      .mockResolvedValueOnce('untracked binary diff\n')
-      // Fifth call: git reset HEAD
-      .mockResolvedValueOnce('');
-
-    const result = await generateBinaryFilePatch('/repo', 'new.png');
-    expect(result).toBe('untracked binary diff\n');
-    expect(mockGit).toHaveBeenCalledWith(['add', '--intent-to-add', '--', 'new.png'], '/repo');
-    expect(mockGit).toHaveBeenCalledWith(['reset', 'HEAD', '--', 'new.png'], '/repo');
-  });
-
-  it('unstages in finally even when diff throws', async () => {
-    mockGit
-      .mockResolvedValueOnce('')
-      .mockResolvedValueOnce('')
-      .mockResolvedValueOnce('')
-      .mockRejectedValueOnce(new Error('diff failed'))
-      .mockResolvedValueOnce('');
-
-    await expect(generateBinaryFilePatch('/repo', 'new.png')).rejects.toThrow('diff failed');
-    expect(mockGit).toHaveBeenCalledWith(['reset', 'HEAD', '--', 'new.png'], '/repo');
-  });
-
-  it('restores a pre-existing stage-0 index entry instead of resetting to HEAD', async () => {
-    mockGit
-      // Tracked diff returns empty (the race shape: the entry appeared after,
-      // or the staged path's worktree file is gone so `diff HEAD` sees nothing)
-      .mockResolvedValueOnce('')
-      // ls-files --stage: a prior staged entry exists
-      .mockResolvedValueOnce('100644 0123456789abcdef0123456789abcdef01234567 0\tnew.png\n')
-      // add --intent-to-add
-      .mockResolvedValueOnce('')
-      // diff --binary
-      .mockResolvedValueOnce('untracked binary diff\n')
-      // update-index restore
-      .mockResolvedValueOnce('');
-
-    await generateBinaryFilePatch('/repo', 'new.png');
-
-    expect(mockGit).toHaveBeenCalledWith(
-      [
-        'update-index',
-        '--add',
-        '--cacheinfo',
-        '100644,0123456789abcdef0123456789abcdef01234567,new.png',
-      ],
-      '/repo'
+  it('refuses private-index failure before staging or restoring any shared-index entry', async () => {
+    vi.mocked(mintDisposableGitIndex).mockResolvedValueOnce(undefined);
+    mockGit.mockResolvedValueOnce('');
+    await expect(generateBinaryFilePatch('/repo', 'new.png')).rejects.toThrow(
+      /refusing to stage the shared index/
     );
-    expect(mockGit).not.toHaveBeenCalledWith(['reset', 'HEAD', '--', 'new.png'], '/repo');
-  });
-
-  it('falls back to reset HEAD for an unmerged prior entry that --cacheinfo cannot rebuild', async () => {
-    mockGit
-      .mockResolvedValueOnce('')
-      // ls-files --stage: conflict stages, not a stage-0 entry
-      .mockResolvedValueOnce(
-        '100644 0123456789abcdef0123456789abcdef01234567 1\tnew.png\n' +
-          '100644 89abcdef0123456789abcdef0123456789abcdef 2\tnew.png\n'
+    expect(
+      mockGit.mock.calls.every(
+        (call) => !['add', 'reset', 'update-index'].includes(call[0][0] ?? '')
       )
-      .mockResolvedValueOnce('')
-      .mockResolvedValueOnce('untracked binary diff\n')
-      .mockResolvedValueOnce('');
-
-    await generateBinaryFilePatch('/repo', 'new.png');
-
-    expect(mockGit).toHaveBeenCalledWith(['reset', 'HEAD', '--', 'new.png'], '/repo');
+    ).toBe(true);
   });
 });

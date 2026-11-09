@@ -2,7 +2,8 @@
 import { join } from 'node:path';
 
 import { FurnaceError } from '../errors/furnace.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
+import { tokenizeJarMn } from './moz-manifest-tokenizers.js';
 
 /**
  * Returns the leading whitespace of the first line matching `pattern`, whose
@@ -46,11 +47,19 @@ import { JAR_MN } from './furnace-constants.js';
  * and mach never fails with "Item already in manifest". Boundary-aware so
  * `moz-card.css` does not match `moz-card-group.css`.
  */
-function isJarMnFileRegistered(content: string, tagName: string, file: string): boolean {
-  const escapedFile = escapeRegex(file);
-  const target = new RegExp(`content/global/elements/${escapedFile}(?:\\s|$)`, 'm');
-  const source = new RegExp(`\\(widgets/${escapeRegex(tagName)}/${escapedFile}\\)`);
-  return target.test(content) || source.test(content);
+export function isJarMnFileRegistered(
+  content: string,
+  tagName: string,
+  file: string,
+  exact = false
+): boolean {
+  return content.split(/\r?\n/).some((line) => {
+    const entry = /^\s*[*+]?\s*([^\s#]+)\s+\(([^)]+)\)\s*(?:#.*)?$/.exec(line);
+    if (!entry) return false;
+    const target = entry[1] === `content/global/elements/${file}`;
+    const source = entry[2] === `widgets/${tagName}/${file}`;
+    return exact ? target && source : target || source;
+  });
 }
 
 /**
@@ -348,7 +357,7 @@ export interface StaleJarMnEntry {
   line: string;
 }
 
-const WIDGET_SOURCE_MAPPING_PATTERN = /\(widgets\/([^/)]+)\/([^)]+)\)/;
+const WIDGET_SOURCE_MAPPING_PATTERN = /^widgets\/([^/]+)\/(.+)$/;
 
 /**
  * Scans jar.mn for widget registration lines `(widgets/<tag>/<file>)` whose
@@ -367,14 +376,15 @@ export async function findStaleJarMnEntries(
 
   const managed = new Set(managedTags);
   const stale: StaleJarMnEntry[] = [];
-  for (const line of (await readText(filePath)).split('\n')) {
-    const match = WIDGET_SOURCE_MAPPING_PATTERN.exec(line);
+  for (const token of tokenizeJarMn((await readText(filePath)).split('\n'))) {
+    if (!token.parsed) continue;
+    const match = WIDGET_SOURCE_MAPPING_PATTERN.exec(token.parsed.source);
     if (!match) continue;
     const tagName = match[1] ?? '';
     const fileName = match[2] ?? '';
     if (!managed.has(tagName)) continue;
     if (!(await pathExists(join(customDir, tagName, fileName)))) {
-      stale.push({ tagName, fileName, line: line.trim() });
+      stale.push({ tagName, fileName, line: token.raw.trim() });
     }
   }
   return stale;

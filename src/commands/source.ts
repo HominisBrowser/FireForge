@@ -75,19 +75,27 @@ export async function sourceSetCommand(
     );
   }
 
-  const written = await withConfigFileLock(projectRoot, async () => {
+  const { firefox: written, checksumDropped } = await withConfigFileLock(projectRoot, async () => {
     const raw = await loadRawConfigDocument(projectRoot);
     const updated = cloneRawConfig(raw);
     const existingFirefox = updated['firefox'];
     const firefox: JsonObject = isJsonObject(existingFirefox) ? { ...existingFirefox } : {};
 
+    // A checksum pins one archive, so it cannot outlive the version or product it was taken from.
+    const samePin =
+      firefox['version'] === options.version && firefox['product'] === options.product;
+    const hadChecksum = firefox['sha256'] !== undefined;
     firefox['version'] = options.version;
     firefox['product'] = options.product;
     if (options.clearSha256 === true) {
       delete firefox['sha256'];
     } else if (options.sha256 !== undefined) {
       firefox['sha256'] = options.sha256;
+    } else if (!samePin) {
+      delete firefox['sha256'];
     }
+    const checksumDropped =
+      !samePin && options.clearSha256 !== true && options.sha256 === undefined && hadChecksum;
     if (options.clearCandidate === true) {
       delete firefox['candidate'];
     } else if (options.candidate !== undefined) {
@@ -101,7 +109,7 @@ export async function sourceSetCommand(
     }
 
     await writeConfigDocument(projectRoot, updated);
-    return validated.firefox;
+    return { firefox: validated.firefox, checksumDropped };
   });
 
   const archive = resolveArchive(written.version, written.product, written.candidate);
@@ -109,10 +117,14 @@ export async function sourceSetCommand(
   success(`Set firefox.version = ${written.version}`);
   success(`Set firefox.product = ${written.product}`);
   success(`Resolved source URL: ${archive.url}`);
-  if (written.sha256 !== undefined) {
+  if (options.sha256 !== undefined && written.sha256 !== undefined) {
     success(`Set firefox.sha256 = ${written.sha256}`);
+  } else if (written.sha256 !== undefined) {
+    info(`Retained firefox.sha256 = ${written.sha256}`);
   } else if (options.clearSha256 === true) {
     info('Cleared firefox.sha256');
+  } else if (checksumDropped) {
+    info('Cleared firefox.sha256: it pinned the previous archive. Pass --sha256 to pin this one.');
   }
   if (written.candidate !== undefined) {
     success(`Set firefox.candidate = ${written.candidate}`);

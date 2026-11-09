@@ -33,6 +33,7 @@ import { toError } from '../utils/errors.js';
 import { info } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
 import { escapeRegex } from '../utils/regex.js';
+import { skippedFurnaceFailureHint } from './test-build-furnace.js';
 import type { TestRunOutcome } from './test-run.js';
 import { emitHarnessVerdict } from './test-verdict.js';
 
@@ -194,7 +195,8 @@ function handleNonZeroTestExit(
    */
   verdict?: HarnessRunVerdict
 ): void {
-  if (result.exitCode === 0 || result.exitCode === 130) return;
+  if (result.exitCode === 130) return;
+  if (result.exitCode === 0 && (verdict === undefined || verdict.kind === 'tests-ran-ok')) return;
   const combinedOutput = `${result.stdout}\n${result.stderr}`;
   if (/copyExtraFilesToProfile/.test(combinedOutput) && /FileExistsError/.test(combinedOutput)) {
     throw new GeneralError(
@@ -268,7 +270,9 @@ function handleNonZeroTestExit(
   const logPath = getActiveRunLogPath();
   throw new TestFailureError(
     withContext(
-      `Tests failed with exit code ${result.exitCode}.` +
+      (result.exitCode === 0
+        ? 'Tests failed despite mach exiting 0; captured failure evidence is authoritative.'
+        : `Tests failed with exit code ${result.exitCode}.`) +
         (changedPrefNoise !== undefined ? `\n\n${changedPrefNoise}` : '')
     ),
     'mach test',
@@ -296,6 +300,10 @@ export function finalizeSingleRunOutcome(
   // consumers grep one stable line instead of mach internals.
   try {
     applySingleRunOutcome(outcome, normalizedPaths, binaryName, postRebuildContext, headless);
+  } catch (error: unknown) {
+    const skipped = skippedFurnaceFailureHint();
+    if (skipped !== undefined) info(skipped);
+    throw error;
   } finally {
     emitHarnessVerdict(outcome.verdict);
   }
@@ -339,10 +347,13 @@ function applySingleRunOutcome(
       getActiveRunLogPath()
     );
   }
-  if (outcome.verdict.kind === 'no-tests' && outcome.result.exitCode === 0) {
+  const zeroChecks = outcome.verdict.checks === 0;
+  if (outcome.verdict.kind === 'no-tests' && (outcome.result.exitCode === 0 || zeroChecks)) {
     // The silent false green: exit 0 plus a "Passed: 0"-style summary with
     // zero TEST-START lines must fail rather than pass.
-    throw new GeneralError(buildNoTestsRanMessage(0, normalizedPaths));
+    throw new GeneralError(
+      buildNoTestsRanMessage(outcome.result.exitCode, normalizedPaths, zeroChecks)
+    );
   }
   // A green-looking summary rejected on crash/truncation evidence gets its
   // own explanation instead of the generic exit-code message, so the
@@ -389,16 +400,27 @@ export function diagnoseShardOutcome(
   binaryName: string,
   postRebuildContext: PostRebuildFailureContext | undefined
 ): string | undefined {
-  if (outcome.verdict.kind === 'no-tests' && outcome.result.exitCode === 0) {
-    return buildNoTestsRanMessage(0, [path]);
+  const withSkipped = (message: string): string => {
+    const skipped = skippedFurnaceFailureHint();
+    return skipped === undefined ? message : `${message}\n\n${skipped}`;
+  };
+  if (
+    outcome.verdict.kind === 'no-tests' &&
+    (outcome.result.exitCode === 0 || outcome.verdict.checks === 0)
+  ) {
+    return withSkipped(
+      buildNoTestsRanMessage(outcome.result.exitCode, [path], outcome.verdict.checks === 0)
+    );
   }
   if (outcome.verdict.incomplete !== undefined) {
-    return buildIncompleteRunMessage(outcome.verdict.incomplete);
+    return withSkipped(buildIncompleteRunMessage(outcome.verdict.incomplete));
   }
   if (outcome.verdict.greenSummaryRejected) {
-    return buildGreenSummaryRejectedMessage(
-      outcome.verdict.greenSummaryRejected,
-      outcome.result.exitCode
+    return withSkipped(
+      buildGreenSummaryRejectedMessage(
+        outcome.verdict.greenSummaryRejected,
+        outcome.result.exitCode
+      )
     );
   }
   try {
@@ -407,13 +429,14 @@ export function diagnoseShardOutcome(
       [path],
       outcome.appdirInjectionAttempted,
       binaryName,
-      postRebuildContext
+      postRebuildContext,
+      outcome.verdict
     );
     return undefined;
   } catch (error: unknown) {
     const diagnosis = toError(error).message;
     const blocks = formatFailureBlocks(outcome.verdict.realFailureBlocks);
-    return blocks !== undefined ? `${blocks}\n${diagnosis}` : diagnosis;
+    return withSkipped(blocks !== undefined ? `${blocks}\n${diagnosis}` : diagnosis);
   }
 }
 

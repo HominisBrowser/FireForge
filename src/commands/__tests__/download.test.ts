@@ -150,14 +150,38 @@ describe('downloadCommand', () => {
     );
   });
 
-  it('restores the previous engine when forced git initialization fails after replacement', async () => {
+  it('indexes a forced replacement before activating it, leaving engine/ untouched when that fails', async () => {
     vi.mocked(initRepository).mockRejectedValue(new Error('git add failed'));
 
     await expect(downloadCommand('/project', { force: true })).rejects.toThrow('git add failed');
 
     expect(warn).toHaveBeenCalledWith(
-      'Replacement engine/ failed during baseline git initialization. FireForge will try to restore the previous engine.'
+      'Replacement engine failed during baseline git initialization; the existing engine/ was left untouched.'
     );
+    expect(initRepository).toHaveBeenCalledWith(
+      expect.stringMatching(
+        new RegExp(`^${escapeRegex(nativePath('/project/engine'))}\\.replacement-`)
+      ),
+      'firefox',
+      expect.anything()
+    );
+    expect(mockRename).not.toHaveBeenCalled();
+    expect(removeDir).toHaveBeenCalledWith(
+      expect.stringMatching(
+        new RegExp(`^${escapeRegex(nativePath('/project/engine'))}\\.replacement-`)
+      )
+    );
+    expect(removeDir).not.toHaveBeenCalledWith(nativePath('/project/engine'));
+  });
+
+  it('restores the previous engine when recording the new baseline fails after activation', async () => {
+    const configMod = await import('../../core/config.js');
+    vi.mocked(configMod.updateState).mockRejectedValueOnce(new Error('state write failed'));
+
+    await expect(downloadCommand('/project', { force: true })).rejects.toThrow(
+      'state write failed'
+    );
+
     expect(warn).toHaveBeenCalledWith(
       'Restored the previous engine/ after the forced replacement failed.'
     );
@@ -165,13 +189,6 @@ describe('downloadCommand', () => {
       1,
       nativePath('/project/engine'),
       expect.stringMatching(new RegExp(`^${escapeRegex(nativePath('/project/engine'))}\\.backup-`))
-    );
-    expect(mockRename).toHaveBeenNthCalledWith(
-      2,
-      expect.stringMatching(
-        new RegExp(`^${escapeRegex(nativePath('/project/engine'))}\\.replacement-`)
-      ),
-      nativePath('/project/engine')
     );
     expect(mockRename).toHaveBeenNthCalledWith(
       3,

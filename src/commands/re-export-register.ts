@@ -89,6 +89,10 @@ export function registerReExport(
       ...stringListOption()
     )
     .option(
+      '--adjacent-ignore-from <file>',
+      'Read --adjacent-ignore entries from a file, one path or glob per line (blank lines and # comments ignored). Adds to any --adjacent-ignore flags.'
+    )
+    .option(
       '--expect-removed <path>',
       'Retire a file from the selected patch while keeping scan-less refusals armed: an absent file the patch created, or a patch-modified upstream file whose engine copy is back at HEAD. Repeatable.',
       ...stringListOption()
@@ -140,14 +144,20 @@ export function registerReExport(
       // Refuse what the locked run would refuse before queueing for the
       // lock, which can be a long wait under contention.
       await preflightReExportArguments(projectRoot, patches, reExportOptions);
-      // A dry run writes nothing, so it does not queue behind peers' builds
-      // and test runs for the engine lock. Its git plumbing runs on a
-      // private index, so not even git's stat-cache refresh reaches the
-      // shared `.git/index`; dry runs still serialize among themselves.
+      // A private index prevents Git's stat-cache writes, while a shared
+      // engine hold prevents controls/builds from mutating the files read
+      // by the preview. Acquire it before copying the private index and
+      // before the command's narrower dry-run serialization lock.
       if (reExportOptions.dryRun === true) {
         const engineDir = getProjectPaths(projectRoot).engine;
-        await withPrivateGitIndex(engineDir, () =>
-          reExportCommand(projectRoot, patches, reExportOptions)
+        await withEngineSessionLock(
+          projectRoot,
+          're-export --dry-run',
+          () =>
+            withPrivateGitIndex(engineDir, () =>
+              reExportCommand(projectRoot, patches, reExportOptions)
+            ),
+          { mode: 'shared', waitLockSeconds: resolveWaitLockSeconds(options.waitLock) }
         );
         return;
       }
@@ -175,6 +185,7 @@ interface ReExportCliOptions {
   expectFrom?: string;
   expectNew?: string[];
   adjacentIgnore?: string[];
+  adjacentIgnoreFrom?: string;
   expectRemoved?: string[];
   declarationsOut?: string;
   hunksFrom?: string;
@@ -208,11 +219,18 @@ async function toReExportOptions(options: ReExportCliOptions): Promise<ReExportO
     expectUnmanaged,
     expectNew,
     adjacentIgnore,
+    adjacentIgnoreFrom,
     ...rest
   } = options;
   const expect = [
     ...(expectFlags ?? []),
     ...(expectFrom !== undefined ? await readPathListFile(expectFrom, '--expect-from') : []),
+  ];
+  const ignoreEntries = [
+    ...(adjacentIgnore ?? []),
+    ...(adjacentIgnoreFrom !== undefined
+      ? await readPathListFile(adjacentIgnoreFrom, '--adjacent-ignore-from')
+      : []),
   ];
   return {
     ...pickDefined({
@@ -224,7 +242,7 @@ async function toReExportOptions(options: ReExportCliOptions): Promise<ReExportO
       expect: nonEmpty(expect),
       expectUnmanaged: nonEmpty(expectUnmanaged),
       expectNew: nonEmpty(expectNew),
-      adjacentIgnore: nonEmpty(adjacentIgnore),
+      adjacentIgnore: nonEmpty(ignoreEntries),
     }),
     ...(cache === false ? { noCache: true } : {}),
   };

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { GeneralError } from '../errors/base.js';
 import { escapeRegex } from '../utils/regex.js';
+import { scopedJarTokens } from './moz-manifest-entries.js';
 import type { JarMnToken, MozBuildToken } from './moz-manifest-tokenizers.js';
 import { tokenizeJarMn, tokenizeMozBuildList } from './moz-manifest-tokenizers.js';
 
@@ -141,7 +142,27 @@ export function insertJarMnEntry(
   afterFallback: boolean;
 } {
   const lines = content.split('\n');
-  const tokens = tokenizeJarMn(lines);
+  const scoped = scopedJarTokens(content);
+  const incoming = tokenizeJarMn([entry])[0]?.parsed;
+  if (incoming && scoped.some(({ token }) => token.parsed?.target === incoming.target)) {
+    throw new GeneralError(
+      `Jar destination already registered with a different source: ${incoming.target}`
+    );
+  }
+  const matches = scoped.filter(
+    ({ token }) => token.parsed && options.sortPattern.test(token.parsed.target)
+  );
+  const archives = new Set(matches.map(({ archive }) => archive));
+  if (archives.size === 0) {
+    for (const { token, archive } of scoped) if (token.type === 'header') archives.add(archive);
+    if (![...scoped].some(({ token }) => token.type === 'header')) archives.add(0);
+  }
+  if (archives.size !== 1)
+    throw new GeneralError('Ambiguous jar.mn archive; select an explicit packaging region');
+  const archive = [...archives][0];
+  const tokens = scoped
+    .filter((item) => item.archive === archive && !item.conditional)
+    .map((item) => item.token);
   let afterFallback = false;
 
   let insertIndex: number;
@@ -152,7 +173,23 @@ export function insertJarMnEntry(
 
   if (options.after) {
     const afterPattern = new RegExp(`(?:^|/)${escapeRegex(options.after)}(?:\\s|\\)|$)`);
-    const afterToken = tokens.find((t) => afterPattern.test(t.raw));
+    const afterToken = tokens.find(
+      (t) => t.type === 'entry' && t.parsed && afterPattern.test(t.raw)
+    );
+    if (
+      !afterToken &&
+      scoped.some(
+        (item) =>
+          item.archive === archive &&
+          item.conditional &&
+          item.token.parsed &&
+          afterPattern.test(item.token.raw)
+      )
+    ) {
+      throw new GeneralError(
+        'The requested jar.mn anchor is conditional; choose an unconditional anchor'
+      );
+    }
     if (afterToken) {
       insertIndex = afterToken.lineIndex + 1;
       previousEntry = afterToken.raw.trim();
@@ -200,6 +237,10 @@ export function insertMozBuildListEntry(
 
   if (!listResult) {
     throw new GeneralError(options.missingListMessage);
+  }
+
+  if (tokenizeMozBuildList([...lines], options.listPattern, listResult.endLine + 1)) {
+    throw new GeneralError('Ambiguous moz.build list; select an explicit packaging region');
   }
 
   const { insertIndex, previousEntry } = findAlphabeticalMozBuildPosition(

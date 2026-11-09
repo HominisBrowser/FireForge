@@ -122,6 +122,25 @@ describe('re-export adjacency scope', () => {
     await removeTempProject(projectRoot);
   });
 
+  it('treats a file explicitly adopted by another selected patch as expected for the whole transaction', async () => {
+    const neighbour = `${TEST_DIR}/browser_other.js`;
+    const adopted = `${TEST_DIR}/browser_new.js`;
+    await writeFiles(projectRoot, {
+      'patches/patches.json': `${JSON.stringify({ version: 1, patches: PATCHES.map((patch) => (patch.filename === '002-ui-module.patch' ? { ...patch, filesAffected: [MODULE_OWNED, neighbour] } : patch)) })}\n`,
+      [`engine/${neighbour}`]: 'other\n',
+      [`engine/${adopted}`]: 'new\n',
+    });
+    await expect(
+      reExportCommand(projectRoot, ['002', '001'], {
+        scan: true,
+        scanFiles: [`001:${adopted}`],
+        refuseAdjacentUnmanaged: true,
+        skipLint: true,
+      })
+    ).resolves.toBeUndefined();
+    expect(await readProjectText(projectRoot, 'patches/001-ui-tests.patch')).toContain(adopted);
+  });
+
   it('does not count a peer file in a sibling directory as adjacent', async () => {
     await writeFiles(engine, {
       'browser/base/content/test/hominis-tiles/browser_peer.js': 'peer\n',

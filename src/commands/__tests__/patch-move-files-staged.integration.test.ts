@@ -181,6 +181,69 @@ describe('patch move-files --create staged-dependency upkeep', () => {
     expect(history).toContain('"droppedDeclarations"');
   });
 
+  /** Gives 009 a second file so moving LATER out does not empty it. */
+  async function keepSourceNonEmpty(manifest: PatchesManifest): Promise<void> {
+    const extra = 'browser/modules/Extra.sys.mjs';
+    await writeFiles(engineDir, { [extra]: 'export const E = 1;\n' });
+    const source = manifest.patches.find((p) => p.filename === '009-ui-later.patch');
+    if (source) source.filesAffected = [LATER, extra];
+  }
+
+  it('into an existing patch: drops a declaration the move made unused and names it', async () => {
+    await seedForwardImport();
+    const manifestPath = join(patchesDir, 'patches.json');
+    const seeded = JSON.parse(await readFile(manifestPath, 'utf8')) as PatchesManifest;
+    await keepSourceNonEmpty(seeded);
+    seeded.patches.unshift(meta('001-ui-base.patch', 1, [FILE_A]));
+    await writeFile(manifestPath, JSON.stringify(seeded, null, 2));
+    await writeFile(join(patchesDir, '001-ui-base.patch'), newFileDiff(FILE_A, 'original js;'));
+    const infos: string[] = [];
+    vi.spyOn(logger, 'info').mockImplementation((message: string) => {
+      infos.push(message);
+    });
+
+    // 001 precedes 002, so the later module's creator no longer follows its importer.
+    await patchMoveFilesCommand(projectRoot, '009-ui-later.patch', '001-ui-base.patch', {
+      file: [LATER],
+      yes: true,
+      skipLint: true,
+    });
+
+    const manifest = await readManifest(patchesDir);
+    for (const patch of manifest.patches) expect(patch.stagedDependencies).toBeUndefined();
+    expect(
+      manifest.patches.find((p) => p.filename === '001-ui-base.patch')?.filesAffected
+    ).toContain(LATER);
+    const text = infos.join('\n');
+    expect(text).toContain('dropped because the move made them unused (1):');
+    expect(text).toContain(`002-ui-source.patch: ${IMPORTER} imports`);
+    const history = await readFile(join(patchesDir, '..', '.fireforge', 'history.jsonl'), 'utf8');
+    expect(history).toContain('"droppedDeclarations"');
+  });
+
+  it('into an existing patch: keeps a declaration that is still forward', async () => {
+    await seedForwardImport();
+    const manifestPath = join(patchesDir, 'patches.json');
+    const seeded = JSON.parse(await readFile(manifestPath, 'utf8')) as PatchesManifest;
+    await keepSourceNonEmpty(seeded);
+    seeded.patches.push(meta('012-ui-tail.patch', 12, [FILE_A]));
+    await writeFile(manifestPath, JSON.stringify(seeded, null, 2));
+    await writeFile(join(patchesDir, '012-ui-tail.patch'), newFileDiff(FILE_A, 'original js;'));
+
+    // 012 follows 002, so the import stays forward and the declaration is re-pointed.
+    await patchMoveFilesCommand(projectRoot, '009-ui-later.patch', '012-ui-tail.patch', {
+      file: [LATER],
+      yes: true,
+      skipLint: true,
+    });
+
+    const manifest = await readManifest(patchesDir);
+    expect(
+      manifest.patches.find((p) => p.filename === '002-ui-source.patch')?.stagedDependencies
+        ?.forwardImports
+    ).toEqual([expect.objectContaining({ owner: '012-ui-tail.patch' })]);
+  });
+
   it('re-points registration owners whose creates path moved', async () => {
     const jar = 'browser/base/jar.mn';
     await writeFiles(engineDir, { [jar]: '  content/later.js\n' });

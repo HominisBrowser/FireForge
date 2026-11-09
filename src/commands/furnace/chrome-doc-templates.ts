@@ -255,7 +255,7 @@ export function generateChromeDocCss(
   --${name}-padding: 16px;
 }
 
-#${name}-window {
+[data-furnace-chrome-doc="${name}"] {
   display: flex;
   flex-direction: column;
   min-height: 100vh;

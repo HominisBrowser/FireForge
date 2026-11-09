@@ -22,29 +22,37 @@
  * never touched, and neither is `.git/index.lock`, which is what makes a
  * concurrent `git status` fail outright rather than merely churn.
  *
- * Fail-open by design: if the git dir or the index cannot be resolved or
- * copied, the scope does not activate and the commands behave exactly as
- * before. A read-only command must not start failing because an optimisation
- * could not be set up.
+ * If repository metadata or the private index cannot be established, the
+ * command refuses before its operation begins. A positively confirmed non-Git
+ * location or absent engine still gets an empty private index, so queue-only
+ * checks work and a concurrently initialized repository stays isolated.
+ * An index-bearing repository never falls back to a shared
+ * index whose refreshes could invalidate another lane.
  *
- * The scope is process-global and non-reentrant on purpose: FireForge
- * commands are one-shot CLI invocations, and nesting two different private
- * indexes for the same run has no meaning. A nested call reuses the outer
- * scope.
+ * Async-local scopes isolate concurrent callers and preserve nested repository
+ * contexts; same-repository nesting reuses only its own ancestor scope.
  */
 
-import { copyFile } from 'node:fs/promises';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { realpathSync } from 'node:fs';
+import { copyFile, realpath, stat, utimes } from 'node:fs/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 
-import { toError } from '../utils/errors.js';
-import { pathExists } from '../utils/fs.js';
+import { GitError } from '../errors/git.js';
+import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { verbose } from '../utils/logger.js';
 import { exec } from '../utils/process.js';
+import { HERMETIC_GIT_ENV_UNSET, hermeticGitEnvironment } from './git-hermetic.js';
 
 /** The active private-index scope, when a read-only command installed one. */
-let activeScope: { repoDir: string; indexFile: string } | undefined;
+interface IndexScope {
+  repoDir: string;
+  indexFile: string;
+  parent?: IndexScope;
+}
+const indexScopes = new AsyncLocalStorage<IndexScope>();
 
 /** Bound on the git-dir probe so a wedged git cannot stall a read-only run. */
 const GIT_DIR_PROBE_TIMEOUT_MS = 30_000;
@@ -61,11 +69,21 @@ const GIT_DIR_PROBE_TIMEOUT_MS = 30_000;
  * @returns `{ GIT_INDEX_FILE }` when scoped, otherwise undefined
  */
 export function readOnlyGitIndexEnv(cwd: string): Record<string, string> | undefined {
-  if (activeScope === undefined) return undefined;
-  const resolved = resolve(cwd);
-  const scoped = activeScope.repoDir;
-  if (resolved !== scoped && !resolved.startsWith(`${scoped}/`)) return undefined;
-  return { GIT_INDEX_FILE: activeScope.indexFile };
+  const current = indexScopes.getStore();
+  if (current === undefined) return undefined;
+  let resolved = resolve(cwd);
+  for (let scope: IndexScope | undefined = current; scope; scope = scope.parent)
+    if (resolved === scope.repoDir || resolved.startsWith(scope.repoDir + sep))
+      return { GIT_INDEX_FILE: scope.indexFile };
+  try {
+    resolved = realpathSync(cwd);
+  } catch {
+    return undefined;
+  }
+  for (let scope: IndexScope | undefined = current; scope; scope = scope.parent)
+    if (resolved === scope.repoDir || resolved.startsWith(scope.repoDir + sep))
+      return { GIT_INDEX_FILE: scope.indexFile };
+  return undefined;
 }
 
 /**
@@ -73,13 +91,16 @@ export function readOnlyGitIndexEnv(cwd: string): Record<string, string> | undef
  * that is not a readable git checkout. `engine/` is not always one
  * (`fireforge download` extracts a source tarball).
  */
-async function resolveGitDir(repoDir: string): Promise<string | undefined> {
+async function resolveGitDir(repoDir: string): Promise<string | null | undefined> {
   try {
     const result = await exec('git', ['rev-parse', '--absolute-git-dir'], {
       cwd: repoDir,
+      env: hermeticGitEnvironment(),
+      envUnset: HERMETIC_GIT_ENV_UNSET,
       timeout: GIT_DIR_PROBE_TIMEOUT_MS,
     });
-    if (result.exitCode !== 0) return undefined;
+    if (result.exitCode !== 0)
+      return /fatal: not a git repository(?:[ (]|$)/i.test(result.stderr) ? null : undefined;
     const gitDir = result.stdout.trim();
     return gitDir.length > 0 ? gitDir : undefined;
   } catch (error: unknown) {
@@ -101,20 +122,38 @@ export async function withPrivateGitIndex<T>(
   repoDir: string,
   operation: () => Promise<T>
 ): Promise<T> {
-  if (activeScope !== undefined) return operation();
-
-  const gitDir = await resolveGitDir(repoDir);
-  if (gitDir === undefined) return operation();
-
-  const minted = await mintPrivateIndex(gitDir);
-  if (minted === undefined) return operation();
-
-  activeScope = { repoDir: resolve(repoDir), indexFile: minted.indexFile };
-  verbose(`Private git index active for ${repoDir} (${minted.indexFile}).`);
+  let canonical: string,
+    absent = false;
   try {
-    return await operation();
+    canonical = await realpath(repoDir);
+  } catch (error) {
+    if (getNodeErrorCode(error) !== 'ENOENT') throw error;
+    canonical = join(await realpath(dirname(repoDir)), basename(repoDir));
+    absent = true;
+  }
+  const parent = indexScopes.getStore();
+  for (let scope: IndexScope | undefined = parent; scope; scope = scope.parent)
+    if (scope.repoDir === canonical) return operation();
+  const gitDir = absent ? null : await resolveGitDir(canonical);
+  if (gitDir === undefined)
+    throw new GitError(
+      'Cannot establish repository metadata for an isolated read-only index',
+      'private-index'
+    );
+  const minted = await mintPrivateIndex(gitDir);
+  if (minted === undefined)
+    throw new GitError(
+      'Cannot create a private read-only index; refusing shared-index fallback',
+      'private-index'
+    );
+  const scope: IndexScope = {
+    repoDir: canonical,
+    indexFile: minted.indexFile,
+    ...(parent ? { parent } : {}),
+  };
+  try {
+    return await indexScopes.run(scope, operation);
   } finally {
-    activeScope = undefined;
     await minted.dispose();
   }
 }
@@ -139,8 +178,7 @@ export interface DisposableGitIndex {
  *
  * The distinction from {@link withPrivateGitIndex} matters. That one exists
  * so a read-only command's incidental index refreshes do not touch the
- * primary checkout, and it is process-global, non-reentrant, and fail-open,
- * all of which are right for that job. This one serves a caller whose index
+ * primary checkout, and it is async-local and fail-closed. This one serves a caller whose index
  * write is intentional and whose visibility is the defect: it is per-call, so
  * two concurrent callers cannot collide, and it never depends on an ambient
  * scope having been installed by whichever command happens to be running.
@@ -159,7 +197,7 @@ export async function mintDisposableGitIndex(
   repoDir: string
 ): Promise<DisposableGitIndex | undefined> {
   const gitDir = await resolveGitDir(repoDir);
-  if (gitDir === undefined) return undefined;
+  if (gitDir == null) return undefined;
   const minted = await mintPrivateIndex(gitDir);
   if (minted === undefined) return undefined;
   return { env: { GIT_INDEX_FILE: minted.indexFile }, dispose: minted.dispose };
@@ -171,17 +209,25 @@ export async function mintDisposableGitIndex(
  * index available", and none of them wants an exception from an optimisation.
  */
 async function mintPrivateIndex(
-  gitDir: string
+  gitDir: string | null
 ): Promise<{ indexFile: string; dispose: () => Promise<void> } | undefined> {
   let tempDir: string | undefined;
   try {
     tempDir = await mkdtemp(join(tmpdir(), 'fireforge-roindex-'));
     const privateIndex = join(tempDir, 'index');
-    const sourceIndex = join(gitDir, 'index');
+    const sourceIndex = gitDir === null ? undefined : join(gitDir, 'index');
     // A repository with no index yet (a fresh init) is fine: git creates
     // the private one on first use.
-    if (await pathExists(sourceIndex)) {
-      await copyFile(sourceIndex, privateIndex);
+    try {
+      if (sourceIndex !== undefined) {
+        await copyFile(sourceIndex, privateIndex);
+        // Git trusts a same-size file whose second is older than the index's own
+        // time, so a copy has to keep that time or it hides a same-second edit.
+        const { atime, mtime } = await stat(sourceIndex);
+        await utimes(privateIndex, atime, mtime);
+      }
+    } catch (error) {
+      if (getNodeErrorCode(error) !== 'ENOENT') throw error;
     }
     const dir = tempDir;
     return {

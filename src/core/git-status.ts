@@ -20,13 +20,11 @@ function isRenameOrCopyColumn(column: string): boolean {
  * A rename or copy occupies two NUL records (`XY new\0old\0`), and the `R`/`C`
  * may sit in either column: git >= 2.18 detects renames in the worktree too
  * (`status.renames`), emitting ` R new\0old\0` for an unstaged rename and
- * `RM`/`R ` for a staged one. Only consuming the second record for an index
- * `R`/`C` turned the worktree form's `old` field into a bogus extra entry
- * whose status was whatever its first two path characters happened to be.
+ * `RM`/`R ` for a staged one. The second record is consumed for an `R`/`C` in
+ * either column.
  * @param output - Raw git status output
  * @returns Parsed entries
  */
-/** @internal Exported for testing */
 export function parsePorcelainStatus(output: string): GitStatusEntry[] {
   const records = output.split('\0').filter((record) => record.length > 0);
   const entries: GitStatusEntry[] = [];
@@ -107,10 +105,11 @@ export function resolveMaxUntrackedFilesPerDir(): number {
  */
 export async function expandUntrackedDirectoryEntries(
   repoDir: string,
-  entries: GitStatusEntry[]
+  entries: GitStatusEntry[],
+  options: { complete?: boolean } = {}
 ): Promise<GitStatusEntry[]> {
   const expanded: GitStatusEntry[] = [];
-  const maxPerDir = resolveMaxUntrackedFilesPerDir();
+  const maxPerDir = options.complete ? Number.POSITIVE_INFINITY : resolveMaxUntrackedFilesPerDir();
   const collapsed = entries
     .filter((entry) => entry.isUntracked && entry.file.endsWith('/'))
     .map((entry) => entry.file);
@@ -191,8 +190,8 @@ export async function listUntrackedFilesInDirs(
  */
 export async function getUntrackedFiles(repoDir: string): Promise<string[]> {
   // Use git ls-files to get all untracked files, which properly expands directories
-  const output = await git(['ls-files', '--others', '--exclude-standard'], repoDir);
-  return output.split('\n').filter((line) => line.trim().length > 0);
+  const output = await git(['ls-files', '--others', '--exclude-standard', '-z'], repoDir);
+  return output.split('\0').filter((line) => line.length > 0);
 }
 
 /**
@@ -203,8 +202,11 @@ export async function getUntrackedFiles(repoDir: string): Promise<string[]> {
  * @returns List of untracked file paths relative to repo root
  */
 export async function getUntrackedFilesInDir(repoDir: string, dir: string): Promise<string[]> {
-  const output = await git(['ls-files', '--others', '--exclude-standard', '--', dir], repoDir);
-  return output.split('\n').filter((line) => line.trim().length > 0);
+  const output = await git(
+    ['ls-files', '--others', '--exclude-standard', '-z', '--', dir],
+    repoDir
+  );
+  return output.split('\0').filter((line) => line.length > 0);
 }
 
 /**
@@ -215,8 +217,8 @@ export async function getUntrackedFilesInDir(repoDir: string, dir: string): Prom
  * @returns List of modified file paths relative to repo root
  */
 export async function getModifiedFilesInDir(repoDir: string, dir: string): Promise<string[]> {
-  const output = await git(['diff', '--name-only', 'HEAD', '--', dir], repoDir);
-  return output.split('\n').filter((line) => line.trim().length > 0);
+  const output = await git(['diff', '--name-only', '-z', 'HEAD', '--', dir], repoDir);
+  return output.split('\0').filter((line) => line.length > 0);
 }
 
 /**
@@ -228,15 +230,15 @@ export async function getModifiedFilesInDir(repoDir: string, dir: string): Promi
 export async function getDirtyFiles(repoDir: string, files: string[]): Promise<string[]> {
   if (files.length === 0) return [];
   // Check both staged and unstaged changes for the given files
-  const trackedOutput = await git(['diff', '--name-only', 'HEAD', '--', ...files], repoDir);
-  const tracked = trackedOutput.split('\n').filter((line) => line.trim().length > 0);
+  const trackedOutput = await git(['diff', '--name-only', '-z', 'HEAD', '--', ...files], repoDir);
+  const tracked = trackedOutput.split('\0').filter((line) => line.length > 0);
 
   // Also check for untracked files
   const untrackedOutput = await git(
-    ['ls-files', '--others', '--exclude-standard', '--', ...files],
+    ['ls-files', '--others', '--exclude-standard', '-z', '--', ...files],
     repoDir
   );
-  const untracked = untrackedOutput.split('\n').filter((line) => line.trim().length > 0);
+  const untracked = untrackedOutput.split('\0').filter((line) => line.length > 0);
 
   return [...new Set([...tracked, ...untracked])].sort();
 }

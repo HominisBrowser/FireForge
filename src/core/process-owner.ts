@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { exec } from '../utils/process.js';
+import { isExplicitAbsolutePath, isPathInsideRoot } from '../utils/paths.js';
+import { listProcesses } from '../utils/process-list.js';
 
 /** Parent evidence; an unreadable parent is never proof of an orphan. */
 export async function readProcessOwner(
@@ -7,14 +8,15 @@ export async function readProcessOwner(
 ): Promise<{ parentPid: number; owner: string } | undefined> {
   if (process.platform === 'win32') return undefined;
   try {
-    const result = await exec('ps', ['-p', String(pid), '-o', 'ppid='], { timeout: 5000 });
-    const parentPid = Number(result.stdout.trim());
-    if (result.exitCode !== 0 || !Number.isSafeInteger(parentPid) || parentPid < 1)
-      return undefined;
+    const [row] = await listProcesses(['ppid'] as const, { pids: [pid], timeoutMs: 5000 });
+    const parentPid = row?.ppid;
+    if (parentPid === undefined || parentPid < 1) return undefined;
     if (parentPid === 1) return { parentPid, owner: 'init/launchd (parent exited)' };
-    const parent = await exec('ps', ['-p', String(parentPid), '-o', 'args='], { timeout: 5000 });
-    if (parent.exitCode !== 0 || !parent.stdout.trim()) return undefined;
-    return { parentPid, owner: parent.stdout.trim() };
+    const [parent] = await listProcesses(['args'] as const, {
+      pids: [parentPid],
+      timeoutMs: 5000,
+    });
+    return parent === undefined ? undefined : { parentPid, owner: parent.args };
   } catch {
     return undefined;
   }
@@ -35,10 +37,32 @@ export async function isStillOrphanedProcess(pid: number, commandLine: string): 
   // command-line appearance or enable a destructive PowerShell fallback.
   if (process.platform === 'win32') return false;
   try {
-    const result = await exec('ps', ['-p', String(pid), '-o', 'ppid=,args='], { timeout: 5000 });
-    const match = /^\s*(\d+)\s+(.+?)\s*$/.exec(result.stdout);
-    return result.exitCode === 0 && match?.[1] === '1' && match[2] === commandLine;
+    const [row] = await listProcesses(['ppid', 'args'] as const, {
+      pids: [pid],
+      timeoutMs: 5000,
+      requireCleanExit: true,
+    });
+    return row?.ppid === 1 && row.args === commandLine;
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether a holder's command line points into this checkout: any absolute
+ * token inside the engine directory or the objdir (a relocated objdir sits
+ * outside the engine). A token test, so `/a/x/engine` does not claim a holder
+ * under `/a/x-2/engine`.
+ *
+ * @param commandLine - The holder's full command line
+ * @param roots - This checkout's absolute directories
+ */
+export function commandIsInCheckout(
+  commandLine: string,
+  roots: readonly (string | undefined)[]
+): boolean {
+  const tokens = commandLine.split(/\s+/).filter(isExplicitAbsolutePath);
+  return roots.some(
+    (root) => root !== undefined && tokens.some((token) => isPathInsideRoot(root, token))
+  );
 }

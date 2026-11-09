@@ -4,8 +4,8 @@ import { readFile } from 'node:fs/promises';
 
 import { Command } from 'commander';
 
+import { assessBuildProvenance } from '../core/build-provenance.js';
 import { getProjectPaths, loadConfig } from '../core/config.js';
-import { cleanDevProfile } from '../core/dev-profile.js';
 import { assertEngineExists } from '../core/engine-precondition.js';
 import { warnIfFurnaceStale } from '../core/furnace-staleness.js';
 import { hasBuildArtifacts, hasRunnableBundle, run, runMachSmoke } from '../core/mach.js';
@@ -69,9 +69,11 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
   // to mach. `fireforge watch` stays permissive and surfaces the same
   // information as a banner suffix. Watch exists to drive rebuilds of
   // partially-built trees, so blocking there would defeat it.
+  let launchablePath: string | undefined;
   if (buildCheck.objDir) {
     const config = await loadConfig(projectRoot);
     const bundleCheck = await hasRunnableBundle(paths.engine, config.binaryName, buildCheck.objDir);
+    launchablePath = bundleCheck.expectedPath;
     if (!bundleCheck.runnable) {
       const expected = bundleCheck.expectedPath ?? `dist/bin/${config.binaryName}`;
       throw new GeneralError(
@@ -85,9 +87,7 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
 
   // Warn if Furnace components changed since the last apply
   await warnIfFurnaceStale(projectRoot);
-
-  // Clean stale profile state to prevent silent startup failures
-  await cleanDevProfile(paths.engine, { removeParentLock: true });
+  await warnAboutBuildProvenance(projectRoot, paths.engine, launchablePath);
 
   // Reclaim temporary profiles a SIGKILLed FireForge could not remove.
   const swept = await sweepAbandonedRunProfiles();
@@ -109,6 +109,27 @@ export async function runCommand(projectRoot: string, options: RunOptions = {}):
     await runInteractive(paths.engine, options, profile);
   } finally {
     await profile.dispose();
+  }
+}
+
+/**
+ * Says so when the browser about to launch is not the tree's: `run` is often how
+ * a person looks at an edit, and a binary carrying a negative control or built
+ * before that edit shows something else. A warning, since looking at an old
+ * build can be the point; a probe failure stays out of the way.
+ */
+async function warnAboutBuildProvenance(
+  projectRoot: string,
+  engineDir: string,
+  launchablePath: string | undefined
+): Promise<void> {
+  try {
+    const findings = await assessBuildProvenance(projectRoot, engineDir, launchablePath);
+    for (const finding of [findings.controlBuilt, ...(findings.stale ?? [])]) {
+      if (finding !== undefined) warn(finding);
+    }
+  } catch (probeError: unknown) {
+    verbose(`Build provenance check skipped: ${toError(probeError).message}`);
   }
 }
 
@@ -500,7 +521,7 @@ export function registerRun(
     )
     .option(
       '--no-purge-caches',
-      'With --profile, keep the profile startup cache (do not pass -purgecaches).'
+      'Keep the default or named profile startup cache (do not pass -purgecaches).'
     )
     .option(
       '--temp-profile',

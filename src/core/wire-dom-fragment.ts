@@ -12,10 +12,10 @@
 import { dirname, join, relative } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { toRootRelativePath } from '../utils/paths.js';
 import { normalizePathSlashes } from '../utils/paths.js';
 import { escapeRegex } from '../utils/regex.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
 import { tokenizeXhtml } from './wire-utils.js';
 
 export const DEFAULT_DOM_TARGET = 'browser/base/content/browser.xhtml';

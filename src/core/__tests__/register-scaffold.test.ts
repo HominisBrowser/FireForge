@@ -31,6 +31,12 @@ describe('upsertMozBuildListEntry', () => {
     expect(upsertMozBuildListEntry(content, 'DIRS', 'mybrowser')).toBeNull();
   });
 
+  it('does not treat the value in another directive as already wired', () => {
+    const content = 'BROWSER_CHROME_MANIFESTS += [\n    "mybrowser",\n]\n';
+    const updated = upsertMozBuildListEntry(content, 'DIRS', 'mybrowser');
+    expect(updated).toContain('DIRS += [\n    "mybrowser",\n]');
+  });
+
   it('appends a fresh block when the directive does not exist', () => {
     const content = 'EXTRA_JS_MODULES += [\n    "Foo.sys.mjs",\n]\n';
     const updated = upsertMozBuildListEntry(content, 'DIRS', 'mybrowser');

@@ -6,40 +6,15 @@
  */
 import { loadavg } from 'node:os';
 
+import type { CheckStepPlan } from '../core/check/steps.js';
+import type {
+  CheckOutputObserver,
+  CheckStepRecorder,
+  CheckStepResult,
+} from '../core/check/types.js';
 import { ExecTimeoutError } from '../errors/base.js';
 import { toError } from '../utils/errors.js';
 import { execStream } from '../utils/process.js';
-import type { CheckStepPlan } from './check-steps.js';
-
-/** What a step's table row and JSON entry report. */
-export interface CheckStepResult {
-  name: string;
-  kind: 'builtin' | 'extra';
-  /** The command line, as the table prints it. */
-  command: string;
-  status: 'pass' | 'fail' | 'skipped';
-  /**
-   * For a skipped step: `config` when `check.skip` names it, `unavailable`
-   * when the project has nothing for it to run.
-   */
-  skipKind?: 'config' | 'unavailable';
-  /** The child's exit code. Null when it never ran or was killed at its budget. */
-  exitCode: number | null;
-  durationMs: number;
-  /** One-line summary for the table. */
-  detail: string;
-  /** Set when the step was killed at its `timeout`. */
-  timedOut?: true;
-  /** The tail of the step's combined output, for a failed step. */
-  outputTail?: string;
-  /**
-   * The host's 1-minute load average when the step started and when it
-   * ended. Absent for a skipped step and on Windows, which has no load
-   * average.
-   */
-  load1Start?: number;
-  load1End?: number;
-}
 
 /** Samples the host's 1-minute load average; undefined where there is none. */
 type LoadSampler = () => number | undefined;
@@ -59,6 +34,12 @@ function loadFields(
 
 /** Combined output kept per step: enough for a tail, bounded for a chatty audit. */
 const COMBINED_OUTPUT_CAP = 256 * 1024;
+/**
+ * Stdout kept for a step that summarizes one JSON document. A document past it is
+ * dropped whole, since a cut one cannot parse, and the summary falls back to the
+ * combined tail's last line.
+ */
+const STDOUT_DOCUMENT_CAP = 4 * 1024 * 1024;
 /** Lines of output a failed step carries in its result. */
 const OUTPUT_TAIL_LINES = 40;
 
@@ -68,10 +49,11 @@ function tailLines(text: string): string {
 }
 
 /** Runs one planned step to completion. Never throws. */
-async function runStep(
+async function executeStep(
   plan: CheckStepPlan,
   now: () => number,
-  load: LoadSampler
+  load: LoadSampler,
+  observation?: CheckOutputObserver
 ): Promise<CheckStepResult> {
   const base = { name: plan.name, kind: plan.kind, command: plan.display };
   if (plan.skipReason !== undefined) {
@@ -85,6 +67,7 @@ async function runStep(
     };
   }
   let stdout = '';
+  let keepStdout = plan.stdoutDocument === true;
   let combined = '';
   const append = (chunk: string): void => {
     combined += chunk;
@@ -99,10 +82,20 @@ async function runStep(
       ...(plan.timeoutMs !== undefined ? { timeout: plan.timeoutMs } : {}),
       ...(plan.env !== undefined ? { env: plan.env } : {}),
       onStdout: (chunk) => {
-        stdout += chunk;
+        if (keepStdout) {
+          stdout += chunk;
+          if (stdout.length > STDOUT_DOCUMENT_CAP) {
+            stdout = '';
+            keepStdout = false;
+          }
+        }
+        observation?.append('stdout', chunk);
         append(chunk);
       },
-      onStderr: append,
+      onStderr: (chunk) => {
+        observation?.append('stderr', chunk);
+        append(chunk);
+      },
     });
     const status = exitCode === 0 ? 'pass' : 'fail';
     return {
@@ -131,6 +124,29 @@ async function runStep(
   }
 }
 
+/** A capture failure is a failed step, never an empty successful result or a lost running child. */
+async function runStep(
+  plan: CheckStepPlan,
+  now: () => number,
+  load: LoadSampler,
+  recorder?: CheckStepRecorder
+): Promise<CheckStepResult> {
+  if (!recorder || plan.skipReason !== undefined) return executeStep(plan, now, load);
+  try {
+    return await recorder(plan, (output) => executeStep(plan, now, load, output));
+  } catch (error) {
+    return {
+      name: plan.name,
+      kind: plan.kind,
+      command: plan.display,
+      status: 'fail',
+      exitCode: null,
+      durationMs: 0,
+      detail: `could not record complete execution: ${toError(error).message}`,
+    };
+  }
+}
+
 /**
  * Runs every step and returns the results in plan order. A step starts
  * once a slot is free and every step it runs `after` has finished
@@ -145,7 +161,8 @@ export async function runCheckSteps(
   plans: readonly CheckStepPlan[],
   jobs: number,
   now: () => number = Date.now,
-  load: LoadSampler = sampleLoad1
+  load: LoadSampler = sampleLoad1,
+  recorder?: CheckStepRecorder
 ): Promise<CheckStepResult[]> {
   const names = new Set(plans.map((plan) => plan.name));
   const results = new Map<string, CheckStepResult>();
@@ -165,7 +182,7 @@ export async function runCheckSteps(
       pending.splice(index, 1);
       running.set(
         plan.name,
-        runStep(plan, now, load).then((result) => {
+        runStep(plan, now, load, recorder).then((result) => {
           results.set(plan.name, result);
           running.delete(plan.name);
         })

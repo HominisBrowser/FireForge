@@ -6,8 +6,9 @@
 import { join } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
-import { pathExists, readText, writeText } from '../utils/fs.js';
 import { normalizePathSlashes } from '../utils/paths.js';
+import { pathExists, readText, writeText } from './authored/fs.js';
+import { jarHasEntry } from './moz-manifest-entries.js';
 import { insertJarMnEntry } from './moz-manifest-helpers.js';
 import type { RegisterResult } from './register-result.js';
 
@@ -55,7 +56,7 @@ export async function registerBrowserContent(
   const content = await readText(manifestPath);
 
   // Idempotency check
-  if (content.includes(`content/browser/${fileName}`)) {
+  if (jarHasEntry(content, [`content/browser/${fileName}`], source)) {
     return { manifest, entry, skipped: true };
   }
 

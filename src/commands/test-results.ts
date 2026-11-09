@@ -16,24 +16,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { RawTestResult } from '../core/test-raw-log.js';
+import type {
+  TestControlEvidence,
+  TestFileResult,
+  TestResultsDocument,
+} from '../core/test-results-document.js';
+import { CONTROL_BASELINE_REPETITION } from '../core/test-results-document.js';
+import type { StartMarkers } from '../core/test-run-completeness.js';
 import { writeJson } from '../utils/fs.js';
-
-/** One file's result in one dispatch. */
-export interface TestFileResult extends RawTestResult {
-  /** `--repeat` run (1-based); 1 for a single run. */
-  run: number;
-  /** The shard (path argument or `--shard-size` chunk) the file ran in. */
-  shard: string;
-  /** Line of the run log where this file's dispatch began (1-based). */
-  logLine: number;
-  /**
-   * The shard's dispatched files, on a harness pseudo-record only (see
-   * {@link HARNESS_PSEUDO_TEST}).
-   */
-  shardFiles?: string[];
-  /** The shard's one file, on a harness pseudo-record of a one-file shard. */
-  file?: string;
-}
 
 /**
  * The `test` id mozlog gives a result the harness itself reports, such as
@@ -43,13 +33,15 @@ export interface TestFileResult extends RawTestResult {
  */
 const HARNESS_PSEUDO_TEST = 'automation.py';
 
-/** The document `--results` writes. */
-export interface TestResultsDocument {
-  schemaVersion: 1;
-  /** Files in dispatch-completion order. */
-  files: TestFileResult[];
-  /** Started files that never ended, per dispatch. */
-  unfinished: Array<{ test: string; run: number; shard: string }>;
+/** Append only after restoration was checked against the control's byte and mode journal. */
+export function recordControlEvidence(evidence: TestControlEvidence): void {
+  (collected.controls ??= []).push(evidence);
+}
+
+/** A compiled mutation is not cleaned up until the clean binary was rebuilt too. */
+export function recordCompiledControlRestore(state: 'done' | 'failed' | 'not-built'): void {
+  for (const control of collected.controls ?? [])
+    if (control.compiled) control.compiledRestoreBuild = state;
 }
 
 let collected: TestResultsDocument = { schemaVersion: 1, files: [], unfinished: [] };
@@ -70,14 +62,39 @@ export function resetTestResults(): void {
 export function recordTestResults(
   results: readonly RawTestResult[],
   unfinished: readonly string[],
-  context: { run: number; shard: string; logLine: number; shardFiles?: readonly string[] }
+  context: {
+    run: number;
+    shard: string;
+    logLine: number;
+    shardFiles?: readonly string[];
+    markers?: StartMarkers;
+    attempts?: number;
+  }
 ): void {
-  const { shardFiles, ...dispatch } = context;
+  const { shardFiles, markers, attempts, ...dispatch } = context;
+  if (markers !== undefined) {
+    (collected.dispatches ??= []).push({
+      run: context.run,
+      shard: context.shard,
+      requested: [...(shardFiles ?? [])],
+      started: [...markers.started],
+      completed: results
+        .filter((result) => result.test !== HARNESS_PSEUDO_TEST)
+        .map((result) => result.test),
+      skipped: [...markers.skipped],
+      unfinished: [...unfinished],
+      attempts: attempts ?? 1,
+    });
+  }
+  const target =
+    context.run === CONTROL_BASELINE_REPETITION
+      ? (collected.controlBaseline ??= { files: [], unfinished: [] })
+      : collected;
   for (const result of results) {
-    collected.files.push({ ...result, ...dispatch, ...harnessRecordFiles(result, shardFiles) });
+    target.files.push({ ...result, ...dispatch, ...harnessRecordFiles(result, shardFiles) });
   }
   for (const test of unfinished) {
-    collected.unfinished.push({ test, run: context.run, shard: context.shard });
+    target.unfinished.push({ test, run: context.run, shard: context.shard });
   }
 }
 

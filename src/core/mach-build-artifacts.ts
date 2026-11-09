@@ -4,7 +4,7 @@ import { join, relative, resolve, sep } from 'node:path';
 
 import { GeneralError } from '../errors/base.js';
 import { AmbiguousBuildArtifactsError } from '../errors/build.js';
-import { toError } from '../utils/errors.js';
+import { getNodeErrorCode, toError } from '../utils/errors.js';
 import { pathExists, readJson, readText, writeJson } from '../utils/fs.js';
 import { verbose } from '../utils/logger.js';
 import { getPlatform } from '../utils/platform.js';
@@ -20,7 +20,7 @@ export interface BuildArtifactCheck {
   exists: boolean;
   /** Name of the obj-* directory if found */
   objDir?: string;
-  /** Whether multiple valid obj-* directories were found */
+  /** Whether the candidates cannot be resolved to the active declared objdir */
   ambiguous?: boolean;
   /** All candidate obj-* directories with build artifacts */
   objDirs?: string[];
@@ -79,20 +79,18 @@ function validateBuildMozinfo(data: unknown): BuildMozinfo {
 
 /**
  * Reads the objdir name the engine's mozconfig declares, or undefined when
- * there is no mozconfig, it cannot be read, or it declares nothing.
+ * there is no mozconfig or it declares nothing.
  *
- * Fail-open: this only ever narrows an ambiguity that would
- * otherwise refuse, so an unreadable mozconfig costs nothing beyond the
- * refusal the caller was already going to raise.
+ * Only a missing file means no declaration. An unreadable configuration
+ * must not select an arbitrary old candidate, even when it is the only one.
  */
 async function readDeclaredObjDirName(engineDir: string): Promise<string | undefined> {
   try {
     const mozconfigPath = join(engineDir, 'mozconfig');
-    if (!(await pathExists(mozconfigPath))) return undefined;
     return extractMozObjdirName(await readText(mozconfigPath));
   } catch (error: unknown) {
-    verbose(`Could not read mozconfig for MOZ_OBJDIR: ${toError(error).message}`);
-    return undefined;
+    if (getNodeErrorCode(error) === 'ENOENT') return undefined;
+    throw error;
   }
 }
 
@@ -129,19 +127,20 @@ export async function hasBuildArtifacts(engineDir: string): Promise<BuildArtifac
     }
 
     let resolvedObjDirs = validObjDirs;
-    let declaredObjDir: string | undefined;
-    if (validObjDirs.length > 1) {
+    const declaredObjDir = await readDeclaredObjDirName(engineDir);
+    if (validObjDirs.length > 1 || declaredObjDir !== undefined) {
       // An ambiguous glob is a question the mozconfig may already answer.
       // Refusing when the active configuration names the objdir sends the
       // operator to rename a directory to satisfy a scan, when the thing
       // that decides the build has said which one it is. The refusal is
       // kept for the genuinely ambiguous case: a declaration that does not
       // resolve to exactly one candidate selects nothing.
-      declaredObjDir = await readDeclaredObjDirName(engineDir);
       const declaredMatches =
         declaredObjDir === undefined
           ? []
-          : validObjDirs.filter((candidate) => candidate === declaredObjDir);
+          : validObjDirs.filter(
+              (candidate) => resolve(engineDir, candidate) === resolve(engineDir, declaredObjDir)
+            );
       if (declaredMatches.length === 1) {
         verbose(`Objdir ambiguity resolved by mozconfig MOZ_OBJDIR: ${declaredMatches[0] ?? ''}.`);
         resolvedObjDirs = declaredMatches;

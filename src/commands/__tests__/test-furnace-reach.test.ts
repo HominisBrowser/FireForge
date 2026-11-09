@@ -83,4 +83,57 @@ describe('partitionReachedComponents', () => {
     });
     expect(verbose).toHaveBeenCalledWith(expect.stringContaining('bad furnace.json'));
   });
+
+  it('reaches components by static chrome element ids without a tag comment in the test', async () => {
+    await writeFiles(engineDir, {
+      'browser/base/content/app.xhtml': '<window><moz-tile id="canvas-main"></moz-tile></window>',
+      'browser/test/tiles/browser_id.js': 'document.getElementById("canvas-main");',
+    });
+    vi.mocked(listStaleFurnaceComponents).mockResolvedValue(['moz-tile', 'moz-other']);
+    await expect(
+      partitionReachedComponents(root, engineDir, ['browser/test/tiles/browser_id.js'])
+    ).resolves.toEqual({ reached: ['moz-tile'], skipped: ['moz-other'] });
+  });
+
+  it('reaches a stale component that a reached custom component composes', async () => {
+    await writeFiles(root, {
+      'furnace.json': JSON.stringify({
+        version: 1,
+        componentPrefix: 'moz-',
+        stock: [],
+        overrides: {},
+        custom: {
+          'moz-top': {
+            description: 't',
+            targetPath: 'a/b',
+            register: true,
+            localized: false,
+            composes: ['moz-mid'],
+          },
+          'moz-mid': {
+            description: 'm',
+            targetPath: 'a/c',
+            register: true,
+            localized: false,
+            composes: ['moz-leaf'],
+          },
+          'moz-leaf': { description: 'l', targetPath: 'a/d', register: true, localized: false },
+          'moz-other': { description: 'o', targetPath: 'a/e', register: true, localized: false },
+        },
+      }),
+      'engine/browser/test/top/browser_top.js': 'document.createElement("moz-top");\n',
+    });
+    vi.mocked(listStaleFurnaceComponents).mockResolvedValue([
+      'moz-top',
+      'moz-mid',
+      'moz-leaf',
+      'moz-other',
+    ]);
+    await expect(
+      partitionReachedComponents(root, engineDir, ['browser/test/top/browser_top.js'])
+    ).resolves.toEqual({
+      reached: ['moz-top', 'moz-mid', 'moz-leaf'],
+      skipped: ['moz-other'],
+    });
+  });
 });

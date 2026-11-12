@@ -1,0 +1,7 @@
+# The configuration of zizmor, which lints the workflows (security.yml).
+rules:
+  # Each job installs the npm that package.json's packageManager field pins,
+  # because the npm bundled with Node is older than trusted publishing needs.
+  # The version is exact and reviewed with package.json.
+  adhoc-packages:
+    disable: true

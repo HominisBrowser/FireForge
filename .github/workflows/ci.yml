@@ -34,10 +34,11 @@ jobs:
       # Full history: `whitespace:check` diffs the PR range, which needs the
       # base commit present. A depth-1 checkout would silently degrade it to
       # the tip-commit form.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
@@ -72,8 +73,10 @@ jobs:
     # A hung run stops and reports instead of holding the runner for hours.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
@@ -120,8 +123,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
@@ -172,7 +177,9 @@ jobs:
       matrix:
         node: ['floor', '24']
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Resolve the Node version
         id: node
         env:
@@ -184,7 +191,7 @@ jobs:
             VERSION="$REQUESTED"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ steps.node.outputs.version }}
           cache: 'npm'

@@ -13,15 +13,17 @@ on:
         type: boolean
         default: false
 
+# Read-only by default: the `verify` job runs the whole suite and every
+# dependency's code, and gets no more than that. The `publish` job names what
+# it needs.
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
   # The release gate: CI's static checks and the test suite with coverage on
   # this commit, in parallel, before anything is published.
   verify:
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
     with:
       smoke: false
 
@@ -30,15 +32,23 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     environment: npm
+    permissions:
+      # Pushes the version commit and the tag.
+      contents: write
+      # Trusted publishing and provenance.
+      id-token: write
     # Builds, packs and publishes; the gate already ran in `verify`.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The credentials stay in the checkout: the last step pushes the version
+      # commit and the tag with them.
+      - uses: actions/checkout@v7.0.1 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version-file: '.nvmrc'
           registry-url: 'https://registry.npmjs.org'

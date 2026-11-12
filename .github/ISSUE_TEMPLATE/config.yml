@@ -2,4 +2,4 @@ blank_issues_enabled: false
 contact_links:
   - name: Documentation
     url: https://github.com/HominisBrowser/FireForge/tree/main/docs
-    about: Reference material for the patch workflow, testing, configuration and the CI contracts.
+    about: Reference material for both project modes, the commands and the configuration.

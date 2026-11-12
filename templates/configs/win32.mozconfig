@@ -1,14 +1,8 @@
 # Windows-specific mozconfig for ${name}
 
-# Use Visual Studio toolchain
-ac_add_options --host=x86_64-pc-mingw32
-ac_add_options --target=x86_64-pc-mingw32
-
-# Windows SDK
-# ac_add_options --with-windows-version=10.0.19041.0
-
-# Clang-cl
-ac_add_options --enable-clang-cl
+# The default target is x86_64 Windows with clang-cl, provided by
+# --enable-bootstrap (common.mozconfig). For ARM64:
+# ac_add_options --target=aarch64-pc-windows-msvc
 
 # Disable maintenance service
 ac_add_options --disable-maintenance-service

@@ -1,132 +1,108 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { resolve } from 'node:path';
-
-import { confirm } from '@clack/prompts';
-import { Command, Option } from 'commander';
-
-import { configExists } from '../core/config.js';
-import { stdioIsInteractive } from '../core/destructive.js';
-import { ConfigError } from '../errors/config.js';
-import type { CommandContext } from '../types/cli.js';
-import type { SetupOptions } from '../types/commands/index.js';
-import { cancel, intro, isCancel, note, outro, spinner } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
-import { FIREFOX_PRODUCTS, PROJECT_LICENSES } from '../utils/validation.js';
+import { defineCommand, kebabCase, opt, usageError } from '../cli/command.js';
+import type { CommandContext } from '../cli/context.js';
 import {
-  buildSetupConfig,
-  resolveFirefoxProduct,
-  resolveProjectLicense,
-  resolveSetupInputs,
-  validateSetupOptions,
-  writeSetupProjectFiles,
-} from './setup-support.js';
+  DEFAULT_LICENSE,
+  FIREFOX_PRODUCTS,
+  inferFirefoxProduct,
+  PROJECT_LICENSES,
+  PROJECT_MODES,
+} from '../config/index.js';
+import { step } from '../kernel/log.js';
+import { ask, choose } from '../kernel/tty.js';
+import { createProject, type ProjectSpec, refuseExistingProject } from '../mode/index.js';
 
-/**
- * Runs the setup command.
- * @param projectRoot - Root directory for the project
- * @param options - CLI options for non-interactive mode
- */
-export async function setupCommand(projectRoot: string, options: SetupOptions = {}): Promise<void> {
-  // Validate any CLI-provided options first
-  validateSetupOptions(options);
+/** The answers that have no default, with the question asked for each. */
+const QUESTIONS = {
+  name: 'What is the name of your browser?',
+  vendor: 'What is your vendor or company name?',
+  firefoxVersion: 'Firefox version to build on (such as 140.9.0esr)',
+} as const;
 
-  // Determine if we can run interactively
-  const isInteractive = stdioIsInteractive();
-
-  intro('FireForge Setup');
-
-  // Check if config already exists
-  if (await configExists(projectRoot)) {
-    if (options.force) {
-      // Skip confirmation when --force is provided
-    } else if (isInteractive) {
-      const overwrite = await confirm({
-        message: 'A fireforge.json already exists. Overwrite?',
-        initialValue: false,
-      });
-
-      if (isCancel(overwrite) || !overwrite) {
-        cancel('Setup cancelled');
-        return;
-      }
-    } else {
-      throw new ConfigError('fireforge.json already exists. Use --force to overwrite.');
-    }
-  }
-
-  const resolved = await resolveSetupInputs(options, isInteractive);
-  const config = buildSetupConfig(resolved);
-
-  const s = spinner('Creating project structure...');
-
-  try {
-    await writeSetupProjectFiles(projectRoot, config);
-
-    s.stop('Project structure created');
-
-    // Show next steps
-    note(
-      `Next steps:\n` +
-        `  1. fireforge download    # Download Firefox source\n` +
-        `  2. fireforge bootstrap   # Install build dependencies\n` +
-        `  3. fireforge build       # Build the browser\n` +
-        `  4. fireforge run         # Launch the browser`,
-      'Getting Started'
+/** The value of an option, or the answer to its question when a terminal is attached. */
+async function required(
+  ctx: CommandContext,
+  key: keyof typeof QUESTIONS,
+  given: string | undefined
+): Promise<string> {
+  if (given !== undefined) return given;
+  if (!ctx.interactive) {
+    throw usageError(
+      `--${kebabCase(key)} is required.`,
+      'Without a terminal, pass --name, --vendor and --firefox-version.'
     );
-
-    outro(`${config.name} project created successfully!`);
-  } catch (error: unknown) {
-    s.error('Failed to create project');
-    throw error;
   }
+  return ask(QUESTIONS[key], {
+    validate: (answer) => (answer === '' ? 'An answer is required' : undefined),
+  });
 }
 
-/** Registers the setup command on the CLI program. */
-export function registerSetup(program: Command, { withErrorHandling }: CommandContext): void {
-  program
-    .command('setup')
-    .description('Initialize a new FireForge project')
-    .option('--name <name>', 'Browser name')
-    .option('--vendor <vendor>', 'Vendor/company name')
-    .option('--app-id <appId>', 'Application ID (reverse-domain format)')
-    .option('--binary-name <binaryName>', 'Binary name (executable name)')
-    .option('--firefox-version <version>', 'Firefox version to base on')
-    .addOption(new Option('--product <product>', 'Firefox product').choices([...FIREFOX_PRODUCTS]))
-    .addOption(new Option('--license <license>', 'Project license').choices([...PROJECT_LICENSES]))
-    .option('-f, --force', 'Overwrite existing configuration without prompting')
-    // `--yes` is a plain alias here: `setup`'s only bypass is the overwrite
-    // prompt, so the two flags mean exactly the same thing. Seventeen other
-    // commands spell this bypass `--yes`. Accepting it means a scripted
-    // sequence can use one spelling throughout.
-    .option('-y, --yes', 'Alias for --force: skip the overwrite confirmation')
-    .action(
-      withErrorHandling(
-        async (options: {
-          name?: string;
-          vendor?: string;
-          appId?: string;
-          binaryName?: string;
-          firefoxVersion?: string;
-          product?: string;
-          license?: string;
-          force?: boolean;
-          yes?: boolean;
-        }) => {
-          const { product, license, yes, ...rest } = options;
-          const setupOptions: SetupOptions = { ...pickDefined(rest) };
-          // `--yes` is an alias, so either flag sets the same bypass.
-          if (yes === true) setupOptions.force = true;
-
-          if (product !== undefined) {
-            setupOptions.product = resolveFirefoxProduct(product, '--product');
-          }
-
-          if (license !== undefined) {
-            setupOptions.license = resolveProjectLicense(license, '--license');
-          }
-
-          await setupCommand(resolve(process.cwd()), setupOptions);
-        }
-      )
+export const setup = defineCommand({
+  name: 'setup',
+  summary: 'Create a FireForge project in this directory',
+  description:
+    'Writes fireforge.json, the mozconfig templates in configs/, the license text and the ' +
+    'ignore rules. Values not given as options are asked for on a terminal. A source-mode ' +
+    'project pins the pristine commit of its Firefox, so creating one downloads that Firefox ' +
+    'when this host does not have it yet. A directory that already holds fireforge.json is ' +
+    'refused; change an existing project with "fireforge config set".',
+  group: 'Project',
+  options: {
+    name: opt.string('Display name of the browser', { valueName: 'name' }),
+    vendor: opt.string('Vendor or company name', { valueName: 'name' }),
+    appId: opt.string('Application ID (default org.<name>.browser)', { valueName: 'id' }),
+    binaryName: opt.string('Executable name (default: the name in lowercase)', {
+      valueName: 'name',
+    }),
+    firefoxVersion: opt.string('Firefox version to build on', { valueName: 'version' }),
+    product: opt.enum(FIREFOX_PRODUCTS, "Mozilla product (default: by the version's shape)"),
+    license: opt.enum(PROJECT_LICENSES, `Project license (default ${DEFAULT_LICENSE})`),
+    mode: opt.enum(
+      PROJECT_MODES,
+      'Where owned changes live: a patch queue, or tracked files under src/ (default patches)'
+    ),
+  },
+  json: true,
+  run: async (ctx, _args, opts) => {
+    await refuseExistingProject(ctx.cwd);
+    const name = await required(ctx, 'name', opts.name);
+    const vendor = await required(ctx, 'vendor', opts.vendor);
+    const firefoxVersion = await required(ctx, 'firefoxVersion', opts.firefoxVersion);
+    const slug = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const prompted = ctx.interactive && opts.name === undefined;
+    const spec: ProjectSpec = {
+      name,
+      vendor,
+      firefoxVersion,
+      appId: opts.appId ?? `org.${slug}.browser`,
+      binaryName: opts.binaryName ?? slug,
+      product: opts.product ?? inferFirefoxProduct(firefoxVersion),
+      license:
+        opts.license ??
+        (prompted
+          ? await choose(
+              'Project license',
+              PROJECT_LICENSES.map((value) => ({ value, label: value })),
+              DEFAULT_LICENSE
+            )
+          : DEFAULT_LICENSE),
+      mode:
+        opts.mode ??
+        (prompted
+          ? await choose('Where do the owned changes live?', [
+              { value: 'patches', label: 'A patch queue over engine/ (patches)' },
+              { value: 'source', label: 'Tracked files under src/ (source)' },
+            ])
+          : 'patches'),
+    };
+    const written = await createProject(ctx.cwd, spec, {
+      env: ctx.env,
+      onProgress: step,
+    });
+    for (const file of written) ctx.out.line(`wrote ${file}`);
+    ctx.out.line(
+      `Created ${spec.name} (${spec.mode} mode). Next: fireforge download, fireforge bootstrap, fireforge build, fireforge run.`
     );
-}
+    ctx.out.json({ ...spec, files: written });
+  },
+});

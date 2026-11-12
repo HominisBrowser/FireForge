@@ -3,11 +3,10 @@
  * Local ESLint rules enforcing FireForge house conventions that no published
  * plugin covers.
  *
- * Each rule here targets a hand-rolled pattern that gets repeated across
- * dozens of files, where one copy is eventually silently broken: a malformed
- * regex character class that escapes nothing, or an errno check that
- * misclassifies a plain `{code}` object. These rules stop the pattern coming
- * back.
+ * Each rule keeps one helper in `src/kernel` the only spelling of a pattern
+ * that is easy to hand-roll and easy to get subtly wrong: a regex character
+ * class that escapes nothing, an errno check that misclassifies a plain
+ * `{code}` object.
  *
  * Plain JS with no build step and no dependencies, because this directory is
  * tooling, is excluded from `tsconfig.json`, and never ships in `dist/`.
@@ -19,13 +18,13 @@ const noOpenCodedToError = {
     type: 'suggestion',
     docs: {
       description:
-        'Use toError(error).message from src/utils/errors.ts instead of open-coding error normalisation.',
+        'Use toError(error).message from src/kernel/errors.ts instead of open-coding error normalisation.',
     },
     schema: [],
     messages: {
       openCoded:
-        'Use `toError({{name}}).message` (src/utils/errors.ts) instead of open-coding error normalisation. ' +
-        'The open-coded form drops the `cause` chain and diverges from the ~30 sites that use the helper.',
+        'Use `toError({{name}}).message` (src/kernel/errors.ts) instead of open-coding error normalisation. ' +
+        'The open-coded form drops the `cause` chain.',
       errorCast:
         'Use `toError({{name}}).message` instead of `({{name}} as Error).message`. The cast is unchecked: ' +
         'a non-Error throwable renders as the literal string "undefined" in operator output.',
@@ -52,11 +51,9 @@ const noOpenCodedToError = {
           consequent.object.name === name &&
           consequent.property.type === 'Identifier' &&
           consequent.property.name === 'message';
-        // The alternate must be `String(<the same identifier>)`. Checking only
-        // that the callee is named `String` reported
-        // `e instanceof Error ? e.message : String(other)`, which uses a
-        // different fallback value and is not the idiom `toError` replaces. It
-        // also reported `String()` with no arguments at all.
+        // The alternate must be `String(<the same identifier>)`:
+        // `e instanceof Error ? e.message : String(other)` uses a different
+        // fallback value and is not the idiom `toError` replaces.
         const isStringCall =
           alternate.type === 'CallExpression' &&
           alternate.callee.type === 'Identifier' &&
@@ -89,18 +86,18 @@ const noOpenCodedToError = {
   },
 };
 
-/** Reports `(x as NodeJS.ErrnoException).code` in favour of `getNodeErrorCode`. */
+/** Reports `(x as NodeJS.ErrnoException).code` in favour of `errnoCode`. */
 const noErrnoCast = {
   meta: {
     type: 'suggestion',
     docs: {
       description:
-        'Use getNodeErrorCode from src/utils/errors.ts instead of casting to NodeJS.ErrnoException.',
+        'Use errnoCode from src/kernel/errors.ts instead of casting to NodeJS.ErrnoException.',
     },
     schema: [],
     messages: {
       errnoCast:
-        'Use `getNodeErrorCode(error)` (src/utils/errors.ts) instead of casting to NodeJS.ErrnoException. ' +
+        'Use `errnoCode(error)` (src/kernel/errors.ts) instead of casting to NodeJS.ErrnoException. ' +
         'The cast performs no runtime check, so a throwable without `.code` silently yields undefined ' +
         'while the type claims otherwise.',
     },
@@ -139,26 +136,24 @@ const noErrnoCast = {
 const preferSharedRegexEscape = {
   meta: {
     type: 'suggestion',
-    docs: { description: 'Use escapeRegex from src/utils/regex.ts.' },
+    docs: { description: 'Use escapeRegExp from src/kernel/text.ts.' },
     schema: [],
     messages: {
       inlineEscape:
-        'Use `escapeRegex(value)` from src/utils/regex.ts instead of an inline escape. ' +
+        'Use `escapeRegExp(value)` from src/kernel/text.ts instead of an inline escape. ' +
         'Hand-written copies drift: a class like ' +
         '`[.*+?^${}()|[\\\\]\\\\\\\\]` closes early and escapes nothing.',
       localHelper:
-        'Import `escapeRegex` from src/utils/regex.ts instead of declaring a local escape helper.',
+        'Import `escapeRegExp` from src/kernel/text.ts instead of declaring a local escape helper.',
     },
   },
   create(context) {
     const filename = context.filename ?? context.getFilename();
-    if (filename.replace(/\\/g, '/').endsWith('src/utils/regex.ts')) return {};
+    if (filename.replace(/\\/g, '/').endsWith('src/kernel/text.ts')) return {};
     return {
       // Match the whole idiom `<value>.replace(/[metachars]/g, '\\$&')`, not
-      // just a regex literal that happens to be a character class. Matching the
-      // literal alone reported every unrelated class of six-plus punctuation
-      // characters (delimiter and bracket matchers, tokenisers) and told the
-      // author to call `escapeRegex`, which would not do what they wanted.
+      // just a regex literal that happens to be a character class: delimiter
+      // and bracket matchers and tokenisers use such classes for other ends.
       CallExpression(node) {
         const { callee, arguments: args } = node;
         if (
@@ -175,15 +170,13 @@ const preferSharedRegexEscape = {
         if (replacement.type !== 'Literal' || replacement.value !== '\\$&') return;
         context.report({ node, messageId: 'inlineEscape' });
       },
-      // `escapeRegex` / `escapeRegExp` only. The selector was
-      // `^escape(Regex|RegExp|For[A-Z]\w*)$`, which matched every `escapeForX`
-      // helper (`escapeForHtml`, `escapeForShell`) and told each of them to
-      // import a regex escaper.
+      // `escapeRegex` / `escapeRegExp` only: an `escapeForHtml` or
+      // `escapeForShell` helper escapes for another target.
       'FunctionDeclaration[id.name=/^escape(Regex|RegExp|Regexp)$/]'(node) {
         context.report({ node: node.id, messageId: 'localHelper' });
       },
       // The same helper written as `const escapeRegex = (s) => …` or a
-      // function expression. A declaration-only selector let those through.
+      // function expression.
       'VariableDeclarator[id.name=/^escape(Regex|RegExp|Regexp)$/]'(node) {
         if (
           node.init?.type === 'ArrowFunctionExpression' ||
@@ -234,23 +227,23 @@ const noUntypedJsonDocument = {
     type: 'suggestion',
     docs: {
       description:
-        'Use JsonObject/JsonValue (src/types/json.ts), ParsedRecord (src/utils/parse.ts), or a named ' +
-        'domain type instead of Record<string, unknown> in exported function signatures.',
+        'Use JsonObject/JsonValue (src/kernel/json.ts), a schema-inferred type (src/kernel/schema.ts), ' +
+        'or a named domain type instead of Record<string, unknown> in exported function signatures.',
     },
     schema: [],
     messages: {
       untypedDocument:
         'Untyped dictionary in an exported signature. `Record<string, unknown>` gives callers no value ' +
         'contract, which is how piecemeal `typeof`-and-cast narrowing accretes downstream. ' +
-        'Use `JsonObject`/`JsonValue` (src/types/json.ts) for raw JSON documents, ' +
-        '`ParsedRecord` (src/utils/parse.ts) for boundary parsing, or a named domain type.',
+        'Use `JsonObject`/`JsonValue` (src/kernel/json.ts) for raw JSON documents, ' +
+        'a type inferred from a schema (src/kernel/schema.ts) for validated ones, or a named domain type.',
     },
   },
   create(context) {
     const filename = (context.filename ?? context.getFilename()).replace(/\\/g, '/');
-    // `isObject` in validation.ts is the sanctioned unknown→object bridge.
+    // `isRecord` in kernel/json.ts is the sanctioned unknown→object bridge.
     // Its type predicate necessarily names Record<string, unknown>.
-    if (filename.endsWith('src/utils/validation.ts')) return {};
+    if (filename.endsWith('src/kernel/json.ts')) return {};
     const functionTypes = new Set([
       'FunctionDeclaration',
       'FunctionExpression',
@@ -259,8 +252,7 @@ const noUntypedJsonDocument = {
     ]);
     // Only functions attached straight to an export declaration count:
     // `export function f`, `export default function`, `export const f = () => …`.
-    // Class methods stay exempt: ParsedRecord's constructor legitimately
-    // takes the Record its factory just narrowed.
+    // Class methods stay exempt.
     const isDirectlyExported = (fn) => {
       const parent = fn.parent;
       if (!parent) return false;
@@ -309,22 +301,21 @@ const noUntypedJsonDocument = {
 
 /**
  * Reports `process.stdin.isTTY && process.stdout.isTTY` in favour of the
- * shared `stdioIsInteractive()` predicate.
+ * shared `isInteractive()` predicate.
  */
 const noOpenCodedTtyCheck = {
   meta: {
     type: 'suggestion',
     docs: {
       description:
-        'Use stdioIsInteractive() from src/core/destructive.ts instead of open-coding the TTY pair check.',
+        'Use isInteractive() from src/kernel/tty.ts instead of open-coding the TTY pair check.',
     },
     schema: [],
     messages: {
       openCoded:
-        'Use `stdioIsInteractive()` (src/core/destructive.ts) instead of open-coding ' +
-        '`process.stdin.isTTY && process.stdout.isTTY`. Node types `isTTY` as `boolean` but at runtime ' +
-        'it is `true | undefined`, and the eighteen open-coded copies this replaced carried nine ' +
-        'different non-TTY refusal strings between them.',
+        'Use `isInteractive()` (src/kernel/tty.ts), or `ctx.interactive` in a command, instead of ' +
+        'open-coding `process.stdin.isTTY && process.stdout.isTTY`. Node types `isTTY` as `boolean` ' +
+        'but at runtime it is `true | undefined`.',
     },
   },
   create(context) {
@@ -332,8 +323,8 @@ const noOpenCodedTtyCheck = {
      * True for `process.<handle>.isTTY`, where `handle` is the one named.
      *
      * Handle-specific on purpose: this rule targets the prompt-answerability
-     * check (`stdin && stdout`), not any TTY conjunction. `logger.ts`'s
-     * spinner gate is `stdout && stderr`, which asks a different question
+     * check (`stdin && stdout`), not any TTY conjunction. The spinner gate in
+     * `kernel/log.ts` is `stderr && stdout`, which asks a different question
      * (whether output can be redrawn) and must not be routed through a
      * predicate about whether a prompt can be answered.
      */
@@ -367,9 +358,8 @@ const noOpenCodedTtyCheck = {
  * The structural spelling hides the real contract: the reader has to open
  * the function to learn what the parameter is, and the type silently changes
  * when the function's return type does. Every local function whose return
- * type is worth naming in a signature should export that type (or already
- * does, as with `ProjectPaths`, `RollbackJournal`, `FireForgeConfig`, and
- * others), and callers should import it. Package imports are left alone: the
+ * type is worth naming in a signature should export that type, and callers
+ * should import it. Package imports are left alone: the
  * author cannot export a name from `node_modules`, and the derived form is
  * the only spelling for e.g. `ReturnType<typeof spinner>`.
  */

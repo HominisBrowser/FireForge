@@ -1,773 +1,300 @@
 // SPDX-License-Identifier: EUPL-1.2
+/**
+ * Drives real Firefox source and a real mach through the built CLI
+ * (dist/bin/fireforge.js), once per project mode, in projects this script
+ * creates. It is a smoke of the command sequence a fork runs, not a test of
+ * the browser that comes out.
+ *
+ * Patch mode: setup, download, bootstrap, import, build, test; then an edit
+ * of one engine file is exported as a patch, `reset --yes` drops it from the
+ * engine, and `import` must bring it back; `verify` closes. The patch is
+ * deleted and the edit discarded afterwards, so the project is reused by the
+ * next run and its build stays warm.
+ *
+ * Source mode: setup (which pins the pristine commit), git init and commit,
+ * download, bootstrap, `override` of one upstream file plus an edit of the
+ * owned copy, build (which materializes the edit into a pool workspace, where
+ * it must arrive), test, and `export --out`, whose generated queue must name
+ * the file. The project is recreated each run; its build lives in the host
+ * pool.
+ *
+ * Covered: every step exits 0 against real Firefox, the edit reaches the
+ * engine in both modes, and the exported patch or queue names the edited
+ * file. Not covered: launching the built browser, packaging, rebase, migrate,
+ * gate and its lanes, Furnace, lint and typecheck rules, failure and recovery
+ * paths, and any test beyond the one path given.
+ *
+ * Environment:
+ *   FIREFORGE_FULL_WORK_DIR         where the projects and the run artifacts
+ *                                   live (default: a new temporary directory)
+ *   FIREFORGE_FULL_MODES            comma-separated modes (default patches,source)
+ *   FIREFORGE_FULL_FIREFOX_VERSION  the Firefox to build on (default 140.0esr)
+ *   FIREFORGE_FULL_TARGET_FILE      engine file to edit
+ *                                   (default browser/base/content/browser.js)
+ *   FIREFORGE_FULL_TEST_PATH        test to run
+ *                                   (default toolkit/modules/tests/xpcshell/test_Log.js)
+ *   FIREFORGE_FULL_SKIP_BOOTSTRAP   1 skips mach bootstrap, for a host that
+ *                                   already has the toolchain
+ *   FIREFORGE_HOME                  host state (pristine repositories, the
+ *                                   workspace pool), as for the CLI
+ */
 import { spawn, spawnSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { constants } from 'node:fs';
-import { access, copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, extname, join } from 'node:path';
+import { access, appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
-  containedPath,
-  recoveryFailure,
-  restoreEngine,
-  restorePath,
-  snapshotEngine,
-  snapshotPath,
-} from './full-integration-workspace.mjs';
-
-const projectRoot = process.env.FIREFORGE_FULL_PROJECT_ROOT;
-const buildMode = process.env.FIREFORGE_FULL_BUILD_MODE === 'full' ? 'full' : 'ui';
-const targetFileOverride = process.env.FIREFORGE_FULL_TARGET_FILE;
-const firefoxVersionOverride = process.env.FIREFORGE_FULL_FIREFOX_VERSION;
-const keepPatch = process.env.FIREFORGE_FULL_KEEP_PATCH === '1';
-const skipSetup = process.env.FIREFORGE_FULL_SKIP_SETUP === '1';
-// FIREFORGE_FULL_TREE=1 additionally exercises `tree create --with-objdir`
-// against the real build: it proves the clone was reconfigured to the tree
-// (no primary paths left in configure output) and that the primary objdir's
-// metadata is untouched afterwards. FIREFORGE_FULL_TREE_TEST_PATH may name a
-// cheap in-tree test (e.g. an xpcshell test) to run through the tree's own
-// build-less `fireforge test`.
-const runTreePhase = process.env.FIREFORGE_FULL_TREE === '1';
-const treeTestPath = process.env.FIREFORGE_FULL_TREE_TEST_PATH;
-
-if (!projectRoot) {
-  throw new Error(
-    'FIREFORGE_FULL_PROJECT_ROOT is required. Point it at a prepared FireForge project backed by a full Firefox source tree.'
-  );
-}
-
 const fireforgeBin = fileURLToPath(new URL('../dist/bin/fireforge.js', import.meta.url));
-const artifactStamp = new Date().toISOString().replace(/[:.]/g, '-');
-const artifactDir = join(projectRoot, '.fireforge', 'full-integration-artifacts', artifactStamp);
-const engineDir = join(projectRoot, 'engine');
-const backups = new Map();
-let engineBaseline;
-let mutationArmed = false;
-const createdPatchInfo = { filename: null };
+const workDir =
+  process.env.FIREFORGE_FULL_WORK_DIR ||
+  (await mkdtemp(join(tmpdir(), 'fireforge-full-integration-')));
+const modes = (process.env.FIREFORGE_FULL_MODES || 'patches,source')
+  .split(',')
+  .map((mode) => mode.trim())
+  .filter(Boolean);
+const firefoxVersion = process.env.FIREFORGE_FULL_FIREFOX_VERSION || '140.0esr';
+const targetFile = process.env.FIREFORGE_FULL_TARGET_FILE || 'browser/base/content/browser.js';
+const testPath =
+  process.env.FIREFORGE_FULL_TEST_PATH || 'toolkit/modules/tests/xpcshell/test_Log.js';
+const skipBootstrap = process.env.FIREFORGE_FULL_SKIP_BOOTSTRAP === '1';
+const hostRoot = process.env.FIREFORGE_HOME || join(homedir(), '.fireforge');
 
-function toError(error) {
-  return error instanceof Error ? error : new Error(String(error));
-}
+const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+const artifactDir = join(workDir, 'artifacts', stamp);
+const marker = `// fireforge-full-integration ${stamp}`;
+const patchName = 'infra-full-integration';
+const identity = ['--name', 'Integration', '--vendor', 'FireForge', '--firefox-version'];
 
 const report = {
   startedAt: new Date().toISOString(),
-  projectRoot,
-  buildMode,
-  firefoxVersionOverride: firefoxVersionOverride ?? null,
-  targetFile: null,
-  patchFilename: null,
-  keptPatch: keepPatch,
-  skippedSetup: skipSetup,
-  commands: [],
-  observations: {},
-  cleanup: {
-    actions: [],
-    errors: [],
-  },
-  artifacts: {
-    dir: artifactDir,
-  },
+  workDir,
+  firefoxVersion,
+  targetFile,
+  testPath,
+  modes: {},
 };
 
-const requiredPaths = [
-  ['fireforge.json', join(projectRoot, 'fireforge.json')],
-  ['engine', join(projectRoot, 'engine')],
-  ['patches', join(projectRoot, 'patches')],
-  ['dist bin', fireforgeBin],
-];
-
-const setupManagedFiles = [
-  'fireforge.json',
-  '.gitignore',
-  'package.json',
-  'LICENSE',
-  'configs/common.mozconfig',
-  'configs/linux.mozconfig',
-  'configs/darwin.mozconfig',
-  'configs/win32.mozconfig',
-  '.fireforge/state.json',
-  'patches/patches.json',
-];
-
-function sanitizeLabel(value) {
-  return (
-    value
-      .replace(/[^a-z0-9._-]+/gi, '-')
-      .replace(/^-+|-+$/g, '')
-      .toLowerCase() || 'step'
-  );
-}
-
-function createPreviewCollector(limit = 200_000) {
-  let text = '';
-  let truncated = false;
-
-  return {
-    push(chunk) {
-      if (truncated) {
-        return;
-      }
-
-      const remaining = limit - text.length;
-      if (chunk.length > remaining) {
-        text += chunk.slice(0, remaining);
-        text += '\n[truncated]';
-        truncated = true;
-      } else {
-        text += chunk;
-      }
-    },
-    getText() {
-      return text;
-    },
-  };
-}
-
-async function pathExists(targetPath) {
-  try {
-    await access(targetPath, constants.F_OK);
-    return true;
-  } catch {
-    return false;
+for (const mode of modes) {
+  if (mode !== 'patches' && mode !== 'source') {
+    throw new Error(`FIREFORGE_FULL_MODES names an unknown mode: ${mode}`);
   }
 }
 
-async function requirePath(label, targetPath) {
-  if (!(await pathExists(targetPath))) {
-    throw new Error(`Missing required full-integration path: ${targetPath} (${label})`);
-  }
-}
-
-async function ensureArtifactDirectory() {
-  await mkdir(artifactDir, { recursive: true });
-}
-
-async function writeArtifact(relativePath, content) {
-  const fullPath = join(artifactDir, relativePath);
-  await mkdir(dirname(fullPath), { recursive: true });
-  await writeFile(fullPath, content, 'utf8');
-  return fullPath;
-}
-
-function runCapture(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    cwd: options.cwd ?? projectRoot,
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      GIT_OPTIONAL_LOCKS: '0',
-      ...(options.env ?? {}),
-    },
-  });
-
-  if (result.error) {
-    throw result.error;
-  }
-
-  const stdout = result.stdout ?? '';
-  const stderr = result.stderr ?? '';
-  const exitCode = result.status ?? 1;
-
-  if (!options.allowFailure && exitCode !== 0) {
-    throw new Error(
-      `Command failed (${exitCode}): ${command} ${args.join(' ')}\n${stdout}${stderr}`
-    );
-  }
-
-  return { stdout, stderr, exitCode };
-}
-
-async function runLoggedCommand(label, command, args, options = {}) {
-  const logFile = join(
-    artifactDir,
-    `${String(report.commands.length + 1).padStart(2, '0')}-${sanitizeLabel(label)}.log`
-  );
-  await mkdir(dirname(logFile), { recursive: true });
-
-  const collector = createPreviewCollector();
-  const startedAt = Date.now();
-  const logStream = createWriteStream(logFile, { encoding: 'utf8' });
-  logStream.write(`$ ${command} ${args.join(' ')}\n\n`);
-
-  const exitCode = await new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd ?? projectRoot,
-      env: {
-        ...process.env,
-        CI: process.env.CI ?? '1',
-        ...(options.env ?? {}),
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    child.stdout.on('data', (chunk) => {
-      const text = chunk.toString();
-      process.stdout.write(text);
-      logStream.write(text);
-      collector.push(text);
-    });
-
-    child.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      process.stderr.write(text);
-      logStream.write(text);
-      collector.push(text);
-    });
-
-    child.on('error', reject);
-    child.on('close', (code) => resolve(code ?? 1));
-
-    if (options.input !== undefined) {
-      child.stdin.end(options.input);
-    } else {
-      child.stdin.end();
-    }
-  });
-
-  logStream.write(`\n[exit ${exitCode}]\n`);
-  logStream.end();
-
-  const durationMs = Date.now() - startedAt;
-  const preview = collector.getText();
-
-  report.commands.push({
-    label,
-    command,
-    args,
-    cwd: options.cwd ?? projectRoot,
-    exitCode,
-    durationMs,
-    logFile,
-  });
-
-  if (options.expectFailure) {
-    if (exitCode === 0) {
-      throw new Error(`Expected command to fail: ${label}`);
-    }
-  } else if (exitCode !== 0) {
-    throw new Error(`Command failed: ${label}. See ${logFile}`);
-  }
-
-  if (options.requiredText && !preview.includes(options.requiredText)) {
-    throw new Error(
-      `Command output for ${label} did not contain expected text: ${options.requiredText}`
-    );
-  }
-
-  return { exitCode, preview, logFile };
-}
-
-function getFireforgeArgs(commandArgs) {
-  return [fireforgeBin, ...commandArgs];
-}
-
-async function runFireforge(label, commandArgs, options = {}) {
-  return runLoggedCommand(label, process.execPath, getFireforgeArgs(commandArgs), options);
-}
-
-function commentMarkerFor(targetFile, markerId, variant = 'patch') {
-  const extension = extname(targetFile).toLowerCase();
-  const coreText =
-    variant === 'patch' ? `fireforge-full-suite:${markerId}` : `fireforge-local-only:${markerId}`;
-
-  if (
-    [
-      '.js',
-      '.mjs',
-      '.cjs',
-      '.ts',
-      '.tsx',
-      '.jsx',
-      '.cpp',
-      '.cc',
-      '.c',
-      '.h',
-      '.hh',
-      '.hpp',
-      '.rs',
-    ].includes(extension)
-  ) {
-    return `// ${coreText}`;
-  }
-
-  if (['.py', '.sh', '.mk', '.mozbuild', '.configure', '.toml', '.cfg'].includes(extension)) {
-    return `# ${coreText}`;
-  }
-
-  return coreText;
-}
-
-function appendMarker(content, marker) {
-  return content.endsWith('\n') ? `${content}${marker}\n` : `${content}\n${marker}\n`;
-}
-
-async function backupRelative(relativePath) {
-  backups.set(relativePath, await snapshotPath(join(projectRoot, relativePath)));
-}
-
-async function restoreRelative(relativePath) {
-  const snapshot = backups.get(relativePath);
-  if (snapshot) await restorePath(join(projectRoot, relativePath), snapshot);
-}
-
-async function loadJson(relativePath) {
-  const absolutePath = join(projectRoot, relativePath);
-  return JSON.parse(await readFile(absolutePath, 'utf8'));
-}
-
-function getManifestPatchedFiles(manifest) {
-  const files = new Set();
-
-  if (!manifest?.patches) {
-    return files;
-  }
-
-  for (const patch of manifest.patches) {
-    for (const file of patch.filesAffected) {
-      files.add(file);
-    }
-  }
-
-  return files;
-}
-
-function selectCandidateFromList(candidateFiles, manifestFiles, engineDir) {
-  for (const file of candidateFiles) {
-    if (manifestFiles.has(file)) {
-      continue;
-    }
-
-    const exists = runCapture('git', ['-C', engineDir, 'ls-files', '--error-unmatch', '--', file], {
-      allowFailure: true,
-    });
-    if (exists.exitCode !== 0) {
-      continue;
-    }
-
-    const status = runCapture('git', ['-C', engineDir, 'status', '--short', '--', file], {
-      allowFailure: true,
-    });
-    if (status.stdout.trim().length > 0) {
-      continue;
-    }
-
-    return file;
-  }
-
-  return null;
-}
-
-function discoverTargetFile(engineDir, manifestFiles) {
-  const preferredCandidates = [
-    'browser/base/content/browser.js',
-    'browser/base/content/browser-init.js',
-    'browser/components/preferences/main.js',
-    'toolkit/modules/AppConstants.sys.mjs',
-    'toolkit/components/printing/content/print.js',
-  ];
-
-  const preferred = selectCandidateFromList(preferredCandidates, manifestFiles, engineDir);
-  if (preferred) {
-    return preferred;
-  }
-
-  const trackedFiles = runCapture('git', ['-C', engineDir, 'ls-files']);
-  const fallback = trackedFiles.stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((file) => /^(browser|toolkit)\//.test(file))
-    .filter((file) => /\.(js|mjs|txt)$/i.test(file))
-    .find((file) => !manifestFiles.has(file));
-
-  if (!fallback) {
-    throw new Error(
-      'Unable to find a clean tracked Firefox source file outside the current patch manifest. Set FIREFORGE_FULL_TARGET_FILE explicitly.'
-    );
-  }
-
-  const status = runCapture('git', ['-C', engineDir, 'status', '--short', '--', fallback], {
-    allowFailure: true,
-  });
-  if (status.stdout.trim().length > 0) {
-    throw new Error(
-      `Auto-selected fallback target ${fallback} already has local changes. Set FIREFORGE_FULL_TARGET_FILE explicitly.`
-    );
-  }
-
-  return fallback;
-}
-
-async function copyPatchToArtifacts(filename) {
-  const source = join(projectRoot, 'patches', filename);
-  const destination = join(artifactDir, 'patches', filename);
-  await mkdir(dirname(destination), { recursive: true });
-  await copyFile(source, destination);
-  return destination;
-}
-
-async function writeNotesTemplate() {
-  const commandSummary = report.commands
-    .map((entry) => `- ${entry.label}: ${entry.exitCode} (${entry.durationMs} ms)`)
-    .join('\n');
-
-  await writeArtifact(
-    'notes-template.md',
-    `# Full Firefox Integration Notes\n\n` +
-      `- Project root: ${projectRoot}\n` +
-      `- Build mode: ${buildMode}\n` +
-      `- Target file: ${report.targetFile ?? 'not selected'}\n` +
-      `- Created patch: ${report.patchFilename ?? 'none'}\n` +
-      `- Artifacts: ${artifactDir}\n\n` +
-      `## Command Timings\n\n${commandSummary || '- No commands recorded'}\n\n` +
-      `## Observations To Record\n\n` +
-      `- Unexpected bootstrap or build warnings:\n` +
-      `- Any file paths that needed a custom target override:\n` +
-      `- Any import or recovery behavior that differed from the synthetic workflow tests:\n` +
-      `- Any Firefox-specific constraints that should become new fixture rules:\n\n` +
-      `## Candidate Follow-Ups\n\n` +
-      `- Add or expand a medium-tier fixture for:\n` +
-      `- Update the synthetic Firefox harness to mirror:\n` +
-      `- Extend this full-tree runner with:\n`
+async function exists(path) {
+  return access(path).then(
+    () => true,
+    () => false
   );
 }
 
 /**
- * Opt-in tree scenario (FIREFORGE_FULL_TREE=1): the direct real-Firefox proof
- * that a `tree create --with-objdir` clone is fully relocated: regenerated
- * configure output contains no primary paths, mach anchored in-tree (venvs
- * rebuilt there), and nothing in the primary objdir's metadata changed.
+ * Runs one command, teeing its output to the console and to a numbered log
+ * file under the artifact directory.
+ *
+ * @param {object} run - The mode's record in the report
+ * @param {string} label - What the step is, for the log name
+ * @param {string} command - The executable
+ * @param {string[]} args - Its arguments
+ * @param {string} cwd - Where it runs
+ * @returns {Promise<{exitCode: number, stdout: string}>}
  */
-async function runTreeScenario(primaryObjDir) {
-  const treeName = `full-suite-tree-${artifactStamp}`;
-  const treeRoot = join(projectRoot, '.fireforge', 'trees', treeName);
-  const treeObservations = {};
-  report.observations.tree = treeObservations;
+async function runLogged(run, label, command, args, cwd) {
+  const index = String(run.steps.length + 1).padStart(2, '0');
+  const logFile = join(artifactDir, `${run.mode}-${index}-${label}.log`);
+  const log = createWriteStream(logFile, { encoding: 'utf8' });
+  log.write(`$ ${command} ${args.join(' ')}\n\n`);
+  const startedAt = Date.now();
+  let stdout = '';
+  const exitCode = await new Promise((resolve, reject) => {
+    // stdin stays the terminal's, so a local run can answer mach bootstrap.
+    const child = spawn(command, args, { cwd, stdio: ['inherit', 'pipe', 'pipe'] });
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+      process.stdout.write(chunk);
+      log.write(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      process.stderr.write(chunk);
+      log.write(chunk);
+    });
+    child.on('error', reject);
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+  await new Promise((resolve) => log.end(`\n[exit ${exitCode}]\n`, resolve));
+  run.steps.push({ label, args, exitCode, durationMs: Date.now() - startedAt, logFile });
+  return { exitCode, stdout };
+}
 
-  const primaryMetadataFiles = ['config.status', 'backend.mk', 'Makefile', 'mozinfo.json'];
-  const statPrimaryMetadata = async () => {
-    const { stat } = await import('node:fs/promises');
-    const snapshot = {};
-    for (const name of primaryMetadataFiles) {
-      snapshot[name] = await stat(join(engineDir, primaryObjDir, name)).then(
-        (s) => s.mtimeMs,
-        () => null
-      );
-    }
-    return snapshot;
-  };
+/**
+ * Runs a FireForge command and fails unless it exits 0.
+ *
+ * @param {object} run - The mode's record in the report
+ * @param {string} label - What the step is
+ * @param {string[]} args - The CLI arguments
+ * @returns {Promise<string>} Its stdout
+ */
+async function fireforge(run, label, args) {
+  const { exitCode, stdout } = await runLogged(
+    run,
+    label,
+    process.execPath,
+    [fireforgeBin, ...args],
+    run.root
+  );
+  if (exitCode !== 0) throw new Error(`fireforge ${args.join(' ')} exited ${exitCode}`);
+  return stdout;
+}
 
-  const metadataBefore = await statPrimaryMetadata();
-  try {
-    await runFireforge('tree-create', ['tree', 'create', treeName, '--with-objdir']);
+function git(cwd, args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
+  return result.stdout;
+}
 
-    // The regenerated configure output must name the tree, never the primary.
-    for (const name of ['config.status', 'backend.mk']) {
-      const filePath = join(treeRoot, 'engine', primaryObjDir, name);
-      const content = await readFile(filePath, 'utf8').catch(() => null);
-      if (content === null) {
-        throw new Error(`Tree scenario: expected regenerated ${name} at ${filePath}`);
-      }
-      if (content.includes(engineDir)) {
-        throw new Error(
-          `Tree scenario: ${name} in the cloned objdir still names the primary engine (${engineDir}) — the in-tree reconfigure did not relocate it.`
-        );
-      }
-    }
-    // mach anchored in-tree: configure re-bootstrapped the venvs inside the tree.
-    const treeVenvs = join(treeRoot, 'engine', primaryObjDir, '_virtualenvs');
-    if (!(await pathExists(treeVenvs))) {
-      throw new Error(
-        `Tree scenario: ${treeVenvs} missing — mach did not re-bootstrap inside the tree.`
-      );
-    }
-    treeObservations.reconfiguredClean = true;
+function commitAll(root, message) {
+  git(root, ['add', '-A']);
+  git(root, [
+    '-c',
+    'user.name=FireForge integration',
+    '-c',
+    'user.email=integration@invalid',
+    'commit',
+    '--quiet',
+    '--allow-empty',
+    '-m',
+    message,
+  ]);
+}
 
-    if (treeTestPath) {
-      await runFireforge('tree-test', ['tree', 'exec', treeName, '--', 'test', treeTestPath]);
-      treeObservations.inTreeTest = treeTestPath;
-    } else {
-      treeObservations.inTreeTest =
-        'Skipped — set FIREFORGE_FULL_TREE_TEST_PATH to run a harness inside the tree.';
-    }
+async function appendMarker(path) {
+  const content = await readFile(path, 'utf8');
+  await appendFile(path, `${content.endsWith('\n') ? '' : '\n'}${marker}\n`);
+}
 
-    // The primary objdir's metadata must be byte-for-byte undisturbed.
-    const metadataAfter = await statPrimaryMetadata();
-    for (const name of primaryMetadataFiles) {
-      if (metadataBefore[name] !== metadataAfter[name]) {
-        throw new Error(
-          `Tree scenario: primary ${primaryObjDir}/${name} changed while operating on the tree (mtime ${metadataBefore[name]} -> ${metadataAfter[name]}).`
-        );
-      }
-    }
-    treeObservations.primaryUntouched = true;
-  } finally {
-    if (await pathExists(treeRoot)) {
-      await runFireforge('tree-remove', ['tree', 'remove', treeName]).catch((error) => {
-        report.cleanup.errors.push(`Failed to remove tree ${treeName}: ${toError(error).message}`);
-      });
-    }
+async function requireMarker(path, present) {
+  const holds = (await readFile(path, 'utf8')).includes(marker);
+  if (holds !== present) {
+    throw new Error(`${path} ${present ? 'lacks' : 'still holds'} the marker ${marker}`);
   }
+}
+
+async function bootstrapUnlessSkipped(run) {
+  if (skipBootstrap) run.notes.push('bootstrap skipped (FIREFORGE_FULL_SKIP_BOOTSTRAP=1)');
+  else await fireforge(run, 'bootstrap', ['bootstrap']);
+}
+
+async function patchMode(run) {
+  const engineFile = join(run.root, 'engine', targetFile);
+  const reused = await exists(join(run.root, 'fireforge.json'));
+  if (reused) {
+    const config = JSON.parse(await readFile(join(run.root, 'fireforge.json'), 'utf8'));
+    if (config.firefox?.version !== firefoxVersion || (config.mode ?? 'patches') !== 'patches') {
+      throw new Error(
+        `${run.root} holds another project; remove it or point FIREFORGE_FULL_WORK_DIR elsewhere.`
+      );
+    }
+    run.notes.push('reused the existing patch-mode project');
+  } else {
+    await mkdir(run.root, { recursive: true });
+    await fireforge(run, 'setup', ['setup', ...identity, firefoxVersion, '--mode', 'patches']);
+  }
+  if (await exists(join(run.root, 'engine', '.git'))) run.notes.push('engine/ already present');
+  else await fireforge(run, 'download', ['download']);
+  // A reused project must start without leftovers of an earlier run.
+  if (reused) await fireforge(run, 'status-clean', ['status', '--check']);
+  await bootstrapUnlessSkipped(run);
+  await fireforge(run, 'import', ['import']);
+  await fireforge(run, 'build', ['build']);
+  await fireforge(run, 'test', ['test', testPath]);
+
+  await appendMarker(engineFile);
+  run.cleanup = async () => {
+    if (run.exported) await fireforge(run, 'cleanup-patch', ['patch', 'delete', patchName]);
+    await fireforge(run, 'cleanup-discard', ['discard', targetFile]);
+    await fireforge(run, 'cleanup-status', ['status', '--check']);
+  };
+  const exported = JSON.parse(
+    await fireforge(run, 'export', [
+      'export',
+      targetFile,
+      '--name',
+      patchName,
+      '--description',
+      'Full Firefox integration marker',
+      '--json',
+    ])
+  );
+  run.exported = true;
+  if (!exported.files?.includes(targetFile)) {
+    throw new Error(`export did not capture ${targetFile}: ${JSON.stringify(exported)}`);
+  }
+  await fireforge(run, 'reset', ['reset', '--yes']);
+  await requireMarker(engineFile, false);
+  await fireforge(run, 'import-roundtrip', ['import']);
+  await requireMarker(engineFile, true);
+  await fireforge(run, 'verify', ['verify']);
+}
+
+async function sourceMode(run) {
+  await rm(run.root, { recursive: true, force: true });
+  await mkdir(run.root, { recursive: true });
+  await fireforge(run, 'setup', ['setup', ...identity, firefoxVersion, '--mode', 'source']);
+  git(run.root, ['init', '--quiet']);
+  commitAll(run.root, 'setup');
+  await fireforge(run, 'download', ['download']);
+  await bootstrapUnlessSkipped(run);
+  await fireforge(run, 'override', ['override', targetFile]);
+  await appendMarker(join(run.root, 'src', targetFile));
+  await fireforge(run, 'status-declared', ['status', '--check']);
+  commitAll(run.root, `own ${targetFile}`);
+
+  const built = JSON.parse(await fireforge(run, 'build', ['build', '--json']));
+  if (typeof built.workspace !== 'string') {
+    throw new Error(`build --json names no workspace: ${JSON.stringify(built)}`);
+  }
+  run.notes.push(`built in workspace ${built.workspace}`);
+  await requireMarker(join(hostRoot, 'workspaces', built.workspace, 'engine', targetFile), true);
+  await fireforge(run, 'test', ['test', testPath]);
+
+  const out = join(artifactDir, 'source-queue');
+  const exported = JSON.parse(await fireforge(run, 'export', ['export', '--out', out, '--json']));
+  if (!exported.patches?.some((patch) => patch.files.includes(targetFile))) {
+    throw new Error(`the exported queue does not name ${targetFile}: ${JSON.stringify(exported)}`);
+  }
+  await fireforge(run, 'verify', ['verify']);
 }
 
 async function main() {
-  await ensureArtifactDirectory();
-
-  for (const [label, targetPath] of requiredPaths) {
-    await requirePath(label, targetPath);
-  }
-
-  const config = await loadJson('fireforge.json');
-  const manifest = await loadJson('patches/patches.json').catch(() => null);
-  const manifestFiles = getManifestPatchedFiles(manifest);
-
-  const targetFile = targetFileOverride ?? discoverTargetFile(engineDir, manifestFiles);
-  report.targetFile = targetFile;
-
-  if (manifestFiles.has(targetFile)) {
-    throw new Error(
-      `Target file ${targetFile} is already managed by the current patch manifest. Choose another file with FIREFORGE_FULL_TARGET_FILE.`
-    );
-  }
-
-  containedPath(engineDir, targetFile);
-  runCapture('git', ['-C', engineDir, 'ls-files', '--error-unmatch', '--', targetFile]);
-  const targetStatus = runCapture('git', ['-C', engineDir, 'status', '--short', '--', targetFile]);
-  if (targetStatus.stdout.trim().length > 0) {
-    throw new Error(
-      `Target file ${targetFile} already has local changes. Choose a clean file with FIREFORGE_FULL_TARGET_FILE.`
-    );
-  }
-
-  for (const relativePath of setupManagedFiles) {
-    await backupRelative(relativePath);
-  }
-
-  report.observations.initialTargetStatus = targetStatus.stdout.trim();
-  report.observations.initialGitStatus = runCapture('git', [
-    '-C',
-    engineDir,
-    'status',
-    '--short',
-  ]).stdout;
-  engineBaseline = await snapshotEngine(engineDir);
-  // Persist recoverable bytes before the first external mutation. A failed
-  // preflight/snapshot has no cleanup authority over the user's workspace.
-  await writeArtifact(
-    'recovery-baseline.json',
-    JSON.stringify(
-      {
-        indexPath: engineBaseline.indexPath,
-        index: engineBaseline.index,
-        engine: [...engineBaseline.paths],
-        project: [...backups],
-      },
-      null,
-      2
-    )
-  );
-
-  const effectiveFirefoxVersion = firefoxVersionOverride ?? config.firefox.version;
-  const setupArgs = [
-    'setup',
-    '--force',
-    '--name',
-    config.name,
-    '--vendor',
-    config.vendor,
-    '--app-id',
-    config.appId,
-    '--binary-name',
-    config.binaryName,
-    '--firefox-version',
-    effectiveFirefoxVersion,
-    '--product',
-    config.firefox.product,
-  ];
-  if (config.license) {
-    setupArgs.push('--license', config.license);
-  }
-
-  const targetAbsolutePath = containedPath(engineDir, targetFile);
-  const originalTarget = await snapshotPath(targetAbsolutePath);
-  if (originalTarget.kind !== 'file')
-    throw new Error('Integration target must be a regular tracked source file');
-  const originalTargetContent = originalTarget.content.toString('utf8');
-  const markerId = artifactStamp;
-  const patchMarker = commentMarkerFor(targetFile, markerId, 'patch');
-  const dirtyMarker = commentMarkerFor(targetFile, markerId, 'dirty');
-
-  mutationArmed = true;
-  if (skipSetup) {
-    report.observations.setup = 'Skipped because FIREFORGE_FULL_SKIP_SETUP=1';
-  } else {
-    await runFireforge('setup', setupArgs);
-  }
-  await runFireforge('doctor', ['doctor']);
-  await runFireforge('status-before', ['status']);
-  await runFireforge('bootstrap', ['bootstrap']);
-  await runFireforge('build', buildMode === 'full' ? ['build'] : ['build', '--ui']);
-
-  // readdir + prefix filter, not `ls obj-*`: spawn without a shell never
-  // glob-expands, so the ls form always exited non-zero and allowFailure
-  // swallowed it, meaning this masked-build-failure detection could never
-  // fire.
-  const engineEntries = await readdir(engineDir).catch(() => []);
-  const firstObjDir = engineEntries.filter((name) => name.startsWith('obj-')).sort()[0];
-  if (firstObjDir) {
-    const distBinPath = join(engineDir, firstObjDir, 'dist', 'bin');
-    if (!(await pathExists(distBinPath))) {
-      report.observations.buildArtifactWarning =
-        `Build exited successfully but ${distBinPath} does not exist. ` +
-        'mach may have masked a build failure with exit code 0.';
-    }
-  } else {
-    report.observations.buildArtifactWarning =
-      'Build exited successfully but no obj-* directory exists in engine/. ' +
-      'mach may have masked a build failure with exit code 0.';
-  }
-
-  if (runTreePhase) {
-    if (!firstObjDir) {
-      throw new Error('FIREFORGE_FULL_TREE=1 requires a completed build with an obj-* directory.');
-    }
-    await runTreeScenario(firstObjDir);
-  }
-
-  await writeFile(targetAbsolutePath, appendMarker(originalTargetContent, patchMarker), 'utf8');
-  await writeArtifact(
-    'snapshots/target-after-edit.txt',
-    await readFile(targetAbsolutePath, 'utf8')
-  );
-
-  const manifestBefore = await loadJson('patches/patches.json').catch(() => ({ patches: [] }));
-  const patchFilesBefore = new Set((manifestBefore.patches ?? []).map((patch) => patch.filename));
-
-  await runFireforge('export', [
-    'export',
-    targetFile,
-    '--name',
-    `full-suite-${markerId}`,
-    '--category',
-    'infra',
-    '--description',
-    'Opt-in full Firefox integration workflow patch',
-  ]);
-
-  const manifestAfterExport = await loadJson('patches/patches.json');
-  const createdPatch = (manifestAfterExport.patches ?? []).find(
-    (patch) => !patchFilesBefore.has(patch.filename)
-  );
-  if (!createdPatch) {
-    throw new Error('The full-tree suite could not determine which patch file was created.');
-  }
-
-  createdPatchInfo.filename = createdPatch.filename;
-  report.patchFilename = createdPatch.filename;
-  await copyPatchToArtifacts(createdPatch.filename);
-
-  runCapture('git', ['-C', engineDir, 'checkout', '--', targetFile]);
-  // The full-tree project may already materialize patch-touched binary
-  // branding assets. Those cannot be compared through the text projection
-  // that `import` uses to prove an existing dirty file is patch-backed, so
-  // force only this idempotent round-trip import. The explicit dirty-guard
-  // check below still runs without --force.
-  await runFireforge('import-roundtrip', ['import', '--force']);
-
-  const importedContent = await readFile(targetAbsolutePath, 'utf8');
-  if (!importedContent.includes(patchMarker)) {
-    throw new Error(`Expected imported content for ${targetFile} to include ${patchMarker}`);
-  }
-  await writeArtifact('snapshots/target-after-import.txt', importedContent);
-
-  await writeFile(targetAbsolutePath, appendMarker(originalTargetContent, dirtyMarker), 'utf8');
-  const dirtyImport = await runFireforge('import-dirty-guard', ['import'], {
-    expectFailure: true,
-    requiredText: 'Uncommitted changes in patch-touched files',
+  await access(fireforgeBin).catch(() => {
+    throw new Error(`${fireforgeBin} is missing: run "npm run build" first.`);
   });
-  report.observations.dirtyGuardPreview = dirtyImport.preview;
-
-  await runFireforge('discard-target', ['discard', targetFile, '--yes']);
-  await runFireforge('import-after-discard', ['import', '--force']);
-
-  const recoveredContent = await readFile(targetAbsolutePath, 'utf8');
-  if (!recoveredContent.includes(patchMarker)) {
-    throw new Error(`Expected recovered content for ${targetFile} to include ${patchMarker}`);
-  }
-  await writeArtifact('snapshots/target-after-recovery-import.txt', recoveredContent);
-  await runFireforge('status-after', ['status']);
-
-  report.observations.finalGitStatus = runCapture('git', [
-    '-C',
-    engineDir,
-    'status',
-    '--short',
-  ]).stdout;
-  report.observations.patchMarker = patchMarker;
-  report.observations.dirtyMarker = dirtyMarker;
-}
-
-let mainError = null;
-
-try {
-  await main();
-} catch (error) {
-  mainError = toError(error);
-  report.failure = {
-    message: mainError.message,
-    stack: mainError.stack,
-  };
-} finally {
-  try {
-    if (mutationArmed) {
-      await restoreEngine(engineDir, engineBaseline, report.cleanup);
+  await mkdir(artifactDir, { recursive: true });
+  let failed = false;
+  for (const mode of modes) {
+    const run = { mode, root: join(workDir, mode), steps: [], notes: [] };
+    const record = { root: run.root, steps: run.steps, notes: run.notes };
+    report.modes[mode] = record;
+    try {
+      await (mode === 'patches' ? patchMode(run) : sourceMode(run));
+      record.success = true;
+    } catch (error) {
+      record.success = false;
+      record.failure = error instanceof Error ? error.message : String(error);
+      failed = true;
     }
-
-    if (mutationArmed && !keepPatch && createdPatchInfo.filename) {
-      await rm(join(projectRoot, 'patches', createdPatchInfo.filename), { force: true });
-      report.cleanup.actions.push(`Removed temporary patch ${createdPatchInfo.filename}`);
+    if (run.cleanup) {
+      await run.cleanup().catch((error) => {
+        record.cleanupFailure = error instanceof Error ? error.message : String(error);
+        failed = true;
+      });
     }
-
-    const restoreTargets = keepPatch
-      ? [...setupManagedFiles.filter((relativePath) => relativePath !== 'patches/patches.json')]
-      : setupManagedFiles;
-
-    for (const relativePath of mutationArmed ? restoreTargets : []) {
-      if (!relativePath) {
-        continue;
-      }
-      try {
-        await restoreRelative(relativePath);
-        report.cleanup.actions.push(`Restored ${relativePath}`);
-      } catch (error) {
-        report.cleanup.errors.push(`Failed to restore ${relativePath}: ${toError(error).message}`);
-      }
-    }
-  } catch (error) {
-    const message = toError(error).message;
-    report.cleanup.errors.push(message);
-    if (!mainError) {
-      mainError = toError(error);
-      report.failure = {
-        message,
-        stack: mainError.stack,
-      };
-    }
-  }
-
-  mainError ??= recoveryFailure(report.cleanup.errors);
-  if (mainError && !report.failure) {
-    report.failure = { message: mainError.message, stack: mainError.stack };
   }
   report.completedAt = new Date().toISOString();
-  report.success = mainError === null;
-
-  await writeArtifact('report.json', `${JSON.stringify(report, null, 2)}\n`);
-  await writeNotesTemplate();
-
-  process.stdout.write(`\nFull Firefox integration artifacts: ${artifactDir}\n`);
+  report.success = !failed;
+  await writeFile(join(artifactDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
+  console.log(`\nFull Firefox integration ${failed ? 'FAILED' : 'passed'}: ${artifactDir}`);
+  if (failed) process.exitCode = 1;
 }
 
-if (mainError) {
-  throw mainError;
-}
+await main();

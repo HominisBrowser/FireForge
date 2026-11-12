@@ -1,10 +1,9 @@
 # macOS-specific mozconfig for ${name}
 
-# Note: MOZ_MACBUNDLE_ID must be set via branding/configure.sh, not mozconfig.
-# It is automatically set when using --with-branding.
+# MOZ_MACBUNDLE_ID comes from the branding directory's configure.sh, not from
+# this file; FireForge passes the rest of the application ID as
+# --with-distribution-id.
 
-# Use system toolchain
-ac_add_options --with-macos-sdk=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
-
-# Code signing (disabled for development)
-# ac_add_options --enable-apple-silicon (uncomment for ARM builds)
+# --enable-bootstrap (common.mozconfig) provides the macOS SDK. To build
+# against a local one instead:
+# ac_add_options --with-macos-sdk=/path/to/MacOSX.sdk

@@ -1,5 +1,9 @@
 name: Full Firefox Integration
 
+# Drives real Firefox source through the built CLI in both project modes
+# (scripts/run-full-firefox-integration.mjs says what that covers). Needs a
+# self-hosted runner that can build Firefox.
+
 on:
   workflow_dispatch:
   schedule:
@@ -15,13 +19,25 @@ jobs:
       - self-hosted
       - firefox-large
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
+      - name: Pin npm to the packageManager version
+        run: |
+          NPM_VERSION="$(node -p "require('./package.json').packageManager.split('@')[1]")"
+          npm install -g "npm@${NPM_VERSION}"
       - run: npm ci
       - run: npm run build
+      # A persistent FIREFORGE_FULL_WORK_DIR keeps the patch-mode project, and
+      # with it a warm build, between runs; FIREFORGE_HOME keeps the pristine
+      # repositories and the workspace pool.
       - run: npm run test:firefox-full
         env:
-          FIREFORGE_FULL_PROJECT_ROOT: ${{ vars.FIREFORGE_FULL_PROJECT_ROOT }}
+          FIREFORGE_FULL_WORK_DIR: ${{ vars.FIREFORGE_FULL_WORK_DIR }}
+          FIREFORGE_FULL_FIREFOX_VERSION: ${{ vars.FIREFORGE_FULL_FIREFOX_VERSION }}
+          FIREFORGE_FULL_SKIP_BOOTSTRAP: ${{ vars.FIREFORGE_FULL_SKIP_BOOTSTRAP }}
+          FIREFORGE_HOME: ${{ vars.FIREFORGE_HOME }}

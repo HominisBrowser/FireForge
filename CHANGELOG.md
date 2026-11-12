@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.60.1
+
+A rework of the whole tool. The two ways of storing a fork stay (patch mode and source mode), and the daily commands (`status`, `lint`, `typecheck`, `check`, `build`, `test`, `run`) mean the same and take the same flags in both. Source mode no longer routes work through a host daemon: there are no jobs, slots, supervisor or proof ledger. The code base is about 49,000 lines instead of 164,000, and the command line has 66 commands and subcommands with 94 distinct flags, against 126 and 261. Upgrading needs configuration changes and one full rebuild; [`docs/migrating.md`](docs/migrating.md) lists every removed command, flag and key with its replacement, and the steps for each mode.
+
+### Workflow
+
+- `fireforge.json` takes `"mode": "patches"` (the default) or `"mode": "source"` with a `source` block (`root`, `metadataRoot`, `pristineCommit`). `setup --mode` creates either.
+- `download` imports the pinned archive as one commit into a pristine repository per pin under `~/.fireforge/pristine/`, the same commit on every host, and checks the archive's SHA-256 against `firefox.sha256` or Mozilla's `SHA256SUMS` every time. In patch mode `engine/` is a checkout of that commit.
+- Source mode builds and tests in workspaces from a per-host pool under `~/.fireforge/workspaces/`. A command leases one for its duration (preferring the one its checkout used last, so the object directory stays warm), brings it to the checkout's `src/` by writing only the paths that differ, and releases it. Parallel sessions are git worktrees, each leasing its own workspace. When all are leased a command waits, naming the holders, up to `--wait-lock` (default two hours).
+- Materialization changes an engine file only when it holds bytes FireForge can account for; anything else is reported as `materialize-drift` with `workspace repair <name>` as the fix.
+- Commands that read owned changes (`status`, `verify`, `lint`, `export`) read `src/` and the pristine repository directly, with no capture, snapshot or slot.
+- Two host locks apply in both modes: `display` (one browser window at a time) and `build` (`buildSlots` concurrent compiles, from `~/.fireforge/host.json`, default 1).
+- Every lint, policy and typecheck rule is defined over the owned changes, so a rule means the same whichever mode produced them. In source mode the files Furnace deploys are judged with the owned files, one group per component, and the patch-size rules judge components of upstream changes; created files answer to `file-too-large`.
+- Leasing a pool workspace deploys the checkout's components after materializing it, and `typecheck` reads its projects with the engine at `engine/` beside the project's files, so a `jsconfig.json` in the engine that names project files (the paths Furnace writes among them) resolves wherever the workspace is.
+- A pristine repository an earlier version stored for the same archive is used as it is; the archive imports as the same commit in both versions.
+- `gate` replaces `prove`: on a clean committed tree it runs `check`, a build, and the declared lanes, stress runs, negative controls and smoke starts in one workspace, reports every entry, and moves `refs/fireforge/verified` fast-forward only when all pass and every declared acceptance is recorded. A commit that changes only `gate.documents` paths needs `check` alone.
+- The object directory is `obj-fireforge` inside every engine and belongs to the path it was configured at. `workspace add --from` clones a workspace's engine without its builds, and `build` removes an object directory configured for another path and builds from nothing; `build --rewrite-mozinfo` is gone, because a relocated object directory keeps reading and linking from the directory it was built in.
+
+### Commands
+
+- `migrate` upgrades a project of the previous format in place, in either mode: the `fireforge.json` keys, the override records, `waivers.json` and `policy.json`, the merge driver and `MOZ_OBJDIR` lines, as one journaled change on a committed tree that ends with `verify`. It lists everything it rewrote or dropped and stops before writing when anything needs a decision. `migrate --to-source` is the conversion of a patch queue to source mode.
+- `status --groups` lists every group by the ID that waivers, scope rules and reserved exceptions name it by. In source mode an ID is the component, the `exportQueue` group, `created-<directory>` or the Furnace component, used as written; nothing is prefixed, and an export's numbering is no part of it.
+- New: `workspace list|add|remove|repair`, `override`, `restore`, `migrate`, `merge-driver install`, `gate`, `gate accept`, `gate status`, `patch set`, `config get|set`, `version`.
+- `export` captures edits into a new patch in patch mode (`--all` replaces `export-all`) and writes the generated patch queue in source mode (`--out`), proven to replay to the tree the checkout builds.
+- `rebase --to <version>` downloads the version, writes the pin and moves the project: patch mode re-applies the queue with reduced context (`--continue`, `--abort`, `--dry-run`, `--force`); source mode merges every owned file three ways and leaves conflicts as git leaves them. It replaces `source set`, `download --force` plus `rebase`, and `authored refresh`.
+- `test` dispatches mochitest files one browser each by default (`--no-shard`, `--standalone`), runs negative controls with `--control <diff> --expect <assertion>`, and takes `--env`. Leftovers of earlier runs of the workspace are reaped and foreign port holders waited for without a flag.
+- `check` gains a `token-lint` step and runs its engine steps in one workspace. `check.extraSteps` commands are argument vectors with a default 600-second timeout and an `engine` flag.
+- `patch set` edits a patch's description, tier, lint waivers and staged dependencies in one transaction.
+- `furnace apply` replaces `furnace deploy`; `furnace create --tests <harness>` and `furnace override --css-only` replace their previous flags.
+- `doctor --recover` undoes changes an interrupted command left half-made.
+- Exit code 143 (`TERMINATED`) for SIGTERM and SIGHUP.
+
+### Configuration
+
+- `sources` becomes `mode` plus `source`. `proof` becomes `gate` with `build`, `documents`, `lanes`, `stress`, `controls`, `runs` and `acceptance`; a smoke start in `runs` is structured (`smokeExit`, `headless`, `args`, `consoleAllowFile`, `validate`).
+- `patchLint.rules` sets the severity of any rule and replaces `jsdocClassMethods`, `chromeScriptJsDoc` and `testAssertionFloor`. `patchLint.waivers` declares waivers per group in either mode. `patchPolicy.scopeRules` selects groups by a `group` regular expression.
+- `exportQueue.groups[].tier` and `exportQueue.componentTiers` carry size tiers into a generated queue. `wire.domTarget` names the chrome document `wire --dom` includes into. `test.harnessFailurePatterns` names output that means the browser failed before any test ran.
+- `license` defaults to `EUPL-1.2`. `patchPolicy.mutationMode` takes `error` or `warn`. `history` is removed. `doctor` probes `externalToolchains`.
+- `patches/patches.json` is written as version 2 (file names, categories and touched files derived; one Firefox stamp for the queue). A version 1 manifest is read and converted on the next write.
+- A mozconfig template that sets `MOZ_OBJDIR` is refused.
+
+### Removed
+
+- `authored` (every subcommand), `host`, `slot`, `job`, `prove`, `tree`, `park`, `export-all`, `source set`, `lint cache`, `patch body|stage|reserve|tier|lint-ignore|staged-dependency`, `furnace deploy|init|list|scan|preview|refresh|sync|chrome-doc`.
+- `slots`, `proof`, `test.canaryPath`, `test.canaryTimeoutSeconds`, `test.reapOrphans`, `test.lockMode`, `test.furnaceApply`, `check.timeout`, `check.timeouts`, `check.status.failOnUnknown`, `patchLint.prettier`, `patchLint.forwardRegistration`.
+- Most flags of the remaining commands, among them `test --headless` (the default), `--reap-orphans`, `--auto-ports`, `--furnace-apply`, `--canary`, `--perf-samples`, `--pgid-file`, `status --fail-on`, `lint --report`, `--since`, `export --category`, `--lint-ignore`, `--skip-lint`, every `--force-unsafe` and `--yes` on queue operations, and the `doctor --repair-*` family.
+- The `.fireforge/logs/` run logs of `build`; `test` keeps its latest ten run logs in the workspace and `--keep-log` copies one.
+
+### Fixes
+
+- Regenerating a patch body in `resolve`, `import --continue` and `rebase` keeps the patch's deletions, and writes only that patch's own work where other patches change the same file.
+- `re-export` puts an edit to a file several patches change into the last selected patch and adjusts the later patches so they still apply; a patch whose files hold no edit keeps its body byte for byte.
+- Resuming an import no longer replaces files of the patches before the failed one, and an import refuses a queue that changed since the paused run.
+- Engine writes of import, discard, reset and rebase happen in one transaction, so an error, a signal or a crash leaves the old state or the new one. Undoing a journal no longer writes through symlinks.
+- `workspace repair` and `workspace add --from` carry or reset the materialization ledger with the engine, so a repaired or cloned workspace never skips a write.
+- The build baseline is captured before the build runs, so an edit made during a build is not recorded as built.
+- Patch bodies are byte-exact on every host: files that are not valid UTF-8 are written as binary sections, Latin-1 and CRLF patch files round-trip, and git's C-quoted paths are read correctly.
+- A crash, a hang, a cut-off suite or a file that never started or finished never reads as a test pass, whatever mach's exit code or summary says.
+- `jar.mn` entries inserted after a flagged entry keep the surrounding indentation, test manifests are recognised by name and by the `moz.build` that lists them, and conditional `moz.build` lists are edited in place.
+- Lint no longer reports false findings on real fork code in the JavaScript and CSS rules; one parser setup serves both languages.
+- A changed file that FireForge does not recognise by name counts as a build input: it needs a full build under a `branding` directory (icons, installer scripts) and a UI build elsewhere, so an image, a font or a data file never leaves a build "fresh". Python build scripts need a full build. Tests, documentation, dot files and `.orig`/`.rej` leftovers never make a build stale.
+- A negative control repeats its unmutated run unless the recorded green run was made the same way: the same invocations, window, repetitions, shuffle seed, mach arguments, harness environment and validator.
+- A raw log, a test manifest or `mozinfo.json` that exists and cannot be read is an error, not read as absent. A failed write to a run's `output.log` is reported once as a warning.
+- Content that should have been read from a repository and was not is an error, never an empty file, and a `git cat-file` answer that ends early is refused as `git-truncated-output`.
+- A command waiting on a lock does not fail when the lock directory is deleted by hand while it is being recreated.
+- On Windows, git is given its own name for the empty file, files are flushed through a handle that may write, and repository paths are compared in native form.
+
+### Docs
+
+- New `docs/getting-started.md`, `source-workflow.md`, `workspaces.md`, `quality.md`, `gate.md`, `authoring.md` and `migrating.md`. `authored-sources.md`, `jobs-and-slots.md`, `proof.md`, `verification-trees.md` and `run-logs.md` are removed. The process lifecycle for contributors is `contributing/lifecycle.md`.
+
+### Maintenance
+
+- CI runs the whole suite on Linux, macOS and Windows, and on the lowest supported Node version.
+- GitHub Actions are locked in `.github/workflows/actions.lock`, transitive ones included, and the workflows are linted with zizmor. The release workflow grants write access and the publishing identity to the publish job only. Dependabot waits seven days before proposing a release.
+
 ## 0.55.0
 
 ### Test harness
@@ -260,27 +336,27 @@
 
 ### Performance
 
-- The worktree ownership scan behind `status`, `verify`, `doctor`, `import` and `discard` runs four git processes instead of one or more per managed file. On the Hominis tree (1,606 managed files) that was 1,625 spawns. `status --ownership` went from 13 to 16 s down to 5.7 s, and `verify` from 15 s to 7.6 s. Output is byte-identical to 0.47.1.
+- The worktree ownership scan behind `status`, `verify`, `doctor`, `import` and `discard` runs four git processes instead of one or more per managed file. `status --ownership` went from 13 to 16 s down to 5.7 s, and `verify` from 15 s to 7.6 s. Output is byte-identical to 0.47.1.
 - The batched untracked listing uses `ls-files -z`, so a non-ASCII name inside a collapsed directory is no longer expanded to a quoted path that names no file.
 
 ### Typecheck and checkJs
 
-- The per-test-file checkJs programs share one parse of each lib, shim and helper file per run. On the Hominis queue (467 programs) the pass went from 66 to 85 s down to 22 to 25 s, with identical findings. This speeds up `typecheck` and every `lint --per-patch`, `export` or `re-export` that misses the lint cache.
+- The per-test-file checkJs programs share one parse of each lib, shim and helper file per run. The pass went from 66 to 85 s down to 22 to 25 s, with identical findings. This speeds up `typecheck` and every `lint --per-patch`, `export` or `re-export` that misses the lint cache.
 - `fireforge typecheck` keeps incremental build info per project in `.fireforge/typecheck/`, keyed so a shim, compiler or FireForge change never replays a stale verdict. New `typecheck --no-cache` checks from scratch and writes nothing. Nothing is written under `engine/`.
-- On the Hominis tree `typecheck` went from 93.8 s to 30.2 s.
+- `typecheck` went from 93.8 s to 30.2 s.
 - For the record: the projects are not run in a worker pool. They took 6 of the 93.8 s; the per-file checkJs pass was the cost.
 
 ### Re-export
 
-- A one-patch `re-export` roots its checkJs program at the patches it re-exports, as `lint --per-patch --patches` already did, instead of type-checking the whole queue. Cross-patch imports still resolve. On Hominis a cold `re-export <patch> --dry-run` went from 76.7 s to 8.0 s.
+- A one-patch `re-export` roots its checkJs program at the patches it re-exports, as `lint --per-patch --patches` already did, instead of type-checking the whole queue. Cross-patch imports still resolve. A cold `re-export <patch> --dry-run` went from 76.7 s to 8.0 s.
 - The queue lint context parses each patch once instead of once per created file: 3 to 4.4 s down to 0.3 s on 401 patches. Shared by `lint --per-patch`, `re-export`, `export` and `typecheck`.
 - `re-export` names its lint scope before the wait and prints a line when it builds a checkJs program. The elapsed time now includes the context build.
 
 ### Patch queue and lint
 
-- New opt-in `patchLint.forwardRegistration: "extended"` widens `forward-registration` beyond test-manifest `support-files` to jar.mn lines, moz.build path tokens, test-manifest sections and `head`, and `customElements.js` chrome URLs. On the Hominis queue it finds 937 edges across 6 patches. The default (`"support-files"`) is unchanged. Each finding prints a `patch staged-dependency --add --kind registration` command, tested to quiet the queue without leaving `staged-dependency-unused` behind.
+- New opt-in `patchLint.forwardRegistration: "extended"` widens `forward-registration` beyond test-manifest `support-files` to jar.mn lines, moz.build path tokens, test-manifest sections and `head`, and `customElements.js` chrome URLs. The default (`"support-files"`) is unchanged. Each finding prints a `patch staged-dependency --add --kind registration` command, tested to quiet the queue without leaving `staged-dependency-unused` behind.
 - New public `findForwardRegistrations(patchesDir, { scope })` returns the same census as structured records.
-- New `lint --per-patch --notices summary|full`. `summary` prints one line per check instead of every NOTICE row (about 430 on a green Hominis queue). `full` stays the default and is unchanged. Errors, warnings and `--report` JSON are unaffected.
+- New `lint --per-patch --notices summary|full`. `summary` prints one line per check instead of every NOTICE row. `full` stays the default and is unchanged. Errors, warnings and `--report` JSON are unaffected.
 
 ### Programmatic API
 

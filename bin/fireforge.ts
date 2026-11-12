@@ -1,163 +1,56 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: EUPL-1.2
 /**
- * FireForge CLI entry point, and the only file that may call process.exit().
- * Library code propagates errors via CommandError or FireForgeError instead.
- *
- * The signal pipeline below composes several lifecycle modules. See
- * docs/lifecycle-invariants.md for who owns what.
+ * The process entry, and the only file that ends the process. Everything
+ * else returns an exit code or throws.
  */
-
-import { installBrokenPipeHandler, main } from '../src/cli.js';
-import { removeActivePgidFile } from '../src/commands/test-harness-teardown.js';
-import { emitKilledVerdict } from '../src/commands/test-verdict.js';
-import { forceReleaseHeldLocksForSignal } from '../src/core/file-lock.js';
-import {
-  forceReleaseFurnaceLocksForActiveOperations,
-  isSignalRollbackInFlight,
-  rollbackActiveOperationsForSignal,
-} from '../src/core/furnace-operation.js';
-import { restoreActiveNegativeControlsForSignal } from '../src/core/negative-control.js';
-import { closeActiveRunLog } from '../src/core/run-log.js';
-import { removeActiveRunProfiles } from '../src/core/run-profile.js';
-import { waitForActiveCriticalSections } from '../src/core/signal-critical.js';
-import { CommandError } from '../src/errors/base.js';
-import { waitForActiveChildShutdown } from '../src/utils/process.js';
-import { waitForStdioDrain } from '../src/utils/stdio-drain.js';
+import { runProgram } from '../src/cli/program.js';
+import { drainStdio, handleBrokenPipe } from '../src/cli/stdio.js';
+import { program } from '../src/commands/index.js';
+import { installSignalHandlers, isShuttingDown } from '../src/kernel/signals.js';
+import { isInteractive } from '../src/kernel/tty.js';
 
 /**
- * Upper bound (ms) the signal handler will wait for any in-flight critical
- * section (e.g. rebase apply + session persist) to finish before calling
- * process.exit. Keep short so a stuck I/O operation cannot indefinitely
- * postpone the exit a user requested with Ctrl+C.
- */
-const SIGNAL_CRITICAL_SECTION_TIMEOUT_MS = 5_000;
-
-/**
- * Upper bound (ms) the signal handler waits for spawned children (Firefox
- * under `run`/`test`, mach under `build`) to shut down after the signal was
- * forwarded to them. Must exceed the largest child grace window
- * (execSmokeRun's killGraceMs default of 10 s) so the SIGTERM → grace →
- * SIGKILL escalation can complete. Exiting earlier orphans hung Firefox
- * trees. A second Ctrl+C escalates to SIGKILL immediately.
- */
-const CHILD_SHUTDOWN_TIMEOUT_MS = 12_000;
-
-/**
- * Upper bound (ms) a delayed exit waits for stdout/stderr to drain. A pipe
- * is async, so `process.exit()` discards anything queued past the 64 KiB
- * kernel buffer, which is enough to truncate a JSON payload mid-object.
- * Bounded so a stalled reader cannot wedge a failing process. An
- * EPIPE'd/closed pipe releases the wait immediately.
+ * Upper bound on the wait for stdout and stderr before a delayed exit.
+ * `process.exit` discards what a pipe still has queued, so every exit but the
+ * forced one drains first; the bound keeps a stalled reader from wedging it.
  */
 const STDIO_FLUSH_TIMEOUT_MS = 5_000;
 
-/**
- * Drains stdio, then exits. Every delayed exit routes through here. Only
- * the second-Ctrl+C force-exit (an explicit request to quit at once) and
- * this helper's own call terminate directly.
- */
-function exitAfterStdioFlush(code: number): void {
-  void waitForStdioDrain(STDIO_FLUSH_TIMEOUT_MS).finally(() => {
+function exitAfterFlush(code: number): void {
+  void drainStdio(STDIO_FLUSH_TIMEOUT_MS).finally(() => {
     process.exit(code);
   });
 }
 
-installBrokenPipeHandler();
+handleBrokenPipe();
 
 process.on('unhandledRejection', (reason: unknown) => {
-  console.error(
-    'Fatal error (unhandled rejection):',
-    reason instanceof Error ? reason.message : reason
-  );
-  if (reason instanceof Error && reason.stack) {
-    console.error(reason.stack);
-  }
-  exitAfterStdioFlush(1);
+  console.error('Fatal error (unhandled rejection):', reason);
+  exitAfterFlush(1);
 });
 
-// SIGINT / SIGTERM run any in-flight furnace rollback before terminating.
-// The library may not call process.exit itself, so the entry point owns both
-// the rollback dispatch and the exit. A no-op when no furnace mutation is
-// registered with the lifecycle wrapper.
-function installFurnaceSignalHandler(signal: 'SIGINT' | 'SIGTERM', exitCode: number): void {
-  process.on(signal, () => {
-    // First, before anything that can stall: a killed test run must leave a
-    // terminal line, or a log tail cannot tell "killed" from "still
-    // running" from "never started". The drain below is bounded but not
-    // instant, and the verdict must survive a drain that times out.
-    // No-op unless a test run was actually in flight.
-    try {
-      emitKilledVerdict(signal);
-    } catch {
-      // A diagnostic must never keep the process from exiting.
-    }
-    if (isSignalRollbackInFlight()) {
-      // A second Ctrl+C while we're already rolling back means the user
-      // wants out now, so let it terminate the process forcefully rather
-      // than queueing another rollback that will race the first.
-      process.exit(exitCode);
-    }
-    // Rollback, critical-section drain, and child shutdown run in parallel.
-    // Draining critical sections (rebase's apply + session persist, registered
-    // via `runInSignalCriticalSection`) keeps the CLI from exiting with a patch
-    // applied to the engine but a stale session file that mis-tracks progress
-    // on `--continue`. Waiting on child shutdown keeps the parent alive through
-    // the SIGTERM → grace → SIGKILL escalation execInherit/execSmokeRun forward
-    // to Firefox/mach. Exiting first orphans those trees.
-    void Promise.allSettled([
-      rollbackActiveOperationsForSignal(signal).catch((error: unknown) => {
-        console.error(
-          `Furnace rollback after ${signal} failed:`,
-          error instanceof Error ? error.message : error
-        );
-      }),
-      waitForActiveCriticalSections(SIGNAL_CRITICAL_SECTION_TIMEOUT_MS),
-      waitForActiveChildShutdown(CHILD_SHUTDOWN_TIMEOUT_MS),
-    ])
-      // A `test --negative-control` mutation must be undone while this
-      // process still holds the engine lock, or the next lock holder builds
-      // and tests the neuter. Runs after child shutdown, so the dying
-      // harness no longer reads the files. Never throws.
-      .then(() => restoreActiveNegativeControlsForSignal())
-      // `withFileLock`'s `finally { rm }` never runs across `process.exit`,
-      // so both sweeps exist for the same reason. The generic one covers
-      // every lock this process holds (engine session, patch directory,
-      // build). The furnace one stays because it carries rollback
-      // bookkeeping the generic sweep does not, and runs after it so the
-      // ownership checks see a settled tree.
-      .then(() => forceReleaseHeldLocksForSignal())
-      .then(() => forceReleaseFurnaceLocksForActiveOperations())
-      // The run log's held partial line and queued writes do not survive
-      // `process.exit`. The command's own `finally` that would close it is
-      // racing this handler and usually loses. Best-effort like the log
-      // itself: a diagnostic must never keep the process from exiting.
-      .then(() => closeActiveRunLog().catch(() => undefined))
-      // `--pgid-file` names a group this handler has just signalled; after a
-      // normal exit `testCommand`'s finally removes it, but that finally
-      // loses the race to the exit below. Only a kill FireForge never saw
-      // may leave the file behind.
-      .then(() => removeActivePgidFile().catch(() => undefined))
-      // A `run --temp-profile` (the `--smoke-exit` default) owes the removal
-      // of its profile directory; the command's finally loses this race too.
-      // Runs after child shutdown, so the browser no longer holds the files.
-      .then(() => removeActiveRunProfiles())
-      .finally(() => {
-        exitAfterStdioFlush(exitCode);
-      });
-  });
-}
-
-installFurnaceSignalHandler('SIGINT', 130);
-installFurnaceSignalHandler('SIGTERM', 143);
-
-main().catch((error: unknown) => {
-  if (error instanceof CommandError) {
-    exitAfterStdioFlush(error.exitCode);
-    return;
-  }
-
-  // Unexpected: withErrorHandling should have thrown a CommandError.
-  console.error('Fatal error:', error);
-  exitAfterStdioFlush(1);
+// The first SIGINT, SIGTERM or SIGHUP runs the interrupt pipeline (stop children, roll
+// back, release locks) and then exits. A second one exits immediately.
+installSignalHandlers({
+  exit: exitAfterFlush,
+  forceExit: (code) => process.exit(code),
 });
+
+runProgram(program, {
+  argv: process.argv.slice(2),
+  cwd: process.cwd(),
+  env: process.env,
+  stdout: (text) => process.stdout.write(text),
+  interactive: isInteractive(),
+}).then(
+  (code) => {
+    // An interrupted command also ends, usually with an error. The interrupt
+    // pipeline is still undoing and releasing, and the exit is its to make.
+    if (!isShuttingDown()) exitAfterFlush(code);
+  },
+  (error: unknown) => {
+    console.error('Fatal error:', error);
+    exitAfterFlush(1);
+  }
+);

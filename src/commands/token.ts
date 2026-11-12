@@ -1,327 +1,260 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { Command, Option } from 'commander';
-
-import { loadConfig } from '../core/config.js';
-import { furnaceConfigExists, loadFurnaceConfig } from '../core/furnace-config.js';
+import { arg, defineCommand, lockOptions, lockWaitMs, opt } from '../cli/command.js';
+import type { CommandContext } from '../cli/context.js';
+import { loadFurnaceConfig } from '../furnace/index.js';
+import { FireForgeError } from '../kernel/errors.js';
+import { exists } from '../kernel/fs.js';
+import {
+  editTracked,
+  type OwnedFiles,
+  ownedFiles,
+  trackedFiles,
+  withOwnedRead,
+} from '../mode/index.js';
+import { loadProject, type Project, type TrackedFiles } from '../project/index.js';
 import {
   addToken,
-  type AddTokenResult,
-  getTokensCssPath,
-  isTokenMode,
+  lintTokens,
+  listTokens,
+  measureCoverage,
+  readTokenFile,
   TOKEN_MODES,
-  validateTokenAdd,
-} from '../core/token-manager.js';
-import { InvalidArgumentError } from '../errors/base.js';
-import { FurnaceError } from '../errors/furnace.js';
-import type { CommandContext } from '../types/cli.js';
-import type { TokenAddOptions } from '../types/commands/index.js';
-import { toError } from '../utils/errors.js';
-import { info, intro, outro, success, warn } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
-import { normalizeTokenName } from '../utils/validation.js';
-import { tokenCoverageCommand } from './token-coverage.js';
-import { tokenLintCommand } from './token-lint.js';
-import { tokenListCommand, tokenShowCommand } from './token-list.js';
+  tokenName,
+  type TokenSettings,
+  tokenSettings,
+  tokenValues,
+} from '../tokens/index.js';
 
-async function normalizeTokenNameForProject(
-  projectRoot: string,
-  rawTokenName: string
-): Promise<string> {
-  if (rawTokenName.startsWith('--')) {
-    return normalizeTokenName(rawTokenName);
-  }
+/** The project's token file and conventions. */
+interface TokenTarget {
+  project: Project;
+  files: TrackedFiles;
+  /** Engine path of the token file. */
+  path: string;
+  settings: TokenSettings;
+}
 
-  try {
-    const furnaceConfig = await loadFurnaceConfig(projectRoot);
-    if (furnaceConfig.tokenPrefix) {
-      const strippedPrefix = furnaceConfig.tokenPrefix.replace(/^--/, '').replace(/-$/, '');
-      const strippedName = rawTokenName.replace(/^--/, '');
-      // A bare name that already starts with the configured prefix text is
-      // treated as fully qualified. Blindly prepending would silently
-      // produce a double-prefixed token (e.g. "--hominis-hominis-shadow-low").
-      if (strippedName === strippedPrefix || strippedName.startsWith(`${strippedPrefix}-`)) {
-        info(
-          `Token name "${rawTokenName}" already starts with the configured prefix ` +
-            `"${strippedPrefix}"; using --${strippedName} instead of prefixing it again.`
-        );
-        return normalizeTokenName(strippedName);
+async function target(ctx: CommandContext): Promise<TokenTarget> {
+  const project = await loadProject(ctx.cwd, ctx.env);
+  const furnace = (await exists(project.paths.furnace))
+    ? await loadFurnaceConfig(project)
+    : undefined;
+  const settings = tokenSettings(furnace, project.config.binaryName);
+  return { project, files: await trackedFiles(project), path: settings.file, settings };
+}
+
+/** Runs `judge` over the files the project owns, held still for the duration. */
+function withOwnedFiles<T>(
+  { project }: TokenTarget,
+  wait: { command: string; waitLock: number | undefined },
+  judge: (owned: OwnedFiles) => Promise<T>
+): Promise<T> {
+  const options = { command: wait.command, waitMs: lockWaitMs(wait.waitLock) };
+  return withOwnedRead(project, options, async () => judge(await ownedFiles(project)));
+}
+
+const add = defineCommand({
+  name: 'add',
+  summary: 'Add a design token to the token file',
+  description:
+    'Names start with "--", which the parser reads as a flag: put "--" before them, as in ' +
+    '`token add --category Spacing --mode static -- --brand-gap 8px`. A bare name takes the ' +
+    'project token prefix.',
+  args: {
+    name: arg.string('Token name, such as --brand-gap or gap'),
+    value: arg.string('CSS value'),
+  },
+  options: {
+    category: opt.string('Category banner to add the token under', { valueName: 'name' }),
+    mode: opt.enum(
+      TOKEN_MODES,
+      'Dark mode: auto follows the platform, static never changes, override has its own dark value',
+      {
+        required: true,
       }
-      return `--${strippedPrefix}-${strippedName}`;
-    }
-  } catch (error: unknown) {
-    warn(
-      `Falling back to generic token normalization because furnace.json could not be loaded: ${toError(error).message}`
-    );
-  }
-
-  return normalizeTokenName(rawTokenName);
-}
-
-/**
- * Reports a no-op add, naming where the existing declaration lives.
- *
- * A variant skip has no category to name, because the declaration lives in
- * a `:root<selector>` block, so the location reads as that block. The
- * location matters: without it a re-run meant to change a value exits 0
- * having silently changed nothing.
- *
- * @param tokenName - Full token name including prefix
- * @param result - Result carrying the skip location, when known
- * @param options - The invocation's options
- */
-function reportSkippedToken(
-  tokenName: string,
-  result: AddTokenResult,
-  options: TokenAddOptions
-): void {
-  const scope =
-    options.variant !== undefined
-      ? `:root${options.variant}`
-      : `category "${result.skippedExisting?.category ?? options.category ?? ''}"`;
-  const where = result.skippedExisting
-    ? ` in ${scope} (line ${result.skippedExisting.line}), unchanged`
-    : '';
-  info(`Token ${tokenName} already exists${where} (skipped)`);
-}
-
-/**
- * Adds a design token to the CSS file and documentation.
- *
- * @param projectRoot - Root directory of the project
- * @param tokenName - Full token name including prefix
- * @param value - CSS value
- * @param options - Command options
- */
-export async function tokenAddCommand(
-  projectRoot: string,
-  tokenName: string,
-  value: string,
-  options: TokenAddOptions
-): Promise<void> {
-  intro('Token Add');
-
-  // A fresh project without furnace.json otherwise fails deep inside the
-  // token-manager's `assertTokenCategoryExists` with "Token CSS file not
-  // found: browser/themes/shared/<binary>-tokens.css", which is technically
-  // correct, but the operator's actual next step is to initialize Furnace, which
-  // scaffolds the tokens CSS file. Catching the uninitialized case here
-  // gives the right guidance before the generic "file not found" error.
-  if (!(await furnaceConfigExists(projectRoot))) {
-    throw new FurnaceError(
-      'Token management requires Furnace to be initialized. ' +
-        'Tokens live in the Furnace-managed tokens CSS file, which `fireforge furnace init` scaffolds alongside the rest of the Furnace workspace.\n\n' +
-        'Run "fireforge furnace init" first, then rerun "fireforge token add ...".'
-    );
-  }
-
-  // Normalize token name using the configured Furnace token prefix when the
-  // user supplied a bare token name like "canvas-gap".
-  tokenName = await normalizeTokenNameForProject(projectRoot, tokenName);
-
-  // Validate mode. The guard IS the runtime proof, so the three `as
-  // TokenMode` casts this replaced are gone with it.
-  if (!isTokenMode(options.mode)) {
-    throw new InvalidArgumentError(
-      `Invalid mode "${options.mode}". Must be one of: ${TOKEN_MODES.join(', ')}`,
-      'mode'
-    );
-  }
-
-  if (options.dryRun) {
-    await validateTokenAdd(projectRoot, {
-      tokenName,
+    ),
+    darkValue: opt.string('Dark value (override only)', { valueName: 'value' }),
+    description: opt.string('Comment written above the declaration', {
+      short: 'd',
+      valueName: 'text',
+    }),
+    variant: opt.string('Add to the :root<selector> block, such as [data-skin=precision]', {
+      valueName: 'selector',
+    }),
+    createCategory: opt.flag('Declare the category banner when the file has none by that name'),
+    dryRun: opt.flag('Show what would change without writing'),
+    ...lockOptions,
+  },
+  json: true,
+  run: async (ctx, { name, value }, opts) => {
+    const { project, files, path, settings } = await target(ctx);
+    const text = await readTokenFile(files, path);
+    const full = tokenName(name, settings.prefix);
+    const result = addToken(text, {
+      name: full,
       value,
-      mode: options.mode,
-      ...(options.category !== undefined ? { category: options.category } : {}),
-      ...(options.description !== undefined ? { description: options.description } : {}),
-      ...(options.darkValue !== undefined ? { darkValue: options.darkValue } : {}),
-      ...(options.createCategory === true ? { createCategory: true } : {}),
-      ...(options.variant !== undefined ? { variant: options.variant } : {}),
-      dryRun: true,
+      mode: opts.mode,
+      category: opts.category,
+      description: opts.description,
+      darkValue: opts.darkValue,
+      variant: opts.variant,
+      createCategory: opts.createCategory,
     });
-
-    info('[dry-run] Would add token:');
-    info(`  Name: ${tokenName}`);
-    info(`  Value: ${value}`);
-    if (options.variant !== undefined) {
-      info(`  Variant: :root${options.variant}`);
-    } else {
-      info(
-        `  Category: ${options.category ?? '(none)'}${options.createCategory === true ? ' (created if missing)' : ''}`
+    if (result.changed && !opts.dryRun) {
+      await editTracked(
+        project,
+        { label: `adding token ${full}`, command: 'token add', waitMs: lockWaitMs(opts.waitLock) },
+        (tx) => files.write(tx, path, result.text)
       );
     }
-    info(`  Mode: ${options.mode}`);
-    if (options.description) info(`  Description: ${options.description}`);
-    if (options.darkValue) info(`  Dark value: ${options.darkValue}`);
-    outro('Dry run complete');
-    return;
-  }
-
-  const result = await addToken(projectRoot, {
-    tokenName,
-    value,
-    mode: options.mode,
-    ...(options.category !== undefined ? { category: options.category } : {}),
-    ...(options.description !== undefined ? { description: options.description } : {}),
-    ...(options.darkValue !== undefined ? { darkValue: options.darkValue } : {}),
-    ...(options.createCategory === true ? { createCategory: true } : {}),
-    ...(options.variant !== undefined ? { variant: options.variant } : {}),
-  });
-
-  if (result.skipped) {
-    reportSkippedToken(tokenName, result, options);
-  } else {
-    const forgeConfig = await loadConfig(projectRoot);
-    const tokensCssFile = getTokensCssPath(forgeConfig.binaryName).split('/').pop();
-    if (result.categoryCreated) success(`Created category "${options.category ?? ''}"`);
-    if (result.cssAdded) success(`Added ${tokenName} to ${tokensCssFile}`);
-    if (result.docsAdded) success(`Added ${tokenName} to SRC_TOKENS.md`);
-    if (result.unmappedAdded) info(`Added to unmapped tokens table (literal value)`);
-    if (result.countUpdated) info(`Updated mode count in documentation`);
-  }
-
-  outro('Done');
-}
-
-/** Registers token management commands on the CLI program. */
-export function registerToken(
-  program: Command,
-  { getProjectRoot, withErrorHandling }: CommandContext
-): void {
-  const token = program
-    .command('token')
-    .description('Design token management')
-    // Match `fireforge furnace`'s no-args contract: print the group's help
-    // and exit 0. Without this default action, commander routes
-    // `fireforge token` (no subcommand) through its own help-then-exit-1
-    // path, so scripts probing the CLI surface see a misleading non-zero
-    // exit for a purely informational invocation.
-    .action(() => {
-      token.outputHelp();
+    const where =
+      result.existing === undefined
+        ? ''
+        : ` in ${result.existing.where} (line ${result.existing.line})`;
+    if (!result.changed) ctx.out.line(`${full} already declared${where}; unchanged`);
+    else ctx.out.line(`${opts.dryRun ? 'Would add' : 'Added'} ${full} to ${path}`);
+    if (result.categoryCreated) ctx.out.line(`  declared category "${opts.category ?? ''}"`);
+    for (const selector of result.mirrored) ctx.out.line(`  also written to ${selector}`);
+    for (const note of result.notes) ctx.out.line(`  ${note}`);
+    ctx.out.json({
+      token: full,
+      file: path,
+      changed: result.changed,
+      dryRun: opts.dryRun,
+      categoryCreated: result.categoryCreated,
+      mirrored: result.mirrored,
     });
+  },
+});
 
-  token
-    .command('add <token-name> <value>')
-    .description(
-      'Add a design token to CSS and documentation. The token name is a positional argument, but most tokens start with `--` (CSS custom property syntax), which Commander reads as an option flag. Use the standard `--` separator to mark the end of options before the token name, e.g. `fireforge token add --mode static --category Colors -- --my-token "#fff"`. Bare names without `--` are accepted directly and prefixed using the configured Furnace `tokenPrefix`.'
-    )
-    .option(
-      '--category <cat>',
-      'Token category (e.g., "Colors — Canvas", "Spacing"). Required for a base declaration; ' +
-        'not required with --variant, which routes into a :root<selector> block where no ' +
-        'category applies'
-    )
-    .addOption(
-      // Use Commander's .choices() so invalid --mode values are rejected with
-      // the built-in "argument must be one of …" message and --help lists the
-      // valid choices up-front. The runtime check in tokenAddCommand remains
-      // as a defence-in-depth guard for programmatic callers that bypass
-      // Commander's argument parsing.
-      // Description ends with `(required)` because Commander's
-      // `makeOptionMandatory` does not render a required marker in `--help`
-      // output. Only `.requiredOption` does that, and switching to
-      // `.requiredOption` would lose the `.choices()` enforcement. The
-      // explicit suffix keeps the runtime validation and surfaces required
-      // status in help alongside the other options that use `.requiredOption`.
-      new Option('--mode <mode>', 'Dark mode behavior (required)')
-        .choices(['auto', 'static', 'override'])
-        .makeOptionMandatory(true)
-    )
-    .option('--description <desc>', 'Comment description for the CSS file')
-    .option('--dark-value <val>', 'Dark mode value (required if mode is "override")')
-    .option(
-      '--variant <selector>',
-      'Attribute selector fragment routing the declaration into a `:root<selector>` block ' +
-        "(e.g. '[data-skin=precision]', '[data-private]', a run such as " +
-        "'[data-skin=precision][data-theme=dark]', or one with a pseudo-class tail such as " +
-        "'[data-skin=precision]:not([data-private])'); creates or updates the block. " +
-        'CSS-only — cannot be combined with --mode override or --create-category. To author ' +
-        'a new category and its variants, add the BASE token first (with --create-category), ' +
-        'then add each variant with --variant.'
-    )
-    .option(
-      '--create-category',
-      'Declare the category banner in the tokens CSS if it does not exist yet'
-    )
-    .option('--dry-run', 'Show what would be changed without writing')
-    .action(
-      withErrorHandling(
-        async (
-          tokenName: string,
-          value: string,
-          options: {
-            category?: string;
-            mode: string;
-            description?: string;
-            darkValue?: string;
-            dryRun?: boolean;
-            createCategory?: boolean;
-            variant?: string;
-          }
-        ) => {
-          await tokenAddCommand(getProjectRoot(), tokenName, value, {
-            mode: options.mode,
-            ...pickDefined({
-              category: options.category,
-              description: options.description,
-              darkValue: options.darkValue,
-              dryRun: options.dryRun,
-              createCategory: options.createCategory,
-              variant: options.variant,
-            }),
-          });
+const list = defineCommand({
+  name: 'list',
+  summary: 'List the token categories and their tokens',
+  options: { category: opt.string('Only this category', { valueName: 'name' }) },
+  json: true,
+  run: async (ctx, _args, opts) => {
+    const { files, path } = await target(ctx);
+    const text = await readTokenFile(files, path);
+    const groups = listTokens(text).filter(
+      (group) => opts.category === undefined || group.category === opts.category
+    );
+    if (opts.category !== undefined && groups.length === 0) {
+      const known = listTokens(text).flatMap((group) =>
+        group.category === null ? [] : [`"${group.category}"`]
+      );
+      throw new FireForgeError('token-category-missing', `Category "${opts.category}" not found.`, {
+        hint: known.length > 0 ? `Categories: ${known.join(', ')}.` : 'The file has no categories.',
+      });
+    }
+    for (const group of groups) {
+      ctx.out.line(`${group.category ?? '(no category)'} (${group.tokens.length})`);
+      for (const token of group.tokens) ctx.out.line(`  ${token.name}`);
+    }
+    ctx.out.json({
+      categories: groups.map((group) => ({
+        category: group.category,
+        tokens: group.tokens.map((token) => ({ ...token })),
+      })),
+    });
+  },
+});
+
+const show = defineCommand({
+  name: 'show',
+  summary: 'Show every value a token takes and where it is declared',
+  args: { name: arg.string('Token name, such as --brand-gap') },
+  json: true,
+  run: async (ctx, { name }) => {
+    const { files, path, settings } = await target(ctx);
+    const full = tokenName(name, settings.prefix);
+    const text = await readTokenFile(files, path);
+    const values = tokenValues(text, full);
+    if (values.length === 0) {
+      throw new FireForgeError('token-missing', `${full} is not declared in the token file.`, {
+        hint: '"fireforge token list" shows the declared tokens; "fireforge token add" declares one.',
+      });
+    }
+    for (const entry of values)
+      ctx.out.line(`${entry.value}  (${entry.block}, line ${entry.line})`);
+    ctx.out.json({ token: full, values: values.map((entry) => ({ ...entry })) });
+  },
+});
+
+const lint = defineCommand({
+  name: 'lint',
+  summary: 'Check themed blocks against the base block and token references against declarations',
+  options: { ...lockOptions },
+  json: true,
+  run: async (ctx, _args, opts) => {
+    const tokens = await target(ctx);
+    const { filesScanned, findings } = await withOwnedFiles(
+      tokens,
+      { command: 'token lint', waitLock: opts.waitLock },
+      (owned) => lintTokens(tokens.path, owned, tokens.settings)
+    );
+    for (const finding of findings) {
+      ctx.out.line(`${finding.file}:${finding.line} [${finding.check}] ${finding.message}`);
+    }
+    ctx.out.line(`${filesScanned} stylesheet(s) scanned`);
+    ctx.out.json({ filesScanned, findings: findings.map((finding) => ({ ...finding })) });
+    if (findings.length > 0) {
+      throw new FireForgeError(
+        'token-lint-failed',
+        `Token lint found ${findings.length} finding(s).`,
+        {
+          hint: 'Fix each finding as its message says; "fireforge token add" declares a missing token.',
         }
-      )
-    );
+      );
+    }
+  },
+});
 
-  token
-    .command('list')
-    .description(
-      'List the design-token categories declared in the tokens CSS with their token names, in file order'
-    )
-    .option('--category <name>', 'Restrict the report to one category')
-    .option('--json', 'Emit the machine-readable envelope on stdout (see docs/machine-output.md)')
-    .action(
-      withErrorHandling(async (options: { category?: string; json?: boolean }) => {
-        await tokenListCommand(
-          getProjectRoot(),
-          pickDefined({ category: options.category, json: options.json })
-        );
-      })
+const coverage = defineCommand({
+  name: 'coverage',
+  summary: 'Measure how much of the owned stylesheets uses project tokens',
+  options: {
+    min: opt.integer('Fail when coverage is below this percentage', {
+      min: 0,
+      max: 100,
+      valueName: 'percent',
+    }),
+    ...lockOptions,
+  },
+  json: true,
+  run: async (ctx, _args, opts) => {
+    const tokens = await target(ctx);
+    const report = await withOwnedFiles(
+      tokens,
+      { command: 'token coverage', waitLock: opts.waitLock },
+      (owned) => measureCoverage(tokens.path, owned, tokens.settings)
     );
+    for (const file of report.files) {
+      ctx.out.line(
+        `${file.file}  tokens ${file.tokenUsages} | allowlisted ${file.allowlisted} | unknown ${file.unknownVars} | raw colors ${file.rawColors}`
+      );
+    }
+    for (const name of report.foreignDeclarations) {
+      ctx.out.line(`token file declares ${name}, which is outside the project prefix`);
+    }
+    ctx.out.line(
+      `Token coverage ${report.percent}%: ${report.tokenUsages} tokens, ${report.rawColors} raw colors, ${report.unknownVars} unknown variables in ${report.files.length} stylesheet(s)`
+    );
+    ctx.out.json({ ...report, files: report.files.map((file) => ({ ...file })) });
+    if (opts.min !== undefined && report.percent < opts.min) {
+      throw new FireForgeError(
+        'token-coverage-low',
+        `Token coverage ${report.percent}% is below ${opts.min}%.`,
+        {
+          hint: 'Replace the raw colors and unknown variables listed above with project tokens.',
+        }
+      );
+    }
+  },
+});
 
-  token
-    .command('show <token-name>')
-    .description(
-      'Show one token: its category, the value it takes in every declaring block, and where it is defined. The leading `--` is optional; with it, use the `--` separator first (e.g. `fireforge token show -- --my-token`).'
-    )
-    .option('--json', 'Emit the machine-readable envelope on stdout (see docs/machine-output.md)')
-    .action(
-      withErrorHandling(async (tokenName: string, options: { json?: boolean }) => {
-        await tokenShowCommand(getProjectRoot(), tokenName, pickDefined({ json: options.json }));
-      })
-    );
-
-  token
-    .command('lint')
-    .description(
-      'Check the token system: themed override blocks declare only tokens the base :root ' +
-        'declares, and every var(--<prefix>…) in the tokens CSS or a patch-touched CSS file ' +
-        'names a declared token. Exits non-zero on any finding'
-    )
-    .option('--json', 'Emit the machine-readable envelope on stdout (see docs/machine-output.md)')
-    .action(
-      withErrorHandling(async (options: { json?: boolean }) => {
-        await tokenLintCommand(getProjectRoot(), pickDefined({ json: options.json }));
-      })
-    );
-
-  token
-    .command('coverage')
-    .description('Measure design token usage across modified CSS files')
-    .action(
-      withErrorHandling(async () => {
-        await tokenCoverageCommand(getProjectRoot());
-      })
-    );
-}
+export const token = defineCommand({
+  name: 'token',
+  summary: 'Design tokens: add, list, show, lint, coverage',
+  group: 'Authoring',
+  subcommands: [add, list, show, lint, coverage],
+});

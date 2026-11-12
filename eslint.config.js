@@ -11,24 +11,21 @@ const jsToolingFiles = ['eslint.config.js', 'scripts/**/*.mjs', 'eslint-rules/**
 
 const sharedRules = {
   'no-throw-literal': 'error',
-  // `Object.hasOwn` everywhere. One straggler still called
-  // `Object.prototype.hasOwnProperty.call(...)`.
+  // `Object.hasOwn` everywhere, not `Object.prototype.hasOwnProperty.call(...)`.
   'prefer-object-has-own': 'error',
   'prefer-const': 'error',
   'no-var': 'error',
-  // Ceiling chosen in 0.31.0, after refactoring everything that exceeded it.
-  // Command orchestrators legitimately sit in the 20s, so a lower bar would
-  // force splits that spread linear flows across helpers.
-  complexity: ['error', 30],
-  // Twenty functions had grown to 7-10 positional parameters, which forced
-  // callers to pad with `undefined` to reach a trailing optional. All of them
-  // now take one options object. 6 is the ceiling the tree already meets.
-  'max-params': ['error', 6],
-  'max-lines': ['error', { max: 500, skipBlankLines: true, skipComments: true }],
+  complexity: ['error', 25],
+  // Past five positional parameters, take one options object.
+  'max-params': ['error', 5],
+  // A file is one cohesive unit and is never split to satisfy this number
+  // (contributing/architecture.md). The ceiling only catches a module that
+  // has stopped being one unit.
+  'max-lines': ['error', { max: 1000, skipBlankLines: true, skipComments: true }],
   'max-lines-per-function': [
     'error',
     {
-      max: 150,
+      max: 120,
       skipBlankLines: true,
       skipComments: true,
       IIFEs: true,
@@ -43,6 +40,86 @@ const sharedRules = {
   'simple-import-sort/exports': 'error',
 };
 
+const testFiles = ['src/**/*.test.ts', 'src/testing/**/*.ts'];
+
+// The layering in contributing/architecture.md. Each module lists the modules
+// it may import; everything else under src/ is refused. A module other than
+// kernel, cli and testing is imported only through its index.ts.
+const OPEN_MODULES = ['kernel', 'cli', 'testing'];
+const BASE = ['kernel', 'cli'];
+const SHARED = [...BASE, 'config', 'git', 'diff', 'mozbuild', 'syntax'];
+const FEATURE = [...SHARED, 'project'];
+const MODULE_IMPORTS = {
+  kernel: [],
+  cli: ['kernel'],
+  config: BASE,
+  git: BASE,
+  diff: BASE,
+  mozbuild: BASE,
+  syntax: ['kernel'],
+  project: SHARED,
+  engine: FEATURE,
+  queue: [...FEATURE, 'engine'],
+  source: [...FEATURE, 'engine'],
+  lint: [...FEATURE, 'engine'],
+  typecheck: [...FEATURE, 'engine', 'lint'],
+  test: [...FEATURE, 'engine'],
+  furnace: [...FEATURE, 'engine', 'register', 'tokens'],
+  tokens: FEATURE,
+  register: FEATURE,
+  mode: [...FEATURE, 'engine', 'queue', 'source', 'lint', 'furnace'],
+};
+const ALL_MODULES = [...Object.keys(MODULE_IMPORTS), 'check', 'doctor', 'commands'];
+MODULE_IMPORTS.check = ALL_MODULES.filter(
+  (name) => !['check', 'doctor', 'commands'].includes(name)
+);
+MODULE_IMPORTS.doctor = ALL_MODULES.filter((name) => !['doctor', 'commands'].includes(name));
+MODULE_IMPORTS.commands = ALL_MODULES.filter((name) => name !== 'commands');
+
+const NODE_IO = ['node:fs', 'node:fs/promises', 'node:child_process', 'node:crypto'];
+
+function layeringFor(moduleName, production) {
+  const allowed = new Set([...MODULE_IMPORTS[moduleName], moduleName]);
+  if (!production) allowed.add('testing');
+  const patterns = [];
+  const refused = ALL_MODULES.filter((name) => !allowed.has(name));
+  if (refused.length > 0) {
+    patterns.push({
+      regex: `^(?:\\.\\./)+(?:${refused.join('|')})/`,
+      message: `src/${moduleName} may import only: ${[...allowed].join(', ')} (contributing/architecture.md).`,
+    });
+  }
+  const viaIndex = [...allowed].filter(
+    (name) => name !== moduleName && !OPEN_MODULES.includes(name)
+  );
+  if (viaIndex.length > 0) {
+    patterns.push({
+      regex: `^(?:\\.\\./)+(?:${viaIndex.join('|')})/(?!index\\.js$)`,
+      message: 'Import another module through its index.js, not its internal files.',
+    });
+  }
+  const paths =
+    production && moduleName !== 'kernel'
+      ? NODE_IO.map((name) => ({
+          name,
+          message: 'File, process and hashing primitives live in src/kernel; use them.',
+        }))
+      : [];
+  return { 'no-restricted-imports': ['error', { paths, patterns }] };
+}
+
+const layeringConfigs = ALL_MODULES.flatMap((moduleName) => [
+  {
+    files: [`src/${moduleName}/**/*.ts`],
+    ignores: testFiles,
+    rules: layeringFor(moduleName, true),
+  },
+  {
+    files: [`src/${moduleName}/**/*.test.ts`],
+    rules: layeringFor(moduleName, false),
+  },
+]);
+
 const jsdocSourceFiles = ['src/**/*.ts'];
 
 export default tseslint.config(
@@ -51,12 +128,9 @@ export default tseslint.config(
       'coverage/',
       'dist/',
       'node_modules/',
-      // Test fixtures: real-shape Firefox engine files copied verbatim into
-      // the suite. They are not part of the project's TypeScript graph and do
-      // not follow project lint rules (BSD/MPL header style, var/let mix,
-      // unused parameters, and so on). The tests that consume them assert
-      // behavior, not style.
-      'src/core/__tests__/__fixtures__/',
+      // Real-shape Firefox files copied verbatim for tests to read. They are
+      // data, not part of the TypeScript graph.
+      'src/**/__fixtures__/',
     ],
   },
   eslint.configs.recommended,
@@ -75,47 +149,32 @@ export default tseslint.config(
     },
     rules: {
       ...sharedRules,
-      // Local rules (eslint-rules/index.js). Each one pins a convention that
-      // the 2026-08-06 quality survey found hand-rolled across dozens of
-      // files, in two cases with a silently broken copy. They landed in 0.41.0
-      // together with the last of the corresponding fixes, so they start
-      // clean.
+      // Local rules (eslint-rules/index.js). Each keeps one kernel helper the
+      // only spelling of a pattern that is easy to hand-roll wrongly.
       'fireforge/no-open-coded-to-error': 'error',
       'fireforge/no-errno-cast': 'error',
       'fireforge/prefer-shared-regex-escape': 'error',
       'fireforge/no-empty-jsdoc': 'error',
-      // Raw JSON documents are typed JsonObject/JsonValue (src/types/json.ts).
-      // This stops the untyped-dictionary contract from re-accreting on
-      // exported functions.
+      // Raw JSON documents are typed JsonObject/JsonValue (src/kernel/json.ts),
+      // never an untyped dictionary on an exported function.
       'fireforge/no-untyped-json-document': 'error',
-      // The TTY pair check was open-coded at eighteen sites, with nine
-      // different non-TTY refusal strings between them.
-      // `stdioIsInteractive()` in core/destructive.ts is now the single
-      // spelling.
+      // `isInteractive()` in src/kernel/tty.ts is the one TTY pair check.
       'fireforge/no-open-coded-tty-check': 'error',
-      // `ReturnType<typeof getProjectPaths>` spelled the parameter type at
-      // fourteen sites while `ProjectPaths` sat exported next to the
-      // function. Name the type. Derive it only from package imports.
-      // Every former `Awaited<ReturnType<typeof loadConfig>>` /
-      // `ReturnType<typeof parseObject>` site now imports the named type the
-      // function is declared to return (FireForgeConfig, ParsedRecord, ...).
+      // A parameter type is named, not derived from a local function with
+      // `ReturnType<typeof f>`. Deriving from a package import stays legal.
       'fireforge/no-return-type-of-import': 'error',
-      // `X as unknown as Y` launders any type into any other. The two
-      // sanctioned bridge casts (ast-utils.toPositionedProgram, and
-      // furnace-config-order's FurnaceConfig-to-JsonObject re-entry) carry
-      // targeted disables with their justification.
+      // `X as unknown as Y` launders any type into any other.
       'no-restricted-syntax': [
         'error',
         {
           selector: 'TSAsExpression > TSAsExpression.expression',
           message:
-            'No `as unknown as` chains — parse the value at its boundary, or route through a ' +
-            'documented bridge helper (see toPositionedProgram in src/core/ast-utils.ts).',
+            'No `as unknown as` chains: validate the value at its boundary with a schema ' +
+            '(src/kernel/schema.ts) instead.',
         },
       ],
-      // `${String(n)}` inside a template literal was spelled 204 times, while
-      // `restrict-template-expressions` already allows numbers. The removal
-      // pass is only worth doing once, so the rule keeps it done.
+      // `${String(n)}` inside a template literal is noise:
+      // `restrict-template-expressions` allows numbers.
       '@typescript-eslint/no-unnecessary-type-conversion': 'error',
       '@typescript-eslint/no-useless-constructor': 'error',
       '@typescript-eslint/no-explicit-any': 'error',
@@ -135,9 +194,8 @@ export default tseslint.config(
         },
       ],
       'no-console': ['error', { allow: ['error'] }],
-      // The "process.exit only in bin/" invariant used to be enforced by
-      // comments alone. The bin/** override below grants the one legitimate
-      // caller. Setting process.exitCode stays legal everywhere.
+      // `process.exit` is only legal in bin/: the bin/** override below grants
+      // the one legitimate caller. Setting process.exitCode stays legal everywhere.
       'no-restricted-properties': [
         'error',
         {
@@ -155,6 +213,7 @@ export default tseslint.config(
       'no-restricted-properties': 'off',
     },
   },
+  ...layeringConfigs,
   {
     files: jsToolingFiles,
     ...tseslint.configs.disableTypeChecked,
@@ -183,7 +242,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['src/**/__tests__/**/*.ts', 'src/**/*.test.ts', 'src/test-utils/**/*.ts'],
+    files: testFiles,
     rules: {
       'jsdoc/require-jsdoc': 'off',
       'max-lines': 'off',
@@ -204,7 +263,7 @@ export default tseslint.config(
   },
   {
     files: jsdocSourceFiles,
-    ignores: ['src/**/__tests__/**/*.ts', 'src/**/*.test.ts'],
+    ignores: testFiles,
     plugins: {
       jsdoc,
     },
@@ -215,11 +274,8 @@ export default tseslint.config(
     },
     rules: {
       // `check-param-names` catches an @param list that has drifted from the
-      // signature. 37 doc blocks had drifted, including two attached to the
-      // wrong declaration. Destructured-property checking is off on purpose:
-      // with it on, the rule demands an `@param options.x` line for every
-      // field of every options bag, which is 29 complaints about a convention
-      // this codebase does not follow and never claimed to.
+      // signature. Destructured-property checking is off on purpose: options
+      // bags document their fields on the type, not as `@param options.x`.
       'jsdoc/check-param-names': ['error', { checkDestructured: false, checkRestProperty: false }],
       // Cheap and independent: flags a documented @returns on a function that
       // returns nothing.

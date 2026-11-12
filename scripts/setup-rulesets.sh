@@ -4,11 +4,8 @@
 # Run AFTER making the repository public (rulesets require public or Pro).
 #
 # Reconciling, not create-only: each ruleset is looked up by name and PUT
-# when it already exists, POSTed when it does not. The previous version
-# POSTed unconditionally, so a second run failed on "name already in use"
-# and drift between this file and the live ruleset could never be corrected
-# by running it, which is how the live ruleset came to require no status
-# checks at all while this file claimed three.
+# when it already exists, POSTed when it does not, so running this again
+# corrects any drift between this file and the live rulesets.
 #
 # Usage: bash scripts/setup-rulesets.sh
 
@@ -41,9 +38,10 @@ apply_ruleset() {
 }
 
 # ── Main branch protection ruleset ──────────────────────────────────────
-# The required contexts must match the job `name:` values in
-# .github/workflows/ci.yml and security.yml exactly. Both files carry a
-# comment explaining why those names must not embed the Node version.
+# The required contexts must match the job `name:` values exactly:
+# `quality (ubuntu)` and `smoke (<os>)` in .github/workflows/ci.yml, `codeql`
+# and `npm audit` in security.yml, `dependency review` in
+# dependency-review.yml. None of them may embed a Node version.
 echo "Applying main branch protection ruleset..."
 apply_ruleset "Protect main" <<'EOF'
 {

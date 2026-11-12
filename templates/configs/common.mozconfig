@@ -1,10 +1,16 @@
 # Common mozconfig for ${name}
-# This file is merged with platform-specific configs
+# FireForge joins this file with the platform's into engine/mozconfig and
+# substitutes the project's name, vendor, appId and binaryName placeholders.
+# FireForge places the object directory itself: a template that sets
+# MOZ_OBJDIR is refused.
 
 # Application identity
 ac_add_options --with-app-name=${binaryName}
-ac_add_options --with-branding=browser/branding/${binaryName}
 export MOZ_APP_BASENAME=${binaryName}
+
+# Branding: uncomment once the engine holds browser/branding/${binaryName}
+# (with its moz.build). A build refuses a branding directory the engine lacks.
+# ac_add_options --with-branding=browser/branding/${binaryName}
 
 # Build options
 ac_add_options --enable-application=browser

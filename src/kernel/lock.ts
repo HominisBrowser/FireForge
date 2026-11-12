@@ -433,12 +433,13 @@ interface Attempt {
 
 async function writeProposal(attempt: Attempt): Promise<void> {
   for (let round = 0; ; round += 1) {
-    await ensureDir(attempt.dir);
     try {
+      await ensureDir(attempt.dir);
       await writeFile(attempt.proposal, JSON.stringify(attempt.record), { durable: false });
       return;
     } catch (error: unknown) {
-      // A removal of the lock directory still under way took it away again.
+      // A removal of the lock directory still under way took it away again,
+      // under the write or under the creation of the directory itself.
       if (errnoCode(error) !== 'ENOENT' || round >= GATE_ATTEMPTS) throw error;
     }
   }

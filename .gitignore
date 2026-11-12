@@ -8,7 +8,6 @@
 # FireForge runtime data
 /.fireforge/
 /configs/
-/patches/.fireforge-patches.lock/
 
 # Firefox source (downloaded separately)
 /engine/

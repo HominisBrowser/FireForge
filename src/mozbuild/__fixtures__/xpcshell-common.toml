@@ -1,0 +1,90 @@
+[DEFAULT]
+# Some tests of downloads.download() expect a file picker, which is only shown
+# by default when the browser.download.useDownloadDir pref is set to true. This
+# is the case on desktop Firefox, but not on Thunderbird.
+# Force pref value to true to get download tests to pass on Thunderbird.
+prefs = ["browser.download.useDownloadDir=true"]
+# Extension tests frequently take more than the default 30s timeout
+requesttimeoutfactor = 2
+
+["test_ChannelWrapper.js"]
+
+["test_ExtensionTaskScheduler.js"]
+
+["test_GuardSets.js"]
+
+["test_GuardSets_propagation.js"]
+
+["test_QuarantinedDomains.js"]
+
+["test_change_backgroundServiceWorker_enabled_pref_false.js"]
+# This is a mirror:once pref and needs to be set before startup.
+prefs = ["extensions.backgroundServiceWorker.enabled=false"]
+
+["test_change_backgroundServiceWorker_enabled_pref_true.js"]
+# This is a mirror:once pref and needs to be set before startup.
+prefs = ["extensions.backgroundServiceWorker.enabled=true"]
+
+["test_change_remote_mode.js"]
+
+["test_ext_MessageManagerProxy.js"]
+skip-if = [
+  "os == 'android'", # Bug 1545439
+]
+
+["test_ext_activityLog.js"]
+
+["test_ext_alarms.js"]
+
+["test_ext_alarms_does_not_fire.js"]
+
+["test_ext_alarms_periodic.js"]
+
+["test_ext_alarms_replaces.js"]
+
+["test_ext_api_events_listener_calls_exceptions.js"]
+
+["test_ext_api_permissions.js"]
+
+["test_ext_asyncAPICall_isHandlingUserInput.js"]
+
+["test_ext_audio_mozextension.js"]
+
+["test_ext_background_api_injection.js"]
+
+["test_ext_background_early_quit.js"]
+
+["test_ext_background_early_shutdown.js"]
+requesttimeoutfactor = 3  # Slow on Linux TSan/ASan (replaces manifest 2x)
+run-sequentially = ["os == 'mac'"] # frequent fail in parallel on Mac
+skip-if = [
+  "isolated_process", # Bug 1709961
+]
+
+["test_ext_background_empty.js"]
+
+["test_ext_background_file_invalid.js"]
+
+["test_ext_background_generated_load_events.js"]
+
+["test_ext_background_generated_reload.js"]
+
+["test_ext_background_global_history.js"]
+skip-if = [
+  "os == 'android'", # Android does not use Places for history.
+]
+
+["test_ext_background_iframe.js"]
+
+["test_ext_background_private_browsing.js"]
+
+["test_ext_background_runtime_connect_params.js"]
+
+["test_ext_background_script_and_service_worker.js"]
+
+["test_ext_background_sub_windows.js"]
+
+["test_ext_background_teardown.js"]
+
+["test_ext_background_telemetry.js"]
+

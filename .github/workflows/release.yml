@@ -18,10 +18,20 @@ permissions:
   id-token: write
 
 jobs:
+  # The release gate: CI's static checks and the test suite with coverage on
+  # this commit, in parallel, before anything is published.
+  verify:
+    uses: ./.github/workflows/ci.yml
+    with:
+      smoke: false
+
   release:
     name: publish
+    needs: verify
     runs-on: ubuntu-latest
     environment: npm
+    # Builds, packs and publishes; the gate already ran in `verify`.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,12 +65,12 @@ jobs:
       # The bump is committed BEFORE anything builds. `npm version
       # --no-git-tag-version` leaves package.json/package-lock.json modified
       # in the worktree, and prepack stamps dist/build-info.json from live
-      # git state, so publishing here used to ship a `.dirty` identity
-      # naming the pre-bump commit, while the tag was created afterwards on
-      # a commit that was never built. Committing first makes the tree clean
-      # at prepack, and makes the published `+g<sha>` the same commit the
-      # tag below points at. Runs on dry-run too (the runner is ephemeral,
-      # nothing is pushed), so a dry run validates the real identity.
+      # git state, so a bump left uncommitted would publish a `.dirty` identity
+      # naming the pre-bump commit, with the tag on a commit that was never
+      # built. Committing first makes the tree clean at prepack, and makes the
+      # published `+g<sha>` the same commit the tag below points at. Runs on
+      # dry-run too (the runner is ephemeral, nothing is pushed), so a dry run
+      # validates the real identity.
       - name: Commit version bump
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -71,28 +81,30 @@ jobs:
           VERSION="$(node -p 'require("./package.json").version')"
           git diff --cached --quiet || git commit -m "release: v$VERSION"
 
-      # No explicit `npm run release:check` step here: `npm publish` (and
-      # `npm publish --dry-run`) fire `prepublishOnly`, which runs the same
-      # gate before any registry interaction. Running it here as well meant
-      # every release executed the full gate twice.
+      # `npm publish` (and `npm publish --dry-run`) fire `prepublishOnly`, the
+      # release gate. FIREFORGE_RELEASE_VERIFIED names the commit `verify`
+      # gated, so it is not run a second time when this tree differs from that
+      # commit only by the version bump above; anything else runs it again.
       - name: Determine version
         id: version
         run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
 
       # FIREFORGE_PACK_STRICT turns prepack's dirty-tree banner into a hard
-      # refusal, so the ordering above is self-enforcing: if anything ever
-      # dirties the worktree before publish again, the release fails loudly
-      # instead of shipping an artifact no commit can reproduce.
+      # refusal, so the ordering above is self-enforcing: if anything dirties
+      # the worktree before publish, the release fails loudly instead of
+      # shipping an artifact no commit can reproduce.
       - name: Publish to npm
         if: inputs.dry-run != true
         env:
           FIREFORGE_PACK_STRICT: '1'
+          FIREFORGE_RELEASE_VERIFIED: ${{ github.sha }}
         run: npm publish --provenance --access public
 
       - name: Publish dry run
         if: inputs.dry-run == true
         env:
           FIREFORGE_PACK_STRICT: '1'
+          FIREFORGE_RELEASE_VERIFIED: ${{ github.sha }}
         run: npm publish --dry-run
 
       - name: Tag and push

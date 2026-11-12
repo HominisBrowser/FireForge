@@ -2,11 +2,9 @@
 /**
  * RuleTester coverage for the local ESLint rules.
  *
- * These rules are `error`-level in `eslint.config.js`, so an untested false
- * positive blocks the gate on correct code. The two shapes that look like
- * violations but are not appear as `valid` cases below: a regex literal that
- * is a metacharacter class but not a regex escape, and a ternary whose
- * `String(...)` fallback takes a different value than the tested error.
+ * These rules are `error`-level in `eslint.config.js`, so a false positive
+ * blocks the gate on correct code. The shapes that look like violations but
+ * are not appear as `valid` cases below.
  */
 import { RuleTester } from 'eslint';
 import tseslint from 'typescript-eslint';
@@ -33,8 +31,7 @@ ts.run('no-open-coded-to-error', rules['no-open-coded-to-error'], {
   valid: [
     'const m = toError(error).message;',
     // The fallback names a different value, so this is not the idiom the rule
-    // replaces. Reporting it told the author to write `toError(e).message`,
-    // which would silently change behaviour.
+    // replaces: `toError(e).message` would change behaviour.
     'const m = e instanceof Error ? e.message : String(other);',
     'const m = e instanceof Error ? e.message : String();',
     'const m = e instanceof Error ? e.message : String(e, 2);',
@@ -58,7 +55,7 @@ ts.run('no-open-coded-to-error', rules['no-open-coded-to-error'], {
 
 ts.run('no-errno-cast', rules['no-errno-cast'], {
   valid: [
-    'const code = getNodeErrorCode(error);',
+    'const code = errnoCode(error);',
     'const x = value as Error;',
     'const x = value as string | undefined;',
   ],
@@ -71,8 +68,7 @@ ts.run('no-errno-cast', rules['no-errno-cast'], {
       code: 'const code = (error as NodeJS.ErrnoException | undefined)?.code;',
       errors: [{ messageId: 'errnoCast' }],
     },
-    // The errno type buried later in a union: `.find`-based matching only saw
-    // the first type reference, so this cast went unreported.
+    // The errno type buried later in a union.
     {
       code: 'const code = (error as Error | NodeJS.ErrnoException).code;',
       errors: [{ messageId: 'errnoCast' }],
@@ -87,7 +83,7 @@ ts.run('no-errno-cast', rules['no-errno-cast'], {
 
 js.run('prefer-shared-regex-escape', rules['prefer-shared-regex-escape'], {
   valid: [
-    'const escaped = escapeRegex(value);',
+    'const escaped = escapeRegExp(value);',
     // A metacharacter-looking character class that is not a regex escape. The
     // rule must not report these on the literal's shape alone.
     'const parts = value.split(/[.*+?^${}()|[\\]\\\\]/);',
@@ -118,8 +114,7 @@ js.run('prefer-shared-regex-escape', rules['prefer-shared-regex-escape'], {
       code: 'function escapeRegExp(value) { return value; }',
       errors: [{ messageId: 'localHelper' }],
     },
-    // Arrow and function-expression spellings of the same local helper. A
-    // declaration-only selector let these through.
+    // Arrow and function-expression spellings of the same local helper.
     {
       code: 'const escapeRegex = (value) => value;',
       errors: [{ messageId: 'localHelper' }],
@@ -146,7 +141,7 @@ ts.run('no-untyped-json-document', rules['no-untyped-json-document'], {
     'export function h(): void { const inner = (d: Record<string, unknown>): void => { void d; }; void inner; }',
     // Interface members are shapes, not function signatures.
     'export interface Args { args: Record<string, unknown>; }',
-    // Class methods are exempt (ParsedRecord's constructor pattern).
+    // Class methods are exempt.
     'export class C { constructor(data: Record<string, unknown>) { void data; } }',
     // Other Record instantiations carry a real value contract.
     'export function typed(map: Record<string, string[]>): void { void map; }',
@@ -205,7 +200,7 @@ js.run('no-open-coded-tty-check', rules['no-open-coded-tty-check'], {
     // The spinner gate asks a different question (can output be redrawn), so
     // it must not be routed through a prompt-answerability predicate.
     { code: 'const ok = process.stdout.isTTY && process.stderr.isTTY;' },
-    { code: 'const ok = stdioIsInteractive();' },
+    { code: 'const ok = isInteractive();' },
     { code: 'const ok = process.stdin.isTTY;' },
   ],
   invalid: [

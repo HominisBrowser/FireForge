@@ -1,302 +1,213 @@
 <!-- SPDX-License-Identifier: EUPL-1.2 -->
 
-# Machine-readable output contract (internal)
+# Machine output
 
-The `--json` surface is a contract with scripted consumers. This file states
-what a `--json` command has to do, so the next one added does not invent a
-shape of its own.
+FireForge has three things a script reads: the exit code ([exit-codes.md](exit-codes.md)), the `--json` document, and the verdict line. stdout carries results and nothing else; progress, warnings and errors go to stderr.
 
-## The rules
+## `--json`
 
-1. **Success writes exactly one JSON document to stdout**, with
-   `schemaVersion` as its first key.
-2. **Failure writes exactly one error document to stdout**, of the shape
-   `{ "schemaVersion": 1, "error": "<human message>", "code": "<tag>" }`,
-   and then exits non-zero. The `error` text is the same sentence the
-   non-JSON mode would print. `code` is a stable machine-readable tag
-   (`engine-missing`, `engine-not-git`, `tree-list-failed`, and so on) that
-   consumers may branch on.
-3. **Machine mode is engaged before any output.** `setMachineOutputMode(true)`
-   has to run before the first write, so that every diagnostic, including one
-   rendered later by `withErrorHandling`, goes to stderr and cannot
-   interleave with the payload.
-4. **stdout carries nothing else.** No banners, no progress, no warnings.
-   `logger.ts` enforces this through a single `routeToStderr()` gate that all
-   of its helpers consult, including `spinner()`, `note()` and
-   `intro`/`outro`.
+With `--json`, stdout is exactly one JSON document on one line. It always carries `schemaVersion` (currently `1`); adding a key keeps the version, removing or retyping one raises it.
 
-## Implementation
+A failure writes this document instead of the command's own, unless the command had already written its result:
 
-Use `emitMachineError` from `src/utils/machine-output.ts` for rule 2. It
-writes the envelope and throws `CommandError`, which the CLI boundary treats
-as already rendered, so the boundary adds no second rendering on stderr.
-
-```ts
-if (options.json === true) {
-  setMachineOutputMode(true);
-  try {
-    const payload = await collect();
-    process.stdout.write(
-      `${JSON.stringify({ schemaVersion: MACHINE_OUTPUT_SCHEMA_VERSION, ...payload }, null, 2)}\n`
-    );
-  } catch (error: unknown) {
-    emitMachineError('collect-failed', toError(error).message);
-  } finally {
-    setMachineOutputMode(false);
-  }
-  return;
-}
+```json
+{ "schemaVersion": 1, "error": "<message>", "code": "<stable-code>", "hint": "<what to do next>" }
 ```
 
-## Current surfaces
+`hint` is absent when the error has none. Without `--json` the same failure is two lines on stderr, `error[<code>]: <message>` and `hint: <hint>`; with `--json` those lines are still written to stderr. `code` is a stable kebab-case tag such as `lock-timeout`, `invalid-argument` or `gate-dirty-tree`. The commands that judge (`lint`, `typecheck`, `check`, `test`, `gate`, `doctor`, `status --check`, `furnace validate`) write their full document and then fail through the exit code, so a red result is the result document, not the failure document.
 
-| Surface                            | Shape                                                                                                                                                                                                                                                                             | Notes                                                                                                                                                                                                                              |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status --json`                    | `{ schemaVersion: 1, … }`                                                                                                                                                                                                                                                         | Error envelope on three engine preconditions                                                                                                                                                                                       |
-| `status --json` under `--check`    | adds `check: { enabled, failOn, allow?, failOnUnknown?, failed, offenders }`                                                                                                                                                                                                      | On the full payload too, not only `--summary`. `allow` and `failOnUnknown` appear only when set. An offender failing only through `--fail-on-unknown` carries `unnamed: true`. `--patches` adds `scope: { patches }`               |
-| `furnace validate --json`          | `{ schemaVersion: 1, passed, summary, maxWarnings?, components, issues, excepted, staleExceptions }`                                                                                                                                                                              | `issues` counts after `validationExceptions`, stale-exception warnings included. `excepted` carries each suppressed finding with its `reason`                                                                                      |
-| `check --json`                     | `{ schemaVersion: 1, verdict, reason?, summary, steps }`                                                                                                                                                                                                                          | One entry per step: `name`, `kind`, `command`, `status` (`pass`/`fail`/`skipped`), `exitCode`, `durationMs`, `detail`, and on failure `outputTail` (`timedOut` when killed at its budget). No verdict line under `--json`          |
-| `check` verdict line               | `FIREFORGE-VERDICT: PASS\|FAIL [reason=step-failures\|lock-timeout\|skipped-steps failed=<steps>] steps=<n> skipped=<n> [skipped-steps=<steps>]`                                                                                                                                  | Not JSON. The last stdout line, after the step table, sealed like `test`'s. Its `reason=` set is its own, not `test`'s                                                                                                             |
-| `tree list --json`                 | `{ schemaVersion: 1, trees }`                                                                                                                                                                                                                                                     | Error envelope on failure                                                                                                                                                                                                          |
-| `token list --json`                | `{ schemaVersion: 1, tokensCssPath, categories }`                                                                                                                                                                                                                                 | Categories in file order, each with its tokens (`name`, `line`, `value`)                                                                                                                                                           |
-| `token show --json`                | `{ schemaVersion: 1, name, category, declarations }`                                                                                                                                                                                                                              | One entry per declaring block, with its selector trail and line                                                                                                                                                                    |
-| `token lint --json`                | `{ schemaVersion: 1, tokensCssPath, tokenPrefix, filesScanned, findings }`                                                                                                                                                                                                        | Each finding has `check`, `file`, `line`, `token`, `message`. The document is written even when findings exist; the exit is then non-zero, as with `status --check --json`                                                         |
-| `test` verdict line                | `FIREFORGE-VERDICT: PASS\|FAIL reason=… [note=<class>] [started=<n>/<m> first-unstarted=<path> started-source=<src>] [shards=<p>/<t> [failed-shards=<labels>]] [runs=<p>/<n>] [control=<outcome>] [shuffle=<seed>] [furnace-applied=<names>\|furnace-apply=skipped] [log=<path>]` | Not JSON. A single final stdout line, sealed by `setStdoutSealed` so nothing can displace it. `log=` names the run's own complete output under `.fireforge/logs/`, so a piped or truncated run still leaves a re-readable artifact |
-| `lint --per-patch --report <path>` | `{ schemaVersion: 1, patches, queueIssues, totals, … }`                                                                                                                                                                                                                           | Written to a file. `queueIssues` holds the cross-patch findings; `patch staged-dependency --add --from` reads back their `stagedDeclarations`                                                                                      |
-| `status --raw`                     | `git status --porcelain` lines                                                                                                                                                                                                                                                    | Not JSON, but still a machine surface: it engages the same stdout discipline, so rules 3 and 4 apply and rules 1 and 2 do not. A clean tree prints nothing                                                                         |
-| `build` log announcement           | `Full build output: <path>`                                                                                                                                                                                                                                                       | Not JSON. `build` prints no verdict line, so it names its run log directly on the way out                                                                                                                                          |
+These commands take `--json`:
 
-`--raw` is why `cli.ts` reads `process.argv` for `--json` or `--raw` before
-dispatching. Rule 3 is about who owns stdout, and that question is settled
-the same way for a porcelain stream as for a JSON document.
+<!-- json-commands -->
 
-`doctor` and `verify` have no `--json` mode (`fireforge check` reports
-`verify` as a step with its exit code and output tail). `doctor` already computes a
-serializable `DoctorCheck[]`, so adding one is cheap if a consumer asks for
-it. Follow the rules above rather than inventing a shape.
+- `fireforge setup`
+- `fireforge config get`
+- `fireforge config set`
+- `fireforge rebase`
+- `fireforge migrate`
+- `fireforge doctor`
+- `fireforge download`
+- `fireforge workspace list`
+- `fireforge workspace add`
+- `fireforge workspace remove`
+- `fireforge workspace repair`
+- `fireforge status`
+- `fireforge lint`
+- `fireforge typecheck`
+- `fireforge verify`
+- `fireforge check`
+- `fireforge build`
+- `fireforge run`
+- `fireforge test`
+- `fireforge gate`
+- `fireforge gate accept`
+- `fireforge gate status`
+- `fireforge package`
+- `fireforge export`
+- `fireforge import`
+- `fireforge resolve`
+- `fireforge re-export`
+- `fireforge patch rename`
+- `fireforge patch reorder`
+- `fireforge patch split`
+- `fireforge patch move-files`
+- `fireforge patch delete`
+- `fireforge patch retire`
+- `fireforge patch compact`
+- `fireforge patch set`
+- `fireforge discard`
+- `fireforge reset`
+- `fireforge override`
+- `fireforge restore`
+- `fireforge merge-driver install`
+- `fireforge register`
+- `fireforge wire`
+- `fireforge token add`
+- `fireforge token list`
+- `fireforge token show`
+- `fireforge token lint`
+- `fireforge token coverage`
+- `fireforge furnace create`
+- `fireforge furnace apply`
+- `fireforge furnace status`
+- `fireforge furnace validate`
+- `fireforge furnace types`
+- `fireforge furnace rename`
+- `fireforge furnace remove`
+- `fireforge furnace override`
+- `fireforge version`
 
-The run logs behind `log=` are specified in [`run-logs.md`](run-logs.md).
+<!-- /json-commands -->
 
-Additive keys outside `test`:
+`bootstrap`, `watch`, `furnace diff` and `merge-driver run` have no JSON form: they hand the terminal to another program, stream until stopped, or write a patch body.
 
-- `check --json`: a skipped step carries `skipKind`, `config` when
-  `check.skip` names it and `unavailable` when the project has nothing for
-  it to run. The verdict line adds `skipped-steps=<steps>` whenever a step
-  is skipped, and `reason=skipped-steps` when `check.failOnSkipped` fails a
-  run on an `unavailable` skip alone.
-- `check --json`: a step that ran carries `load1Start` and `load1End`, the
-  host's 1-minute load average when it started and when it ended, so a
-  timeout under a loaded host reads as such. Both are absent on Windows,
-  which has no load average; the table's `LOAD` column shows `-` there.
-- `furnace validate --json`: a finding about particular elements carries
-  `tags` (`no-keyboard-handler` names each synthetic element with an
-  `@click`). An exception that matched an error adds a
-  `validation-exception-on-error` error, and a full run under
-  `furnace.json#minComponents` a `component-floor` error on `furnace.json`.
-- `furnace validate --json`: a `hardcoded-text` finding
-  carries `files`, the component's module file names it was found in.
+## The verdict line
 
-## Versioning
-
-`schemaVersion` is `MACHINE_OUTPUT_SCHEMA_VERSION` in
-`src/utils/machine-output.ts`. Additive changes (a new key) do not bump it.
-Removing or retyping a key does, and needs a changelog note saying what
-moved.
-
-## `test` verdict reasons
-
-`FIREFORGE-VERDICT: FAIL reason=<reason>` uses a closed set
-(`FireforgeVerdictReason`, `src/commands/test-verdict.ts`):
-
-| Reason              | Meaning                                                                                                                                                                                                                                                                                                                                                           |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `crash`             | The harness or the browser died, so there is no trustworthy suite result.                                                                                                                                                                                                                                                                                         |
-| `server-startup`    | A mochitest server never came up (`could not start server on port`, `Timed out while waiting for server startup`) before any test ran. An infrastructure failure, retried like `crash` within `--harness-retries`; this reason is what is left once the budget is spent.                                                                                          |
-| `harness-arguments` | Profile or other harness argument setup failed before any tests could run; a rebuild is not the repair.                                                                                                                                                                                                                                                           |
-| `no-tests`          | The run dispatched but nothing ran.                                                                                                                                                                                                                                                                                                                               |
-| `test-failures`     | The suite ran and reported unexpected results.                                                                                                                                                                                                                                                                                                                    |
-| `preflight`         | The run was refused before the harness was reached.                                                                                                                                                                                                                                                                                                               |
-| `inconclusive`      | A result exists, but `engine/` moved under it or a perf run changed power source, so the result was discarded.                                                                                                                                                                                                                                                    |
-| `lock-timeout`      | The run never started: the engine session lock stayed contended.                                                                                                                                                                                                                                                                                                  |
-| `killed`            | A signal terminated the run, or FireForge ended it because its parent process vanished. Written from the signal handler (or the parent-exit watchdog) so that a log tail always describes itself. A killed run must never be silent, or "killed", "still running" and "never started" all look alike. `signal=` names the cause: a signal name, or `parent-exit`. |
-
-### The additive `note=` key
-
-A `FAIL reason=preflight` line covers every gate before the harness: a
-missing build, a peer's packaging record replacing this session's, a
-developer browser holding the objdir. An unattended reader whose pipe kept
-only the verdict line could not tell those apart, so a preflight refusal that
-can classify itself also emits `note=<class>`.
-
-`note=` is additive, like `log=`, `signal=` and `shards=`. `reason=` always
-comes from the closed set above, so a consumer that
-tokenises `key=value` pairs is unaffected, and a gate that names no class
-emits no `note=` at all. The classes are not a closed set and may grow, so
-consumers should treat an unrecognised one as opaque. Current values:
-`browser-busy`, `stale-browser`, `stale-browser-kill-failed`, `marionette-port-busy`, `mochitest-port-busy`,
-`coverage-replaced`, `stale-build`, `stale-components`, `no-launchable-binary`, `negative-control` (the
-control diff was refused), `negative-control-pending` (an interrupted run's
-control could not be undone safely). Also `stale-compiled`
-(compiled sources changed after the binary under test was linked) and
-`control-built` (the binary still carries a compiled negative control whose
-restore build never ran or failed). An `invalid-build-baseline` refusal
-names the first failing field and its value. `note=negative-control-restore` rides a
-`reason=inconclusive` line whose control could not be restored byte-exact.
-
-A `note=coverage-replaced` line adds `build-paths=<path>,…`: every requested
-path the refusal says to rebuild, engine-relative with forward slashes and
-no trailing `/`, and not capped like the refusal text. A script retries with
-`fireforge test --build <paths>` (or `--build-only`). Within an entry, `%`,
-`,` and whitespace are percent-encoded, so splitting on `,` and applying
-`decodeURIComponent` to each entry gives the paths back; an ordinary path is
-written as is. The key is absent when the uncovered request is the whole
-suite, whose remedy is `fireforge build`.
-
-### Multi-run invocations: `FIREFORGE-RUN:`, `runs=` and `control=`
-
-A mixed-harness request, `--repeat <n>` and `--negative-control <diff>` run
-several mach invocations under one lock hold (see
-[`testing.md`](testing.md#several-runs-under-one-lock-hold)). Each sub-run
-writes one raw stdout line before the verdict:
+A command whose result is a pass/fail judgement ends stdout with one line:
 
 ```
-FIREFORGE-RUN: PASS|FAIL [reason=…] [note=…] [checks=<n>] [unexpected=<n>] [shards=<p>/<t>] run=<i>/<n> [harness=xpcshell|mochitest]
+FIREFORGE-VERDICT: PASS [key=value ...]
+FIREFORGE-VERDICT: FAIL reason=<reason> [key=value ...]
 ```
 
-Its keys are the ones that sub-run's verdict line would have carried alone.
-A `FIREFORGE-RUN:` line is never a verdict: the invocation still ends with
-exactly one `FIREFORGE-VERDICT:` line. With more than one planned run it
-carries `runs=<passed>/<planned>` and no count keys; a failed aggregate takes
-the most structural reason among its runs (`inconclusive`, `preflight`,
-`crash`, `server-startup`, `harness-arguments`, `no-tests`, `test-failures`) and that run's
-`note=`. A run that never started (the invocation stopped at a refusal)
-counts toward `<planned>` but not `<passed>`.
+Nothing follows it on stdout. Whitespace and `%` inside a value are percent-encoded, so the line splits on spaces into `key=value` pairs; decode a value with `decodeURIComponent`. Under `--json` the line is not written: the document carries the judgement.
 
-`control=caught|missed|inconclusive` is present only for a negative control.
-`caught` means every repetition went red with `reason=test-failures`, and
-the process exits 0 even though the status is `FAIL`; `missed` means a
-repetition stayed green (exit 5); `inconclusive` covers every other outcome.
-A one-run control keeps its run's full line, counts included, and appends
-the key.
+The line is written on every way out. A run stopped by a signal writes `FAIL reason=killed signal=SIGINT` (or `SIGTERM`) before it cleans up, so a log tail can tell "killed" from "still running". A run that fails before it could judge writes `FAIL reason=<code>` with the error's `code`.
 
-### The additive `started=` and `first-unstarted=` keys
+These commands end with a verdict line:
 
-Written together on a `FAIL reason=test-failures` line when a run that mach
-exited 0 on was refused its pass because requested test files never started:
-`started=<n>/<m>` counts the requested test files with a start (or skip)
-marker, and `first-unstarted=<path>` names the first, in dispatch order,
-that has none. A run refused only for a non-zero `unexpected=` count or a
-mid-test shutdown carries neither. Absent on every other line. See
-[`testing.md`](testing.md#the-verdict-line).
+<!-- verdict-commands -->
 
-`started-source=raw|stream|capture` follows them and names the evidence the
-count came from: the mozlog structured log (a run with `--results` or
-`--shard-size`), the complete streamed output (every other run), or, only
-when nothing was streamed, the last 2 MB of the capture.
+- `fireforge check`
+- `fireforge test`
+- `fireforge gate`
+- `fireforge furnace validate`
 
-### Shards: `FIREFORGE-SHARD:` and `failed-shards=`
+<!-- /verdict-commands -->
 
-A sharded run prints one `FIREFORGE-SHARD:` line per finished shard, before
-the verdict line:
+### `check`
 
 ```
-FIREFORGE-SHARD: PASS|FAIL [reason=…] [checks=<n>] [unexpected=<n>] shard=<i>/<n> path=<label> [failed-files=<path>,…] [ports=http:<n>,ssl:<n>,ws:<n>]
+FIREFORGE-VERDICT: PASS steps=7 passed=3 skipped=4
+FIREFORGE-VERDICT: FAIL reason=check-failed failed=status,lint steps=7 passed=1 skipped=4
 ```
 
-`path=` is the shard's path argument (whitespace replaced by `_`), or a
-`--shard-size`/`--jobs` chunk's first file plus `+<k>`. `failed-files=`
-appears under `--shard-size` and names the chunk's files that failed. The
-aggregate verdict appends `failed-shards=<label>,…` after `shards=` when any
-shard did not pass; under `--shard-size` `shards=` counts files and
-`failed-shards=` names files. Both are absent on a green run.
+| Key       | Meaning                                                                                         |
+| --------- | ----------------------------------------------------------------------------------------------- |
+| `reason`  | `check-failed` when a step is red; otherwise an error `code` (`lock-timeout`, `engine-missing`) |
+| `failed`  | The steps that keep the check from passing, comma-separated                                     |
+| `steps`   | Steps in the report                                                                             |
+| `passed`  | Steps that passed                                                                               |
+| `skipped` | Steps that did not run                                                                          |
 
-`ports=` names the mochitest HTTP server, ssltunnel and
-WebSocket ports the shard's harness reported (its "falling back to port"
-lines), in that order and only those it reported; it is absent when the
-harness reported none (an xpcshell shard, or a harness that died before its
-servers). A shard whose server never started says `reason=server-startup`,
-and the aggregate verdict does too when every crashed shard failed that way.
+The document is `{ pass, failed, durationMs, steps }`. Each step is `{ name, kind, status, detail, durationMs, skipped, output }`: `kind` is `builtin` or `extra`; `status` is `pass`, `fail` or `skipped`; `skipped` is `config` (left out by `check.skip` or `--skip`), `unavailable` (the project has nothing for it to run) or `null`; `output` holds what a failed step reported, line by line.
 
-### Additive keys of parallel and per-file runs
+A `check.extraSteps` command runs from the project root with `FIREFORGE_PROJECT_ROOT`, `FIREFORGE_OWNED_PATHS` (a file listing the owned engine paths, one per line), `FIREFORGE_CHECK_LINT_REPORT` (the lint step's JSON report, when `check.lintReport` is set; order the step `after: ["lint"]` to read it) and, for a step declaring `engine: true`, `FIREFORGE_ENGINE` (the engine directory of the workspace the check holds).
 
-`jobs=<n>` marks a `--jobs` run, `lock=shared` a run that held the engine
-session lock shared, and `results=<path>` names the `--results` document.
-A `--jobs` run whose caller set `MOZ_UPLOAD_DIR` appends
-`upload-dirs=<dir>,…`, the per-instance upload directories
-(`<MOZ_UPLOAD_DIR>/job-<i>`, one per instance that ran), and a `--results`
-record whose `test` is `automation.py` (a harness-level result) carries
-`shardFiles`, plus `file` when its shard has exactly one file. A
-run whose engine changed mid-run only in files the running browser cannot
-see keeps its verdict and appends `drift-tolerated=<n>`. A negative control
-on compiled source appends `control-build=compiled`, and
-`control-restore-build=done|failed` for the full build that recompiles the
-restored source after the last run. Every run that reaches
-dispatch appends `build-id=<BuildID>`, read from the launchable build's
-`application.ini` (absent when that file has no `BuildID`). A raw log
-that starts none of a dispatch's requested files counts as
-`started=0/<m> ... started-source=raw`.
+### `test`
 
-### The additive `shuffle=` key
+```
+FIREFORGE-VERDICT: PASS checks=12 unexpected=0 log=<path> [results=<path>]
+FIREFORGE-VERDICT: FAIL reason=test-failures shards=3/4 log=<path>
+FIREFORGE-VERDICT: FAIL reason=preflight note=build-stale
+```
 
-A `fireforge test --shuffle [seed]` run records the seed used to permute
-FireForge's isolated path-argument shards. Repeating the seed and selection
-repeats that shard order. It also forwards native mach `--shuffle`, which
-randomizes files within an invocation without using this seed. `--no-shard`
-disables FireForge's seeded argument permutation. The seed is exported as
-`FIREFORGE_SHUFFLE_SEED` for custom in-file task code and appended as
-`shuffle=<seed>` to every verdict form. This field does not claim replayable
-native harness file order. Absent when shuffle was not requested.
+| `reason`               | Meaning                                                                                               |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `test-failures`        | The suite ran and reported unexpected results, or planned files never started or finished             |
+| `crash`                | The harness or the browser died, or a clean exit showed no completed suite                            |
+| `server-startup`       | A test server never came up before any test ran                                                       |
+| `no-tests`             | The harness ran nothing                                                                               |
+| `validate`             | The harness was green and the lane's `validate` command exited nonzero                                |
+| `inconclusive`         | The engine changed while the harness ran (exit code 14)                                               |
+| `control-missed`       | A negative control's tests stayed green with the mutation applied                                     |
+| `control-wrong-red`    | A negative control went red, but not at exactly the expected assertions                               |
+| `control-baseline-red` | A negative control's tests were red without the mutation                                              |
+| `preflight`            | Refused before the harness started; `note=` is the refusal's `code` and its text precedes the verdict |
+| `lock-timeout`         | The workspace, the display or a build slot did not come free                                          |
+| `killed`               | A signal ended the run; `signal=` names it                                                            |
 
-### The additive `orphans-reaped=` key
+| Key                                                                                                  | Meaning                                                                                                          |
+| ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `checks=<n>` `unexpected=<n>`                                                                        | The harness summary of a run with one harness invocation                                                         |
+| `shards=<passed>/<total>`                                                                            | A run of several invocations                                                                                     |
+| `runs=<passed>/<total>`                                                                              | `--repeat`                                                                                                       |
+| `started=<n>/<m>` `first-unstarted=<path>` `started-source=`                                         | Where a run that did not start every planned file stopped, and what that was read from                           |
+| `unfinished=<n>` `app-exit=<signal>`                                                                 | Files that started and never ended; the signal the browser died on                                               |
+| `note=`                                                                                              | `exit-noise-ignored` or `teardown-noise-ignored` on a pass that overruled harness noise                          |
+| `control=caught\|missed\|wrong-red\|baseline-red\|inconclusive` `control-restore-build=done\|failed` | A negative control ([testing.md](testing.md#negative-controls)), and the build that restored a compiled mutation |
+| `shuffle=<seed>` `orphans-reaped=<n>`                                                                | The `--shuffle` seed; harness processes left over and terminated                                                 |
+| `log=<path>` `results=<path>`                                                                        | The run's complete output; the `--results` document                                                              |
 
-How many harness processes FireForge terminated itself during the run: at
-preflight, survivors of an earlier run in this objdir under `--reap-orphans`
-or `test.reapOrphans: "reap"`; at teardown, helpers this run's harness
-launched (httpd, websocket server, ssltunnel, process bridge, the browser,
-`moz-http2`) that were still alive after mach exited. Summed across the census, every
-retry attempt and every shard. Absent when nothing was reaped, so a green after a reap is
-distinguishable from a green on a quiet machine. A run ended by SIGTERM or by the parent-exit
-watchdog writes its verdict before the teardown reap runs, so that line never
-carries the key; the reap is reported on stderr instead.
+The document (also written by `--results`) is `{ schemaVersion, verdict, reason?, log, tree, tests, dispatches, files, summary, built?, engineMoved?, validateExit? }`: `verdict` is `pass` or `fail`; `tests` are the planned files with their suite; `dispatches` are the harness invocations with exit code, attempts and verdict; `files` is one record per test file per invocation with its failures; `summary` is `{ files, passed, failed, unfinished, neverStarted, reaped }`. A negative control's document is `{ schemaVersion, verdict, control, why?, targets, restoreBuild?, baseline?, mutated? }`, where `baseline` and `mutated` are run documents.
 
-A preflight refusal's own text is written to stdout before the verdict line,
-and into the run log, so the verdict stays the last stdout write while the
-reason survives both a redirect and a `tail`. See
-[`run-logs.md`](run-logs.md).
+### `gate`
 
-### Additive host and perf keys
+```
+FIREFORGE-VERDICT: PASS result=verified commit=<sha>
+FIREFORGE-VERDICT: PASS result=pending commit=<sha> accept=visual,wording
+FIREFORGE-VERDICT: PASS result=feedback
+FIREFORGE-VERDICT: FAIL result=failed reason=gate-failed failed=check,lane:tiles commit=<sha>
+FIREFORGE-VERDICT: FAIL reason=gate-dirty-tree
+```
 
-`host-load=<number>` records the one-minute load at suite startup. Each suite
-also samples the highest CPU process before and after dispatch. A contention
-warning appends `host-cpu-warning=true`; the diagnostic names the process
-and measured CPU. These diagnostics annotate a test failure without changing
-its classifier reason.
+| Key      | Meaning                                                                                                                                                                        |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `result` | `verified` (the ref is at the commit), `pending` (passed; acceptances outstanding; the ref has not moved), `failed`, or `feedback` (a `--lane` subset)                         |
+| `reason` | `gate-failed` for a red entry; otherwise the `code` of what stopped the gate (`gate-dirty-tree`, `gate-not-fast-forward`, `gate-ref-moved`, `gate-tree-moved`, `lock-timeout`) |
+| `failed` | The red entries, comma-separated: `check`, `build`, `lane:<id>`, `stress:<id>`, `control:<id>`, `run:<id>`                                                                     |
+| `commit` | The gated commit; absent for feedback                                                                                                                                          |
+| `accept` | The acceptance IDs still to record with `fireforge gate accept <id> --note <text>`                                                                                             |
 
-Perf runs append `power-source=ac|battery|unknown`. On macOS the source is
-read from `pmset -g ps`, so charging on AC reads `ac`. A known source
-transition appends `power-changed=true` and refuses the run as
-`reason=inconclusive`. The producer's sample JSON carries an additional
-`fireforgeHost: { start, end, powerSourceChanged }` object, where each host
-state includes `load`, `power` and an optional `topProcess` with CPU and
-command. Consumers should tolerate this additive object. Unknown power
-state is visible but never treated as a proven transition.
+`PASS` means nothing was red; only `result=verified` means the commit is verified.
 
-On a perf run (`--perf-samples`), an `engine/` change during the run makes
-the verdict `reason=inconclusive` only when HEAD moved or a changed path is
-packaged by the running build: a source an objdir install manifest names, a
-directory one installs from, or a test file. Edits that no manifest installs
-(compiled sources, build files, docs) leave the sample standing with a
-warning naming them. Other runs are inconclusive only when a changed path is
-one the running browser can see: a file the objdir links to its source, one
-staged at dispatch, or a test file or staging input of the run; anything
-else leaves the verdict standing with `drift-tolerated=<n>`.
+The document is `{ outcome, basis, pass, commit, tree, entries, check, pending, artifacts }`. `outcome` is the verdict's `result`. `basis` says where the entries come from: `run` (this invocation ran them), `recorded` (the pass recorded for this commit stands), `documents` (only `gate.documents` paths changed since the verified commit, so the check alone ran), `already-verified`, or `feedback`. Each entry is `{ id, status, detail, durationMs, artifacts? }` with `status` `pass`, `fail` or `skipped` (after a red build). `check` is the check document of this invocation or `null`. `artifacts` is the run's directory, `.fireforge/gate/<commit>/`, which holds `result.json` and one directory per entry (`lane-<id>/output.log`, `lane-<id>/results.json`, `lane-<id>/upload/`, `run-<id>/console.txt`).
 
-### Additive Furnace keys
+`gate status --json` is `{ head, clean, verified, relation, ahead, result, accepted, pending }`: `relation` is `verified`, `ahead` (HEAD descends from the verified commit, by `ahead` commits), `diverged` or `unverified`; `result` is `{ pass, finishedAt, entries }` for HEAD in this checkout or `null`; `accepted` maps acceptance IDs to `{ by, at, note, commit }`. `gate accept --json` is `{ id, commit, tree, acceptance, pending }`.
 
-A `fireforge test --build` or `--build-only` run whose pre-test Furnace apply
-deployed components appends `furnace-applied=<name>,<name>…`: the components
-whose `components/` source changed since their last deploy, which the
-runtime under test therefore includes. `--no-furnace-apply` skips that apply
-and appends `furnace-apply=skipped`. `--furnace-apply reached` appends
-`furnace-skipped=<names>` for components with undeployed edits that no
-requested test reaches. All are absent otherwise.
+### `status`
+
+`status --json` is `{ mode, owned, groups, pending, clean }`. `owned` lists every owned path as `{ path, group }`, `group` being the ID of its group. `groups` lists the groups in application order as `{ id, kind, paths }`: `kind` is `patch`, `component` (the upstream changes of a source-mode component), `created` (a source-mode group of created files) or `furnace` (the files a Furnace component deploys, which are not among `owned`). `pending` lists what is unaccounted for as `{ code, subject?, message, hint? }`.
+
+### `migrate`
+
+`migrate --json` is `{ state, mode, converted, removed, manual, rewritten, deleted, followUp, verify, pass }`. `state` is `upgraded`, or `current` when the project was already in the current format and nothing was written. `converted`, `removed` and `manual` are lists of `{ key, message }`: what was rewritten, what was dropped and why, and what was not carried over because only a person can decide it. `rewritten` and `deleted` are project-relative files. `verify` is the `verify` document and `pass` its outcome. `migrate --to-source --json` is `{ created, overridden, deleted, pristineCommit }`.
+
+A pre-push hook can compare the tree of `refs/fireforge/verified` with the tree of the commit being pushed:
+
+```sh
+test "$(git rev-parse refs/fireforge/verified^{tree})" = "$(git rev-parse "$pushed"^{tree})"
+```
+
+### `furnace validate`
+
+```
+FIREFORGE-VERDICT: PASS errors=0 warnings=2
+FIREFORGE-VERDICT: FAIL errors=1 warnings=0
+```
+
+The document is `{ pass, judged, errors, warnings, findings, excepted }`.
+
+### `doctor`
+
+`doctor --json` is `{ healthy, checks }`. Each check is `{ id, title, status, detail, fix }`: `status` is `ok`, `warn` or `fail`, and `fix` is what to run or `null`. Check IDs: `config`, `git`, `pristine`, `engine`, `merge-driver`, `workspaces`, `storage`, `components`, `python`, `journals`, `locks`, `disk`, `typing`, and `toolchain:<toolchain>/<tool>` for each tool `externalToolchains` declares. A check that does not apply to the project's mode, or that an earlier failure makes meaningless, is absent.

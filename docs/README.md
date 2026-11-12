@@ -2,34 +2,29 @@
 
 # FireForge documentation
 
-[`../README.md`](../README.md) is the getting-started page. These files are
-the reference material behind it. `fireforge --help` (and
-`fireforge <command> --help`) is always the authority on flags. These docs
-cover the things a flag list cannot say.
+Start with [getting-started.md](getting-started.md). `fireforge <command> --help` lists every option; these pages cover what an option list cannot say.
 
 ## Using FireForge
 
-| File                                           | Covers                                                                               |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------ |
-| [patch-workflow.md](patch-workflow.md)         | Export, re-export, deletions, queue maintenance, per-patch lint, CI gating, rebasing |
-| [testing.md](testing.md)                       | `fireforge test`: scope, modes, build freshness, the verdict line, verbosity         |
-| [furnace.md](furnace.md)                       | Components: overrides, shared CSS fragments, typed cross-module imports              |
-| [verification-trees.md](verification-trees.md) | CoW snapshots for concurrent read-mostly verification                                |
-| [configuration.md](configuration.md)           | `fireforge.json` settings, design tokens, lock waits, environment variables          |
+| Page                                     | Covers                                                                                       |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------- |
+| [getting-started.md](getting-started.md) | From an empty directory to a running fork in either mode, and the daily loop                 |
+| [patch-workflow.md](patch-workflow.md)   | Patch mode: the queue and manifest, import, export, re-export, queue operations, rebase      |
+| [source-workflow.md](source-workflow.md) | Source mode: `src/`, overrides, materialization, exporting a queue, the merge driver, rebase |
+| [workspaces.md](workspaces.md)           | Parallel sessions: git worktrees, the workspace pool, locks, host state and disk use         |
+| [quality.md](quality.md)                 | Lint rules and waivers, policy, typecheck, and `check`                                       |
+| [gate.md](gate.md)                       | `gate`: lanes, controls, smoke starts, acceptances, the verified ref and a pre-push hook     |
+| [testing.md](testing.md)                 | `test`: what runs, dispatch, build freshness, the verdict, host hygiene, negative controls   |
+| [furnace.md](furnace.md)                 | Components: create, override, deploy, validate, shared CSS fragments, typing files           |
+| [authoring.md](authoring.md)             | Design tokens, build-manifest registration, chrome script wiring                             |
+| [configuration.md](configuration.md)     | Every key of `fireforge.json`, `furnace.json` and `host.json`, and the environment variables |
+| [migrating.md](migrating.md)             | Upgrading a project from 0.56: removed commands, flags and keys, step by step                |
 
-## Contracts for scripts and CI
+## For scripts and CI
 
-| File                                   | Covers                                                                      |
-| -------------------------------------- | --------------------------------------------------------------------------- |
-| [exit-codes.md](exit-codes.md)         | Every exit code, which error class produces it, and how CI should branch    |
-| [machine-output.md](machine-output.md) | The `--json` / `--raw` / verdict-line output contract and its versioning    |
-| [run-logs.md](run-logs.md)             | `.fireforge/logs/`: what `test` and `build` write, and what survives a pipe |
+| Page                                   | Covers                                                   |
+| -------------------------------------- | -------------------------------------------------------- |
+| [exit-codes.md](exit-codes.md)         | Every exit code, and what the judging commands exit with |
+| [machine-output.md](machine-output.md) | The `--json` document and the `FIREFORGE-VERDICT:` line  |
 
-## Internals
-
-| File                                               | Covers                                                                       |
-| -------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [lifecycle-invariants.md](lifecycle-invariants.md) | Locking, rollback, signal handling, and the decision table for new mutations |
-
-Release history and the reasoning behind individual changes live in
-[`../CHANGELOG.md`](../CHANGELOG.md).
+Release history is in [`../CHANGELOG.md`](../CHANGELOG.md). Contributors read [`../contributing/architecture.md`](../contributing/architecture.md).

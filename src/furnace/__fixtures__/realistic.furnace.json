@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "componentPrefix": "moz-",
+  "stock": [],
+  "overrides": {},
+  "custom": {
+    "moz-acme-tile-frame": {
+      "description": "Tile chrome frame: header, browser slot, resize grip, states, gestures",
+      "targetPath": "toolkit/content/widgets/moz-acme-tile-frame",
+      "register": true,
+      "localized": true,
+      "sharedFtl": "browser/acme-tiles.ftl"
+    },
+    "moz-acme-workspace-preview": {
+      "description": "Store-only workspace wireframe preview beside the switcher (hover/focus feedback)",
+      "targetPath": "toolkit/content/widgets/moz-acme-workspace-preview",
+      "register": true,
+      "localized": false
+    },
+    "moz-acme-shared": {
+      "description": "Shared widget substrate: MozAcmeElement base (Fluent wiring + emitIntent) + menu roving + the list-drag machine",
+      "targetPath": "toolkit/content/widgets/moz-acme-shared",
+      "kind": "library",
+      "register": false,
+      "localized": false
+    },
+    "moz-acme-editor": {
+      "description": "The Editor tile (contracts/editor.md): vendored the editor 6 (a pinned vendor drop) orchestrator + lazy directory tree in shadow DOM — components emit (open/save/close/doc-changed intents), the chrome controller owns every filesystem touch and storage commit",
+      "targetPath": "toolkit/content/widgets/moz-acme-editor",
+      "register": true,
+      "localized": true,
+      "sharedFtl": "browser/acme-editor.ftl"
+    },
+    "moz-acme-pane-stack": {
+      "description": "The split pane stack: the active pane's favicon in front of its partner's inside one favicon's box; the rear is a fixed swap target whose hit area is the half nearer to it, a side change plays the swap",
+      "targetPath": "toolkit/content/widgets/moz-acme-pane-stack",
+      "register": true,
+      "localized": true,
+      "sharedFtl": "browser/acme-focus-split.ftl"
+    },
+    "moz-acme-dock": {
+      "description": "Bottom-centre canvas dock: chips over tabOrder (fly / dive / reorder / close)",
+      "targetPath": "toolkit/content/widgets/moz-acme-dock",
+      "register": true,
+      "localized": true,
+      "sharedFtl": "browser/acme-dock.ftl"
+    }
+  },
+  "tokenPrefix": "--acme-",
+  "platformPrefixes": [
+    "--moz-"
+  ],
+  "tokenAllowlist": [
+    "--card-border-color",
+    "--popup-box-shadow",
+    "--border-radius-medium",
+    "--background-color-overlay"
+  ],
+  "runtimeVariables": [
+    "--acme-empty-glyph",
+    "--acme-group-color",
+    "--acme-pill-alpha",
+    "--acme-slider-progress"
+  ],
+  "tokenHostDocuments": [
+    "browser/base/content/acme.xhtml"
+  ],
+  "typecheckJsconfig": [
+    "components/custom/jsconfig.json",
+    "engine/browser/base/content/jsconfig.json"
+  ],
+  "typecheckTagMap": "tools/types/acme-shim-widgets.d.ts",
+  "validationExceptions": [
+    {
+      "component": "moz-acme-editor",
+      "check": "hardcoded-text",
+      "reason": "the vendored the editor bundle's character-width probe",
+      "file": "moz-acme-editor-codemirror.mjs"
+    },
+    {
+      "component": "moz-acme-pane-stack",
+      "check": "no-keyboard-handler",
+      "reason": "pointer-only rear inside a tab or a switcher card, whose host owns the keyboard"
+    },
+    {
+      "component": "moz-acme-tile-frame",
+      "check": "no-delegates-focus",
+      "reason": "deliberate no-delegatesFocus: the host is its own tab stop for the two-step focus model, distinct from the header controls and the move and resize affordances"
+    },
+    {
+      "component": "moz-acme-shared",
+      "check": "no-delegates-focus",
+      "reason": "moz-acme-shared has no element of its own: its modules are template parts, and the refine bar"
+    }
+  ],
+  "optInChecks": [
+    "icon-button-label"
+  ]
+}

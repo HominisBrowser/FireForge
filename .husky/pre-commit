@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 
-# Prepend common Homebrew locations only when they exist — the previous
-# unconditional export baked one developer machine's layout into shared hooks.
+# Prepend common Homebrew locations only when they exist, so the hooks find
+# tools installed there without assuming one machine's layout.
 [ -d /opt/homebrew/bin ] && PATH="/opt/homebrew/bin:$PATH"
 [ -d /usr/local/bin ] && PATH="/usr/local/bin:$PATH"
 export PATH

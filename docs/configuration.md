@@ -2,805 +2,346 @@
 
 # Configuration
 
-`fireforge.json` at the project root holds the project's configuration, and
-`furnace.json` holds component configuration. This file covers the settings
-whose behavior needs more than a schema line, plus the environment variables
-FireForge reads.
+A project is configured by `fireforge.json` at its root, and its components by `furnace.json` beside it. Both are checked against a schema on every command: a wrong type or value names the key path, and an unknown key is refused with the nearest known key. Invalid configuration exits 2.
 
-## `firefox`, the source pin
+Read and change `fireforge.json` through the schema:
 
-`firefox.version`, together with `firefox.product` and optionally
-`firefox.sha256` and `firefox.candidate`, is the source pin that
-`fireforge download` resolves an archive from. `fireforge source set` writes
-it.
-
-The pin lives in `fireforge.json` next to hand-maintained policy sections,
-which is worth knowing when you revert that file. Running
-`git checkout -- fireforge.json` after an accidental reformat also reverts an
-uncommitted pin, and the tree is then building a different version than the
-config claims.
-
-`fireforge source set`, `fireforge config <key> <value>` and `furnace init`
-edit `fireforge.json` in place. Only the values that change
-are rewritten. Indentation, key order, and objects or arrays kept on one
-line stay as they are, so a pin move is a diff of the `firefox` block alone.
-New keys follow the layout of the object they land in.
-
-`fireforge doctor`'s "Source pin matches engine" check compares the pin with
-the engine's committed `browser/config/version.txt`. That file never carries
-the `esr` suffix, so a trailing `esr` is dropped from the pin for this
-comparison (a `153.4.0esr` pin matches `153.4.0`). The comparison with the
-version the last download recorded keeps the full pin.
-
-### Archive integrity: `firefox.sha256` and `firefox.allowUnverifiedDownload`
-
-Every fresh download is checked against Mozilla's published `SHA256SUMS` for
-the release. A mismatch fails the download and discards the archive. The
-check also fails closed when the published digest cannot be obtained at all:
-a 404, a captive portal answering with an HTML page, a dropped connection, or
-a timeout. TLS alone is thin trust for the artifact that becomes the git
-baseline every patch is built on, and "the checksum host was unreachable" is
-exactly the condition someone positioned on the network can arrange.
-
-- `firefox.sha256` pins the digest. It takes precedence over the published
-  file and is the right answer for reproducible builds and offline mirrors:
-  obtain it out of band, and the download verifies with no network beyond the
-  archive itself.
-- `firefox.allowUnverifiedDownload: true` accepts a download when the
-  published digest is unavailable, with a loud warning. This disables the
-  integrity check for that case, so the archive is trusted on TLS alone. Use
-  it only for a mirror you already trust, and prefer pinning `sha256`
-  instead. A digest that is fetched and does not match is rejected either
-  way. The setting is ignored when `sha256` is set.
-
-`fireforge doctor` reports the pin beside what the checkout actually is (the
-engine's own `browser/config/version.txt` and the version the last download
-recorded) and warns when they disagree. It is a report, not a lock, since a
-tree may legitimately be mid-migration. `product`, `sha256` and `candidate`
-have no recorded counterpart on disk, so the check does not claim to have
-verified them.
-
-## External toolchains
-
-Projects with generated asset prerequisites can declare opt-in
-`externalToolchains`. `fireforge doctor` reports missing required tools as
-errors and missing optional tools as warnings.
-
-Seasonal branding on macOS, for example, can declare Apple's Icon Composer
-tool at
-`/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool`,
-plus `actool` via `xcrun`, `sips`, and `iconutil`.
-
-On macOS, `fireforge doctor` also checks that the bootstrapped clang
-(`~/.mozbuild/clang`, or under `MOZBUILD_STATE_PATH`) can link against the
-SDK the build will use. That is the SDK `engine/mozconfig` selects with
-`--with-macos-sdk`, resolved by sourcing the mozconfig the way mach does,
-or `xcrun --show-sdk-path` when it names none. The check links a trivial C
-program through the toolchain's lld in a temp directory. When that fails, it
-reports a warning with clang's first error and lists the SDKs installed
-under the mozbuild state directory, the Command Line Tools and the active
-Xcode. An Xcode update can ship an SDK the pinned toolchain cannot read, and
-`mach configure` then dies at its linker probe with nothing but `config.log`
-saying why. The check does nothing on other platforms and when no clang has
-been bootstrapped.
-
-## `patchLint`
-
-Per-patch lint type-checks plain Firefox JS against a built-in
-Firefox-globals shim that tracks upstream WebIDL additions per release.
-Most globals in it are `any`. `Cu` is typed as `CuShim`, the members of
-`nsIXPCComponents_Utils` (`js/xpconnect/idl/xpccomponents.idl`) with loose
-parameter and result types, so a call to a member `Cu` does not have (such
-as `Cu.now()`, which is `ChromeUtils.now()`) fails `typecheck` and per-patch
-lint instead of throwing at runtime. The same shim backs
-`fireforge typecheck`.
-
-- `patchLint.checkJsExtraShim` adds members to the structured shim globals
-  via TypeScript interface merging, for example
-  `interface ChromeUtilsShim { newApi(): any }`.
-- `patchLint.checkJsTestFiles: true` extends the pass to patch-owned test
-  `.js` files (`browser_*`, `test_*`, `xpcshell_*`, and `/test/` paths). Each
-  one is checked as its own small script-scope program against a loose
-  built-in harness shim.
-- `patchLint.checkJsTestShim` points at a project `.d.ts` whose typed
-  declarations (a real `TestUtils` interface, say) override the loose
-  baseline, so calls to harness members that do not exist fail at export
-  time.
-- `patchLint.litTypes: true` (default off, requires `checkJs`) types Lit in
-  the per-patch programs' shim, as `typecheck.litTypes` does for the
-  project pass (see [`typecheck`](#typecheck)). Set both to the same value,
-  so a widget class has Lit's members, such as `updateComplete`, and a
-  closed member list in both passes.
-- `patchLint.prettier` (`'off'`, `'warning'` or `'error'`, default `'off'`)
-  runs the project's configured Prettier over patch-owned `.sys.mjs`
-  modules. It runs from inside `engine/`, so `engine/.prettierrc*` and
-  `engine/.prettierignore` decide the outcome. The same command run from the
-  repo root can report a false pass when the root `.prettierignore` excludes
-  `engine/`. Prettier is resolved from `engine/node_modules`, then the
-  project's, then `npx --no-install`. Left at `'off'`, formatting is out of
-  scope for the per-patch tier, and no other tier checks `.sys.mjs`
-  formatting either.
-- `patchLint.forwardRegistration` (`'support-files'` or `'extended'`,
-  default `'support-files'`) picks which carriers the `forward-registration`
-  queue rule checks for a line naming a file that only a later patch
-  creates. The default checks test-manifest `support-files`. `'extended'`
-  also checks:
-  - jar.mn pair lines (the source in parentheses, relative to the jar.mn);
-  - moz.build path tokens (a quoted string with a `.` or `/`, relative to
-    the moz.build);
-  - test-manifest section headers and `head`;
-  - `customElements.js` `chrome://<pkg>/content/…` URLs, resolved through
-    the jar.mn lines the same queue adds.
-
-  A line whose target cannot be resolved without the build system is left
-  alone: a `%` or `@AB_CD@` substitution, `**`, `!`, a path that leaves the
-  tree, or a chrome URL no queue jar.mn line packages. Each finding prints
-  the same paste-and-run `patch staged-dependency --add --kind registration`
-  command as the `support-files` arm, ending in a `--reason '<why …>'`
-  placeholder to fill in. Each finding also carries the declaration as
-  structured `stagedDeclarations`, so a `lint --per-patch --report` file
-  can be applied with one `patch staged-dependency <patch> --add --from
-<report>` per patch instead of one call per edge. The setting is opt-in because a queue
-  that was never checked for these carriers can carry many such edges, and a new error would red a
-  `--max-warnings 0` gate on install. The same census is on the public API as
-  `findForwardRegistrations(patchesDir, { scope })`, which defaults to
-  `'extended'`, for a consumer that keeps its own ratchet over these edges.
-
-- `patchLint.fileSizeThresholds` tunes the `file-too-large` line counts per
-  file class:
-
-  ```json
-  {
-    "patchLint": {
-      "fileSizeThresholds": {
-        "general": { "notice": 500, "warning": 800, "error": 900 },
-        "test": { "warning": 1500 }
-      }
-    }
-  }
-  ```
-
-  Every field is optional and merges over the defaults (general
-  `500/750/900`, test `1200/1400/1600`). The merged triple has to satisfy
-  `notice <= warning <= error`, which is validated at config load. Under
-  the recommended gate posture `--max-warnings 0`, the `warning` band
-  is a hard failure rather than a soft limit, which is what these thresholds
-  exist to let you move. A notice is the design target: advisory, and it
-  never fails `--max-warnings 0`. Only the error band suggests splitting.
-
-- `patchLint.fileSizeMetric` (`'raw'` or `'code'`, default `'raw'`) picks
-  what `file-too-large` counts. `'raw'` counts every line, the way `wc -l`
-  does. `'code'` blanks comments with acorn's tokenizer (module first, then
-  script, since chrome subscripts are scripts) and counts the lines left
-  non-blank, so JSDoc and blank lines do not count. A file acorn cannot
-  tokenize is counted in raw lines, the upper bound, and a
-  `file-size-unparsed` notice names it. Every message says which unit it
-  counted ("lines" or "code lines"). The counter is on the public API as
-  `countCodeLines(content)`, next to `resolveFileSizeThresholds` and
-  `isTestFile`.
-
-- `patchLint.patchSizeThresholds` tunes `large-patch-lines` and
-  `large-patch-files` per tier (`general`, `test`, `branding`), each with a
-  `lines` and a `files` triple:
-
-  ```json
-  {
-    "patchLint": {
-      "patchSizeThresholds": {
-        "general": {
-          "lines": { "notice": 1000, "warning": 2000, "error": 4000 },
-          "files": { "notice": 8, "warning": 12, "error": 24 }
-        },
-        "branding": { "files": { "error": 90 } }
-      }
-    }
-  }
-  ```
-
-  Every field is optional and merges over the defaults, and each merged
-  triple has to satisfy `notice <= warning <= error`. The line defaults are
-  general `800/1500/3000`, test `1500/3000/6000` and branding
-  `8000/18000/30000`. Files warn above 5 (general, test) or 60 (branding).
-  The files triple has no notice or error band unless you set one: an unset
-  `files.notice` follows `files.warning`, and an unset `files.error` never
-  fires. The `branding` tier applies to a patch whose files all sit under
-  `browser/branding/` (plus `browser/moz.configure` and
-  `browser/confvars.sh`), or one marked `"tier": "branding"` in
-  `patches.json` (`re-export --tier branding`). A patch whose files are all
-  tests takes the `test` tier, and wins over branding.
-  `getPatchSizeThresholds(tier, config)` returns the configured values.
-
-- `patchLint.patchSizeMetric` (`'diff'` or `'addedCode'`, default `'diff'`)
-  picks what `large-patch-lines` counts. `'diff'` counts every non-binary
-  line of the unified diff, headers and context included. `'addedCode'`
-  counts only added lines that are neither blank nor comment, judged on
-  each file's post-image in `engine/` (a hunk can start inside a block
-  comment). Comments are recognised per file kind: JS through acorn, CSS
-  block comments, `<!-- -->` in markup, and whole-line `#` comments in
-  manifests, `moz.build`, Fluent and similar. In CSS it also skips lines
-  inside a Furnace `@fireforge-include` … `@fireforge-end-include`
-  expansion: they are a copy of a shared fragment. Under `'addedCode'`, a
-  general-tier patch that carries tests counts per class: lines in test
-  files against the test tier's `lines`, everything else against the
-  general tier's, each with its own finding.
-
-- `patchLint.patchSizeRegistrationFiles` lists globs whose files count
-  toward neither `large-patch-lines` nor `large-patch-files`, for example
-  `["jar.mn", "moz.build", "components.conf", "*.toml", "jsconfig*.json"]`.
-  A glob without a `/` matches the basename, one with a `/` the
-  engine-relative path; `*` stays within a path segment and `**` crosses
-  segments. Default: none.
-
-- `patchLint.tokenScales` (default unset) puts property families on a token
-  scale. In every CSS file a patch creates, a declaration of a governed
-  property must resolve to the scale (`token-scale`, an error):
-
-  ```json
-  {
-    "patchLint": {
-      "tokenScales": [
-        {
-          "properties": ["gap", "row-gap", "column-gap", "padding*", "margin*"],
-          "prefix": "--mybrowser-space-",
-          "allowLiterals": ["0", "auto", "*%", "1px"],
-          "allow": ["--mybrowser-page-padding"]
-        },
-        { "properties": ["z-index"], "prefix": "--mybrowser-z-" }
-      ]
-    }
-  }
-  ```
-
-  `properties` takes exact names or a `*`-suffixed prefix. Each value atom
-  must be a `var()` of a `prefix` token or of an `allow` name (exact, or
-  `*`-suffixed such as `--moz-*`), a literal matching `allowLiterals` (`*`
-  is a wildcard), or a CSS-wide keyword (`inherit`, `initial`, `unset`,
-  `revert`, `revert-layer`). A `var()` fallback is held to the same scale,
-  so `var(--mybrowser-gap, 7px)` fails on `7px`. `calc()`, `min()`, `max()`
-  and `clamp()` are transparent. Files the patch modifies rather than
-  creates are not checked, and a line carrying
-  `fireforge-ignore: token-scale` is skipped. Declarations inside
-  descriptor at-rules (`@font-face`, `@counter-style`, `@property`,
-  `@font-feature-values`, `@font-palette-values`, `@page` and its margin
-  boxes) are descriptors, not properties, and are not judged.
-
-  A scale also takes:
-
-  - `prefix` as a list (`["--mybrowser-space-", "--mybrowser-gap-"]`) for a
-    scale whose steps are spelled more than one way.
-  - `allowInCalc`: literals legal only inside a math function, such as the
-    unitless multiplier in `calc(var(--mybrowser-space-2) * 2)`, without
-    also passing a bare `2`. Same wildcard syntax as `allowLiterals`.
-  - `offsetCap`: the px a declaration may subtract from the scale's tokens
-    inside a math function (`calc(var(--mybrowser-space-4) - 1px)`), summed
-    over the declaration. A px value anywhere else still fails.
-  - `exclude`: engine-relative globs of files the scale does not govern,
-    such as a vendored minified sheet, so its patch needs no patch-wide
-    waiver.
-  - `minFiles`: the fewest patch-created stylesheets (outside `exclude`)
-    that must declare one of the scale's properties. Under it the queue
-    fails `token-scale-vacuous` (an error on `fireforge.json` in
-    `lint --per-patch`), so a scale that matches nothing, or a scan set a
-    move emptied, cannot pass by judging nothing. A `--patches` run does
-    not judge the floor.
-  - `allowValues`: reviewed declarations accepted as written, as
-    `{ "property": "margin-inline-start", "value": "-3px", "reason": "…" }`.
-    A declaration whose property and value match an entry (whitespace runs
-    collapsed) passes in every file the scale governs, so a reviewed raw
-    value can move to another sheet without an `exclude` for it. The
-    property must be one the scale governs, and `reason` is required.
-
-  An unknown key in a scale is refused.
-
-## `typecheck`
-
-`typecheck.projects` lists the jsconfig files `fireforge typecheck` checks
-as whole projects. `typecheck.extraShim` and `typecheck.projectOverrides`
-add declarations to the Firefox-globals shim, for every project or for one.
-When `patchLint.checkJs` is on, the same command also runs the per-patch
-checkJs pass that `export` enforces, so a green `typecheck` means
-export-clean types.
-
-`--project <path>` checks one jsconfig instead of the configured list,
-with every other setting of the block: `extraShim`, `litTypes`,
-`undefinedIdentifiers`, and the `projectOverrides` entry for that project.
-A `projectOverrides` key matches the project by the file it names, so
-`./a/jsconfig.json` and an absolute path both find the `a/jsconfig.json`
-entry.
-
-The two passes see different programs. The project pass checks each
-project's files with all of the project's roots and the shim settings
-above. A per-patch program checks only a patch-created `.sys.mjs` module,
-in one program with the queue's other patch-owned modules, or a
-patch-created test script, in its own program (see below). A
-patch-modified upstream file, a widget `.mjs` and a chrome script are not
-checked per patch at all. `fireforge typecheck --explain <file>` runs no
-check and prints both views of one file:
-
-- each configured project, whether it lists the file as a root, and its
-  `litTypes`, effective extra shim (naming the `projectOverrides` entry
-  that set it) and `undefinedIdentifiers`;
-- whether a per-patch program checks it: the patches that create or modify
-  it, the program it is a root of or why it has none, and for a test its
-  heads; the shim settings; the modules its imports can resolve to; and
-  each `resource:`/`chrome:` import with what it resolves to, or `any`.
-
-The file may be given relative to the project root, relative to `engine/`,
-or as an absolute path. With `--project`, only that project is shown.
-`re-export` ends a run that wrote a patch with per-patch checkJs files with
-a line saying the project pass is still owed.
-
-Project build info is written in `.fireforge/typecheck/`, outside `engine/`,
-with a key covering the shim, TypeScript version, compiler options and
-FireForge version. Diagnostics always use a fresh project
-program: prior incremental diagnostic state is never restored. Cached and
-`--no-cache` runs therefore check the same complete file set. `--no-cache`
-also disables build-info writes. A jsconfig's own `incremental` and
-`tsBuildInfoFile` are ignored.
-
-`typecheck.litTypes: true` (default off) types Lit in the
-shim: `LitElement` and the helpers of
-`chrome://global/content/vendor/lit.all.mjs`, and `MozLitElement` of
-`chrome://global/content/lit-utils.mjs`. The element classes carry closed
-member lists, as `Cu` does, so a misspelt member of a widget host is an
-error rather than `any`. Template helpers and directives stay loose. It is
-off by default because a reactive property declared only in
-`static properties` or `static queries` then needs a declaration to be
-known. The shim declares the global type
-`MozLitElementWith<Extra>`: a widget casts its base to it, and its
-instances carry `Extra` beside MozLitElement's members. A query getter
-cannot be declared any other way: a class field redefines the getter
-MozLitElement installs and throws, and a constructor declaration reads it
-before `renderRoot` exists.
-
-```js
-const Base = /** @type {MozLitElementWith<{ input: HTMLInputElement }>} */ (MozLitElement);
-export class MozSearch extends Base {
-  static queries = { input: 'input' };
-}
+```sh
+npx fireforge config get firefox.version
+npx fireforge config get gate.lanes[0].files
+npx fireforge config set build.jobs 12
+npx fireforge config set patchLint.rules '{"jsdoc-class-method": "warning"}'
 ```
 
-Per-patch checkJs types Lit when `patchLint.litTypes` is set. Without
-`litTypes`, `MozLitElementWith<Extra>` is `any`, as the base is, so the
-same source checks with and without it. A project shim can add members by
-merging `interface LitElementShimMembers`; a jsconfig `paths` entry that maps these
-URLs to real sources takes precedence.
+`config set` reads the value as JSON when the key accepts that (`4`, `true`, `["a"]`) and as text otherwise, validates the whole file with the change, and rewrites only the changed value, keeping the rest of the file's layout.
 
-Per-patch checkJs gives each test script its own program. A
-test's `resource:///` and `chrome://` imports (including a
-`typeof import("…")` cast) resolve to the modules the queue creates up to
-the test's own patch, so a test of an earlier patch's module is checked
-against its real types. A module a later patch creates, an upstream module
-and a basename two patches create still type as `any`, and an implicit-any
-finding on such an import names it. A type-member reference through such
-an import, `import("…").Type` or `typeof import("…").member`, types as
-`any` too, in every per-patch program. In the project pass the same
-reference is an error ("Namespace '"resource:*"' has no exported member")
-unless the project's jsconfig `paths` resolve the URL, as the entries
-Furnace maintains do for `chrome://global/content/elements/` (see
-[`furnace.md`](furnace.md#typed-cross-module-imports)).
+`config set` does not change `mode`, because the mode moves together with the `source` block and the files that hold the owned changes; it fails with the code `config-mode-switch` (exit 8) and names the route. `fireforge migrate` converts a patch-mode project to source mode. Going back is `fireforge export`, then a hand edit that sets `mode` to `patches` and removes `source` ([source-workflow.md](source-workflow.md#coming-from-patch-mode-going-back)).
 
-Both project and per-patch checkJs provide Gecko DOM constructor
-`isInstance(value)` predicates with instance narrowing, plus
-`MouseEvent.MOZ_SOURCE_PEN`. These declarations retain normal DOM member
-checking; they do not turn constructors or instances into `any`.
+Paths are project-relative unless the table says engine-relative (a path inside Firefox, such as `browser/base/content/browser.js`). Neither kind may be absolute or climb out with `..`. Globs use `*` within one path segment and `**` across segments.
 
-## `patchPolicy`
+## Identity and mode
 
-`patchPolicy.ranges` makes `patch compact` range-aware, so closing ordinal
-gaps does not move a patch out of the band its category owns.
+| Key             | Type                                                    | Default                  | Meaning                                                                                         |
+| --------------- | ------------------------------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------- |
+| `name`          | string                                                  | required                 | Display name of the browser                                                                     |
+| `vendor`        | string                                                  | required                 | Vendor or company name                                                                          |
+| `appId`         | string                                                  | required                 | Application ID in reverse-domain form, such as `org.mybrowser.browser`                          |
+| `binaryName`    | string                                                  | required                 | Executable name: a lowercase letter, then lowercase letters, digits and hyphens                 |
+| `license`       | `EUPL-1.2` \| `MPL-2.0` \| `0BSD` \| `GPL-2.0-or-later` | `EUPL-1.2`               | SPDX identifier of the project license; the license header lint expects on created files        |
+| `markerComment` | string                                                  | `binaryName` in capitals | Marker appended as a comment to lines FireForge writes into upstream files, such as `MYBROWSER` |
+| `mode`          | `patches` \| `source`                                   | `patches`                | Where owned changes live: a patch queue, or tracked files under `source.root`                   |
 
-With `patchPolicy.allowGaps: false`, orders are contiguous within a range:
-a new patch must fill an existing gap or take the number right after the
-range's last patch. A patch that has to leave the queue without opening a
-gap is removed with `patch retire`, which keeps its order as a retired slot.
-An order a peer has claimed but not exported yet is held with `patch
-reserve`, so a later order can be exported without a gap in between (see
-[`patch-workflow.md`](patch-workflow.md#queue-maintenance)).
+The identity strings are substituted into the mozconfig templates (`${name}`, `${vendor}`, `${appId}`, `${binaryName}`), so they refuse control characters. `fireforge setup` proposes the same default license and writes `license` explicitly.
 
-### Registration-only rules
+## `source`
 
-Four opt-in rules read the patch bodies rather than `patches.json` alone.
-`verify` and `lint --per-patch` report them (as `patch-policy/<code>` in
-lint), at the severity `mutationMode` implies. Mutating commands do not
-evaluate them, because those commands check a projected manifest before
-any body exists.
+Present exactly when `mode` is `source` ([source-workflow.md](source-workflow.md)).
 
-```json
-{
-  "patchPolicy": {
-    "ranges": [{ "from": 100, "to": 899, "category": "ui" }],
-    "addOnlyMarker": "hominis",
-    "upstreamAllowlist": [
-      "browser/moz.configure",
-      { "path": "**/jar.mn", "addOnly": true },
-      { "path": "**/moz.build", "addOnly": true }
-    ],
-    "scopeRules": [
-      { "filenamePattern": "-tests\\.patch$", "files": ["**/test/**", "**/tests/**", "**/*.toml"] }
-    ],
-    "verifyDocumentPaths": true
-  }
-}
-```
+| Key                     | Type   | Default  | Meaning                                                                |
+| ----------------------- | ------ | -------- | ---------------------------------------------------------------------- |
+| `source.root`           | string | required | Directory whose files supply the engine files of the same path (`src`) |
+| `source.metadataRoot`   | string | required | Directory holding the override records (`.fireforge-sources`)          |
+| `source.pristineCommit` | string | required | Commit the pinned Firefox archive imports as                           |
 
-- `upstreamAllowlist` names, as path globs, the upstream files a
-  non-reserved patch may modify (`upstream-allowlist`). A file is upstream
-  when no patch in the queue creates it, so fork-owned files never need an
-  entry. A patch in a `reservedRanges` band is exempt: its allowlist entry's
-  `files` already governs it. Globs are anchored engine-relative paths: `*`
-  stays within a segment, `**` spans segments, so `*.toml` matches only a
-  top-level file and `**/*.toml` matches one anywhere.
-- An object entry with `addOnly: true` puts matching files in
-  registration-only mode (`add-only`): the patch may only add lines, every
-  non-blank added line must contain the marker (the entry's `marker`, else
-  `addOnlyMarker`, matched case-insensitively), and deleting the file or
-  changing it as binary is refused. When several entries match a file, any
-  add-only one makes it add-only.
-- An add-only entry's `retiredPaths` lists paths whose registrations a
-  patch may remove, for a reviewed retirement. A removed line that contains
-  one of them (a plain substring, such as `fxa/fxa-logo.svg`) is not counted
-  as a removal; any other removal still fails `add-only`. `retiredPaths` on
-  an entry without `addOnly` is refused.
-- `scopeRules` limits a class of patch to the files its globs name
-  (`scope`). A rule selects patches by `category`, `filenamePattern` (a
-  regular expression over the patch filename), or both. The example keeps a
-  `-tests` patch to test directories and test manifests.
-- `verifyDocumentPaths: true` requires each reserved allowlist entry's `adr`
-  and `documentation` path to exist under the project root
-  (`reserved-document-missing`).
+`root` and `metadataRoot` are canonical relative directories, neither inside the other, and outside `engine`, `.git`, `.fireforge`, `node_modules`, `patches`, `secrets`, `components` and `configs`.
 
-## `test`
+## `firefox`
 
-`test.canaryPath` and `test.canaryTimeoutSeconds` supply the defaults for
-`fireforge test --canary`.
+The pin: which Firefox release the project builds on.
 
-`test.reapOrphans` is `"report"` (default) or `"reap"`: what the preflight
-census does with a harness helper that survived an earlier run in this
-objdir. `"reap"` terminates it and stamps `orphans-reaped=<n>` on the verdict
-line; `--reap-orphans` does the same for one invocation. The objdir anchor
-rule is the same under both. See [`testing.md`](testing.md).
+| Key                               | Type                                                                 | Default  | Meaning                                                                                                                       |
+| --------------------------------- | -------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `firefox.version`                 | string                                                               | required | Firefox release, such as `140.9.0esr` or `147.0b1`                                                                            |
+| `firefox.product`                 | `firefox` \| `firefox-esr` \| `firefox-beta` \| `firefox-devedition` | required | Product the version belongs to; an `esr` version pairs with `firefox-esr`, a beta with `firefox-beta` or `firefox-devedition` |
+| `firefox.sha256`                  | string                                                               |          | Pinned SHA-256 of the source archive; wins over the `SHA256SUMS` Mozilla publishes                                            |
+| `firefox.allowUnverifiedDownload` | boolean                                                              | `false`  | Accept a download whose published digest cannot be fetched, trusting TLS alone; ignored with `sha256`                         |
+| `firefox.candidate`               | string                                                               |          | Release-candidate build directory, such as `build2`, for pre-release verification                                             |
 
-`test.mochitestPorts` is `"fixed"` (default) or `"auto"`. `"auto"` lets a
-browser run proceed while the mochitest server or Marionette port is held by
-something that is not this checkout's own, relying on the engine
-harness's own busy-port fallback, so sibling checkouts can run browser suites
-at once. `--auto-ports` does the same for one invocation. See
-[`testing.md`](testing.md#shared-browsers-ports-and-host-state).
+Change the pin with `fireforge rebase --to <version>`, which also moves the project's changes.
 
-`test.lockMode` is `"exclusive"` (default) or `"shared"`. `"shared"` lets a
-build-less run that applies no negative control and uses auto ports hold the
-engine-session lock shared, so peers' build-less runs on the same objdir
-overlap while builds, re-exports and every other writer still hold it alone.
-`--shared-lock` does the same for one invocation. See
-[`testing.md`](testing.md#concurrency).
+## `build`
 
-`test.furnaceApply` is `"all"` (default), `"reached"` or `"none"`: which
-components a `test --build` deploys before building. `--furnace-apply` does
-the same for one invocation. See
-[`testing.md`](testing.md#furnace-components-in-a-pre-test-build).
+| Key                              | Type        | Default  | Meaning                                                                     |
+| -------------------------------- | ----------- | -------- | --------------------------------------------------------------------------- |
+| `build.jobs`                     | integer ≥ 1 | mach's   | Parallel jobs for `mach build`; `build -j` overrides it                     |
+| `build.release.overlay`          | path        | required | Captured mozconfig fragment appended last for a release build               |
+| `build.release.secrets.variable` | string      | required | Environment variable the release build receives the secrets directory in    |
+| `build.release.secrets.files`    | array       | required | File names that must be in that directory; a release missing one is refused |
+| `build.release.outputs`          | array       |          | Paths in the release object directory to collect, such as `dist/*.dmg`      |
 
-## `history`
-
-`history.path` is where FireForge appends its patch history log, relative to
-the project root (default `.fireforge/history.jsonl`). The log records
-structural patch operations (staged dependencies, splits, renames, export
-orders, re-exports that change a patch's file list) as one JSON object per
-line. FireForge never reads it back; it is an audit trail only. Each record
-carries `invocationId` (shared by every record one command writes), `pid`,
-`ppid`, and `sessionId` when the environment sets `FIREFORGE_SESSION_ID`, so
-a session sharing the checkout can select its own lines.
-
-If a log exists at `patches/.fireforge-history.jsonl`, inside the tracked
-queue, the next append moves it to `history.path`; when both files exist, its
-records are appended to the `history.path` file rather than either being
-overwritten. Setting `history.path` to `patches/.fireforge-history.jsonl`
-keeps the log at that location.
+`fireforge package --release` builds with `build.release` in an object directory of its own, emptied first, and leaves the development build alone. The secrets directory is set per host as `releaseSecrets` in `~/.fireforge/host.json`; the release build gets it in the environment variable `secrets.variable` names, and a release whose secrets are declared is refused while that directory is unset or lacks one of `secrets.files`.
 
 ## `buildAudit`
 
-The post-build packaging audit is warn-only. Most of what it would otherwise
-report as "missing packaged artifact" is classified away from the structure
-of the tree itself: an unselected `--with-branding` tree read from the
-generated `engine/mozconfig`, a directory reached only through a
-platform-gated `DIRS +=` in an ancestor `moz.build`, a Storybook
-`*.stories.mjs`. One case cannot be derived from the tree: a source that is
-deliberately never packaged, such as a type-only mirror whose header says it
-is never loaded. Declare those:
+After a build, FireForge warns about front-end files that changed since the previous build and that nothing packages: such a file builds without complaint and is simply absent from the browser.
+
+| Key                              | Type   | Default  | Meaning                                                    |
+| -------------------------------- | ------ | -------- | ---------------------------------------------------------- |
+| `buildAudit.unpackaged[].path`   | path   | required | Engine-relative path, exact or with `*` inside one segment |
+| `buildAudit.unpackaged[].reason` | string | required | Why the file is never packaged                             |
+
+## `test`
+
+| Key                           | Type              | Default | Meaning                                                                                                                      |
+| ----------------------------- | ----------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `test.mochitestPorts`         | `fixed` \| `auto` | `fixed` | `auto` lets a run proceed while another workspace holds the Marionette port or, where the harness can move, a server port    |
+| `test.harnessFailurePatterns` | array             |         | Regular expressions of output lines meaning the browser failed before any test ran; such a run reads `crash`, not `no-tests` |
+
+## `patchLint`
+
+The quality rules over owned changes ([quality.md](quality.md)).
+
+| Key                                    | Type                          | Default   | Meaning                                                                                    |
+| -------------------------------------- | ----------------------------- | --------- | ------------------------------------------------------------------------------------------ |
+| `patchLint.rules`                      | map of rule ID to severity    |           | `off`, `notice`, `warning` or `error` per rule, replacing its default                      |
+| `patchLint.waivers`                    | array                         |           | Waivers per group of owned changes, beside those a patch manifest carries                  |
+| `patchLint.waivers[].group`            | string                        | required  | The group: a patch or component name such as `ui-sidebar`, or the full group ID            |
+| `patchLint.waivers[].rule`             | rule ID                       | required  | The rule waived                                                                            |
+| `patchLint.waivers[].max`              | integer ≥ 0                   |           | Largest measurement still waived; without it the rule is waived at any size                |
+| `patchLint.waivers[].reason`           | string                        | required  | Why the waiver exists                                                                      |
+| `patchLint.waivers[].share`            | `product` \| `test`           |           | Share of the group a `large-patch-lines` ceiling bounds; needs `max`                       |
+| `patchLint.checkJs`                    | boolean                       | `false`   | Type-check created modules (`checkjs-type-error`)                                          |
+| `patchLint.checkJsStrict`              | boolean                       | `false`   | Run checkJs with `strict` and `noImplicitAny`; needs `checkJs`                             |
+| `patchLint.checkJsCompilerOptions`     | object                        |           | Overrides after the strict preset; needs `checkJsStrict` (see below)                       |
+| `patchLint.checkJsExtraShim`           | path                          |           | `.d.ts` added to the Firefox globals shim for checkJs                                      |
+| `patchLint.checkJsTestFiles`           | boolean                       | `false`   | Also check created test scripts, each as its own program; needs `checkJs`                  |
+| `patchLint.checkJsTestShim`            | path                          |           | `.d.ts` of typed harness declarations; needs `checkJsTestFiles`                            |
+| `patchLint.litTypes`                   | boolean                       | `false`   | Type Lit in the checkJs shim with closed member lists; needs `checkJs`                     |
+| `patchLint.undefinedIdentifiers`       | `off` \| `warning` \| `error` | `warning` | How checkJs reports undefined identifiers                                                  |
+| `patchLint.rawColorAllowlist`          | array                         |           | Paths (exact or basename) exempt from `raw-color-value`                                    |
+| `patchLint.fileSizeThresholds`         | object                        |           | `file-too-large` bands per file class (`general`, `test`), merged over the defaults        |
+| `patchLint.fileSizeMetric`             | `raw` \| `code`               | `raw`     | What `file-too-large` counts: every line, or lines carrying code                           |
+| `patchLint.patchSizeThresholds`        | object                        |           | Size bands per tier (`general`, `test`, `branding`), each with `lines` and `files`         |
+| `patchLint.patchSizeMetric`            | `diff` \| `addedCode`         | `diff`    | What `large-patch-lines` counts: every diff line, or added lines carrying code             |
+| `patchLint.patchSizeRegistrationFiles` | array                         |           | Globs of registration files neither patch-size rule counts                                 |
+| `patchLint.tokenScales`                | array                         |           | CSS property families whose values in created stylesheets must be scale tokens (see below) |
+
+**Size bands.** Each band object takes `notice`, `warning` and `error` (integers ≥ 1); what you leave out keeps the default, and the result must stay ordered `notice ≤ warning ≤ error`. The defaults are in [quality.md](quality.md#rules).
 
 ```json
 {
-  "buildAudit": {
-    "unpackaged": [
-      {
-        "path": "browser/base/content/hominis-tile-host-types.js",
-        "reason": "Type-only mirror of the tile host, never loaded, and no jar.mn entry by design."
-      }
-    ]
+  "patchLint": {
+    "fileSizeThresholds": { "general": { "warning": 800, "error": 1000 } },
+    "patchSizeThresholds": {
+      "general": { "lines": { "warning": 2000 }, "files": { "warning": 8 } }
+    }
   }
 }
 ```
 
-- `path` is engine-relative. A `*` may glob within one path segment. `**` is
-  refused, because a subtree carve-out is how a reviewed exception quietly
-  becomes a blanket one.
-- `reason` is required and must be non-empty. This is the one audit class
-  FireForge cannot verify against the tree, so the declaration is the
-  evidence. By the time someone reads it, an unexplained carve-out is
-  indistinguishable from a mistake.
-- Admitted paths are listed in the audit output, never silenced. The notice
-  reads `admitted as unpackaged by buildAudit.unpackaged "<path>"` followed
-  by the declared reason.
-- A declared path that does resolve to a packaged artifact is reported as a
-  stale carve-out rather than suppressed, because the declaration asserts a
-  fact about the tree that is no longer true.
-- A declaration matching nothing that changed in a given run says nothing.
-  Unlike `--expect-unmanaged`, whose unmet entries are reported because it is
-  a per-invocation flag list, this is a standing list checked only against
-  the files that happened to change, so "not met" is the normal case.
+**`checkJsCompilerOptions`** takes the booleans `strictNullChecks`, `strictFunctionTypes`, `strictBindCallApply`, `noImplicitThis`, `useUnknownInCatchVariables`, `strictPropertyInitialization`, `noUnusedLocals`, `noUnusedParameters`, and `paths`, a module-resolution mapping with engine-relative targets (each pattern may hold one `*`).
 
-The `Packaged:` summary line names each non-zero skip class with its count,
-so a run that dismissed four unselected-branding files reads differently from
-one that dismissed four unregistered sources.
+**`tokenScales[]`** entries:
+
+| Key             | Type                      | Meaning                                                                          |
+| --------------- | ------------------------- | -------------------------------------------------------------------------------- |
+| `properties`    | array, required           | CSS properties governed: exact names or `*`-suffixed prefixes such as `padding*` |
+| `prefix`        | string or array, required | Custom-property prefix of the scale tokens, such as `--mybrowser-space-`         |
+| `allowLiterals` | array                     | Literal values accepted without a token; `*` is a wildcard                       |
+| `allow`         | array                     | Further custom properties accepted: exact names or `*`-suffixed prefixes         |
+| `allowInCalc`   | array                     | Literal values accepted only inside `calc()`, `min()`, `max()` or `clamp()`      |
+| `offsetCap`     | number ≥ 0                | Largest total px a declaration may subtract from scale tokens in a math function |
+| `exclude`       | array                     | Engine-relative globs of files the scale skips                                   |
+| `minFiles`      | integer ≥ 1               | Fewest created stylesheets that must declare a governed property                 |
+| `allowValues`   | array                     | Reviewed declarations accepted as written: `{ "property", "value", "reason" }`   |
+
+## `patchPolicy`
+
+Which upstream files owned changes may touch, and how the patch queue is ordered ([quality.md](quality.md#policy), [patch-workflow.md](patch-workflow.md#queue-operations-patch)).
+
+| Key                                                    | Type              | Default  | Meaning                                                                                                                                        |
+| ------------------------------------------------------ | ----------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `patchPolicy.ranges`                                   | array             | required | Order bands owned by categories: `{ "from", "to", "category" }`, inclusive, not overlapping                                                    |
+| `patchPolicy.reservedRanges`                           | array             |          | Order bands for listed exceptional patches: `{ "from", "to", "allowed" }`                                                                      |
+| `patchPolicy.reservedRanges[].allowed[].filename`      | string            | required | Group ID of the exception: the patch file name allowed in the range, or in source mode the component                                           |
+| `patchPolicy.reservedRanges[].allowed[].files`         | array             |          | Exact upstream files the exception may change outside the allowlist; any when absent                                                           |
+| `patchPolicy.reservedRanges[].allowed[].adr`           | path              |          | Decision record documenting the exception                                                                                                      |
+| `patchPolicy.reservedRanges[].allowed[].documentation` | path              |          | Documentation of the exception                                                                                                                 |
+| `patchPolicy.filenamePattern`                          | string            |          | Regular expression with named captures `order`, `category` and `slug` every patch file name must match                                         |
+| `patchPolicy.requireDescription`                       | boolean           | `false`  | An empty patch description is a violation                                                                                                      |
+| `patchPolicy.allowGaps`                                | boolean           | `true`   | Allow unoccupied orders within a category range                                                                                                |
+| `patchPolicy.mutationMode`                             | `error` \| `warn` | `error`  | How queue operations treat a policy problem they would add: `error` refuses it; `warn` reports it and lowers the policy lint rules to warnings |
+| `patchPolicy.upstreamAllowlist`                        | array             |          | Globs, or entries `{ "path", "addOnly", "marker", "retiredPaths" }`, naming the upstream files owned changes may modify                        |
+| `patchPolicy.addOnlyMarker`                            | string            |          | Marker for `addOnly` entries that set none                                                                                                     |
+| `patchPolicy.scopeRules`                               | array             |          | `{ "group", "files" }`: groups whose ID matches the `group` regular expression touch only files matching `files`                               |
+| `patchPolicy.verifyDocumentPaths`                      | boolean           | `false`  | Require the `adr` and `documentation` paths of reserved exceptions to exist                                                                    |
+
+## `typecheck`
+
+| Key                              | Type                          | Default   | Meaning                                                                                                     |
+| -------------------------------- | ----------------------------- | --------- | ----------------------------------------------------------------------------------------------------------- |
+| `typecheck.projects`             | array                         | required  | `jsconfig.json` or `tsconfig.json` files checked whole; a path under `engine/` names the workspace's engine |
+| `typecheck.extraShim`            | path                          |           | `.d.ts` added to the Firefox globals shim of every project                                                  |
+| `typecheck.projectOverrides`     | map                           |           | Per project (keyed as in `projects`): another `.d.ts` instead of `extraShim`, or `null` for none            |
+| `typecheck.undefinedIdentifiers` | `off` \| `warning` \| `error` | `warning` | How undefined identifiers are reported                                                                      |
+| `typecheck.litTypes`             | boolean                       | `false`   | Type Lit in the shim with closed member lists                                                               |
 
 ## `check`
 
-`fireforge check` is the composed static gate. It runs six built-in steps,
-`status`, `verify`, `lint`, `typecheck`, `furnace-validate` and
-`token-coverage`, and then the project's own commands. Every field of the
-`check` block is optional:
+The composed static check ([quality.md](quality.md#check)).
+
+| Key                          | Type             | Default  | Meaning                                                                               |
+| ---------------------------- | ---------------- | -------- | ------------------------------------------------------------------------------------- |
+| `check.skip`                 | array            |          | Built-in steps this project never runs                                                |
+| `check.status.failOn`        | array            | all      | Status codes that fail the status step                                                |
+| `check.status.allow`         | array            |          | Status codes the status step accepts                                                  |
+| `check.maxWarnings.lint`     | integer ≥ 0      |          | Warnings the lint step tolerates                                                      |
+| `check.maxWarnings.furnace`  | integer ≥ 0      |          | Warnings the furnace-validate step tolerates                                          |
+| `check.extraSteps[].name`    | string           | required | Step name: lowercase letters, digits and dashes, not a built-in step's name           |
+| `check.extraSteps[].command` | array            | required | Argument vector run from the project root; the step passes on exit 0                  |
+| `check.extraSteps[].timeout` | integer ≥ 1      | `600`    | Seconds before the step is killed and fails                                           |
+| `check.extraSteps[].engine`  | boolean          | `false`  | The step reads the engine: it runs holding the workspace, with `FIREFORGE_ENGINE` set |
+| `check.extraSteps[].after`   | array            |          | Steps that must finish first, whatever their outcome                                  |
+| `check.minTokenCoverage`     | integer 0 to 100 |          | Percentage below which the token-coverage step fails                                  |
+| `check.failOnSkipped`        | boolean          | `false`  | Fail when a built-in step is skipped for having nothing to run                        |
+| `check.lintReport`           | path             |          | File the lint step writes its JSON report to (`FIREFORGE_CHECK_LINT_REPORT`)          |
+
+## `gate`
+
+What `fireforge gate` runs besides `check`. [gate.md](gate.md) explains each entry with an example.
+
+| Key                             | Type                                      | Default  | Meaning                                                                                                                   |
+| ------------------------------- | ----------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `gate.build`                    | `ui` \| `full`                            | `ui`     | The build the gate runs; a workspace that needs a full build gets one either way                                          |
+| `gate.documents`                | array                                     |          | Globs of paths that change nothing the gate tests; a pattern without a slash matches a file name at any depth             |
+| `gate.lanes[].id`               | string                                    | required | Lane ID: lowercase letters, digits, `.`, `_`, `-`                                                                         |
+| `gate.lanes[].files`            | array                                     | required | Engine-relative globs or literal paths of the tests                                                                       |
+| `gate.lanes[].exclude`          | array                                     |          | Tests left out of `files`                                                                                                 |
+| `gate.lanes[].dispatch`         | `shards` \| `one-browser` \| `standalone` | `shards` | A browser per file, one browser for all, or a restart between files                                                       |
+| `gate.lanes[].headed`           | boolean                                   | `false`  | Runs with a visible window, holding the display                                                                           |
+| `gate.lanes[].env`              | map                                       |          | Harness environment; a value starting `{artifacts}` names a path in the lane's output directory                           |
+| `gate.lanes[].uploadDir`        | boolean                                   | `false`  | Gives the harness a `MOZ_UPLOAD_DIR` in the lane's output directory                                                       |
+| `gate.lanes[].machArgs`         | array                                     |          | `--setpref=<name>=<value>` arguments whose value names no path                                                            |
+| `gate.lanes[].validate.command` | array                                     | required | Argument vector run after a clean harness exit: `node <script>` or a committed script; `{artifacts}` expands              |
+| `gate.stress[]`                 | lane keys, plus `repeat`                  |          | A lane run `repeat` (integer ≥ 1, required) times; every repetition must pass                                             |
+| `gate.controls[].id`            | string                                    | required | Control ID                                                                                                                |
+| `gate.controls[].diff`          | path                                      | required | Committed diff holding the mutation                                                                                       |
+| `gate.controls[].test`          | engine path                               | required | Test that must catch it                                                                                                   |
+| `gate.controls[].assertions`    | array                                     | required | Labels of the reds it must produce, every one and no other                                                                |
+| `gate.runs[].id`                | string                                    | required | Run ID                                                                                                                    |
+| `gate.runs[].smokeExit`         | integer ≥ 1                               | required | Seconds the console is watched before the browser is ended                                                                |
+| `gate.runs[].headless`          | boolean                                   | `false`  | Starts without a window                                                                                                   |
+| `gate.runs[].args`              | array                                     |          | Arguments for the browser                                                                                                 |
+| `gate.runs[].consoleAllowFile`  | path                                      |          | Committed file of console line patterns the smoke start accepts                                                           |
+| `gate.runs[].validate.command`  | array                                     | required | As on a lane                                                                                                              |
+| `gate.acceptance[].id`          | string                                    | required | Acceptance ID                                                                                                             |
+| `gate.acceptance[].reason`      | string                                    | required | What the person decides                                                                                                   |
+| `gate.acceptance[].evidence`    | array                                     |          | `lane:<id>`, `stress:<id>`, `control:<id>` or `run:<id>` entries whose outputs the person looks at; each must be declared |
+
+IDs are unique within each list.
+
+## `exportQueue`
+
+How a source-mode `export` groups created files into patches ([source-workflow.md](source-workflow.md#writing-a-patch-queue-export)).
+
+| Key                          | Type        | Default   | Meaning                                                                |
+| ---------------------------- | ----------- | --------- | ---------------------------------------------------------------------- |
+| `exportQueue.groups[].name`  | string      | required  | The group's ID and patch name: lowercase words joined by hyphens       |
+| `exportQueue.groups[].paths` | array       | required  | Engine-relative globs; a created file joins the first group it matches |
+| `exportQueue.groups[].tier`  | `branding`  |           | Size tier written into the generated queue for the group's patch       |
+| `exportQueue.componentTiers` | map         |           | Size tier (`branding`) per component of upstream changes               |
+| `exportQueue.maxGroupBytes`  | integer ≥ 1 | `1048576` | Byte budget of a directory group for created files no group matches    |
+
+## `wire`
+
+| Key                 | Type        | Default                              | Meaning                                                              |
+| ------------------- | ----------- | ------------------------------------ | -------------------------------------------------------------------- |
+| `wire.subscriptDir` | engine path | `browser/base/content`               | Directory of wired chrome subscripts                                 |
+| `wire.domTarget`    | engine path | `browser/base/content/browser.xhtml` | Top-level chrome document that wired DOM fragments are included into |
+
+## `externalToolchains`
+
+Tools the project needs beyond what Firefox's own build needs, in named groups. `fireforge doctor` looks for each tool and reports one row per tool, naming the toolchain and the tool.
+
+| Key                                     | Type    | Default  | Meaning                                                                               |
+| --------------------------------------- | ------- | -------- | ------------------------------------------------------------------------------------- |
+| `externalToolchains[].name`             | string  | required | Toolchain name, such as `seasonal-branding`                                           |
+| `externalToolchains[].tools`            | array   | required | The tools it needs, at least one                                                      |
+| `externalToolchains[].tools[].name`     | string  | required | Tool name, and what is looked up when no `path` is set                                |
+| `externalToolchains[].tools[].path`     | string  |          | Executable path, absolute or project-relative; the tool is found when the path exists |
+| `externalToolchains[].tools[].xcrun`    | boolean |          | Find the tool with `xcrun -find <name>` instead of on `PATH`                          |
+| `externalToolchains[].tools[].required` | boolean | `true`   | A missing tool fails `doctor`; with `false` it is a warning                           |
+
+A tool is looked for in one place: at `path` when set, else through `xcrun` when `xcrun` is true, else on `PATH`.
 
 ```json
 {
-  "check": {
-    "skip": ["token-coverage"],
-    "status": {
-      "failOn": ["unmanaged", "patch-owned-drift", "conflict", "ownership-conflict"],
-      "allow": ["patch-backed", "branding", "furnace", "binary-unsupported"],
-      "failOnUnknown": true
-    },
-    "maxWarnings": { "lint": 0, "furnace": 0 },
-    "extraSteps": [
-      { "name": "policy-audit", "command": "npm run audit:policy", "timeout": 600 },
-      { "name": "invariants", "command": "node check-invariants.mjs", "cwd": "tools" }
-    ]
-  }
+  "externalToolchains": [
+    {
+      "name": "seasonal-branding",
+      "tools": [
+        { "name": "actool", "xcrun": true },
+        { "name": "pngquant", "required": false }
+      ]
+    }
+  ]
 }
 ```
 
-- `skip` lists the built-in steps this project never runs. `typecheck` is
-  also skipped when there is no `typecheck` block, and `furnace-validate`
-  when there is no `furnace.json`.
-- `status` is the status step's `--check` policy: `--fail-on`, `--allow` and
-  `--fail-on-unknown` (see [`patch-workflow.md`](patch-workflow.md#ci-enforcement)).
-  An invalid policy is refused as a config error before any step runs.
-- `maxWarnings` passes `--max-warnings` to `lint --per-patch` and
-  `furnace validate`.
-- `extraSteps[]` adds project commands. `name` is lowercase letters, digits
-  and dashes and must not repeat a built-in name. `command` runs with
-  `/bin/sh -c` (`cmd.exe /c` on Windows) from the project root, or from the
-  project-relative `cwd`. `timeout` is in seconds: past it the step's whole
-  process tree is killed and the step fails. A step passes when it exits 0.
-  `after` lists steps, built-in or extra, that must finish before it starts
-  (whatever their outcome); a name that is not a step, or an ordering cycle,
-  is refused.
-- `timeout` bounds every built-in step, in seconds, and `timeouts` sets it
-  per step (`{ "typecheck": 600 }`). A step past its budget is killed and
-  fails. Unset, built-in steps are unbounded.
-- `failOnSkipped: true` fails the check (`reason=skipped-steps`) when a
-  built-in step is skipped because the project has nothing for it to run
-  (no `typecheck` block, no `furnace.json`). A step named in `skip` is a
-  decision and never fails it.
-- `lintReport` is a project-relative path the lint step writes its
-  `lint --per-patch --report` JSON to. Every extra step receives the
-  absolute path as `FIREFORGE_CHECK_LINT_REPORT`, so an audit that runs
-  `after: ["lint"]` can read the run's lint report instead of linting the
-  queue a second time.
+## `furnace.json`
 
-The verdict line names the skipped steps with an additive
-`skipped-steps=<a,b>` key beside `skipped=<n>`.
+The component configuration ([furnace.md](furnace.md)). It is created with `version` and `componentPrefix` the first time a Furnace command writes it; edits rewrite only the changed values.
 
-The step table gives each step's time and, in its `LOAD` column, the host's
-1-minute load average when the step started and when it ended
-(`12.3→18.0`), so a step that timed out on a loaded host reads as such.
-Windows has no load average, so the column shows `-` there.
+| Key                    | Type          | Default                                         | Meaning                                                                                                         |
+| ---------------------- | ------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `version`              | `1`           | `1`                                             | Format version                                                                                                  |
+| `componentPrefix`      | string        | required                                        | Prefix every custom component name starts with (`moz-` when Furnace creates the file)                           |
+| `stock`                | array         | `[]`                                            | Stock components the project composes                                                                           |
+| `overrides`            | map           | `{}`                                            | Overrides of stock components, by tag (see below)                                                               |
+| `custom`               | map           | `{}`                                            | Custom components, by tag (see below)                                                                           |
+| `ftlBasePath`          | path          | `toolkit/locales/en-US/toolkit/global`          | Engine directory localized components deploy their `.ftl` into                                                  |
+| `typecheckJsconfig`    | path or array |                                                 | `jsconfig.json` files whose chrome-module `paths` Furnace maintains                                             |
+| `typecheckTagMap`      | path          |                                                 | `.d.ts` file Furnace writes with the `HTMLElementTagNameMap` entries                                            |
+| `validationExceptions` | array         |                                                 | Reviewed validation warnings: `{ "component", "check", "reason", "tag"?, "file"? }` (a tag or a file, not both) |
+| `minComponents`        | integer ≥ 1   |                                                 | Fewest components a full validation judges                                                                      |
+| `optInChecks`          | array         |                                                 | Checks that run only when listed: `icon-button-label`                                                           |
+| `tokenFile`            | path          | `browser/themes/shared/<binaryName>-tokens.css` | Engine path of the design-token file                                                                            |
+| `tokenPrefix`          | string        | `--<binaryName>-`                               | Custom-property prefix of the project tokens                                                                    |
+| `tokenAllowlist`       | array         |                                                 | Custom properties from elsewhere that stylesheets may reference                                                 |
+| `platformPrefixes`     | array         | `["--moz-"]`                                    | Prefixes of platform-owned custom properties                                                                    |
+| `runtimeVariables`     | array         |                                                 | Runtime state channels set from script, accepted as references                                                  |
+| `tokenHostDocuments`   | array         |                                                 | Documents that load the token file                                                                              |
+| `tokenSiblingSheets`   | map           |                                                 | Sheet glob to the sheets that load beside it                                                                    |
 
-## Design tokens
+A `custom.<tag>` entry:
 
-Tokens are managed with `fireforge token add`. `fireforge token list` and
-`fireforge token show` report what is already there.
+| Key               | Type                   | Meaning                                                                                  |
+| ----------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
+| `description`     | string, required       | What the component is                                                                    |
+| `targetPath`      | path, required         | Engine directory the component deploys into                                              |
+| `register`        | boolean, required      | List the element in `customElements.js`                                                  |
+| `localized`       | boolean, required      | The component uses Fluent strings                                                        |
+| `kind`            | `element` \| `library` | `library`: base classes and helpers with no element of its own (needs `register: false`) |
+| `composes`        | array                  | Components it renders in its template; known names, without cycles                       |
+| `keyboardCovered` | boolean                | Keyboard activation comes from a wrapped native element                                  |
+| `sharedFtl`       | string                 | An existing feature Fluent file the component shares; needs `localized`                  |
 
-- `--create-category` declares a new category banner and inserts the token in
-  one step. It cannot be combined with `--variant`: author the category with
-  the base token first, then add each variant.
-- `--category` is required for a base declaration and optional under
-  `--variant`, where the declaration is routed into a `:root<selector>` block
-  and never into a category section. It is still validated when supplied.
-- `--variant` takes the same selector grammar the block matcher understands:
-  one attribute fragment (`[data-private]`, `[data-skin=precision]`), a run
-  of them (`[data-skin=precision][data-theme=dark]`), and an optional
-  pseudo-class tail (`[data-skin=precision]:not([data-private])`). Names and
-  values must be identifier-safe, and `=value` is normalized to `="value"`. A
-  variant naming a qualifier matches only a block carrying that qualifier.
-  One without a qualifier still matches a qualified block, and the write says
-  so.
-- `--mode override` mirrors into both `:root[data-theme="dark"]` and
-  `:root[data-theme="light"]`. A qualified block such as
-  `:root[data-theme="light"]:not([data-private])` is matched and written
-  through, with a warning naming the selector. The qualifier carries meaning,
-  but silently skipping half the mirror is the worse failure.
-- A token already present in the target block is reported with its location
-  (`already exists in :root[…] (line N), unchanged`) rather than as a bare
-  no-op.
+An `overrides.<tag>` entry:
 
-### Reading the token file
+| Key           | Type                 | Meaning                                       |
+| ------------- | -------------------- | --------------------------------------------- |
+| `type`        | `css-only` \| `full` | `css-only` deploys only stylesheets           |
+| `description` | string               | Why it is overridden                          |
+| `basePath`    | path                 | Engine directory the stock component lives in |
+| `baseVersion` | string               | Firefox version the override was taken from   |
+| `baseCommit`  | string               | Commit it was taken from                      |
 
-`token add --category` refuses a category that the tokens CSS does not
-declare, so `token list` exists to name the categories without you
-hand-parsing a `= Category =` banner out of the file.
+A name may appear once across `stock`, `overrides` and `custom`.
 
-- `fireforge token list [--category <name>] [--json]` reports each category
-  banner with the tokens declared under it, in file order. Declarations above
-  the first banner are reported under `(no category)` rather than dropped,
-  and a banner with no tokens is still listed, since `token add` accepts it.
-  An unknown `--category` is refused by naming the ones that exist, because a
-  filter that printed nothing would read as "this category is empty".
-- `fireforge token show <token-name> [--json]` reports the owning category
-  and the value the token takes in every block that declares it: the base
-  `:root`, the dark `@media` mirror, and each `:root[variant]`, with the line
-  of each. The leading `--` is optional, and if you include it, pass the `--`
-  separator first (`fireforge token show -- --my-token`).
+## Host configuration
 
-Only the base `:root` block owns a token, so `token list` reports it once.
-The dark and variant blocks mirror it and appear in `token show`.
+`~/.fireforge/host.json` (under `$FIREFORGE_HOME` when set) configures the host, not a project ([workspaces.md](workspaces.md#host-locks)):
 
-### Checking the token file
-
-`fireforge token lint [--json]` exits non-zero on either of two findings:
-
-- `token-lockstep`: a themed override block (the dark `@media` mirror, a
-  `:root[variant]` block) declares a token with the project's token prefix
-  that the base `:root` does not declare. Every other theme would resolve
-  it to nothing. Overrides of non-prefixed properties (a `--moz-*` platform
-  variable) are left alone.
-- `token-undeclared`: a `var(--<prefix>…)` in the tokens CSS, or in any CSS
-  file a patch in the queue touches, names a token no block of the tokens
-  CSS declares. A property declared in the same file, and the `furnace.json`
-  `tokenAllowlist` and `runtimeVariables` names, are exempt. A
-  reference with a fallback (`var(--x, 0)`) is optional and not reported,
-  and a token a sibling sheet declares counts as declared. Sheets are
-  siblings when one queue document links both (`<link rel="stylesheet">`,
-  `<html:link>` or `<?xml-stylesheet?>`, in markup or a Lit template; a
-  `chrome://` URL resolves through the queue's jar.mn lines, a relative
-  one beside the document), when one `@import`s the other, or when
-  `furnace.json` `tokenSiblingSheets` pairs them:
-  `{ "browser/themes/**/panel*.css": ["browser/base/content/host.css"] }`
-  (a partner is a path or a glob over the queue's sheets).
-
-The prefix is `furnace.json` `tokenPrefix`, else `--<binaryName>-`.
-
-## Smoke runs
-
-For unattended smoke checks, `fireforge run --smoke-exit <s> --headless`
-launches the browser headless. A headed smoke window on a shared desktop
-absorbs live input, which contaminates the console capture, so headed
-non-CI launches print a warning saying so. Exit codes 12 and 13 separate a
-console regression from a launch failure. See
-[`exit-codes.md`](exit-codes.md).
-
-A smoke run starts on a fresh temporary profile by default.
-The step exists to prove what the build does on a clean start. The
-developer's `obj-*/tmp/profile-default` carries whatever the last session
-left (a pre-reset database, a restored hand-made applet), and those reds
-say nothing about the tree. FireForge creates the directory under the OS
-temp dir, seeds the two prefs `mach run` writes into profiles it makes
-itself (`browser.shell.checkDefaultBrowser` and
-`browser.aboutConfig.showWarning`), and passes it to Firefox as
-`-profile`. The directory is removed when the run ends. That includes a
-failed run and a SIGINT/SIGTERM, which the signal handler removes after
-the browser tree has shut down. A FireForge that was SIGKILLed cannot clean
-up after itself, so the next `run` removes any temporary profile whose
-owning process is gone.
-
-- `--profile <path>` launches with a named profile directory and leaves it
-  in place. Under `--smoke-exit` it replaces the fresh default. Firefox also
-  gets `-purgecaches`, which discards the profile's startup
-  cache of compiled chrome scripts. That cache is keyed on the build id, and
-  a `build --ui` does not change it, so without the purge a kept profile runs
-  the chrome scripts an earlier build cached. `--no-purge-caches` keeps the
-  cache. mach's `profile-default` has its `startupCache/` removed before
-  every run and after every `build --ui`, and a temporary profile starts
-  without one.
-- `--temp-profile` gives a plain `run` the same fresh, removed-afterwards
-  profile.
-- Arguments after `--` go to the browser, after the profile ones. A headed
-  session on a kept profile that a chrome-context Marionette client drives
-  is `fireforge run --profile <dir> -- -marionette -remote-allow-system-access`,
-  with `marionette.port` set in the profile's `user.js` so peers' harnesses
-  keep 2828. The objdir app launched directly gets neither `-purgecaches`
-  nor the startup-cache cleanup, so it can serve a widget script an earlier
-  launch cached.
-
-After a build, mach leaves a `.purgecaches` file in the app directory
-(`dist/bin/browser`, and `Contents/Resources/browser` in the macOS bundle).
-The next launch of the objdir app purges the startup cache of whichever
-profile it starts on and deletes the file. Only that first launch purges: a
-test harness or a direct launch can consume it, and every reused profile
-started after it keeps its cache. `fireforge build --ui` says so in one
-line at the end, since a UI build keeps the build id that cache is keyed
-on. Start other reused profiles with `-purgecaches`.
-
-A smoke run whose browser exits with a clean status before the window
-elapses, without printing any console output, fails with exit 13.
-Lines from mach's own log (the timestamped command echo) do not
-count as output. A launch that exits silently never reached a window: a
-stale `.parentlock`, or a profile whose run of SIGTERM-ended smoke runs
-counts as a startup-crash streak (`toolkit.startup.recent_crashes`).
-
-A plain `run` without either flag keeps mach's `profile-default`. `mach run`'s
-desktop parser has no `--profile` option (its `--profile/-P` belongs to the
-Android parser), so the profile is always passed as a program parameter.
-With an explicit profile, mach neither writes its `runprefs` from
-`~/.mozbuild/machrc` nor accepts `--setpref`.
-
-The allowlist (`--console-allow-file`) is count-blind by default: a line that
-matches an entry never counts, however often it fires. A `# max-hits: N`
-comment directly above an entry (other comments may sit between) caps how
-many lines that entry may match in one run. The attribution block prints
-capped entries as `hits×/N`, and an entry that fires past its ceiling is
-reported and fails the run with exit 12, the same as an unallowed error. A
-directive with no entry after it is refused rather than silently ignored.
-
-## Lock waits
-
-Every FireForge command that mutates the engine takes the engine-session
-lock, and some take a second subsystem lock as well. Contention fails fast
-after about a second by default.
-
-`--wait-lock [seconds]` (bare flag means 60, valid range 1 to 86400, a day) replaces
-that with a bounded wait, and the budget covers every lock the command takes.
-For `furnace apply`, `deploy` and `sync` that means the furnace lock as well
-as the engine-session lock. The furnace leaves that take only the furnace lock
-(`create`, `remove`, `rename`, `refresh`, `scan`, `override`, `preview`, and
-`chrome-doc create`/`remove`) apply the flag to that lock. While waiting, a
-progress line roughly every 5 seconds identifies the holder by PID, command
-and start time.
-
-Commands that take no lock accept `--wait-lock` and ignore it, so a scripted
-sequence can append the flag everywhere without a usage error killing the
-run.
-
-`FIREFORGE_WAIT_LOCK=<seconds>` applies the same budget to every command in a
-session, using the same bounds as the flag. It is the fallback whenever the
-flag is absent, including for the furnace lock a build's pre-build apply and
-`doctor --repair-furnace` take. An explicit `--wait-lock` always wins.
-
-Without either, a writer such as `re-export`, `export` or a `patch` verb waits
-about one second for the engine-session lock and then exits 15 (lock timeout)
-while a peer's `build` or `test` holds it. `re-export --dry-run` takes no lock,
-so a clean preview says nothing about whether the writing run will get one. On
-an engine several sessions share, pass `--wait-lock <seconds>` to every writing
-command, or set `FIREFORGE_WAIT_LOCK` once so every command of the session
-waits its turn.
-
-Waiters are granted a lock in arrival order: the progress line's "You are
-next" or "N ahead of you" is the order the lock will actually be handed out.
-A waiter that crashed, was killed, or is stopped drops out of the queue
-instead of blocking it.
-
-`fireforge status --lock` reports the current holder and queue depth.
+| Key              | Type        | Default | Meaning                                                         |
+| ---------------- | ----------- | ------- | --------------------------------------------------------------- |
+| `buildSlots`     | integer ≥ 1 | `1`     | How many compiles may run at once on this host                  |
+| `releaseSecrets` | string      |         | Absolute directory holding the secret files release builds read |
 
 ## Environment variables
 
-| Variable                             | Effect                                                                                                                                  |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `FIREFORGE_WAIT_LOCK`                | Session-wide lock wait budget in seconds (1 to 86400). See above.                                                                       |
-| `FIREFORGE_SESSION_ID`               | Recorded as `sessionId` on every patch history log record this process writes. See `history` above.                                     |
-| `FIREFORGE_LOG_KEEP`                 | Also write every `test`/`build` run log here, outside retention (a directory collects one file per run). See `run-logs.md`.             |
-| `FIREFORGE_MAX_UNTRACKED_FILES`      | Per-directory cap when expanding collapsed untracked directories in `status` (default 5000). A non-positive value warns and is ignored. |
-| `FIREFORGE_GIT_ADD_TIMEOUT_MS`       | Timeout for the monolithic `git add -A` baseline pass (default 10 min). For slow or loaded filesystems.                                 |
-| `FIREFORGE_GIT_ADD_CHUNK_TIMEOUT_MS` | Timeout for the chunked `git add -- <dir>` fallback (default 30 min). Paired with the above.                                            |
+| Variable              | Meaning                                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------- |
+| `FIREFORGE_HOME`      | Where host state lives instead of `~/.fireforge`                                                          |
+| `FIREFORGE_WAIT_LOCK` | Default for `--wait-lock <seconds>`: how long a command waits for a lock or workspace (default two hours) |
 
-`CLAUDECODE` is read by mozbuild, not by FireForge. `fireforge test
---full-output` unsets it for test dispatches only. See
-[`testing.md`](testing.md#output-verbosity).
+FireForge sets `FIREFORGE_PROJECT_ROOT`, `FIREFORGE_OWNED_PATHS`, `FIREFORGE_CHECK_LINT_REPORT` and `FIREFORGE_ENGINE` for `check.extraSteps` ([quality.md](quality.md#extra-steps)). Gate validators get `FIREFORGE_PROJECT_ROOT` and `FIREFORGE_ENGINE` ([gate.md](gate.md#lanes)). Other `FIREFORGE_*` names are reserved for its own processes.

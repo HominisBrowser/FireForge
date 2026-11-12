@@ -1,105 +1,52 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { Command } from 'commander';
+import { defineCommand, lockWaitMs, opt } from '../cli/command.js';
+import { ensureBuilt, packageBrowser } from '../engine/index.js';
+import { deployComponents, withWorkspace } from '../mode/index.js';
+import { loadProject } from '../project/index.js';
+import { workspaceOptions } from './workspace.js';
 
-import { validateBrandOverride } from '../core/brand-validation.js';
-import { prepareBuildEnvironment } from '../core/build-prepare.js';
-import { getProjectPaths, loadConfig } from '../core/config.js';
-import { assertEngineExists } from '../core/engine-precondition.js';
-import { hasBuildArtifacts, type MachCommandResult, machPackageCapture } from '../core/mach.js';
-import { assertBuildArtifacts } from '../core/mach-build-artifacts.js';
-import { explainMachError } from '../core/mach-error-hints.js';
-import { BuildError } from '../errors/build.js';
-import type { CommandContext } from '../types/cli.js';
-import type { PackageOptions } from '../types/commands/index.js';
-import { elapsedSince } from '../utils/elapsed.js';
-import { error, info, intro, outro, verbose } from '../utils/logger.js';
-import { pickDefined } from '../utils/options.js';
-
-/**
- * Runs the package command to create a distribution package.
- * @param projectRoot - Root directory of the project
- * @param options - Package options
- */
-export async function packageCommand(projectRoot: string, options: PackageOptions): Promise<void> {
-  const brandInfo = options.brand ? ` [${options.brand}]` : '';
-  intro(`FireForge Package${brandInfo}`);
-
-  // Load configuration
-  const config = await loadConfig(projectRoot);
-  const paths = getProjectPaths(projectRoot);
-  validateBrandOverride(config.binaryName, options.brand);
-
-  // Check if engine exists
-  await assertEngineExists(paths.engine);
-
-  const buildCheck = await hasBuildArtifacts(paths.engine);
-  assertBuildArtifacts(paths.engine, buildCheck, {
-    label: 'Package',
-    requirement: 'Packaging requires a completed build.',
-    remediation: "Run 'fireforge build' first, then rerun 'fireforge package'.",
-    requireExisting: true,
-  });
-
-  // Log brand info if specified
-  if (options.brand) {
-    verbose(`Packaging with brand: ${options.brand}`);
-    info(`Brand: ${options.brand}`);
-  }
-
-  // Shared pre-flight: branding, Furnace, mozconfig
-  await prepareBuildEnvironment(projectRoot, paths, config);
-
-  // Run package
-  info('Creating distribution package...');
-  info('This may take a while.\n');
-
-  const startTime = Date.now();
-  let result: MachCommandResult;
-
-  try {
-    // `machPackageCapture` streams output live and captures the tail for
-    // post-run diagnostics. An inherit-only dispatch leaves the hint
-    // translator unable to see the failure text. The captured stderr is fed
-    // through `explainMachError` below so recognised failure modes get an
-    // actionable hint prepended to the raw mach output.
-    result = await machPackageCapture(paths.engine);
-  } catch (error: unknown) {
-    throw new BuildError(
-      'Package process failed to start',
-      'mach package',
-      error instanceof Error ? error : undefined
+export const packageCommand = defineCommand({
+  name: 'package',
+  summary: 'Create a distribution package',
+  description:
+    'Packages the development build, which must match the source (--build brings it up to ' +
+    'date). --release builds and packages with the build.release recipe in its own object directory.',
+  group: 'Daily',
+  options: {
+    release: opt.flag('Build and package a release with build.release'),
+    build: opt.flag('Build first when the development build is older than the engine'),
+    out: opt.path("Where a release's outputs go (default .fireforge/release-output)"),
+    jobs: opt.integer('Parallel jobs of the release build (default build.jobs)', {
+      short: 'j',
+      min: 1,
+    }),
+    ...workspaceOptions,
+  },
+  constraints: { exclusive: [['release', 'build']], requires: { out: ['release'] } },
+  json: true,
+  run: async (ctx, _args, opts) => {
+    const project = await loadProject(ctx.cwd, ctx.env);
+    const waitMs = lockWaitMs(opts.waitLock);
+    const result = await withWorkspace(
+      project,
+      { command: 'package', workspace: opts.workspace, waitMs },
+      async (workspace) => {
+        await deployComponents(workspace, { waitMs });
+        if (!opts.release) await ensureBuilt(workspace, { build: opts.build, waitMs });
+        return packageBrowser(workspace, {
+          release: opts.release,
+          ...(opts.out === undefined ? {} : { outputDir: opts.out }),
+          ...(opts.jobs === undefined ? {} : { jobs: opts.jobs }),
+          waitMs,
+        });
+      }
     );
-  }
-
-  const timeStr = elapsedSince(startTime);
-
-  if (result.exitCode !== 0) {
-    error(`Packaging failed after ${timeStr}`);
-    const combinedOutput = `${result.stdout}\n${result.stderr}`;
-    const hints = explainMachError(combinedOutput);
-    const hintBlock = hints.length > 0 ? `\n\nHint:\n${hints.map((h) => `  ${h}`).join('\n')}` : '';
-    throw new BuildError(
-      `Packaging failed with exit code ${result.exitCode}.${hintBlock}`,
-      'mach package'
-    );
-  }
-
-  info(`\nPackage created in obj-*/dist/`);
-  outro(`Packaging completed in ${timeStr}!`);
-}
-
-/** Registers the package command on the CLI program. */
-export function registerPackage(
-  program: Command,
-  { getProjectRoot, withErrorHandling }: CommandContext
-): void {
-  program
-    .command('package')
-    .description('Create distribution package')
-    .option('--brand <name>', 'Package specific brand')
-    .action(
-      withErrorHandling(async (options: { brand?: string }) => {
-        await packageCommand(getProjectRoot(), pickDefined(options));
-      })
-    );
-}
+    for (const output of result.outputs) ctx.out.line(output);
+    if (result.outputs.length === 0) ctx.out.line('Packaging produced no output file.');
+    ctx.out.json({
+      objDir: result.objDir,
+      outputs: result.outputs,
+      outputDir: result.outputDir ?? null,
+    });
+  },
+});

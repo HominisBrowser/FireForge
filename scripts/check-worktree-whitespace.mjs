@@ -3,11 +3,9 @@
 /**
  * Whitespace-error gate (trailing whitespace, space-before-tab, lone CR).
  *
- * Checks the worktree locally and the commits in CI. The worktree-only form
- * this replaced could not fail where it ran: `release:check` reaches it with
- * a clean tree in both CI workflows, so both `git diff --check` calls exited
- * 0 unconditionally and the gate never inspected anything that had actually
- * been written.
+ * Checks the worktree locally and the commits in CI. A worktree-only check
+ * could not fail in CI, where the tree is always clean, so a clean tree is
+ * judged by its commits instead.
  *
  * Range selection:
  *   - `WHITESPACE_CHECK_BASE` set (CI sets it to the PR base sha)  → `<base>...HEAD`
@@ -17,7 +15,8 @@
 import { spawnSync } from 'node:child_process';
 import { lstat, readFile } from 'node:fs/promises';
 
-const pathspecs = ['--', '.', ':(exclude)patches/*.patch'];
+// Fixtures are upstream files copied byte for byte, trailing whitespace included.
+const pathspecs = ['--', '.', ':(exclude)patches/*.patch', ':(exclude,glob)**/__fixtures__/**'];
 
 function runGit(label, args) {
   const result = spawnSync('git', args, {

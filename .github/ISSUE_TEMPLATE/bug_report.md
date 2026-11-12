@@ -22,8 +22,13 @@ What you expected to happen.
 
 - OS: [e.g. macOS 14, Fedora Silverblue 43, Windows 11]
 - Node.js version: [e.g. 22.22.2]
-- FireForge version: [x.y.z — paste the output of `npx fireforge --version`]
+- FireForge version: [x.y.z — paste the output of `npx fireforge version`]
 - Firefox version target: [e.g. 140 esr]
+- Project mode: [patches or source — `npx fireforge config get mode`]
+
+**Diagnostics**
+The output of `npx fireforge doctor` in the project, and the failing command
+rerun with `--verbose` (or `--json` for its machine-readable error).
 
 **Additional context**
 Add any other context, logs, or screenshots.

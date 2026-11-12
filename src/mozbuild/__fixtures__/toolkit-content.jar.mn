@@ -1,0 +1,130 @@
+toolkit.jar:
+%  content global %content/global/ contentaccessible=yes
+*  content/global/license.html
+   content/global/xul.css
+   content/global/autocomplete.css
+   content/global/aboutAbout.js
+   content/global/aboutAbout.html
+   content/global/aboutLogging/aboutLogging.html (aboutLogging/aboutLogging.html)
+   content/global/aboutLogging/aboutLogging.css (aboutLogging/aboutLogging.css)
+   content/global/aboutLogging/aboutLogging.mjs (aboutLogging/aboutLogging.mjs)
+   content/global/aboutLogging/jwt.mjs (aboutLogging/jwt.mjs)
+   content/global/aboutLogging/profileSaveUploadLogic.mjs (aboutLogging/profileSaveUploadLogic.mjs)
+   content/global/aboutLogging/profileStorage.mjs (aboutLogging/profileStorage.mjs)
+   content/global/aboutLogging/uploadedProfilesManager.mjs (aboutLogging/uploadedProfilesManager.mjs)
+   content/global/aboutNetError.mjs
+   content/global/aboutNetError.html
+   content/global/aboutNetErrorHelpers.mjs
+   content/global/net-error-card.mjs
+   content/global/aboutNetworking.js
+   content/global/aboutNetworking.html
+#ifndef ANDROID
+   content/global/aboutProfiles.js
+   content/global/aboutProfiles.xhtml
+#endif
+   content/global/aboutServiceWorkers.js
+   content/global/aboutServiceWorkers.xhtml
+   content/global/aboutwebrtc/aboutWebrtc.css   (aboutwebrtc/aboutWebrtc.css)
+   content/global/aboutwebrtc/aboutWebrtc.mjs    (aboutwebrtc/aboutWebrtc.mjs)
+   content/global/aboutwebrtc/graph.mjs    (aboutwebrtc/graph.mjs)
+   content/global/aboutwebrtc/graphdb.mjs    (aboutwebrtc/graphdb.mjs)
+   content/global/aboutwebrtc/configurationList.mjs (aboutwebrtc/configurationList.mjs)
+   content/global/aboutwebrtc/disclosure.mjs (aboutwebrtc/disclosure.mjs)
+   content/global/aboutwebrtc/copyButton.mjs (aboutwebrtc/copyButton.mjs)
+   content/global/aboutwebrtc/aboutWebrtc.html (aboutwebrtc/aboutWebrtc.html)
+   content/global/aboutRestricted/aboutRestricted.mjs (aboutRestricted/aboutRestricted.mjs)
+   content/global/aboutRestricted/aboutRestricted.html (aboutRestricted/aboutRestricted.html)
+   content/global/aboutRestricted/aboutRestricted.css (aboutRestricted/aboutRestricted.css)
+   content/global/aboutSupport.js
+*  content/global/aboutSupport.xhtml
+#ifndef MOZ_GLEAN_ANDROID
+   content/global/aboutGlean.js
+   content/global/aboutGlean.html
+   content/global/aboutGlean.css
+#endif
+   content/global/aboutTelemetry.js
+   content/global/aboutTelemetry.xhtml
+   content/global/aboutTelemetry.css
+   content/global/aboutUrlClassifier.js
+   content/global/aboutUrlClassifier.xhtml
+   content/global/aboutUrlClassifier.css
+*   content/global/buildconfig.html
+   content/global/buildconfig.css
+   content/global/colorpicker.html
+   content/global/contentAreaUtils.js
+#ifndef MOZ_GECKOVIEW
+   content/global/editMenuOverlay.js
+#endif
+   content/global/filepicker.properties
+   content/global/customElements.js
+   content/global/globalOverlay.js
+   content/global/mozilla.html
+   content/global/aboutMozilla.css
+   content/global/preferencesBindings.js
+   content/global/preferences/AsyncSetting.mjs  (preferences/AsyncSetting.mjs)
+   content/global/preferences/Preference.mjs    (preferences/Preference.mjs)
+   content/global/preferences/Preferences.mjs   (preferences/Preferences.mjs)
+   content/global/preferences/Setting.mjs       (preferences/Setting.mjs)
+   content/global/process-content.js
+   content/global/resetProfile.css
+   content/global/resetProfile.js
+   content/global/resetProfile.xhtml
+   content/global/resetProfileProgress.xhtml
+   content/global/TopLevelVideoDocument.js
+   content/global/datetimepicker.xhtml
+   content/global/ScrollOffsets.mjs                (ScrollOffsets.mjs)
+   content/global/treeUtils.js
+#ifndef MOZ_GECKOVIEW
+   content/global/viewZoomOverlay.js
+#endif
+   content/global/widgets.css
+   content/global/bindings/calendar.js         (widgets/calendar.js)
+   content/global/bindings/colorpicker-common.mjs             (widgets/colorpicker-common.mjs)
+   content/global/bindings/colorpicker.mjs     (widgets/colorpicker.mjs)
+   content/global/bindings/datekeeper.js       (widgets/datekeeper.js)
+   content/global/bindings/datepicker.js       (widgets/datepicker.js)
+   content/global/bindings/datetimebox.css     (widgets/datetimebox.css)
+   content/global/bindings/spinner.js          (widgets/spinner.js)
+   content/global/bindings/timekeeper.js       (widgets/timekeeper.js)
+   content/global/bindings/timepicker.js       (widgets/timepicker.js)
+   content/global/elements/autocomplete-input.js              (widgets/autocomplete-input.js)
+   content/global/elements/autocomplete-popup.js              (widgets/autocomplete-popup.js)
+   content/global/elements/autocomplete-richlistitem.js       (widgets/autocomplete-richlistitem.js)
+   content/global/elements/browser-custom-element.mjs         (widgets/browser-custom-element.mjs)
+   content/global/elements/button.js           (widgets/button.js)
+   content/global/elements/checkbox.js         (widgets/checkbox.js)
+   content/global/elements/datetimebox.js      (widgets/datetimebox.js)
+   content/global/elements/dialog.js           (widgets/dialog.js)
+   content/global/elements/findbar.js          (widgets/findbar.js)
+   content/global/elements/editor.js           (widgets/editor.js)
+   content/global/elements/general.js          (widgets/general.js)
+   content/global/elements/menu.js             (widgets/menu.js)
+   content/global/elements/menupopup.js        (widgets/menupopup.js)
+   content/global/elements/menupopup.css       (widgets/menupopup.css)
+   content/global/elements/moz-badge.tokens.css    (widgets/moz-badge/moz-badge.tokens.css)
+   content/global/elements/moz-badge.css    (widgets/moz-badge/moz-badge.css)
+   content/global/elements/moz-badge.mjs    (widgets/moz-badge/moz-badge.mjs)
+   content/global/elements/moz-box.tokens.css    (widgets/moz-box.tokens.css)
+   content/global/elements/moz-box-common.css    (widgets/moz-box-common.css)
+   content/global/elements/moz-box-button.css    (widgets/moz-box-button/moz-box-button.css)
+   content/global/elements/moz-box-button.mjs    (widgets/moz-box-button/moz-box-button.mjs)
+   content/global/elements/moz-box-group.css    (widgets/moz-box-group/moz-box-group.css)
+   content/global/elements/moz-box-group.mjs    (widgets/moz-box-group/moz-box-group.mjs)
+   content/global/elements/moz-breadcrumb.tokens.css    (widgets/moz-breadcrumb-group/moz-breadcrumb.tokens.css)
+   content/global/elements/moz-breadcrumb.css    (widgets/moz-breadcrumb-group/moz-breadcrumb.css)
+   content/global/elements/moz-breadcrumb-group.css    (widgets/moz-breadcrumb-group/moz-breadcrumb-group.css)
+   content/global/elements/moz-breadcrumb-group.mjs    (widgets/moz-breadcrumb-group/moz-breadcrumb-group.mjs)
+   content/global/elements/moz-box-item.css    (widgets/moz-box-item/moz-box-item.css)
+   content/global/elements/moz-box-item.mjs    (widgets/moz-box-item/moz-box-item.mjs)
+   content/global/elements/moz-box-link.css    (widgets/moz-box-link/moz-box-link.css)
+   content/global/elements/moz-box-link.mjs    (widgets/moz-box-link/moz-box-link.mjs)
+   content/global/elements/moz-button.css    (widgets/moz-button/moz-button.css)
+   content/global/elements/moz-button.mjs    (widgets/moz-button/moz-button.mjs)
+   content/global/elements/moz-button-group.css    (widgets/moz-button-group/moz-button-group.css)
+   content/global/elements/moz-button-group.mjs    (widgets/moz-button-group/moz-button-group.mjs)
+   content/global/elements/moz-card.css         (widgets/moz-card/moz-card.css)
+   content/global/elements/moz-card.mjs         (widgets/moz-card/moz-card.mjs)
+   content/global/elements/moz-checkbox.css    (widgets/moz-checkbox/moz-checkbox.css)
+   content/global/elements/moz-checkbox.mjs    (widgets/moz-checkbox/moz-checkbox.mjs)
+   content/global/elements/moz-checkbox-icon.svg    (widgets/moz-checkbox/moz-checkbox-icon.svg)
+   content/global/elements/moz-homestead-applet-tools.mjs  (widgets/moz-homestead-applet-tools/moz-homestead-applet-tools.mjs)

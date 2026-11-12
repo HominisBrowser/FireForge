@@ -6,23 +6,30 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # The release workflow runs the same gate before it publishes.
+  workflow_call:
+    inputs:
+      smoke:
+        description: 'Also run the smoke and node-floor jobs.'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
-# Overlapping pushes cancel the older run: the quality job runs the full
-# release:check suite and is expensive to duplicate.
+# Overlapping pushes cancel the older run.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  quality:
-    # Stable name: the branch-protection ruleset requires this exact check
-    # context (scripts/setup-rulesets.sh). Embedding the Node version here
-    # silently invalidated the required check on every Node bump.
-    name: quality (ubuntu)
+  # Format, whitespace, lint, types, dead code and cycles: everything in
+  # release:check that is not a test.
+  static:
+    name: static
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       # Full history: `whitespace:check` diffs the PR range, which needs the
       # base commit present. A depth-1 checkout would silently degrade it to
@@ -46,18 +53,68 @@ jobs:
             echo "Join each to the end of the preceding comment line." >&2
             exit 1
           fi
-      - run: npm run release:check
+      - run: npm run toolchain:check
+      - run: npm run format:check
+      - run: npm run whitespace:check
         env:
           WHITESPACE_CHECK_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+      - run: npm run lint:ci
+      - run: npm run typecheck
+      - run: npm run deadcode:check
+      - run: npm run cycles:check
+
+  # The suite once, with the coverage thresholds of vitest.config.ts, then
+  # the package as npm would publish it: its file list, and a real pack,
+  # install and run of the installed executable (pack:verify).
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    # A hung run stops and reports instead of holding the runner for hours.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+      - name: Pin npm to the packageManager version
+        run: |
+          NPM_VERSION="$(node -p "require('./package.json').packageManager.split('@')[1]")"
+          npm install -g "npm@${NPM_VERSION}"
+      - run: npm ci
+      - run: npm run test:coverage
+      - run: npm run pack:dry-run
+      - run: npm run build
+      - run: npm run pack:verify
+
+  quality:
+    # Stable name: the branch-protection ruleset requires this exact check
+    # context (scripts/setup-rulesets.sh), so it must not embed a Node
+    # version. It runs whatever the jobs before it did and fails unless they
+    # passed, so a skipped job can never stand in for a passed one.
+    name: quality (ubuntu)
+    needs: [static, tests]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the static checks and the tests to have passed
+        if: ${{ needs.static.result != 'success' || needs.tests.result != 'success' }}
+        run: |
+          echo "static: ${{ needs.static.result }}, tests: ${{ needs.tests.result }}" >&2
+          exit 1
+      - run: echo "static and tests passed"
 
   smoke:
-    # Stable name, for the same reason `quality (ubuntu)` above carries one:
-    # the branch-protection ruleset requires these exact check contexts, and
-    # embedding the Node version made every Node bump silently invalidate
-    # all three of them.
+    # Stable names, for the same reason as `quality (ubuntu)`: the ruleset
+    # requires these exact check contexts.
     name: smoke (${{ matrix.os }})
-    needs: quality
+    needs: static
+    # `inputs.smoke` is empty on a push, a pull request and a manual run, and
+    # an empty value compares equal to false, so the test is on its text.
+    if: ${{ format('{0}', inputs.smoke) != 'false' }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -75,46 +132,68 @@ jobs:
           npm install -g "npm@${NPM_VERSION}"
       - run: npm ci
       - run: npm run typecheck
-      - run: npm run test:package
-      # The whole suite runs on every OS in the matrix. It was previously a
-      # hand-listed 10-file subset that nothing kept in sync: 15 of the 17
-      # test files that branch on `win32` had drifted out of it, so the
-      # platform-specific code paths this leg exists to cover were the ones
-      # not running. The full suite takes ~35s, which is cheaper than
-      # maintaining the list.
+      - run: npm run build
+      # The built CLI, from outside the repository: it must find its
+      # templates and write a patch-mode project, which needs no network.
+      - name: Create a project with the built CLI
+        shell: bash
+        run: |
+          CLI="$PWD/dist/bin/fireforge.js"
+          node "$CLI" --version
+          PROJECT="$RUNNER_TEMP/smoke-project"
+          mkdir -p "$PROJECT"
+          cd "$PROJECT"
+          FIREFORGE_HOME="$RUNNER_TEMP/fireforge-home" node "$CLI" setup \
+            --name Smoke --vendor Smoke --firefox-version 140.0esr --mode patches
+          test -f fireforge.json
+          test -f configs/common.mozconfig
+          FIREFORGE_HOME="$RUNNER_TEMP/fireforge-home" node "$CLI" config get firefox.version
+      # The whole suite on the other systems, for platform-specific code
+      # paths; on Ubuntu the `tests` job runs it.
       - run: npm test
+        if: ${{ matrix.os != 'ubuntu-latest' }}
 
   # Node-version axis, Ubuntu only. A separate job rather than a wider
-  # `smoke` matrix: the ruleset requires the three `smoke (<os>)` contexts
-  # by exact name (scripts/setup-rulesets.sh), and adding a second matrix
-  # dimension would rename all of them. `22` is the engines floor
-  # (`>=22.22.2`), `24` the next LTS line, and `.nvmrc` the pinned dev
-  # version, so the floor is exercised on every PR instead of only being
-  # claimed in `engines`.
+  # `smoke` matrix: the ruleset requires the three `smoke (<os>)` contexts by
+  # exact name, and a second matrix dimension would rename them. `floor` is
+  # the lowest version `engines.node` admits, so the floor is exercised
+  # instead of only claimed; `24` is the next LTS line. The pinned `.nvmrc`
+  # version is the one `tests` runs.
   node-floor:
     name: node-floor (${{ matrix.node }})
-    needs: quality
+    needs: static
+    # `inputs.smoke` is empty on a push, a pull request and a manual run, and
+    # an empty value compares equal to false, so the test is on its text.
+    if: ${{ format('{0}', inputs.smoke) != 'false' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        node: ['22', '24', 'nvmrc']
+        node: ['floor', '24']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Resolve the Node version
+        id: node
+        env:
+          REQUESTED: ${{ matrix.node }}
+        run: |
+          if [ "$REQUESTED" = floor ]; then
+            VERSION="$(node -p "require('./package.json').engines.node.replace(/^>=\s*/, '')")"
+          else
+            VERSION="$REQUESTED"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: matrix.node != 'nvmrc'
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ steps.node.outputs.version }}
           cache: 'npm'
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: matrix.node == 'nvmrc'
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'npm'
+      # Through npx: the npm bundled with the floor Node cannot replace
+      # itself in place.
       - name: Pin npm to the packageManager version
         run: |
           NPM_VERSION="$(node -p "require('./package.json').packageManager.split('@')[1]")"
-          npm install -g "npm@${NPM_VERSION}"
+          npx --yes "npm@${NPM_VERSION}" install -g "npm@${NPM_VERSION}"
       - run: npm ci
       - run: npm run typecheck
       - run: npm test

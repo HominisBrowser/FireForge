@@ -8,7 +8,7 @@
 // when the tree is dirty. FIREFORGE_PACK_STRICT=1 turns that banner into a
 // refusal for consumers that want the hard gate. Plain builds stay quiet
 // and never fail on git problems, because a git-less staging directory must
-// still build (the wrapper smoke test packs from one).
+// still build.
 import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';

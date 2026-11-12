@@ -1,0 +1,606 @@
+{
+  "name": "Acme",
+  "vendor": "Example Vendor",
+  "appId": "org.example.acme",
+  "binaryName": "acme",
+  "firefox": {
+    "version": "153.7.0esr",
+    "product": "firefox-esr",
+    "sha256": "7f8715ee7de2cf36a156216a9b1c7f26d1653010e65793bb2fce66e12edb6ea0",
+    "candidate": "build1"
+  },
+  "mode": "source",
+  "source": {
+    "root": "src",
+    "metadataRoot": ".fireforge-sources",
+    "pristineCommit": "a5654e28a51104adec4bfa85c976d5c0bee7c0c6"
+  },
+  "build": {
+    "jobs": 14,
+    "release": {
+      "overlay": "configs/release.mozconfig",
+      "secrets": {
+        "variable": "ACME_BUILD_SECRETS_DIR",
+        "files": [
+          "google-safebrowsing-api.key"
+        ]
+      },
+      "outputs": [
+        "config.status",
+        "dist/*.dmg",
+        "dist/acme/*.app",
+        "dist/bin/certutil",
+        "dist/bin/signmar",
+        "dist/host/bin/mar",
+        "dist/bin/*.dylib"
+      ]
+    }
+  },
+  "test": {
+    "mochitestPorts": "auto"
+  },
+  "license": "EUPL-1.2",
+  "markerComment": "ACME",
+  "externalToolchains": [
+    {
+      "name": "seasonal-branding",
+      "tools": [
+        {
+          "name": "ictool",
+          "path": "/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool",
+          "required": false
+        },
+        {
+          "name": "actool",
+          "xcrun": true,
+          "required": false
+        },
+        {
+          "name": "sips",
+          "required": false
+        },
+        {
+          "name": "iconutil",
+          "required": false
+        }
+      ]
+    }
+  ],
+  "buildAudit": {
+    "unpackaged": [
+      {
+        "path": "browser/base/content/acme-tile-host-types.js",
+        "reason": "Type-only JSDoc mirror of the tile host; never loaded, so it has no jar.mn entry."
+      }
+    ]
+  },
+  "patchLint": {
+    "checkJs": true,
+    "checkJsStrict": true,
+    "checkJsCompilerOptions": {
+      "strictNullChecks": true,
+      "noUnusedLocals": true,
+      "noUnusedParameters": true
+    },
+    "checkJsExtraShim": "tools/types/acme-patch-lint.d.ts",
+    "checkJsTestFiles": true,
+    "checkJsTestShim": "tools/types/acme-patch-lint-tests.d.ts",
+    "litTypes": true,
+    "rawColorAllowlist": [
+      "acme-tokens.css",
+      "browser/themes/shared/acme-tokens.css"
+    ],
+    "fileSizeMetric": "code",
+    "fileSizeThresholds": {
+      "general": {
+        "notice": 500,
+        "warning": 800,
+        "error": 1000
+      },
+      "test": {
+        "notice": 1000,
+        "warning": 1300,
+        "error": 1500
+      }
+    },
+    "patchSizeMetric": "addedCode",
+    "patchSizeThresholds": {
+      "general": {
+        "lines": {
+          "notice": 1000,
+          "warning": 2000,
+          "error": 4000
+        },
+        "files": {
+          "notice": 8,
+          "warning": 12,
+          "error": 24
+        }
+      },
+      "test": {
+        "lines": {
+          "notice": 1500,
+          "warning": 3000,
+          "error": 6000
+        },
+        "files": {
+          "notice": 8,
+          "warning": 12,
+          "error": 24
+        }
+      },
+      "branding": {
+        "lines": {
+          "notice": 8000,
+          "warning": 18000,
+          "error": 30000
+        },
+        "files": {
+          "notice": 60,
+          "warning": 60,
+          "error": 90
+        }
+      }
+    },
+    "patchSizeRegistrationFiles": [
+      "jar.mn",
+      "*jar.inc.mn",
+      "*-jar.mn",
+      "moz.build",
+      "components.conf",
+      "customElements.js",
+      "*.toml",
+      "*.ini",
+      "package-manifest.in",
+      "jsconfig*.json"
+    ],
+    "tokenScales": [
+      {
+        "properties": [
+          "gap",
+          "row-gap",
+          "column-gap",
+          "padding*",
+          "margin*"
+        ],
+        "prefix": [
+          "--acme-space-",
+          "--acme-gap-"
+        ],
+        "allow": [
+          "--acme-*"
+        ],
+        "allowLiterals": [
+          "0",
+          "0px",
+          "auto",
+          "*%",
+          "1px",
+          "-1px"
+        ],
+        "allowInCalc": [
+          "0.5",
+          "1.5",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "0.25",
+          "0.75",
+          "1.25",
+          "-1"
+        ],
+        "offsetCap": 2,
+        "exclude": [
+          "browser/base/content/acme-file-view.css",
+          "browser/base/content/acme-genapp-kit/genapp-tailwind.css"
+        ],
+        "allowValues": [
+          {
+            "property": "margin-block-end",
+            "value": "126px",
+            "reason": "Reserves the height of the control cluster below the toolbar, a structural offset."
+          },
+          {
+            "property": "margin-block-end",
+            "value": "168px",
+            "reason": "Reserves the height of the control cluster below the toolbar, a structural offset."
+          }
+        ],
+        "minFiles": 56
+      },
+      {
+        "properties": [
+          "border-radius",
+          "border-top-left-radius",
+          "border-top-right-radius",
+          "border-bottom-left-radius",
+          "border-bottom-right-radius",
+          "border-start-start-radius",
+          "border-start-end-radius",
+          "border-end-start-radius",
+          "border-end-end-radius"
+        ],
+        "prefix": [
+          "--acme-"
+        ],
+        "allowLiterals": [
+          "0",
+          "0px",
+          "50%"
+        ],
+        "allowInCalc": [
+          "1"
+        ],
+        "offsetCap": 6,
+        "exclude": [
+          "browser/base/content/acme-genapp-kit/genapp-tailwind.css",
+          "browser/base/content/acme-start.css"
+        ],
+        "minFiles": 55
+      },
+      {
+        "properties": [
+          "font-size",
+          "font-weight",
+          "line-height",
+          "letter-spacing",
+          "font"
+        ],
+        "prefix": [
+          "--acme-"
+        ],
+        "allowLiterals": [
+          "normal",
+          "italic",
+          "oblique",
+          "small-caps",
+          "0",
+          "100%",
+          "1em",
+          "monospace",
+          "sans-serif",
+          "serif",
+          "system-ui",
+          "ui-monospace",
+          "\"*\"",
+          "'*'",
+          "message-box",
+          "caption",
+          "icon",
+          "menu",
+          "small-caption",
+          "status-bar"
+        ],
+        "allowInCalc": [
+          "1.2",
+          "1.1",
+          "1.5",
+          "2",
+          "0.5",
+          "0.9",
+          "0.8"
+        ],
+        "exclude": [
+          "browser/base/content/acme-file-view.css",
+          "browser/base/content/acme-genapp-kit/genapp-tailwind.css"
+        ],
+        "minFiles": 48
+      }
+    ],
+    "rules": {
+      "jsdoc-class-method": "error",
+      "test-needs-assertion": "error",
+      "chrome-script-jsdoc": "error"
+    }
+  },
+  "patchPolicy": {
+    "ranges": [
+      {
+        "from": 1,
+        "to": 99,
+        "category": "branding"
+      },
+      {
+        "from": 100,
+        "to": 199,
+        "category": "infra"
+      },
+      {
+        "from": 200,
+        "to": 599,
+        "category": "ui"
+      },
+      {
+        "from": 600,
+        "to": 899,
+        "category": "ui"
+      }
+    ],
+    "addOnlyMarker": "acme",
+    "upstreamAllowlist": [
+      {
+        "path": "**/jar.mn",
+        "addOnly": true,
+        "retiredPaths": [
+          "content/browser/logos/fxa-logo.svg"
+        ]
+      },
+      {
+        "path": "browser/base/moz.build",
+        "addOnly": true
+      },
+      {
+        "path": "browser/modules/moz.build",
+        "addOnly": true
+      },
+      {
+        "path": "browser/moz.build",
+        "addOnly": true
+      },
+      {
+        "path": "toolkit/content/customElements.js",
+        "addOnly": true
+      },
+      "browser/themes/shared/jar.inc.mn"
+    ],
+    "scopeRules": [
+      {
+        "group": "-tests\\.patch$",
+        "files": [
+          "**/test/**",
+          "**/tests/**"
+        ]
+      }
+    ],
+    "verifyDocumentPaths": true,
+    "mutationMode": "error",
+    "reservedRanges": [
+      {
+        "from": 900,
+        "to": 999,
+        "allowed": [
+          {
+            "filename": "900-infra-bindgen-basic-string-workaround.patch",
+            "files": [
+              "tools/profiler/rust-api/build.rs"
+            ],
+            "adr": "docs/architecture/adr/0001-bindgen-basic-string-workaround.md",
+            "documentation": "docs/implementation/UPSTREAM_CONTRACTS.md"
+          },
+          {
+            "filename": "901-ui-audio-volume-field.patch",
+            "files": [
+              "docshell/base/BrowsingContext.h",
+              "docshell/base/BrowsingContext.cpp"
+            ],
+            "adr": "docs/architecture/adr/0005-per-tile-audio-attenuation.md",
+            "documentation": "docs/implementation/UPSTREAM_CONTRACTS_CANVAS.md"
+          }
+        ]
+      }
+    ]
+  },
+  "typecheck": {
+    "projects": [
+      "components/custom/jsconfig.json",
+      "engine/browser/base/content/jsconfig.json",
+      "engine/browser/modules/acme/jsconfig.json"
+    ],
+    "extraShim": "tools/types/acme-shim-portable.d.ts",
+    "undefinedIdentifiers": "error",
+    "litTypes": true,
+    "projectOverrides": {
+      "engine/browser/base/content/jsconfig.json": "tools/types/acme-shim-browser-content.d.ts"
+    }
+  },
+  "check": {
+    "status": {
+      "failOn": [
+        "unmanaged"
+      ]
+    },
+    "maxWarnings": {
+      "lint": 0,
+      "furnace": 0
+    },
+    "failOnSkipped": true,
+    "extraSteps": [
+      {
+        "name": "branding-month",
+        "command": [
+          "node",
+          "tools/scripts/check-branding-month.mts"
+        ],
+        "timeout": 300
+      },
+      {
+        "name": "engine-eslint",
+        "command": [
+          "node",
+          "tools/scripts/run-engine-eslint.mts"
+        ],
+        "timeout": 300
+      },
+      {
+        "name": "repo-audits",
+        "command": [
+          "node",
+          "tools/scripts/run-audits.mts"
+        ],
+        "timeout": 600,
+        "after": [
+          "typecheck"
+        ]
+      }
+    ]
+  },
+  "exportQueue": {
+    "groups": [
+      {
+        "name": "test-scenarios-1",
+        "paths": [
+          "browser/base/content/test/acme-tiles/file_scenario_video.html",
+          "browser/base/content/test/acme-tiles/file_scenario_wiki.html"
+        ]
+      },
+      {
+        "name": "test-scenarios-2",
+        "paths": [
+          "browser/base/content/test/acme-tiles/file_scenario_docs.html",
+          "browser/base/content/test/acme-tiles/file_scenario_mail.html"
+        ]
+      },
+      {
+        "name": "test-scenarios-3",
+        "paths": [
+          "browser/base/content/test/acme-tiles/file_scenario_shop.html",
+          "browser/base/content/test/acme-tiles/file_scenario_news.html"
+        ]
+      },
+      {
+        "name": "test-scenarios-4",
+        "paths": [
+          "browser/base/content/test/acme-tiles/file_scenario_recipe.html",
+          "browser/base/content/test/acme-tiles/file_scenario_dashboard.html"
+        ]
+      },
+      {
+        "name": "test-perf",
+        "paths": [
+          "browser/base/content/test/acme-tiles/*perf*"
+        ]
+      },
+      {
+        "name": "test-store-fixtures",
+        "paths": [
+          "browser/modules/acme/test/unit/fixtures/**"
+        ]
+      }
+    ],
+    "maxGroupBytes": 1048576
+  },
+  "gate": {
+    "build": "ui",
+    "lanes": [
+      {
+        "id": "acme",
+        "files": [
+          "browser/base/content/test/acme/browser_*.js"
+        ],
+        "dispatch": "one-browser",
+        "uploadDir": true,
+        "validate": {
+          "command": [
+            "node",
+            "tools/scripts/validate-suite.mts",
+            "--pref-census",
+            "{artifacts}/modifiedPrefs.json",
+            "--allow",
+            "tools/audit-config/pref-leaks-allow.json"
+          ]
+        }
+      },
+      {
+        "id": "tiles",
+        "files": [
+          "browser/base/content/test/acme-tiles/browser_*.js"
+        ],
+        "exclude": [
+          "browser/base/content/test/acme-tiles/browser_acme_ui_captures*.js",
+          "browser/base/content/test/acme-tiles/browser_acme_tiles_fullscreen.js",
+          "browser/base/content/test/acme-tiles/browser_acme_tile_frame_drag_out.js"
+        ],
+        "dispatch": "one-browser",
+        "uploadDir": true,
+        "env": {
+          "ACME_MEMORY_GUARD_JSON": "{artifacts}/memory-guard.json"
+        },
+        "validate": {
+          "command": [
+            "node",
+            "tools/scripts/validate-suite.mts",
+            "--pref-census",
+            "{artifacts}/modifiedPrefs.json",
+            "--allow",
+            "tools/audit-config/pref-leaks-allow.json",
+            "--memory-guard",
+            "{artifacts}/memory-guard.json"
+          ]
+        }
+      },
+      {
+        "id": "tiles-fullscreen",
+        "files": [
+          "browser/base/content/test/acme-tiles/browser_acme_tiles_fullscreen.js"
+        ],
+        "headed": true,
+        "machArgs": [
+          "--setpref=focusmanager.testmode=true"
+        ]
+      },
+      {
+        "id": "tiles-drag-out",
+        "files": [
+          "browser/base/content/test/acme-tiles/browser_acme_tile_frame_drag_out.js"
+        ],
+        "headed": true
+      },
+      {
+        "id": "captures",
+        "files": [
+          "browser/base/content/test/acme-tiles/browser_acme_ui_captures*.js"
+        ],
+        "exclude": [
+          "browser/base/content/test/acme-tiles/browser_acme_ui_captures_chat.js",
+          "browser/base/content/test/acme-tiles/browser_acme_ui_captures_cards.js",
+          "browser/base/content/test/acme-tiles/browser_acme_ui_captures_fonts.js"
+        ],
+        "dispatch": "standalone",
+        "uploadDir": true,
+        "env": {
+          "ACME_CAPTURE": "1",
+          "ACME_CAPTURE_DIR": "{artifacts}/captures"
+        },
+        "validate": {
+          "command": [
+            "node",
+            "tools/scripts/validate-captures.mts",
+            "{artifacts}/captures",
+            "--baseline=tools/audit-config/capture-scenes.json"
+          ]
+        }
+      }
+    ],
+    "runs": [
+      {
+        "id": "smoke",
+        "smokeExit": 30,
+        "consoleAllowFile": "tools/audit-config/smoke-console-allow.txt",
+        "validate": {
+          "command": [
+            "node",
+            "tools/scripts/validate-smoke.mts",
+            "{artifacts}/console.txt",
+            "--allow",
+            "tools/audit-config/smoke-console-allow.txt"
+          ]
+        }
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "visual",
+        "reason": "A person looks at the captured scenes of the surfaces this change touches.",
+        "evidence": [
+          "lane:captures"
+        ]
+      }
+    ],
+    "documents": [
+      "docs/**",
+      "*.md"
+    ]
+  }
+}

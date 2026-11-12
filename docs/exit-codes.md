@@ -1,96 +1,78 @@
 <!-- SPDX-License-Identifier: EUPL-1.2 -->
 
-# Exit codes (internal)
+# Exit codes
 
-The exit code is the machine-readable half of the CLI's contract. A script
-branches on it, and CI uses it to decide whether to retry or escalate. The
-values live in `src/errors/codes.ts`. This file says what they mean and
-which error class produces each one.
+A script branches on the exit code, and CI uses it to decide whether to retry or escalate. Every failure also has a stable string `code` (`lock-timeout`, `gate-dirty-tree`). It is printed on stderr with the message, followed by the hint when the failure has one:
 
-| Code | Name                   | Meaning                                                                                                                                       | Produced by                                                                                       |
-| ---: | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-|    0 | `SUCCESS`              | Completed. Also a run that prompted and the operator declined: declining is a successful run that chose not to proceed.                       | (none)                                                                                            |
-|    1 | `GENERAL_ERROR`        | Unspecified failure the operator has to act on.                                                                                               | `GeneralError` (and `PreflightRefusalError`), `ParserFallbackError`, `ExecTimeoutError`           |
-|    2 | `CONFIG_ERROR`         | `fireforge.json` missing or invalid.                                                                                                          | `ConfigError` and subclasses                                                                      |
-|    3 | `DOWNLOAD_ERROR`       | Could not download or extract Firefox source.                                                                                                 | `DownloadError` and subclasses                                                                    |
-|    4 | `GIT_ERROR`            | A git operation failed.                                                                                                                       | `GitError` and subclasses, except `GitNotFoundError`                                              |
-|    5 | `BUILD_ERROR`          | `mach build` failed, or a test suite went red.                                                                                                | `BuildError` and subclasses, `TestFailureError`                                                   |
-|    6 | `PATCH_ERROR`          | A patch failed to apply (including a patch `rebase --dry-run` predicts will reject), or the patch queue could not be mutated.                 | `PatchError`, `PatchManifestCorruptError`, `RebaseError` and subclasses                           |
-|    7 | `MISSING_DEPENDENCY`   | A required tool (python3, git, tar) was not found.                                                                                            | `PythonNotFoundError`, `GitNotFoundError`, `MachNotFoundError`                                    |
-|    8 | `INVALID_ARGUMENT`     | The flags were wrong. A usage problem, not an environment one.                                                                                | `InvalidArgumentError`, plus commander usage errors (unknown command or option, missing argument) |
-|    9 | `FURNACE_ERROR`        | A Furnace component operation failed.                                                                                                         | `FurnaceError`                                                                                    |
-|   10 | `RESOLUTION_ERROR`     | Conflict resolution failed.                                                                                                                   | `ResolutionError`                                                                                 |
-|   11 | `INTERNAL_ERROR`       | A FireForge invariant did not hold. This is a bug in FireForge, not something the operator can fix.                                           | `InternalInvariantError`                                                                          |
-|   12 | `SMOKE_EXIT_FAILURE`   | `run --smoke-exit` saw console errors that were not allowed in the smoke window, or an allowlisted shape fired past its `# max-hits` ceiling. | `SmokeRunError`                                                                                   |
-|   13 | `SMOKE_LAUNCH_FAILURE` | `run --smoke-exit` saw the browser exit uncleanly before the window elapsed, or exit cleanly before it without any console output.            | `SmokeRunError`                                                                                   |
-|   14 | `INCONCLUSIVE`         | A test run's verdict was thrown away because `engine/` moved while the harness ran. This is not red. Re-run it.                               | `InconclusiveVerdictError`                                                                        |
-|   15 | `LOCK_TIMEOUT`         | A lock wait expired, so the run never started. Re-queue it with a larger `--wait-lock`.                                                       | `LockContentionError`                                                                             |
-|  130 | `USER_CANCELLED`       | The operator interrupted a prompt (Esc or Ctrl+C). 128 + SIGINT.                                                                              | `CancellationError`                                                                               |
+```
+error[gate-dirty-tree]: <message>
+hint: <what to do next>
+```
 
-Usage errors that commander detects itself (an unknown command, an unknown
-or malformed option, a missing required argument) never reach a command
-action. `createProgram` installs
-commander's `exitOverride()`, and the entry point maps the resulting
-`CommanderError` to `INVALID_ARGUMENT` (8) with the standard envelope on
-stdout. `--help` and `--version` take the same path and still exit 0, and so
-does a command group invoked without a subcommand (`fireforge`,
-`fireforge tree`): commander prints the group's help and the entry point
-treats that as informational rather than as a wrong flag. That matches the
-exit 0 that `patch`, `token` and `furnace` give through their own help
-action.
+The `--json` failure document `{ schemaVersion, error, code, hint }` carries the same three ([machine-output.md](machine-output.md)). Branch on the exit code for the category and on `code` for the exact cause.
 
-## The three distinctions that matter for CI
+| Code | Name                   | Meaning                                                                                                                  |
+| ---: | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+|    0 | `SUCCESS`              | Completed. A prompt answered "no" also exits 0: the run did what it was asked.                                           |
+|    1 | `GENERAL_ERROR`        | A failure you act on: a red `lint`, `typecheck`, `check` or `doctor`, a refusal before any work started.                 |
+|    2 | `CONFIG_ERROR`         | `fireforge.json` or a state document is missing or invalid, including an unknown key.                                    |
+|    3 | `DOWNLOAD_ERROR`       | The Firefox source could not be downloaded or extracted, or this host has not downloaded the pin yet.                    |
+|    4 | `GIT_ERROR`            | A git operation failed, or a ref could not be moved the way the command requires.                                        |
+|    5 | `BUILD_ERROR`          | `mach` failed: a build that did not compile, a test run that went red.                                                   |
+|    6 | `PATCH_ERROR`          | A patch did not apply, or the patch queue is inconsistent or could not be changed.                                       |
+|    7 | `MISSING_DEPENDENCY`   | A required tool (git, python3, watchman for `watch`) is not installed or not usable.                                     |
+|    8 | `INVALID_ARGUMENT`     | The command line is wrong: an unknown option, a bad value, a combination that is refused.                                |
+|    9 | `FURNACE_ERROR`        | Component management failed: validation errors, generated typing files out of date.                                      |
+|   10 | `RESOLUTION_ERROR`     | Conflicts are left for a person to resolve, such as a rebase that ended with conflict markers.                           |
+|   11 | `INTERNAL_ERROR`       | An internal invariant did not hold: a bug in FireForge, never yours to fix. The message asks for a report.               |
+|   12 | `SMOKE_EXIT_FAILURE`   | A smoke start (`run --smoke-exit`) saw console errors that no allowlist entry accepts.                                   |
+|   13 | `SMOKE_LAUNCH_FAILURE` | A smoke start's browser exited before its window elapsed.                                                                |
+|   14 | `INCONCLUSIVE`         | A result exists but cannot be trusted, because what it judged changed underneath it. Run again; do not report it as red. |
+|   15 | `LOCK_TIMEOUT`         | A wait for a lock or a workspace expired, so the work never started. Run again, or pass `--wait-lock <seconds>`.         |
+|  130 | `USER_CANCELLED`       | Interrupted with Ctrl+C (SIGINT), at a prompt or while running. Changes in progress were rolled back.                    |
+|  143 | `TERMINATED`           | Asked to stop with SIGTERM. Changes in progress were rolled back.                                                        |
 
-**Retry or escalate.** `GENERAL_ERROR` usually means the operator has to
-change something, and a retry may then help. `INTERNAL_ERROR` means nothing
-they could change would have helped. Escalate it, do not retry.
+A second interrupt while the first is still being handled ends the process at once with the same code, without the rollback.
 
-**Red, never ran, or thrown away.** These are three different facts, each
-with its own code.
+## The commands that judge
 
-- `BUILD_ERROR` (5) is a suite that failed. It is thrown as
-  `TestFailureError`, which keeps the code but carries test remedies rather
-  than build ones (`--json` reports it as `test-failure`).
-- `LOCK_TIMEOUT` (15) is a run that never started, because another FireForge
-  process held the lock for the whole budget. Nothing about the request was
-  wrong, so re-queue it.
-- `INCONCLUSIVE` (14) is a suite whose result was discarded because
-  `engine/` moved underneath it. The code may be perfectly green, so
-  reporting it as red is wrong.
+### `test`
 
-Separate codes keep a summary line from showing opposite facts as the same
-kind of failure, such as `FAIL - exit 1` beside `FAIL - exit 5`. The `FIREFORGE-VERDICT:` line's `reason=` key carries the same
-distinction for humans.
+| Result                                                                                         | Exit |
+| ---------------------------------------------------------------------------------------------- | ---: |
+| Every planned test file ran and passed; a negative control was caught                          |    0 |
+| Refused before the harness started: a stale build without `--build`, a path that is not a test |    1 |
+| Red: failures, a crash, a hang, a file that never started or finished                          |    5 |
+| A negative control failed: `control-missed`, `control-wrong-red`, `control-baseline-red`       |    5 |
+| The engine changed while the harness ran (`test-inconclusive`, `control-inconclusive`)         |   14 |
+| The workspace, the display or a build slot did not come free                                   |   15 |
 
-`LockContentionError` backs every lock in FireForge (engine session, patch
-directory, build, furnace), so all four exit 15. That is intentional: the
-fact is the same whichever lock was contended.
+### `check`
 
-**Interrupted or declined.** A Ctrl+C and a deliberate "no" at a
-confirmation are distinct, so a script can tell them apart: an interrupt raises
-`CancellationError` and exits 130, and a declined confirmation returns
-normally and exits 0, because the run did what it was asked and the answer
-was no.
+| Result                                                                                        | Exit |
+| --------------------------------------------------------------------------------------------- | ---: |
+| Every step that ran passed                                                                    |    0 |
+| A step failed, or a step had nothing to run and `check.failOnSkipped` is set (`check-failed`) |    1 |
+| An unknown step name for `--only` or `--skip`                                                 |    8 |
+| The workspace did not come free; no step's result is reported                                 |   15 |
 
-## `fireforge check`
+### `gate`
 
-The composed gate maps its verdict onto the existing codes rather than
-adding one:
+| Result                                                                                                                                                       | Exit |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---: |
+| `verified`: everything passed and `refs/fireforge/verified` is at the commit                                                                                 |    0 |
+| `pending`: everything passed and acceptances are outstanding; the ref has not moved                                                                          |    0 |
+| `feedback`: the entries named with `--lane` passed; nothing was recorded                                                                                     |    0 |
+| The working tree differs from HEAD (`gate-dirty-tree`); only the check is red (`gate-check-failed`)                                                          |    1 |
+| No commit to judge (`gate-no-commit`); the verified commit is not an ancestor (`gate-not-fast-forward`); the ref moved while the gate ran (`gate-ref-moved`) |    4 |
+| The build, a lane, a stress run, a control or a smoke start is red (`gate-failed`)                                                                           |    5 |
+| The working tree or HEAD changed while the gate ran (`gate-tree-moved`)                                                                                      |   14 |
+| The workspace did not come free                                                                                                                              |   15 |
 
-| Exit | When                                                                                                                                                                                                |
-| ---: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|    0 | Every step passed or was skipped.                                                                                                                                                                   |
-|    1 | At least one step failed (`reason=step-failures`). Each step's own exit code is in the `--json` document's `steps[].exitCode`. Also a `--patches` name that matches no patch, before any step runs. |
-|   15 | Every failed step exited 15 (`reason=lock-timeout`): nothing was judged red, the steps never got their locks. Re-queue it.                                                                          |
-|    2 | `fireforge.json` is invalid, including a `check.status` policy `status` would refuse. Raised before any step runs.                                                                                  |
-|    8 | An unknown `--only`/`--skip` step, or a bad `--jobs`. Raised before any step runs.                                                                                                                  |
+A gate that exits 0 has not necessarily moved the ref: read `result=` on the verdict line, `outcome` in the JSON document, or the ref itself. A red check with green lanes exits 1 because nothing `mach` ran failed; any red build or declared entry exits 5 whatever the check said.
 
-`furnace validate` exits 9 (`FURNACE_ERROR`) both for errors and for
-warnings past `--max-warnings`, so a gate that wants the distinction reads
-`summary.errors` from its `--json` document.
+`gate accept` exits 1 when a lane it stands on has no recorded pass for the commit (`gate-evidence-missing`) or the tree is dirty, and 8 for an undeclared ID.
 
-## Adding a code
+### `doctor`
 
-New codes go in `src/errors/codes.ts` with a comment saying what a consumer
-should do differently on seeing it. If the answer is "nothing different from
-an existing code", it does not need one. Add a row here in the same change.
+Exits 0 when no check failed (warnings do not count) and 1 otherwise (`doctor-unhealthy`). A missing tool of `externalToolchains` is a failed check when it is `required` and a warning otherwise.

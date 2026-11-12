@@ -1,0 +1,594 @@
+{
+  "name": "MyBrowser",
+  "vendor": "Acme",
+  "appId": "org.mybrowser.browser",
+  "binaryName": "mybrowser",
+  "firefox": {
+    "version": "153.7.0esr",
+    "product": "firefox-esr",
+    "sha256": "7f8715ee7de2cf36a156216a9b1c7f26d1653010e65793bb2fce66e12edb6ea0",
+    "candidate": "build1"
+  },
+  "build": {
+    "jobs": 14,
+    "release": {
+      "overlay": "configs/release.mozconfig",
+      "secrets": {
+        "variable": "MYBROWSER_BUILD_SECRETS_DIR",
+        "files": [
+          "google-safebrowsing-api.key"
+        ]
+      },
+      "outputs": [
+        "config.status",
+        "dist/*.dmg",
+        "dist/mybrowser/*.app",
+        "dist/bin/certutil",
+        "dist/bin/signmar",
+        "dist/host/bin/mar",
+        "dist/bin/*.dylib"
+      ]
+    }
+  },
+  "test": {
+    "reapOrphans": "owned"
+  },
+  "license": "EUPL-1.2",
+  "markerComment": "MYBROWSER",
+  "externalToolchains": [
+    {
+      "name": "seasonal-branding",
+      "tools": [
+        {
+          "name": "actool",
+          "xcrun": true,
+          "required": false
+        },
+        {
+          "name": "sips",
+          "required": false
+        }
+      ]
+    }
+  ],
+  "buildAudit": {
+    "unpackaged": [
+      {
+        "path": "browser/base/content/mybrowser-tile-host-types.js",
+        "reason": "Type-only mirror; never loaded."
+      }
+    ]
+  },
+  "patchLint": {
+    "checkJs": true,
+    "checkJsStrict": true,
+    "checkJsCompilerOptions": {
+      "strictNullChecks": true,
+      "noUnusedLocals": true,
+      "noUnusedParameters": true
+    },
+    "checkJsExtraShim": "tools/types/mybrowser-patch-lint.d.ts",
+    "checkJsTestFiles": true,
+    "checkJsTestShim": "tools/types/mybrowser-patch-lint-tests.d.ts",
+    "litTypes": true,
+    "rawColorAllowlist": [
+      "mybrowser-tokens.css"
+    ],
+    "fileSizeMetric": "code",
+    "fileSizeThresholds": {
+      "general": {
+        "notice": 500,
+        "warning": 800,
+        "error": 1000
+      },
+      "test": {
+        "notice": 1000,
+        "warning": 1300,
+        "error": 1500
+      }
+    },
+    "patchSizeMetric": "addedCode",
+    "patchSizeThresholds": {
+      "general": {
+        "lines": {
+          "notice": 1000,
+          "warning": 2000,
+          "error": 4000
+        },
+        "files": {
+          "notice": 8,
+          "warning": 12,
+          "error": 24
+        }
+      },
+      "test": {
+        "lines": {
+          "notice": 1500,
+          "warning": 3000,
+          "error": 6000
+        },
+        "files": {
+          "notice": 8,
+          "warning": 12,
+          "error": 24
+        }
+      },
+      "branding": {
+        "lines": {
+          "notice": 8000,
+          "warning": 18000,
+          "error": 30000
+        },
+        "files": {
+          "notice": 60,
+          "warning": 60,
+          "error": 90
+        }
+      }
+    },
+    "patchSizeRegistrationFiles": [
+      "jar.mn",
+      "*jar.inc.mn"
+    ],
+    "tokenScales": [
+      {
+        "properties": [
+          "gap",
+          "row-gap",
+          "column-gap",
+          "padding*",
+          "margin*"
+        ],
+        "prefix": [
+          "--mybrowser-space-",
+          "--mybrowser-gap-"
+        ],
+        "allow": [
+          "--mybrowser-*"
+        ],
+        "allowLiterals": [
+          "0",
+          "0px"
+        ],
+        "allowInCalc": [
+          "0.5",
+          "1.5"
+        ],
+        "offsetCap": 2,
+        "exclude": [
+          "browser/base/content/mybrowser-file-view.css",
+          "browser/base/content/mybrowser-genapp-kit/genapp-tailwind.css"
+        ],
+        "allowValues": [
+          {
+            "property": "margin-block-end",
+            "value": "126px",
+            "reason": "Vertical window bar: reserves the rail control cluster's height below the pill, a structural offset (spacing-scale.json perSiteAllow)."
+          },
+          {
+            "property": "margin-block-end",
+            "value": "168px",
+            "reason": "Vertical window bar: reserves the rail control cluster's height below the pill, a structural offset (spacing-scale.json perSiteAllow)."
+          }
+        ],
+        "minFiles": 56
+      }
+    ],
+    "jsdocClassMethods": "error",
+    "testAssertionFloor": "error",
+    "chromeScriptJsDoc": "error",
+    "forwardRegistration": "extended"
+  },
+  "patchPolicy": {
+    "ranges": [
+      {
+        "from": 1,
+        "to": 99,
+        "category": "branding"
+      },
+      {
+        "from": 100,
+        "to": 199,
+        "category": "infra"
+      },
+      {
+        "from": 200,
+        "to": 599,
+        "category": "ui"
+      },
+      {
+        "from": 600,
+        "to": 899,
+        "category": "ui"
+      }
+    ],
+    "addOnlyMarker": "mybrowser",
+    "upstreamAllowlist": [
+      {
+        "path": "**/jar.mn",
+        "addOnly": true,
+        "retiredPaths": [
+          "content/browser/logos/fxa-logo.svg"
+        ]
+      },
+      {
+        "path": "browser/base/moz.build",
+        "addOnly": true
+      },
+      {
+        "path": "browser/modules/moz.build",
+        "addOnly": true
+      }
+    ],
+    "scopeRules": [
+      {
+        "filenamePattern": "-tests\\.patch$",
+        "files": [
+          "**/test/**",
+          "**/tests/**"
+        ]
+      }
+    ],
+    "verifyDocumentPaths": true,
+    "mutationMode": "error",
+    "reservedRanges": [
+      {
+        "from": 900,
+        "to": 999,
+        "allowed": [
+          {
+            "filename": "900-infra-bindgen-basic-string-workaround.patch",
+            "files": [
+              "tools/profiler/rust-api/build.rs"
+            ],
+            "adr": "docs/adr/0001-example.md",
+            "documentation": "docs/UPSTREAM.md"
+          },
+          {
+            "filename": "901-ui-audio-volume-field.patch",
+            "files": [
+              "docshell/base/BrowsingContext.h",
+              "docshell/base/BrowsingContext.cpp",
+              "docshell/base/CanonicalBrowsingContext.h",
+              "docshell/base/CanonicalBrowsingContext.cpp",
+              "dom/base/nsPIDOMWindow.h",
+              "dom/base/nsGlobalWindowOuter.cpp",
+              "dom/audiochannel/AudioChannelService.cpp",
+              "dom/chrome-webidl/BrowsingContext.webidl",
+              "toolkit/content/widgets/browser-custom-element.mjs"
+            ],
+            "adr": "docs/adr/0001-example.md",
+            "documentation": "docs/UPSTREAM.md"
+          }
+        ]
+      }
+    ]
+  },
+  "typecheck": {
+    "projects": [
+      "components/custom/jsconfig.json",
+      "engine/browser/base/content/jsconfig.json",
+      "engine/browser/modules/mybrowser/jsconfig.json"
+    ],
+    "extraShim": "tools/types/mybrowser-shim-portable.d.ts",
+    "undefinedIdentifiers": "error",
+    "litTypes": true,
+    "projectOverrides": {
+      "engine/browser/base/content/jsconfig.json": "tools/types/mybrowser-shim-browser-content.d.ts"
+    }
+  },
+  "check": {
+    "status": {
+      "failOn": [
+        "unmanaged"
+      ]
+    },
+    "maxWarnings": {
+      "lint": 0,
+      "furnace": 0
+    },
+    "timeout": 600,
+    "failOnSkipped": true,
+    "extraSteps": [
+      {
+        "name": "branding-month",
+        "command": "node tools/scripts/check-branding-month.mts",
+        "timeout": 300,
+        "footprint": {
+          "static": true
+        }
+      },
+      {
+        "name": "engine-eslint",
+        "command": "node tools/scripts/run-engine-eslint.mts",
+        "timeout": 300,
+        "footprint": {
+          "static": true,
+          "cpu": 4,
+          "memory": 4
+        }
+      },
+      {
+        "name": "repo-audits",
+        "command": "node tools/scripts/run-audits.mts",
+        "timeout": 600,
+        "after": [
+          "typecheck"
+        ],
+        "footprint": {
+          "static": true,
+          "cpu": 2,
+          "memory": 4
+        }
+      },
+      {
+        "name": "seasonal-depth-proof",
+        "command": "node tools/scripts/generate-seasonal-branding.mts --depth-proof-self-test --month 1",
+        "timeout": 300,
+        "footprint": {
+          "static": true
+        }
+      },
+      {
+        "name": "token-lint",
+        "command": "./node_modules/.bin/fireforge token lint",
+        "timeout": 300,
+        "footprint": {
+          "static": true
+        }
+      },
+      {
+        "name": "tooling",
+        "command": "node tools/scripts/lint-tooling.mts && ./node_modules/.bin/tsc -p tsconfig.tools.json && node --test --test-reporter=dot 'tools/scripts/**/*.test.mts'",
+        "timeout": 600,
+        "footprint": {
+          "static": true,
+          "cpu": 4,
+          "memory": 4
+        }
+      }
+    ]
+  },
+  "sources": {
+    "schemaVersion": 1,
+    "mode": "authored",
+    "root": "src",
+    "metadataRoot": ".fireforge-sources",
+    "pristineCommit": "a5654e28a51104adec4bfa85c976d5c0bee7c0c6"
+  },
+  "slots": {
+    "dependencyCaches": [
+      {
+        "source": "engine/node_modules",
+        "target": "engine/node_modules"
+      },
+      {
+        "source": "tools/vendor/codemirror/node_modules",
+        "target": "tools/vendor/codemirror/node_modules"
+      },
+      {
+        "source": "tools/vendor/genapp-kit/node_modules",
+        "target": "tools/vendor/genapp-kit/node_modules"
+      }
+    ]
+  },
+  "proof": {
+    "mainBranch": "main",
+    "noneRoutes": [
+      "tools/**",
+      ".claude/**",
+      "tsconfig.tools.json",
+      "components/prettier.config.mjs",
+      ".prettierignore",
+      ".gitignore"
+    ],
+    "gate": {
+      "build": "ui",
+      "mode": "dev",
+      "lanes": [
+        {
+          "id": "unit",
+          "files": [
+            "browser/modules/mybrowser/test/unit/test_*.js"
+          ],
+          "quiet": true
+        },
+        {
+          "id": "mybrowser",
+          "files": [
+            "browser/base/content/test/mybrowser/browser_*.js"
+          ],
+          "dispatch": "one-browser",
+          "quiet": true,
+          "uploadDir": true,
+          "validate": {
+            "command": [
+              "node",
+              "tools/scripts/validate-suite.mts",
+              "--pref-census",
+              "{artifacts}/modifiedPrefs.json",
+              "--allow",
+              "tools/audit-config/pref-leaks-allow.json"
+            ]
+          }
+        },
+        {
+          "id": "webext",
+          "files": [
+            "browser/base/content/test/mybrowser-webext/browser_*.js"
+          ],
+          "quiet": true,
+          "uploadDir": true,
+          "validate": {
+            "command": [
+              "node",
+              "tools/scripts/validate-suite.mts",
+              "--pref-census",
+              "{artifacts}/modifiedPrefs.json",
+              "--allow",
+              "tools/audit-config/pref-leaks-allow.json"
+            ]
+          }
+        },
+        {
+          "id": "tiles",
+          "files": [
+            "browser/base/content/test/mybrowser-tiles/browser_*.js"
+          ],
+          "exclude": [
+            "browser/base/content/test/mybrowser-tiles/browser_mybrowser_ui_captures*.js",
+            "browser/base/content/test/mybrowser-tiles/browser_mybrowser_tiles_fullscreen.js",
+            "browser/base/content/test/mybrowser-tiles/browser_mybrowser_tile_frame_drag_out.js"
+          ],
+          "dispatch": "one-browser",
+          "quiet": true,
+          "uploadDir": true,
+          "env": {
+            "MYBROWSER_MEMORY_GUARD_JSON": "{artifacts}/memory-guard.json"
+          },
+          "validate": {
+            "command": [
+              "node",
+              "tools/scripts/validate-suite.mts",
+              "--pref-census",
+              "{artifacts}/modifiedPrefs.json",
+              "--allow",
+              "tools/audit-config/pref-leaks-allow.json",
+              "--memory-guard",
+              "{artifacts}/memory-guard.json"
+            ]
+          }
+        },
+        {
+          "id": "tiles-fullscreen",
+          "files": [
+            "browser/base/content/test/mybrowser-tiles/browser_mybrowser_tiles_fullscreen.js"
+          ],
+          "headed": true,
+          "machArgs": [
+            "--setpref=focusmanager.testmode=true"
+          ]
+        },
+        {
+          "id": "tiles-drag-out",
+          "files": [
+            "browser/base/content/test/mybrowser-tiles/browser_mybrowser_tile_frame_drag_out.js"
+          ],
+          "headed": true,
+          "holdFront": true
+        },
+        {
+          "id": "terminal-helper",
+          "files": [
+            "browser/base/content/test/mybrowser-tiles/browser_mybrowser_terminal.js"
+          ],
+          "validate": {
+            "command": [
+              "node",
+              "tools/scripts/run-helper-checks.mts"
+            ],
+            "footprint": {
+              "cpu": 4,
+              "memory": 4
+            }
+          }
+        },
+        {
+          "id": "captures",
+          "files": [
+            "browser/base/content/test/mybrowser-tiles/browser_mybrowser_ui_captures*.js"
+          ],
+          "exclude": [
+            "browser/base/content/test/mybrowser-tiles/browser_mybrowser_ui_captures_chat.js",
+            "browser/base/content/test/mybrowser-tiles/browser_mybrowser_ui_captures_cards.js",
+            "browser/base/content/test/mybrowser-tiles/browser_mybrowser_ui_captures_fonts.js"
+          ],
+          "owns": [
+            "browser/base/content/**",
+            "browser/themes/**",
+            "toolkit/themes/**",
+            "toolkit/content/widgets/**",
+            "browser/locales/en-US/browser/**",
+            "components/**",
+            "furnace.json"
+          ],
+          "dispatch": "standalone",
+          "uploadDir": true,
+          "env": {
+            "MYBROWSER_CAPTURE": "1",
+            "MYBROWSER_CAPTURE_DIR": "{artifacts}/captures"
+          },
+          "validate": {
+            "command": [
+              "node",
+              "tools/scripts/validate-captures.mts",
+              "{artifacts}/captures",
+              "--baseline=tools/audit-config/capture-scenes.json"
+            ],
+            "footprint": {
+              "memory": 2
+            }
+          }
+        }
+      ],
+      "runs": [
+        {
+          "id": "smoke",
+          "args": [
+            "--smoke-exit",
+            "30",
+            "--capture-console",
+            "{artifacts}/console.txt",
+            "--console-allow-file",
+            "tools/audit-config/smoke-console-allow.txt"
+          ],
+          "validate": {
+            "command": [
+              "node",
+              "tools/scripts/validate-smoke.mts",
+              "{artifacts}/console.txt",
+              "--allow",
+              "tools/audit-config/smoke-console-allow.txt"
+            ]
+          }
+        }
+      ],
+      "acceptance": [
+        {
+          "id": "visual",
+          "reason": "A person looks at the captured scenes.",
+          "owns": [
+            "browser/base/content/**",
+            "browser/themes/**",
+            "toolkit/themes/**",
+            "toolkit/content/widgets/**",
+            "components/**",
+            "furnace.json"
+          ],
+          "evidence": [
+            "lane:captures"
+          ]
+        }
+      ]
+    }
+  },
+  "exportQueue": {
+    "groups": [
+      {
+        "name": "test-scenarios-1",
+        "paths": [
+          "browser/base/content/test/mybrowser-tiles/file_scenario_video.html",
+          "browser/base/content/test/mybrowser-tiles/file_scenario_wiki.html"
+        ]
+      },
+      {
+        "name": "test-scenarios-2",
+        "paths": [
+          "browser/base/content/test/mybrowser-tiles/file_scenario_docs.html",
+          "browser/base/content/test/mybrowser-tiles/file_scenario_mail.html"
+        ]
+      }
+    ],
+    "maxGroupBytes": 1048576
+  }
+}

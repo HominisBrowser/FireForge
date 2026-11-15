@@ -14,7 +14,9 @@ import { posix } from 'node:path';
 import { type ManifestReference, resolveManifestPath } from './paths.js';
 import {
   joinSource,
+  literalText,
   type ManifestEdit,
+  manifestError,
   type Placement,
   scanStringList,
   sortedInsertIndex,
@@ -311,15 +313,32 @@ export interface NewTest {
   after?: string;
 }
 
+/** The text of a key, value or section name as it is written: a TOML string cannot hold a quote, a backslash or a line break unescaped, and no line of either format a line break. */
+function written(format: 'toml' | 'ini', text: string, what: string): string {
+  if (format === 'toml') return literalText(text, what);
+  if (/[\r\n]/.test(text)) {
+    throw manifestError(
+      `${what} ${JSON.stringify(text)} contains a line break.`,
+      'Add the entry by hand.'
+    );
+  }
+  return text;
+}
+
 function sectionLines(format: 'toml' | 'ini', name: string, keys: NewTest['keys']): string[] {
   const rows = Object.entries(keys ?? {}).map(([key, value]) => {
-    if (typeof value === 'string')
-      return format === 'toml' ? `${key} = "${value}"` : `${key} = ${value}`;
+    const row = written(format, key, 'The key');
+    if (typeof value === 'string') {
+      const text = written(format, value, `The value of ${key}`);
+      return format === 'toml' ? `${row} = "${text}"` : `${row} = ${text}`;
+    }
+    const items = value.map((item) => written(format, item, `An item of ${key}`));
     return format === 'toml'
-      ? `${key} = [${value.map((item) => `"${item}"`).join(', ')}]`
-      : `${key} = ${value.join(' ')}`;
+      ? `${row} = [${items.map((item) => `"${item}"`).join(', ')}]`
+      : `${row} = ${items.join(' ')}`;
   });
-  return [format === 'toml' ? `["${name}"]` : `[${name}]`, ...rows];
+  const header = written(format, name, 'The test name');
+  return [format === 'toml' ? `["${header}"]` : `[${header}]`, ...rows];
 }
 
 /** What a new test manifest starts with. */

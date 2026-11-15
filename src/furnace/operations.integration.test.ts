@@ -18,6 +18,7 @@ import {
   removeComponent,
   renameComponent,
   typingDrift,
+  updateTypingFiles,
 } from './index.js';
 
 const dir = useTempDir();
@@ -142,6 +143,50 @@ describe('createComponent', () => {
       code: 'furnace-jsconfig-invalid',
     });
     expect(await readTree(f.root, ['.fireforge'])).toEqual(before);
+  });
+});
+
+describe('a dry run', () => {
+  const typed = (): object => ({
+    ...FURNACE,
+    typecheckJsconfig: 'components/custom/jsconfig.json',
+  });
+
+  it('lists the paths the operation then changes, the generated typing files included', async () => {
+    const f = await fixture(typed());
+    await updateTypingFiles(f.project, f.tracked);
+    const dryCreate = await createComponent(f.project, f.tracked, 'moz-acme-chip', {
+      dryRun: true,
+    });
+    const created = await createComponent(f.project, f.tracked, 'moz-acme-chip');
+    expect(dryCreate.paths).toEqual(created.paths);
+    expect(created.paths).toEqual(
+      expect.arrayContaining(['components/custom/jsconfig.json', 'types/widgets.d.ts'])
+    );
+
+    const dryRename = await renameComponent(
+      f.project,
+      f.tracked,
+      'moz-acme-chip',
+      'moz-acme-pill',
+      {
+        dryRun: true,
+      }
+    );
+    const renamed = await renameComponent(f.project, f.tracked, 'moz-acme-chip', 'moz-acme-pill');
+    expect(dryRename.paths).toEqual(renamed.paths);
+    expect(renamed.paths).toEqual(
+      expect.arrayContaining(['components/custom/jsconfig.json', 'types/widgets.d.ts'])
+    );
+
+    const dryRemove = await removeComponent(f.project, f.tracked, 'moz-acme-pill', {
+      dryRun: true,
+    });
+    const removed = await removeComponent(f.project, f.tracked, 'moz-acme-pill');
+    expect(dryRemove.paths).toEqual(removed.paths);
+    expect(removed.paths).toEqual(
+      expect.arrayContaining(['components/custom/jsconfig.json', 'types/widgets.d.ts'])
+    );
   });
 });
 

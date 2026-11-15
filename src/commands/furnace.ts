@@ -34,7 +34,12 @@ async function target(ctx: CommandContext): Promise<FurnaceTarget> {
   return { project, tracked: await trackedFiles(project, { declare: true }) };
 }
 
-/** Runs `body` in the workspace whose engine the components deploy into. */
+/**
+ * Runs `body` in the workspace whose engine the components deploy into. Only
+ * `validate` has the workspace deployed into first, so it judges the files
+ * the project deploys; `apply` deploys itself and the rest read the
+ * deployment as it stands.
+ */
 function inWorkspace<T>(
   project: Project,
   command: string,
@@ -43,7 +48,12 @@ function inWorkspace<T>(
 ): Promise<T> {
   return withWorkspace(
     project,
-    { command: `furnace ${command}`, workspace: opts.workspace, waitMs: lockWaitMs(opts.waitLock) },
+    {
+      command: `furnace ${command}`,
+      workspace: opts.workspace,
+      waitMs: lockWaitMs(opts.waitLock),
+      deploy: command === 'validate',
+    },
     body
   );
 }
@@ -78,7 +88,10 @@ const create = defineCommand({
     sharedFtl: opt.string('Share this existing feature Fluent file instead (implies --localized)', {
       valueName: 'path',
     }),
-    register: opt.flag('List the element in customElements.js', { negatable: true, default: true }),
+    register: opt.flag('Register the element in customElements.js when deployed', {
+      negatable: true,
+      default: true,
+    }),
     compose: opt.list('A component it renders inside its template', { valueName: 'tag' }),
     tests: opt.enum(TEST_STYLES, 'Scaffold a test in this harness'),
     dryRun,
@@ -217,7 +230,7 @@ const types = defineCommand({
 const diff = defineCommand({
   name: 'diff',
   summary:
-    'Show how components differ from their deployed copy (custom) or the stock files (override)',
+    'Show how components differ from their deployed copy (custom) or the stock files (override), and what a deployment would remove',
   args: { name: arg.string('Only this component', { optional: true }) },
   options: { ...workspaceOptions },
   run: async (ctx, { name }, opts) => {

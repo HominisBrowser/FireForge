@@ -6,6 +6,7 @@ import {
   compileAllowlist,
   createSmokeScan,
   isBrowserLine,
+  isLaunchLine,
   isSmokeError,
   parseAllowlistFile,
   smokeFailure,
@@ -33,6 +34,24 @@ describe('smoke error lines', () => {
     expect(isBrowserLine(' 0:00.42 /obj/dist/bin/firefox -profile /tmp/p')).toBe(false);
     expect(isBrowserLine('   ')).toBe(false);
     expect(isBrowserLine('console.log: started')).toBe(true);
+  });
+
+  it.each([
+    '/opt/mach/pip.py:12: DeprecationWarning: imp is deprecated',
+    'UserWarning: psutil failed to run',
+    'Traceback (most recent call last):',
+    '  File "/opt/mach/x.py", line 4, in <module>',
+  ])("does not take the launcher's %j for the browser", (line) => {
+    expect(isBrowserLine(line)).toBe(false);
+  });
+
+  it('finds the line mach logs as it starts the browser', () => {
+    expect(isLaunchLine(' 0:00.42 /obj/dist/bin/firefox -profile /tmp/p')).toBe(true);
+    expect(isLaunchLine(' 0:00.42 C:\\obj\\dist\\bin\\fork.exe -no-remote -profile C:\\t')).toBe(
+      true
+    );
+    expect(isLaunchLine(' 0:00.42 Reading build config for -profile support')).toBe(false);
+    expect(isLaunchLine('/obj/dist/bin/firefox -profile /tmp/p')).toBe(false);
   });
 });
 
@@ -71,7 +90,7 @@ describe('a smoke scan', () => {
     ];
     const scan = createSmokeScan(allow);
     for (const line of [
-      ' 0:00.10 firefox -profile x',
+      ' 0:00.10 /obj/dist/bin/firefox -profile x',
       'console.warn: RSLoader: fine',
       'console.error: known RSLoader issue',
       'JavaScript error: real, line 1',
@@ -86,6 +105,34 @@ describe('a smoke scan', () => {
     expect(report.browserLines).toBe(5);
     expect(report.entries.map((entry) => entry.hits)).toEqual([2, 0, 2]);
     expect(report.overCap).toEqual([{ source: 'flood', origin: 'f:2', hits: 2, maxHits: 1 }]);
+  });
+});
+
+describe('what counts as the browser having started', () => {
+  const scanned = (lines: string[]): number => {
+    const scan = createSmokeScan([]);
+    for (const line of lines) scan.line(line);
+    return scan.report().browserLines;
+  };
+  const LAUNCH = ' 0:01.20 /obj/dist/bin/firefox -no-remote -profile /tmp/p';
+
+  it('counts nothing a launcher printed before the browser was started', () => {
+    expect(
+      scanned([
+        '/opt/mach/pip.py:12: DeprecationWarning: imp is deprecated',
+        'Creating local Python environment',
+        ' 0:00.50 Adding configure options',
+      ])
+    ).toBe(0);
+    expect(scanned(['mach prints a plain line first', ' 0:00.50 Reading config'])).toBe(0);
+  });
+
+  it('counts nothing after the launch line but launcher diagnostics', () => {
+    expect(scanned([LAUNCH, 'UserWarning: psutil failed to run', ' 0:01.90 exit'])).toBe(0);
+  });
+
+  it('counts the browser lines after the launch line', () => {
+    expect(scanned(['UserWarning: before', LAUNCH, 'console.log: ready', '###!!! x'])).toBe(2);
   });
 });
 

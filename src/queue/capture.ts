@@ -45,6 +45,7 @@ import {
   type Projection,
   projectQueue,
   readApplied,
+  recoverInterrupted,
   regeneratePatchBody,
   sameState,
 } from './baseline.js';
@@ -180,6 +181,7 @@ export async function exportPatch(
   if ((options.all === true) === paths.length > 0) {
     throw usage('Name the paths to export, or export every unowned edit with "all".');
   }
+  if (options.dryRun !== true) await recoverInterrupted(project);
   await requireNoSession(project, 'the export');
   const queue = await loadQueue(project);
   requireNewName(queue, options.name);
@@ -415,6 +417,7 @@ export async function reExport(
   if ((options.all === true) === named.length > 0) {
     throw usage('Name the patches to re-export, or re-export every patch with "all".');
   }
+  if (options.dryRun !== true) await recoverInterrupted(project);
   await requireNoSession(project, 'the re-export');
   const queue = await loadQueue(project);
   const selected = options.all === true ? [...queue.patches] : selectPatches(queue, named);

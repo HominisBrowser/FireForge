@@ -24,7 +24,13 @@ import {
   sparseTree,
   statesIn,
 } from './apply.js';
-import { engineHead, forgetApplied, regeneratePatchBody, sameState } from './baseline.js';
+import {
+  engineHead,
+  forgetApplied,
+  recoverInterrupted,
+  regeneratePatchBody,
+  sameState,
+} from './baseline.js';
 import {
   isPatchName,
   type LintIgnoreEntry,
@@ -104,6 +110,7 @@ async function operate(
   label: string,
   edit: (draft: QueueDraft, queue: Queue) => void | Promise<void>
 ): Promise<QueueEdit> {
+  await recoverInterrupted(project);
   await requireNoSession(project, label);
   return mutateQueue(project, label, async (draft, queue) => {
     const before = new Map(
@@ -525,7 +532,11 @@ export interface PatchMetaChange {
   description?: string;
   /** `null` clears the tier. */
   tier?: 'branding' | null;
-  /** Waivers to add (replacing any entry for the same rule) and rules whose waiver to drop. */
+  /**
+   * Waivers to add and rules whose waivers to drop. An added rule ID replaces every entry of its
+   * rule; an added ceiling replaces a rule ID and the ceiling of the same share (or the unscoped
+   * one), and keeps the ceilings of other shares. A removal drops every entry of the rule.
+   */
   lintIgnore?: { add?: readonly LintIgnoreEntry[]; remove?: readonly string[] };
   /** Declarations to add (replacing an equal one) and to drop. */
   stagedDependencies?: {
@@ -536,6 +547,13 @@ export interface PatchMetaChange {
 
 function ruleOf(entry: LintIgnoreEntry): string {
   return typeof entry === 'string' ? entry : entry.rule;
+}
+
+/** Whether adding `entry` replaces `other`: the same rule, and the same scope unless either waives it whole. */
+function replaces(entry: LintIgnoreEntry, other: LintIgnoreEntry): boolean {
+  if (ruleOf(entry) !== ruleOf(other)) return false;
+  if (typeof entry === 'string' || typeof other === 'string') return true;
+  return entry.share === other.share;
 }
 
 function absent(row: PatchEntry, what: string, present: readonly string[]): FireForgeError {
@@ -555,7 +573,7 @@ function editWaivers(row: DraftPatch, change: NonNullable<PatchMetaChange['lintI
     list = list.filter((entry) => ruleOf(entry) !== rule);
   }
   for (const entry of change.add ?? []) {
-    list = [...list.filter((other) => ruleOf(other) !== ruleOf(entry)), entry];
+    list = [...list.filter((other) => !replaces(entry, other)), entry];
   }
   setWaivers(row, list);
 }

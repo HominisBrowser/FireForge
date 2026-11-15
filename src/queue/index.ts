@@ -28,7 +28,7 @@ import { ExitCode } from '../kernel/errors.js';
 import type { PatchProject, Project } from '../project/index.js';
 import { queueError } from './queue.js';
 
-export { replayQueue } from './apply.js';
+export { replay, replayQueue, sparseTree } from './apply.js';
 export { type EnginePath, regeneratePatchBody } from './baseline.js';
 export { exportPatch, reExport } from './capture.js';
 export { engineChanges, queueChanges } from './changes.js';
@@ -46,7 +46,14 @@ export {
   stagedDependencyOf,
 } from './operations.js';
 export { type Placement } from './placement.js';
-export { mutateQueue, type Queue, type QueuePatch, readQueue, writeQueue } from './queue.js';
+export {
+  mutateQueue,
+  pathsOf,
+  type Queue,
+  type QueuePatch,
+  readQueue,
+  writeQueue,
+} from './queue.js';
 export { discard, enginePaths, resetEngine } from './restore.js';
 export { importQueue, rebaseQueue, type RebaseResult, resolvePatchFromEngine } from './session.js';
 export { queueStatus, verifyQueue } from './status.js';

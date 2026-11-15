@@ -39,9 +39,10 @@ import {
   tempPathFor,
   walkFiles,
 } from '../kernel/fs.js';
+import { hashFile } from '../kernel/hash.js';
 import { isRecord, readJsonIfExists, writeJson } from '../kernel/json.js';
 import { withLock } from '../kernel/lock.js';
-import { s } from '../kernel/schema.js';
+import { type Infer, s } from '../kernel/schema.js';
 import type { HostPaths, PatchProject } from '../project/index.js';
 import { type DownloadOptions, ensureArchive, extractArchive } from './archive.js';
 import { type FirefoxPin, pinKey } from './pin.js';
@@ -60,7 +61,10 @@ const PIN_FILE = 'fireforge-pin.json';
 const PinRecord = s.object({
   firefox: s.unknown(),
   commit: s.string({ pattern: /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/ }),
+  /** The archive the commit was imported from; absent in a record that predates it. */
+  archive: s.object({ sha256: s.string({ pattern: /^[a-f0-9]{64}$/ }) }).optional(),
 });
+type PinRecord = Infer<typeof PinRecord>;
 
 /** The metadata of the one commit an archive imports as. */
 const IMPORT_COMMIT = {
@@ -79,19 +83,47 @@ const HOST_INDEPENDENT_CONFIG = [
 /** An import takes minutes; a second command for the same pin waits for it. */
 const IMPORT_WAIT_MS = 60 * 60 * 1000;
 
-/**
- * The pristine repository of a pin when this host already has it. Reads
- * nothing from the network.
- *
- * @param host - The host locations
- * @param pin - The pin
- * @throws `pristine-invalid` (exit code 2) when the repository's record is malformed
- */
-export async function findPristine(
-  host: Pick<HostPaths, 'pristine'>,
-  pin: FirefoxPin
-): Promise<Pristine | undefined> {
-  const read = async (repo: string): Promise<{ firefox: unknown; commit: string } | undefined> =>
+/** What a record proves about the archive its commit was imported from. */
+function evidenceOf(record: PinRecord): {
+  sha256: string | undefined;
+  verification: 'pinned' | 'published' | 'unverified';
+} {
+  const stored = isRecord(record.firefox) ? record.firefox : {};
+  const pinned = typeof stored['sha256'] === 'string' ? stored['sha256'] : undefined;
+  return {
+    // A pinned digest was checked against the archive, so it is the archive's.
+    sha256: record.archive?.sha256 ?? pinned,
+    // Without a pinned digest an import either matched the published one or,
+    // only where the project allowed it, was trusted on TLS alone.
+    verification:
+      pinned !== undefined
+        ? 'pinned'
+        : stored['allowUnverifiedDownload'] === true
+          ? 'unverified'
+          : 'published',
+  };
+}
+
+/** Why a record does not meet the pin's verification requirements, or undefined when it does. */
+function unmet(record: PinRecord, pin: FirefoxPin): string | undefined {
+  const evidence = evidenceOf(record);
+  if (pin.sha256 !== undefined) {
+    if (evidence.sha256 === pin.sha256) return undefined;
+    return evidence.sha256 === undefined
+      ? `its import did not record the archive's digest, and firefox.sha256 requires ${pin.sha256}`
+      : `it was imported from an archive with SHA-256 ${evidence.sha256}, not the pinned ${pin.sha256}`;
+  }
+  if (evidence.verification !== 'unverified' || pin.allowUnverifiedDownload) return undefined;
+  return 'it was imported from an archive accepted without checking its digest, which firefox.allowUnverifiedDownload no longer allows';
+}
+
+type Lookup =
+  | { kind: 'absent' }
+  | { kind: 'found'; pristine: Pristine }
+  | { kind: 'unmet'; pristine: Pristine; reason: string };
+
+async function lookup(host: Pick<HostPaths, 'pristine'>, pin: FirefoxPin): Promise<Lookup> {
+  const read = (repo: string): Promise<PinRecord | undefined> =>
     readJsonIfExists(join(repo, PIN_FILE), PinRecord, {
       code: 'pristine-invalid',
       exitCode: ExitCode.CONFIG_ERROR,
@@ -99,26 +131,63 @@ export async function findPristine(
     });
   const repo = join(host.pristine, pinKey(pin));
   const record = await read(repo);
-  if (record !== undefined) return { repo, commit: record.commit };
+  if (record !== undefined) {
+    const pristine = { repo, commit: record.commit };
+    const reason = unmet(record, pin);
+    return reason === undefined ? { kind: 'found', pristine } : { kind: 'unmet', pristine, reason };
+  }
   // A repository filed under the pin's key without its candidate serves the
   // pin when its record names exactly this archive.
-  if (pin.candidate === undefined) return undefined;
+  if (pin.candidate === undefined) return { kind: 'absent' };
   const earlier = join(host.pristine, pinKey({ product: pin.product, version: pin.version }));
   const stored = await read(earlier);
-  return stored !== undefined && samePin(stored.firefox, pin)
-    ? { repo: earlier, commit: stored.commit }
-    : undefined;
+  return stored !== undefined && samePin(stored, pin)
+    ? { kind: 'found', pristine: { repo: earlier, commit: stored.commit } }
+    : { kind: 'absent' };
 }
 
-/** Whether a stored pin record names the archive of `pin`: product, version, candidate and digest. */
-function samePin(stored: unknown, pin: FirefoxPin): boolean {
+/**
+ * The pristine repository of a pin when this host already has it and what
+ * was recorded at its import meets the pin: the archive's digest equal to
+ * `firefox.sha256` when the pin has one, and a digest that was verified
+ * unless `firefox.allowUnverifiedDownload` is set. Reads nothing from the
+ * network.
+ *
+ * @param host - The host locations
+ * @param pin - The pin
+ * @throws `pristine-invalid` (exit code 2) when the repository's record is
+ *   malformed; `pristine-unsatisfied` (exit code 3) when the repository does
+ *   not meet the pin, which `fireforge download` settles
+ */
+export async function findPristine(
+  host: Pick<HostPaths, 'pristine'>,
+  pin: FirefoxPin
+): Promise<Pristine | undefined> {
+  const found = await lookup(host, pin);
+  if (found.kind === 'unmet') {
+    throw new FireForgeError(
+      'pristine-unsatisfied',
+      `The pristine source of ${pinKey(pin)} does not meet this project's pin: ${found.reason}.`,
+      {
+        exitCode: ExitCode.DOWNLOAD_ERROR,
+        hint: 'Run "fireforge download" to verify it again; the cached archive is used when this host still has it.',
+      }
+    );
+  }
+  return found.kind === 'found' ? found.pristine : undefined;
+}
+
+/** Whether a stored record names the archive of `pin`: product, version, candidate and digest. */
+function samePin(record: PinRecord, pin: FirefoxPin): boolean {
+  const stored = record.firefox;
   if (!isRecord(stored)) return false;
+  const { sha256 } = evidenceOf(record);
   return (
     stored['product'] === pin.product &&
     stored['version'] === pin.version &&
     stored['candidate'] === pin.candidate &&
-    stored['sha256'] !== undefined &&
-    stored['sha256'] === pin.sha256
+    sha256 !== undefined &&
+    sha256 === pin.sha256
   );
 }
 
@@ -208,17 +277,23 @@ export async function ensurePristine(
     }
     return pristine;
   };
-  const present = await findPristine(host, pin);
-  if (present !== undefined) return check(present);
+  const present = await lookup(host, pin);
+  if (present.kind === 'found') return check(present.pristine);
 
   const key = pinKey(pin);
   const lock = join(host.locks, `pristine-${key}`);
   return withLock(lock, { label: `pristine ${key}`, waitMs: IMPORT_WAIT_MS }, async () => {
-    const imported = await findPristine(host, pin);
-    if (imported !== undefined) return check(imported);
+    const imported = await lookup(host, pin);
+    if (imported.kind === 'found') return check(imported.pristine);
+    if (imported.kind === 'unmet') {
+      options.onProgress?.(
+        `The imported source of ${key} does not meet the pin (${imported.reason}); verifying and importing it again`
+      );
+    }
 
     const repo = join(host.pristine, key);
     const archive = await ensureArchive(host, pin, options);
+    const archiveSha256 = await hashFile(archive);
     await ensureDir(host.pristine);
     const staging = tempPathFor(repo);
     const tree = `${staging}-tree`;
@@ -227,8 +302,15 @@ export async function ensurePristine(
       await extractArchive(archive, tree);
       options.onProgress?.('Importing the source as one commit');
       const pristine = check({ repo, commit: await importTree(tree, staging) });
-      await writeJson(join(staging, PIN_FILE), { firefox: pin, commit: pristine.commit });
-      // Whatever is at the final path has no record, so it is an import that never finished.
+      const record = { firefox: pin, commit: pristine.commit, archive: { sha256: archiveSha256 } };
+      if (imported.kind === 'unmet' && imported.pristine.commit === pristine.commit) {
+        // The same commit again: the repository stays and its record is brought up to date.
+        await writeJson(join(repo, PIN_FILE), record);
+        return pristine;
+      }
+      await writeJson(join(staging, PIN_FILE), record);
+      // What is at the final path either has no record (an import that never
+      // finished) or holds another commit than the archive imports as.
       await remove(repo);
       await move(staging, repo);
       return pristine;
@@ -295,13 +377,19 @@ export interface EngineInstall {
  *
  * @param project - The project
  * @param pristine - The pristine repository of its pin
- * @param options - `force`, and `waitMs` for the engine lock
+ * @param options - `force`; `waitMs` for the engine lock; `beforeReplace`,
+ *   run under that lock once an existing engine is about to be replaced, which
+ *   leaves the engine alone by throwing
  * @throws `engine-exists` when there is an engine and `force` is not set
  */
 export async function installProjectEngine(
   project: PatchProject,
   pristine: Pristine,
-  options: { force?: boolean; waitMs?: number | undefined } = {}
+  options: {
+    force?: boolean;
+    waitMs?: number | undefined;
+    beforeReplace?: (() => Promise<void>) | undefined;
+  } = {}
 ): Promise<EngineInstall> {
   const engineDir = project.paths.engine;
   return withEngineLock(project, { command: 'download', waitMs: options.waitMs }, async () => {
@@ -315,6 +403,7 @@ export async function installProjectEngine(
         hint: 'Pass --force to replace it. Its uncommitted changes are kept as a recovery snapshot; its build is not.',
       });
     }
+    await options.beforeReplace?.();
     const snapshot = (await isRepository(engineDir))
       ? await saveRecoverySnapshot(engineDir, { label: 'download' })
       : undefined;

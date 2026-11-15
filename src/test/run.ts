@@ -98,6 +98,8 @@ export interface FileResult {
   unexpected: boolean;
   durationMs?: number;
   failures: AssertionFailure[];
+  /** What the harness said when the file itself ended unexpectedly. */
+  message?: string;
 }
 
 /** One mach invocation and its verdict. */
@@ -288,6 +290,7 @@ function fileResults(
             expected: result.expected,
             unexpected: result.unexpected,
             ...(result.durationMs === undefined ? {} : { durationMs: result.durationMs }),
+            ...(result.message === undefined ? {} : { message: result.message }),
           }),
       failures: result?.failures ?? [],
     };
@@ -304,6 +307,7 @@ function fileResults(
       expected: result.expected,
       unexpected: result.unexpected,
       failures: result.failures,
+      ...(result.message === undefined ? {} : { message: result.message }),
     });
   }
   return files;

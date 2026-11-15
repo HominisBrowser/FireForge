@@ -30,10 +30,10 @@ components/
 
 - `-d, --description <text>`: what the component is.
 - `--localized`: give it its own Fluent file. `--shared-ftl <path>` shares an existing feature Fluent file instead.
-- `--register` (the default) lists the element in `toolkit/content/customElements.js` so it is defined lazily; `--no-register` leaves it out.
+- `--register` (the default) marks the element for `toolkit/content/customElements.js` so it is defined lazily; `--no-register` leaves it out. `create` writes only the component's sources and its `furnace.json` entry: the `customElements.js` entry and the `jar.mn` lines are written into the engine when the component is deployed (see [Deploying](#deploying)), so the first `build` has them.
 - `--compose <tag>`: a component it renders in its template.
 - `--tests browser-chrome|mochikit|xpcshell`: scaffold a test in that harness and register it in its manifest.
-- `--dry-run`: show what would change.
+- `--dry-run`: show what would change: the same list of files the command then changes, the generated typing files included.
 
 `furnace override <name>` copies a stock component from the engine (`toolkit/content/widgets/<name>`, or `--from <dir>`) into `components/overrides/<name>/` and records the Firefox version it was taken from. `--css-only` copies and deploys only its stylesheets.
 
@@ -57,9 +57,11 @@ Deployment compares what the components want the engine to hold with what it hol
 - one `toolkit/content/jar.mn` line per module and stylesheet of a custom component, packaged as `chrome://global/content/elements/<file>`;
 - one `customElements.js` entry per registered element, in the list that matches how it loads (ES modules in the list imported on `DOMContentLoaded`).
 
-A deployment record in the workspace says what each component deployed, so a deployed file the component does not have, or a component `furnace.json` does not list, is taken away, and an override's file goes back to the upstream bytes. Everything else is decided from the bytes on disk: an unchanged component costs a read and a hash, and a reset engine or a lost record is repaired by the next deployment.
+A deployment record in the workspace says what each component deployed, so a deployed file the component does not have, or a component `furnace.json` does not list, is taken away, and an override's file goes back to the upstream bytes. A path that any component still wants is never taken away, whichever component it moves from or to. A project without `furnace.json` is deployed too, as an empty set: in source mode, where a workspace serves any checkout, it takes away what another checkout deployed into it. Everything else is decided from the bytes on disk: an unchanged component costs a read and a hash, and a reset engine or a lost record is repaired by the next deployment.
 
-`furnace status` lists the components and whether the engine holds them as the project has them. `furnace diff [name]` shows how a custom component differs from its deployed copy, or an override from the stock files.
+`furnace status` lists the components and whether the engine holds them as the project has them. `furnace diff [name]` shows how a custom component differs from its deployed copy, or an override from the stock files, and what the next deployment would take away: a file a component dropped, a component `furnace.json` no longer lists, an override file going back to its upstream bytes (shown as the engine's copy against what the engine will hold).
+
+`furnace apply --dry-run`, `furnace status`, `furnace diff` and `furnace override` bring a source-mode workspace to the checkout's owned files but never deploy the components into it first, so they report the state the next deployment would start from. `furnace validate` deploys first, so it judges the files the project deploys.
 
 ## Shared CSS fragments
 

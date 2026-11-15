@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -20,7 +20,10 @@ useMachSandbox();
 const OVERLAY = 'ac_add_options --disable-tests\n';
 
 /** A patch-mode project over a synthetic engine, with the given `build` section. */
-async function workspaceWith(buildSection?: unknown): Promise<Workspace> {
+async function workspaceWith(
+  buildSection?: unknown,
+  firefox: Record<string, unknown> = {}
+): Promise<Workspace> {
   const root = join(dir(), 'project');
   await writeTree(root, {
     'fireforge.json': JSON.stringify({
@@ -28,7 +31,7 @@ async function workspaceWith(buildSection?: unknown): Promise<Workspace> {
       vendor: 'Test',
       appId: 'org.example.testbrowser',
       binaryName: 'testbrowser',
-      firefox: { version: '140.9.0esr', product: 'firefox-esr' },
+      firefox: { version: '140.9.0esr', product: 'firefox-esr', ...firefox },
       ...(buildSection === undefined ? {} : { build: buildSection }),
     }),
     'configs/common.mozconfig': 'ac_add_options --enable-application=browser\n',
@@ -172,5 +175,80 @@ describe('packageBrowser', () => {
     await expect(
       packageBrowser(workspace, { release: true, outputDir: join(dir(), 'out') })
     ).rejects.toMatchObject({ code: 'release-output-missing', exitCode: ExitCode.BUILD_ERROR });
+  });
+
+  it('touches nothing in the output directory when a later declared output is missing', async () => {
+    const workspace = await workspaceWith({
+      release: {
+        overlay: 'configs/release.mozconfig',
+        outputs: ['dist/*.package', 'dist/absent.dmg'],
+      },
+    });
+    const outputDir = join(dir(), 'out');
+    await writeTree(outputDir, {
+      'release.json': '{"old":true}\n',
+      'dist/testbrowser.package': 'old package\n',
+    });
+    await expect(packageBrowser(workspace, { release: true, outputDir })).rejects.toMatchObject({
+      code: 'release-output-missing',
+    });
+    expect(await readFile(join(outputDir, 'release.json'), 'utf8')).toBe('{"old":true}\n');
+    expect(await readFile(join(outputDir, 'dist/testbrowser.package'), 'utf8')).toBe(
+      'old package\n'
+    );
+    expect((await readdir(dir())).filter((name) => name.includes('fireforge-tmp'))).toEqual([]);
+  });
+
+  it('puts the previous outputs and release.json back when they cannot all be replaced', async () => {
+    const workspace = await workspaceWith({
+      release: {
+        overlay: 'configs/release.mozconfig',
+        outputs: ['config.status', 'dist/*.package'],
+      },
+    });
+    const outputDir = join(dir(), 'out');
+    // A file where the second output needs a directory: its placement fails after the first one's.
+    await writeTree(outputDir, {
+      'release.json': '{"old":true}\n',
+      'config.status': 'old status\n',
+      dist: 'not a directory\n',
+    });
+    await expect(packageBrowser(workspace, { release: true, outputDir })).rejects.toThrow();
+    expect(await readFile(join(outputDir, 'release.json'), 'utf8')).toBe('{"old":true}\n');
+    expect(await readFile(join(outputDir, 'config.status'), 'utf8')).toBe('old status\n');
+    expect(await readFile(join(outputDir, 'dist'), 'utf8')).toBe('not a directory\n');
+    expect((await readdir(outputDir)).sort()).toEqual(['config.status', 'dist', 'release.json']);
+    expect((await readdir(dir())).filter((name) => name.includes('fireforge-tmp'))).toEqual([]);
+  });
+
+  it('refuses an output directory that overlaps the object directory before building', async () => {
+    const workspace = await workspaceWith({
+      release: { overlay: 'configs/release.mozconfig', outputs: ['config.status'] },
+    });
+    await writeTree(workspace.releaseObjDir, { 'config.status': 'built\n' });
+    for (const outputDir of [
+      workspace.releaseObjDir,
+      join(workspace.releaseObjDir, 'dist'),
+      join(workspace.releaseObjDir, '..'),
+    ]) {
+      await expect(packageBrowser(workspace, { release: true, outputDir })).rejects.toMatchObject({
+        code: 'release-output-overlaps-build',
+        exitCode: ExitCode.INVALID_ARGUMENT,
+      });
+    }
+    expect(await readFile(join(workspace.releaseObjDir, 'config.status'), 'utf8')).toBe('built\n');
+    expect(await readMachLog(workspace.engineDir)).toEqual([]);
+  });
+
+  it('records the pin of a release candidate in release.json', async () => {
+    const workspace = await workspaceWith(
+      { release: { overlay: 'configs/release.mozconfig', outputs: ['config.status'] } },
+      { candidate: 'build2' }
+    );
+    const outputDir = join(dir(), 'out');
+    await packageBrowser(workspace, { release: true, outputDir });
+    expect(JSON.parse(await readFile(join(outputDir, 'release.json'), 'utf8'))).toMatchObject({
+      pin: { product: 'firefox-esr', version: '140.9.0esr', candidate: 'build2' },
+    });
   });
 });

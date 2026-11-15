@@ -3,11 +3,15 @@ import { arg, defineCommand, lockOptions, opt } from '../cli/command.js';
 import type { CommandContext } from '../cli/context.js';
 import {
   addWorkspace,
+  engineLockPath,
   type PoolWorkspace,
+  readHostLocks,
   removeWorkspace,
   repairWorkspace,
 } from '../engine/index.js';
 import { FireForgeError } from '../kernel/errors.js';
+import type { JsonObject } from '../kernel/json.js';
+import { type LockHolder, type LockStatus, readLockStatus } from '../kernel/lock.js';
 import { listAllWorkspaces } from '../mode/index.js';
 import { hostPaths, loadProject, type Project } from '../project/index.js';
 
@@ -40,12 +44,38 @@ function row(workspace: PoolWorkspace): string {
   return `${workspace.name}  ${workspace.pin}  ${workspace.built ? 'built' : 'not built'}  ${state}  ${last}`;
 }
 
+/** One holder of a lock as `--json` reports it: who, since when, and for which checkout and command. */
+function leaseDocument(holder: LockHolder): JsonObject {
+  return {
+    pid: holder.pid,
+    mode: holder.mode,
+    since: holder.requestedAt,
+    checkout: holder.info['checkout'] ?? null,
+    command: holder.info['command'] ?? null,
+  };
+}
+
+/** What a lock's state says about it, without taking it. */
+function lockDocument(status: Pick<LockStatus, 'holders' | 'unidentified'>): {
+  leased: boolean;
+  leases: JsonObject[];
+  unidentifiedHolders: number;
+} {
+  return {
+    leased: status.holders.length + status.unidentified > 0,
+    leases: status.holders.map(leaseDocument),
+    unidentifiedHolders: status.unidentified,
+  };
+}
+
 const list = defineCommand({
   name: 'list',
   summary: 'List the workspaces of this host',
   json: true,
   run: async (ctx) => {
-    const { engine, pool } = await listAllWorkspaces(hostPaths(ctx.env), await projectHere(ctx));
+    const host = hostPaths(ctx.env);
+    const project = await projectHere(ctx);
+    const { engine, pool } = await listAllWorkspaces(host, project);
     if (engine !== undefined) {
       const state =
         engine.holders.length > 0 ? `in use by PID ${engine.holders.join(', ')}` : 'free';
@@ -53,8 +83,25 @@ const list = defineCommand({
     }
     for (const workspace of pool) ctx.out.line(row(workspace));
     if (engine === undefined && pool.length === 0) ctx.out.line('The pool is empty.');
+    const engineLock =
+      engine === undefined || project === undefined
+        ? undefined
+        : await readLockStatus(engineLockPath(project));
+    const { display, build } = await readHostLocks(host);
     ctx.out.json({
-      engine: engine ?? null,
+      engine:
+        engine === undefined || engineLock === undefined
+          ? null
+          : { ...engine, ...lockDocument(engineLock), waiting: engineLock.waiting },
+      host: {
+        display: { ...lockDocument(display), waiting: display.waiting },
+        build: {
+          slots: build.slots,
+          inUse: build.holders.length + build.unidentified,
+          ...lockDocument(build),
+          waiting: build.waiting,
+        },
+      },
       workspaces: pool.map((workspace) => ({
         name: workspace.name,
         path: workspace.dir,
@@ -64,6 +111,7 @@ const list = defineCommand({
         clonedFrom: workspace.clonedFrom ?? null,
         lessee: workspace.lessee ?? null,
         holders: workspace.holders.map((holder) => holder.pid),
+        ...lockDocument(workspace),
       })),
     });
   },

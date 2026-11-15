@@ -122,7 +122,7 @@ export async function createComponent(
   name: string,
   options: CreateOptions = {}
 ): Promise<EditResult> {
-  return editProject(project, `creating component ${name}`, options, async (tx) => {
+  return editProject(project, `creating component ${name}`, options, async (tx, view) => {
     const config = await loadFurnaceConfig(project);
     assertCustomName(config, name);
     await assertFree(project, config, name);
@@ -161,7 +161,7 @@ export async function createComponent(
             testScaffold(name, project.config.binaryName, options.tests, project.config.license),
             scaffoldProject(project)
           );
-    await writeTypingFiles(project, next, tracked, tx);
+    await writeTypingFiles(project, next, tracked, tx, view);
     return notes;
   });
 }
@@ -194,7 +194,7 @@ export async function overrideComponent(
   name: string,
   options: OverrideOptions = {}
 ): Promise<EditResult> {
-  return editProject(project, `overriding component ${name}`, options, async (tx) => {
+  return editProject(project, `overriding component ${name}`, options, async (tx, view) => {
     const config = await loadFurnaceConfig(project);
     await assertFree(project, config, name);
     const type = options.cssOnly === true ? 'css-only' : 'full';
@@ -227,7 +227,7 @@ export async function overrideComponent(
       const stock = document['stock'];
       if (Array.isArray(stock)) document['stock'] = stock.filter((entry) => entry !== name);
     });
-    await writeTypingFiles(project, next, tracked, tx);
+    await writeTypingFiles(project, next, tracked, tx, view);
     return [];
   });
 }
@@ -301,7 +301,7 @@ export async function renameComponent(
   to: string,
   options: EditOptions = {}
 ): Promise<EditResult> {
-  return editProject(project, `renaming component ${from} to ${to}`, options, async (tx) => {
+  return editProject(project, `renaming component ${from} to ${to}`, options, async (tx, view) => {
     const config = await loadFurnaceConfig(project);
     const { kind } = findComponent(config, from);
     if (kind === 'custom') assertCustomName(config, to);
@@ -336,7 +336,7 @@ export async function renameComponent(
         ))
       );
     }
-    await writeTypingFiles(project, next, tracked, tx);
+    await writeTypingFiles(project, next, tracked, tx, view);
     return notes;
   });
 }
@@ -358,7 +358,7 @@ export async function removeComponent(
   name: string,
   options: EditOptions = {}
 ): Promise<EditResult> {
-  return editProject(project, `removing component ${name}`, options, async (tx) => {
+  return editProject(project, `removing component ${name}`, options, async (tx, view) => {
     const config = await loadFurnaceConfig(project);
     const { kind } = findComponent(config, name);
     const users = Object.entries(config.custom)
@@ -387,7 +387,7 @@ export async function removeComponent(
         testScaffold(name, project.config.binaryName, style, project.config.license)
       );
     }
-    await writeTypingFiles(project, next, tracked, tx);
+    await writeTypingFiles(project, next, tracked, tx, view);
     return [];
   });
 }
@@ -404,8 +404,8 @@ export async function updateTypingFiles(
   tracked: TrackedFiles,
   options: EditOptions = {}
 ): Promise<EditResult> {
-  return editProject(project, 'updating the component typing files', options, async (tx) => {
-    await writeTypingFiles(project, await loadFurnaceConfig(project), tracked, tx);
+  return editProject(project, 'updating the component typing files', options, async (tx, view) => {
+    await writeTypingFiles(project, await loadFurnaceConfig(project), tracked, tx, view);
     return [];
   });
 }

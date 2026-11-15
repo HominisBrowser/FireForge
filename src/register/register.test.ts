@@ -62,6 +62,36 @@ async function register(
   return plan;
 }
 
+describe('edits planned over a file that has since changed', () => {
+  it('refuses the second of two plans made over the same jar.mn and keeps the first', async () => {
+    const files = engine();
+    const first = await planRegister(files, request('browser/base/content/alpha.js'));
+    const second = await planRegister(files, request('browser/base/content/beta.js'));
+    await applyEdits(noTransaction, files, first.edits);
+    await expect(applyEdits(noTransaction, files, second.edits)).rejects.toMatchObject({
+      code: 'tracked-file-moved',
+      message: expect.stringContaining('changed since it was read') as unknown,
+    });
+    const jar = files.contents.get('browser/base/jar.mn') ?? '';
+    expect(jar).toContain('content/alpha.js');
+    expect(jar).not.toContain('content/beta.js');
+  });
+
+  it('refuses a plan that created a file another command created first', async () => {
+    const files = engine();
+    const plan = await planRegister(
+      files,
+      request(`${MODULE_DIR}/Thing.sys.mjs`, { createManifest: true })
+    );
+    const created = plan.edits.find((edit) => edit.path === `${MODULE_DIR}/moz.build`);
+    expect(created?.before).toBeNull();
+    files.contents.set(`${MODULE_DIR}/moz.build`, '# someone else\n');
+    await expect(applyEdits(noTransaction, files, plan.edits)).rejects.toMatchObject({
+      code: 'tracked-file-moved',
+    });
+  });
+});
+
 describe('which manifest a path belongs in', () => {
   const REGISTRABLE: [string, boolean][] = [
     ['browser/themes/shared/panel.css', true],

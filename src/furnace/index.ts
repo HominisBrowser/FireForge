@@ -17,6 +17,7 @@ export {
   type DeploymentResult,
   deploymentStatus,
   type FurnaceWorkspace,
+  hasDeployment,
 } from './deploy.js';
 export { componentDiff } from './diff.js';
 export { type EditResult } from './edit.js';

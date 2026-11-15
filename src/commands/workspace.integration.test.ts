@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 /** `workspace` and `bootstrap` through the CLI, over a seeded pristine repository and the stand-in mach. */
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { engineLockPath, workspaceLockPath } from '../engine/index.js';
 import { ExitCode } from '../kernel/errors.js';
+import { acquireLock } from '../kernel/lock.js';
 import { hostPaths, type Project } from '../project/index.js';
 import { type CliResult, runCli } from '../testing/cli.js';
 import { TEST_PIN_KEY } from '../testing/config.js';
@@ -95,12 +98,134 @@ describe('fireforge workspace', () => {
     const listed = await cli(project, 'workspace', 'list', '--json');
     expect(json(listed)).toEqual({
       schemaVersion: 1,
-      engine: { path: workspace.engineDir, holders: [] },
+      engine: {
+        path: workspace.engineDir,
+        holders: [],
+        leased: false,
+        leases: [],
+        unidentifiedHolders: 0,
+        waiting: 0,
+      },
+      host: {
+        display: { leased: false, leases: [], unidentifiedHolders: 0, waiting: 0 },
+        build: {
+          slots: 1,
+          inUse: 0,
+          leased: false,
+          leases: [],
+          unidentifiedHolders: 0,
+          waiting: 0,
+        },
+      },
       workspaces: [],
     });
     expect((await cli(project, 'workspace', 'list')).stdout).toBe(
       `engine  ${workspace.engineDir}  free\n`
     );
+  });
+});
+
+describe('fireforge workspace list --json, lease state', () => {
+  it('reports who leases each workspace and who holds the display and the build slots, without taking them', async () => {
+    const project = await makeEngineProject(dir(), { source: true });
+    await seedPristine(project.host);
+    await cli(project, 'workspace', 'add', 'alpha');
+    await cli(project, 'workspace', 'add', 'beta');
+    await writeFile(join(project.host.root, 'host.json'), '{"buildSlots":2}');
+    const state = async (): Promise<Record<string, unknown>> =>
+      json(await cli(project, 'workspace', 'list', '--json'));
+
+    const idle = await state();
+    expect(idle['workspaces']).toMatchObject([
+      { name: 'alpha', leased: false, leases: [], holders: [] },
+      { name: 'beta', leased: false, leases: [], holders: [] },
+    ]);
+
+    const lease = await acquireLock(workspaceLockPath(project.host, 'beta'), {
+      info: { checkout: '/work/sidebar', command: 'build' },
+    });
+    const display = await acquireLock(join(project.host.locks, 'display'), {});
+    const slot = await acquireLock(join(project.host.locks, 'build'), {
+      mode: 'shared',
+      limit: 2,
+      info: { command: 'build' },
+    });
+    try {
+      const busy = await state();
+      const beta = (busy['workspaces'] as Record<string, unknown>[])[1];
+      expect(beta).toMatchObject({
+        name: 'beta',
+        pin: TEST_PIN_KEY,
+        built: false,
+        leased: true,
+        holders: [process.pid],
+        unidentifiedHolders: 0,
+        leases: [
+          { pid: process.pid, mode: 'exclusive', checkout: '/work/sidebar', command: 'build' },
+        ],
+      });
+      const [held] = beta?.['leases'] as { since: string }[];
+      expect(new Date(held?.since ?? '').toISOString()).toBe(held?.since);
+      expect((busy['workspaces'] as Record<string, unknown>[])[0]).toMatchObject({
+        name: 'alpha',
+        leased: false,
+      });
+      expect(busy['host']).toEqual({
+        display: {
+          leased: true,
+          leases: [
+            {
+              pid: process.pid,
+              mode: 'exclusive',
+              since: expect.any(String) as string,
+              checkout: null,
+              command: null,
+            },
+          ],
+          unidentifiedHolders: 0,
+          waiting: 0,
+        },
+        build: {
+          slots: 2,
+          inUse: 1,
+          leased: true,
+          leases: [
+            {
+              pid: process.pid,
+              mode: 'shared',
+              since: expect.any(String) as string,
+              checkout: null,
+              command: 'build',
+            },
+          ],
+          unidentifiedHolders: 0,
+          waiting: 0,
+        },
+      });
+      // Reading changed nothing: the same holders show again, and nobody lost a lock.
+      expect(await state()).toEqual(busy);
+    } finally {
+      await slot.release();
+      await display.release();
+      await lease.release();
+    }
+    expect(await state()).toEqual(idle);
+  });
+
+  it("reports a patch-mode engine's holder", async () => {
+    const project = await makeEngineProject(dir());
+    await makeProjectEngine(project);
+    const lock = await acquireLock(engineLockPath(project), { info: { command: 'build' } });
+    try {
+      const listed = json(await cli(project, 'workspace', 'list', '--json'));
+      expect(listed['engine']).toMatchObject({
+        leased: true,
+        holders: [process.pid],
+        leases: [{ pid: process.pid, mode: 'exclusive', command: 'build', checkout: null }],
+      });
+    } finally {
+      await lock.release();
+    }
   });
 });
 

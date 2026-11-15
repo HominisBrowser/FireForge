@@ -34,6 +34,8 @@ export interface RawTestResult {
   unexpected: boolean;
   /** Subtests that reported an unexpected status, the unexpected passes included. */
   failures: AssertionFailure[];
+  /** What the harness said when the file itself ended unexpectedly, such as a timeout's or a script error's text. */
+  message?: string;
   /** Wall time between `test_start` and `test_end`, when both carried a time. */
   durationMs?: number;
 }
@@ -155,6 +157,11 @@ export function parseRawTestLog(text: string): RawTestLog {
         expected: typeof record['expected'] === 'string' ? record['expected'] : status,
         unexpected: isUnexpected(record) || own.length > 0,
         failures: own,
+        ...(isUnexpected(record) &&
+        typeof record['message'] === 'string' &&
+        record['message'] !== ''
+          ? { message: record['message'] }
+          : {}),
         ...(start !== undefined && typeof record['time'] === 'number'
           ? { durationMs: record['time'] - start }
           : {}),

@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { exists } from '../kernel/fs.js';
+import { transaction } from '../kernel/journal.js';
 import { resetShutdown, runShutdown } from '../kernel/signals.js';
 import { createPatchProject, type PatchFixture } from '../testing/patch-project.js';
 import { useTempDir, writeTree } from '../testing/temp.js';
 import { mutateQueue, readQueue, writeQueue } from './index.js';
-import { loadQueue, resolvePatch, selectPatches } from './queue.js';
+import { loadQueue, queueJournal, resolvePatch, selectPatches } from './queue.js';
 
 const dir = useTempDir();
 const STAMP = { product: 'firefox-esr' as const, version: '140.9.0esr' };
@@ -135,6 +139,47 @@ describe('mutateQueue', () => {
       'infra-ci',
       'branding-sidebar',
     ]);
+  });
+
+  it('undoes an interrupted earlier change before it reads the queue', async () => {
+    const fixture = await threePatches();
+    const project = await fixture.project();
+    const body = join(fixture.patches, '005-infra-ci.patch');
+    const manifest = await readFile(join(fixture.patches, 'patches.json'), 'utf8');
+    // A run that died after removing a body and before replacing the manifest leaves this journal.
+    const dead = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore' });
+    await once(dead, 'exit');
+    const journal = queueJournal(project);
+    let saved = '';
+    const copies = new Map<string, Buffer>();
+    await transaction(journal, 'the interrupted change', async (tx) => {
+      await tx.remove(body);
+      saved = await readFile(journal, 'utf8');
+      for (const name of await readdir(`${journal}.d`)) {
+        copies.set(name, await readFile(join(`${journal}.d`, name)));
+      }
+    });
+    for (const [name, bytes] of copies) {
+      await mkdir(`${journal}.d`, { recursive: true });
+      await writeFile(join(`${journal}.d`, name), bytes);
+    }
+    const [header = '', ...entries] = saved.split('\n');
+    const forged = { ...(JSON.parse(header) as object), pid: dead.pid, start: 'gone' };
+    await writeFile(journal, [JSON.stringify(forged), ...entries].join('\n'));
+    await expect(loadQueue(project)).rejects.toMatchObject({ code: 'queue-patch-missing' });
+
+    await mutateQueue(project, 'the description', (draft) => {
+      const [first] = draft.patches;
+      if (first !== undefined) first.description = 'after recovery';
+    });
+    expect((await loadQueue(project)).patches.map((patch) => patch.name)).toEqual([
+      'ui-sidebar',
+      'infra-ci',
+      'branding-sidebar',
+    ]);
+    expect(await readFile(body, 'utf8')).toContain('ci.js');
+    expect(await readFile(join(fixture.patches, 'patches.json'), 'utf8')).not.toBe(manifest);
+    expect(await exists(journal)).toBe(false);
   });
 
   it('writes nothing once an interrupt has arrived', async () => {

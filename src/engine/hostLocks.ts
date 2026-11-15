@@ -8,7 +8,7 @@ import { isAbsolute, join } from 'node:path';
 
 import { ExitCode } from '../kernel/errors.js';
 import { readJsonIfExists } from '../kernel/json.js';
-import { COMMAND_WAIT_MS, withLock } from '../kernel/lock.js';
+import { COMMAND_WAIT_MS, type LockStatus, readLockStatus, withLock } from '../kernel/lock.js';
 import { type Infer, s } from '../kernel/schema.js';
 import type { HostPaths } from '../project/index.js';
 
@@ -88,4 +88,29 @@ export async function withBuildSlot<T>(
     },
     body
   );
+}
+
+/** Who holds the host's two locks right now. */
+export interface HostLockState {
+  /** The display lock. */
+  display: LockStatus;
+  /** The build slots: `slots` is the limit of `host.json`, the holders are the compiles using one. */
+  build: LockStatus & { slots: number };
+}
+
+/**
+ * Reports who holds the display and the build slots, without taking or
+ * changing either lock.
+ *
+ * @param host - The host locations
+ * @throws `host-config-invalid` (exit code 2) when `host.json` does not match its schema
+ */
+export async function readHostLocks(
+  host: Pick<HostPaths, 'root' | 'locks'>
+): Promise<HostLockState> {
+  const { buildSlots } = await readHostConfig(host);
+  return {
+    display: await readLockStatus(join(host.locks, 'display')),
+    build: { ...(await readLockStatus(join(host.locks, 'build'))), slots: buildSlots },
+  };
 }

@@ -160,6 +160,6 @@ Before you push, `fireforge gate` runs `check`, a build and the test lanes `fire
 npx fireforge doctor
 ```
 
-`doctor` checks the configuration, git, the pinned source, the engine or the workspace pool, the stored changes, interrupted runs, locks, disk space, generated typing files and the tools `externalToolchains` declares, and says what to run for each problem. `doctor --recover` undoes changes an interrupted command left half-made.
+`doctor` checks the configuration, git, the pinned source, the engine or the workspace pool, the stored changes, interrupted runs, locks, disk space, generated typing files and the tools `externalToolchains` declares, and says what to run for each problem. `doctor --recover` undoes changes an interrupted command left half-made, holding the lock that command would have held; a journal whose lock is taken, or that no known lock covers, is listed and left for the command that owns it.
 
 Every failure prints `error[<code>]: <message>` with its stable code, and a `hint:` line saying what to do next. Scripts read the exit code ([exit-codes.md](exit-codes.md)) and `--json` ([machine-output.md](machine-output.md)).

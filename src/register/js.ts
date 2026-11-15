@@ -10,9 +10,65 @@ import type * as estree from 'estree';
 import { usageError } from '../cli/command.js';
 import { FireForgeError, toError } from '../kernel/errors.js';
 import { escapeRegExp } from '../kernel/text.js';
-import { lineIndent, lineStart, parseJs, type Positioned, walkJs } from '../syntax/index.js';
+import {
+  isStringLiteral,
+  lineIndent,
+  lineStart,
+  parseJs,
+  type Positioned,
+  walkJs,
+} from '../syntax/index.js';
 
 const GUARD = /typeof\s+\w+\s*!==\s*"undefined"/;
+/** Words that cannot start an expression chain: `class.init` is a syntax error. */
+const RESERVED_WORDS = new Set([
+  'await',
+  'break',
+  'case',
+  'catch',
+  'class',
+  'const',
+  'continue',
+  'debugger',
+  'default',
+  'delete',
+  'do',
+  'else',
+  'enum',
+  'export',
+  'extends',
+  'false',
+  'finally',
+  'for',
+  'function',
+  'if',
+  'implements',
+  'import',
+  'in',
+  'instanceof',
+  'interface',
+  'let',
+  'new',
+  'null',
+  'package',
+  'private',
+  'protected',
+  'public',
+  'return',
+  'static',
+  'super',
+  'switch',
+  'this',
+  'throw',
+  'true',
+  'try',
+  'typeof',
+  'var',
+  'void',
+  'while',
+  'with',
+  'yield',
+]);
 const DANGEROUS_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function invalid(label: string, value: string, rule: string): FireForgeError {
@@ -58,6 +114,14 @@ export function validateWireExpression(expression: string, label: string): void 
       label,
       expression,
       'use dotted identifiers (letters, digits, underscores, $), optionally ending in ()'
+    );
+  }
+  const root = leadingName(expression);
+  if (RESERVED_WORDS.has(root)) {
+    throw invalid(
+      label,
+      expression,
+      `"${root}" is a reserved word and cannot start the expression`
     );
   }
   refuseDangerous(label, expression);
@@ -125,18 +189,27 @@ function guardedBlock(
     ].map((line) => i + line);
 }
 
+/** The 1-based line of an offset, for messages. */
+function lineOf(content: string, offset: number): number {
+  return content.slice(0, offset).split('\n').length;
+}
+
 /**
- * The body of the function a property or class method of one of `names`
- * holds, such as `onLoad() { ... }` in an object literal.
+ * The body of the function a property or class method named by one of
+ * `names` holds, such as `onLoad() { ... }` in an object literal. The first
+ * name that any method has wins, so `names` is in order of preference.
+ *
+ * @throws `script-ambiguous-anchor` when that name belongs to several methods
  */
 function findMethodBody(
+  content: string,
   program: estree.Program,
-  names: readonly string[]
+  names: readonly string[],
+  file: string
 ): Positioned<estree.BlockStatement> | undefined {
-  let found: Positioned<estree.BlockStatement> | undefined;
+  const found: { name: string; body: Positioned<estree.BlockStatement> }[] = [];
   walkJs(program, (node) => {
     if (
-      found === undefined &&
       (node.type === 'Property' || node.type === 'MethodDefinition') &&
       !node.computed &&
       node.key.type === 'Identifier' &&
@@ -144,33 +217,105 @@ function findMethodBody(
       (node.value.type === 'FunctionExpression' || node.value.type === 'ArrowFunctionExpression') &&
       node.value.body.type === 'BlockStatement'
     ) {
-      found = node.value.body as Positioned<estree.BlockStatement>;
+      found.push({
+        name: node.key.name,
+        body: node.value.body as Positioned<estree.BlockStatement>,
+      });
     }
-    return found === undefined;
+    return undefined;
+  });
+  const name = names.find((candidate) => found.some((method) => method.name === candidate));
+  const candidates = found.filter((method) => method.name === name);
+  if (candidates.length > 1) {
+    const lines = candidates.map((method) => lineOf(content, method.body.start)).join(', ');
+    throw new FireForgeError(
+      'script-ambiguous-anchor',
+      `${file} has ${candidates.length} ${name} methods (lines ${lines}); FireForge cannot tell which one to edit.`,
+      { hint: `Add the call to the right ${name} by hand.` }
+    );
+  }
+  return candidates[0]?.body;
+}
+
+/** The text of a string literal argument: a quoted string or a template without substitutions. */
+function stringArgument(node: estree.Node | undefined): string | undefined {
+  if (isStringLiteral(node)) return node.value;
+  if (node?.type === 'TemplateLiteral' && node.expressions.length === 0) {
+    return node.quasis[0]?.value.cooked ?? undefined;
+  }
+  return undefined;
+}
+
+/** The URL of a `loadSubScript("…")` call with a string-literal URL, else undefined. */
+function loadedScript(node: estree.Node): string | undefined {
+  if (node.type !== 'CallExpression') return undefined;
+  const { callee } = node;
+  const name =
+    callee.type === 'MemberExpression' && !callee.computed && callee.property.type === 'Identifier'
+      ? callee.property.name
+      : callee.type === 'Identifier'
+        ? callee.name
+        : undefined;
+  return name === 'loadSubScript' ? stringArgument(node.arguments[0]) : undefined;
+}
+
+/** Whether anything under `root` is a `loadSubScript` call with a string-literal URL. */
+function loadsScript(root: estree.Node): boolean {
+  let found = false;
+  walkJs(root, (node) => {
+    if (loadedScript(node) !== undefined) found = true;
+    return !found;
   });
   return found;
 }
 
 /**
- * Adds a guarded `loadSubScript` for `name` after the last existing one in
- * browser-main.js, or at the end of the file's last block.
+ * Parses an edit's result again, so an edit that broke the file is refused
+ * instead of written.
+ */
+function parsed(next: string, file: string): string {
+  try {
+    parseJs(next, 'script');
+  } catch (error) {
+    throw new FireForgeError(
+      'script-edit-invalid',
+      `The edit would leave ${file} unparseable: ${toError(error).message}`,
+      { hint: `Make the change in ${file} by hand.` }
+    );
+  }
+  return next;
+}
+
+/**
+ * Adds a guarded `loadSubScript` for `name` after the last existing loader
+ * in browser-main.js (a `try` block or statement that calls `loadSubScript`
+ * with a string-literal URL), or, when the file loads nothing yet, at the
+ * end of its one top-level function.
  *
  * @param content - browser-main.js
  * @param name - The subscript, without `.js`
  * @param marker - The comment marker the lint rules look for, such as `MYBROWSER:`
- * @returns The new text, or undefined when the subscript is already loaded
+ * @returns The new text, or undefined when a `loadSubScript` call already loads it
+ * @throws `script-no-anchor` when there is no loader and not exactly one top-level function
  */
 export function addSubscript(content: string, name: string, marker: string): string | undefined {
-  if (content.includes(`content/${name}.js"`)) return undefined;
-  const program = parseScript(content, 'browser-main.js');
+  const file = 'browser-main.js';
+  const program = parseScript(content, file);
+  const wanted = `/content/${name}.js`;
+  const urls: string[] = [];
+  walkJs(program, (node) => {
+    const url = loadedScript(node);
+    if (url !== undefined) urls.push(url);
+    return undefined;
+  });
+  if (urls.some((url) => url.endsWith(wanted))) return undefined;
   const loaders: { start: number; end: number }[] = [];
   walkJs(program, (node) => {
-    if (
-      node.type === 'TryStatement' &&
-      content.slice(node.start, node.end).includes('loadSubScript')
-    ) {
+    if (node.type === 'TryStatement' && loadsScript(node.block)) loaders.push(node);
+    else if (node.type === 'ExpressionStatement' && loadedScript(node.expression) !== undefined) {
       loaders.push(node);
     }
+    return undefined;
   });
   const outermost = loaders.filter(
     (inner) =>
@@ -188,23 +333,32 @@ export function addSubscript(content: string, name: string, marker: string): str
       `  console.error("Failed to load ${name}.js:", e);`,
       '}',
     ].map((line) => i + line);
-  if (last !== undefined) return insertBlock(content, { at: 'after', node: last }, block);
-  const close = content.lastIndexOf('\n}');
-  if (close === -1) {
+  if (last !== undefined) {
+    return parsed(insertBlock(content, { at: 'after', node: last }, block), file);
+  }
+  const functions = program.body.filter(
+    (statement): statement is Positioned<estree.FunctionDeclaration> =>
+      statement.type === 'FunctionDeclaration'
+  );
+  const only = functions.length === 1 ? functions[0] : undefined;
+  if (only === undefined) {
     throw new FireForgeError(
       'script-no-anchor',
-      'browser-main.js has no closing brace to insert before.',
+      `${file} has no loadSubScript call and not exactly one top-level function to add the load to.`,
       { hint: 'Add the subscript load to browser-main.js by hand.' }
     );
   }
-  return insertBlock(content, { at: 'before', node: { start: close + 1 } }, (i) => block(`${i}  `));
+  const body = only.body as Positioned<estree.BlockStatement>;
+  const end = body.body.at(-1) as Positioned<estree.Statement> | undefined;
+  const place: Anchor = end === undefined ? { at: 'first', body } : { at: 'after', node: end };
+  return parsed(insertBlock(content, place, block), file);
 }
 
-/** Whether the script calls `expression` anywhere; comments and strings never count. */
-function alreadyCalls(content: string, program: estree.Program, expression: string): boolean {
+/** Whether `body` calls `expression`; comments and strings never count. */
+function alreadyCalls(content: string, body: estree.Node, expression: string): boolean {
   const callee = expression.replace(/\(\)$/, '');
   let found = false;
-  walkJs(program, (node) => {
+  walkJs(body, (node) => {
     if (node.type === 'CallExpression') {
       const target = node.callee as Positioned;
       if (content.slice(target.start, target.end) === callee) found = true;
@@ -237,14 +391,15 @@ export function addInit(
   expression: string,
   options: { after?: string | undefined; marker: string }
 ): string | undefined {
-  const program = parseScript(content, 'browser-init.js');
-  if (alreadyCalls(content, program, expression)) return undefined;
-  const body = findMethodBody(program, ['onLoad']);
+  const file = 'browser-init.js';
+  const program = parseScript(content, file);
+  const body = findMethodBody(content, program, ['onLoad'], file);
   if (body === undefined) {
     throw new FireForgeError('script-no-anchor', 'browser-init.js has no onLoad method.', {
       hint: 'Add the init call to browser-init.js by hand.',
     });
   }
+  if (alreadyCalls(content, body, expression)) return undefined;
   const statements = body.body as Positioned<estree.Statement>[];
   const blocks = statements.filter(
     (statement) =>
@@ -264,7 +419,10 @@ export function addInit(
       : first !== undefined
         ? { at: 'before', node: first }
         : { at: 'first', body };
-  return insertBlock(content, place, guardedBlock('init', expression, options.marker));
+  return parsed(
+    insertBlock(content, place, guardedBlock('init', expression, options.marker)),
+    file
+  );
 }
 
 /**
@@ -281,9 +439,9 @@ export function addDestroy(
   expression: string,
   marker: string
 ): string | undefined {
-  const program = parseScript(content, 'browser-init.js');
-  if (alreadyCalls(content, program, expression)) return undefined;
-  const body = findMethodBody(program, ['onUnload', 'uninit']);
+  const file = 'browser-init.js';
+  const program = parseScript(content, file);
+  const body = findMethodBody(content, program, ['onUnload', 'uninit'], file);
   if (body === undefined) {
     throw new FireForgeError(
       'script-no-anchor',
@@ -291,7 +449,8 @@ export function addDestroy(
       { hint: 'Add the destroy call to browser-init.js by hand.' }
     );
   }
+  if (alreadyCalls(content, body, expression)) return undefined;
   const first = body.body[0] as Positioned<estree.Statement> | undefined;
   const place: Anchor = first !== undefined ? { at: 'before', node: first } : { at: 'first', body };
-  return insertBlock(content, place, guardedBlock('destroy', expression, marker));
+  return parsed(insertBlock(content, place, guardedBlock('destroy', expression, marker)), file);
 }

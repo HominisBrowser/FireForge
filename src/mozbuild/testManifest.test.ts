@@ -298,14 +298,26 @@ describe('addTest', () => {
 
   it('writes keys, and the INI spelling for .ini', () => {
     expect(
-      addTest(MANIFEST, '', 'test_x.js', { keys: { 'skip-if': ['os == "win"'], head: 'head.js' } })
+      addTest(MANIFEST, '', 'test_x.js', { keys: { 'skip-if': ["os == 'win'"], head: 'head.js' } })
         .text
-    ).toBe(lines('["test_x.js"]', 'skip-if = ["os == "win""]', 'head = "head.js"'));
+    ).toBe(lines('["test_x.js"]', `skip-if = ["os == 'win'"]`, 'head = "head.js"'));
     expect(
       addTest('dom/mochitest.ini', '[DEFAULT]\n', 'test_x.html', {
         keys: { 'support-files': ['a', 'b'] },
       }).text
     ).toBe(lines('[DEFAULT]', '', '[test_x.html]', 'support-files = a b'));
+  });
+
+  it('refuses a TOML value it cannot quote, and a line break in either format', () => {
+    for (const value of ['os == "win"', 'a\\b', 'a\nb']) {
+      expect(() => addTest(MANIFEST, '', 'test_x.js', { keys: { 'skip-if': [value] } })).toThrow(
+        /does not write into a manifest|FireForge does not write/
+      );
+    }
+    expect(() => addTest(MANIFEST, '', 'te"st.js')).toThrow(/test name/);
+    expect(() =>
+      addTest('dom/mochitest.ini', '', 'test_x.html', { keys: { head: 'a\nb' } })
+    ).toThrow(/line break/);
   });
 
   it('changes nothing for a test that is already listed', () => {

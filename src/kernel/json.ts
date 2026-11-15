@@ -63,9 +63,12 @@ export function parseJson(
 function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeys);
   if (!isRecord(value)) return value;
-  const sorted: Record<string, unknown> = {};
-  for (const key of Object.keys(value).sort()) sorted[key] = sortKeys(value[key]);
-  return sorted;
+  // fromEntries defines own properties, so a `__proto__` key stays data.
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortKeys(value[key])])
+  );
 }
 
 /** How {@link stringifyJson} lays a document out. */

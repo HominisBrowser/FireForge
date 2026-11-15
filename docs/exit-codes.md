@@ -58,16 +58,16 @@ A second interrupt while the first is still being handled ends the process at on
 
 ### `gate`
 
-| Result                                                                                                                                                       | Exit |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---: |
-| `verified`: everything passed and `refs/fireforge/verified` is at the commit                                                                                 |    0 |
-| `pending`: everything passed and acceptances are outstanding; the ref has not moved                                                                          |    0 |
-| `feedback`: the entries named with `--lane` passed; nothing was recorded                                                                                     |    0 |
-| The working tree differs from HEAD (`gate-dirty-tree`); only the check is red (`gate-check-failed`)                                                          |    1 |
-| No commit to judge (`gate-no-commit`); the verified commit is not an ancestor (`gate-not-fast-forward`); the ref moved while the gate ran (`gate-ref-moved`) |    4 |
-| The build, a lane, a stress run, a control or a smoke start is red (`gate-failed`)                                                                           |    5 |
-| The working tree or HEAD changed while the gate ran (`gate-tree-moved`)                                                                                      |   14 |
-| The workspace did not come free                                                                                                                              |   15 |
+| Result                                                                                                                                                            | Exit |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---: |
+| `verified`: everything passed and `refs/fireforge/verified` is at the commit                                                                                      |    0 |
+| `pending`: everything passed and acceptances are outstanding; the ref has not moved                                                                               |    0 |
+| `feedback`: the entries named with `--lane` passed; nothing was recorded                                                                                          |    0 |
+| The working tree differs from HEAD (`gate-dirty-tree`); only the check is red (`gate-check-failed`)                                                               |    1 |
+| No commit to judge (`gate-no-commit`); the verified commit is not an ancestor (`gate-not-fast-forward`); the ref moved while the gate ran (`gate-ref-moved`)      |    4 |
+| The build, a lane, a stress run, a control or a smoke start is red (`gate-failed`)                                                                                |    5 |
+| The working tree or HEAD changed while the gate ran (`gate-tree-moved`); every failed entry was blocked because the engine changed under it (`gate-inconclusive`) |   14 |
+| The workspace did not come free, or every failed entry was blocked because a lock it needed did not (`lock-timeout`); another gate on the commit did not finish   |   15 |
 
 A gate that exits 0 has not necessarily moved the ref: read `result=` on the verdict line, `outcome` in the JSON document, or the ref itself. A red check with green lanes exits 1 because nothing `mach` ran failed; any red build or declared entry exits 5 whatever the check said.
 

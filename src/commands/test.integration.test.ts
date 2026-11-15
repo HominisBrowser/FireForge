@@ -162,6 +162,18 @@ describe('fireforge test in the project workspace', () => {
     expect(pool.exitCode).toBe(ExitCode.INVALID_ARGUMENT);
   }, 60_000);
 
+  it('refuses a checkout path before --build builds anything', async () => {
+    await seed();
+    const project = await makeEngineProject(dir(), config);
+    expect((await cli(project, 'download')).exitCode).toBe(ExitCode.SUCCESS);
+    const refused = await cli(project, 'test', `src/${A}`, '--build');
+    expect(refused.exitCode).toBe(ExitCode.GENERAL_ERROR);
+    expect(verdictLine(refused.stdout)).toBe(
+      'FIREFORGE-VERDICT: FAIL reason=preflight note=test-path-missing'
+    );
+    expect(await readMachLog(join(project.root, 'engine'))).toEqual([]);
+  }, 60_000);
+
   it('source mode: leases a workspace holding the checkout, builds it and tests there', async () => {
     await seed();
     const project = await makeSourceProject(dir(), {

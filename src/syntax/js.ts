@@ -214,56 +214,239 @@ export interface Specifier {
   readonly line: number;
 }
 
+/** A module URL a getter map or a bare getter line names. */
+const GETTER_URL = /^(?:resource|chrome|moz-src):\/\//;
+
+/** What stands in for the characters of a string or template literal in {@link maskJs}. */
+const FILLER = '\u0001';
+
+/** Source with comments blanked and string contents replaced by filler, and the literals it hid. */
+interface Masked {
+  /** Same length and line structure as the source; quotes are kept, their contents are filler. */
+  readonly text: string;
+  /** Each single- or double-quoted literal by the offset of its opening quote. */
+  readonly literals: ReadonlyMap<number, string>;
+}
+
 /**
- * A bare `Name: "resource://…"` property line, as added inside an existing
- * `defineESModuleGetters` map: the call's opener is not among the added
- * lines, so only the property line names the module.
+ * Masks what is not code, for source that does not parse: comments become
+ * spaces and the contents of strings and templates become filler, so a
+ * pattern over the result only sees real code. Offsets and newlines are
+ * kept. A quoted string that is not closed on its line ends there; regex
+ * literals are not modelled.
  */
-const GETTER_PROPERTY_LINE =
-  /^\s*["']?[A-Za-z_$][\w$]*["']?\s*:\s*["']((?:resource|chrome|moz-src):\/\/[^"']+)["']\s*,?\s*$/;
+function maskJs(source: string): Masked {
+  const chars = source.split('');
+  const literals = new Map<number, string>();
+  const hide = (from: number, to: number, fill: string): void => {
+    for (let i = from; i < to; i++) {
+      if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = fill;
+    }
+  };
+  // Scans code from `i` to the end of the source, or to the `}` that closes a template substitution.
+  const code = (start: number, substitution: boolean): number => {
+    let depth = 0;
+    let i = start;
+    while (i < source.length) {
+      const char = source.charAt(i);
+      const next = source.charAt(i + 1);
+      if (char === '/' && next === '/') {
+        const end = source.indexOf('\n', i);
+        const stop = end === -1 ? source.length : end;
+        hide(i, stop, ' ');
+        i = stop;
+      } else if (char === '/' && next === '*') {
+        const end = source.indexOf('*/', i + 2);
+        const stop = end === -1 ? source.length : end + 2;
+        hide(i, stop, ' ');
+        i = stop;
+      } else if (char === '"' || char === "'") {
+        let end = i + 1;
+        while (
+          end < source.length &&
+          source.charAt(end) !== char &&
+          !/[\r\n]/.test(source.charAt(end))
+        ) {
+          end += source.charAt(end) === '\\' ? 2 : 1;
+        }
+        const closed = source.charAt(end) === char;
+        if (closed) literals.set(i, source.slice(i + 1, end));
+        hide(i + 1, Math.min(end, source.length), FILLER);
+        i = closed ? end + 1 : Math.min(end, source.length);
+      } else if (char === '`') {
+        i = template(i + 1);
+      } else {
+        if (substitution && char === '{') depth++;
+        if (substitution && char === '}' && depth-- === 0) return i;
+        i++;
+      }
+    }
+    return i;
+  };
+  const template = (start: number): number => {
+    let i = start;
+    while (i < source.length && source.charAt(i) !== '`') {
+      if (source.charAt(i) === '\\') {
+        hide(i, i + 2, FILLER);
+        i += 2;
+      } else if (source.charAt(i) === '$' && source.charAt(i + 1) === '{') {
+        hide(i, i + 2, FILLER);
+        i = code(i + 2, true);
+        hide(i, i + 1, FILLER);
+        i++;
+      } else {
+        hide(i, i + 1, FILLER);
+        i++;
+      }
+    }
+    return i + 1;
+  };
+  code(0, false);
+  return { text: chars.join(''), literals };
+}
+
+/** `Name: "scheme://…"` as a whole line, with a quoted or bare name. */
+const GETTER_LINE = new RegExp(
+  `^\\s*(?:["']${FILLER}+["']|[A-Za-z_$][\\w$]*)\\s*:\\s*(["'])${FILLER}+\\1\\s*,?\\s*$`
+);
+
+/**
+ * The values of the properties of the map whose body starts at `open`: the
+ * quoted text after each top-level colon, in masked text where braces in
+ * strings and comments are not structure.
+ */
+function getterValues(
+  text: string,
+  open: number,
+  literals: ReadonlyMap<number, string>,
+  add: (specifier: string | undefined, offset: number) => void
+): void {
+  let depth = 1;
+  let close = open;
+  for (; close < text.length && depth > 0; close++) {
+    if (text[close] === '{') depth++;
+    else if (text[close] === '}') depth--;
+  }
+  let nesting = 0;
+  let colon = -1;
+  for (let at = open; at < close - 1; at++) {
+    const char = text.charAt(at);
+    if ('([{'.includes(char)) nesting++;
+    else if (')]}'.includes(char)) nesting--;
+    else if (char === ',' && nesting === 0) colon = -1;
+    else if (char === ':' && nesting === 0 && colon === -1) {
+      colon = at;
+      const position = at + 1 + (/^\s*/.exec(text.slice(at + 1))?.[0].length ?? 0);
+      const literal = literals.get(position);
+      const after = text.slice(position + (literal?.length ?? 0) + 2, close);
+      if (literal !== undefined && /^\s*[,}]/.test(after)) add(literal, position);
+    }
+  }
+}
+
+/** The specifiers of source that does not parse as a whole, found in its masked text. */
+function textSpecifiers(
+  source: string,
+  add: (specifier: string | undefined, offset: number) => void
+): void {
+  const { text, literals } = maskJs(source);
+  const quoted = `(["'])${FILLER}*\\1`;
+  const patterns = [
+    new RegExp(`\\bimport\\s+(?:[^'"]*?\\s+from\\s+)?${quoted}`, 'dg'),
+    new RegExp(`\\bimport\\s*\\(\\s*${quoted}\\s*\\)`, 'dg'),
+    new RegExp(`ChromeUtils\\.importESModule\\s*\\(\\s*${quoted}`, 'dg'),
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const open = match.indices?.[1]?.[0];
+      if (open !== undefined) add(literals.get(open), match.index);
+    }
+  }
+  for (const call of text.matchAll(/defineESModuleGetters\s*\([^{)]*\{/g)) {
+    getterValues(text, call.index + call[0].length, literals, add);
+  }
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    const match = GETTER_LINE.exec(line);
+    const open = match === null ? undefined : line.indexOf(match[1] ?? '"', line.indexOf(':'));
+    const value = open === undefined ? undefined : literals.get(offset + open);
+    if (value !== undefined && GETTER_URL.test(value)) add(value, offset);
+    offset += line.length + 1;
+  }
+}
+
+/** The module specifiers of a program that parsed, read from its import and call nodes. */
+function programSpecifiers(
+  program: estree.Program,
+  add: (specifier: string | undefined, offset: number) => void
+): void {
+  walkJs(program, (node) => {
+    if (node.type === 'ImportDeclaration' || node.type === 'ImportExpression') {
+      if (isStringLiteral(node.source)) add(node.source.value, node.start);
+    } else if (node.type === 'CallExpression') {
+      const { callee } = node;
+      const member =
+        callee.type === 'MemberExpression' &&
+        !callee.computed &&
+        callee.property.type === 'Identifier'
+          ? callee.property.name
+          : callee.type === 'Identifier'
+            ? callee.name
+            : undefined;
+      const first = node.arguments[0];
+      if (member === 'importESModule' && callee.type === 'MemberExpression') {
+        const object = callee.object;
+        if (
+          object.type === 'Identifier' &&
+          object.name === 'ChromeUtils' &&
+          isStringLiteral(first)
+        ) {
+          add(first.value, node.start);
+        }
+      } else if (member === 'defineESModuleGetters') {
+        const map = node.arguments[1];
+        if (map?.type === 'ObjectExpression') {
+          for (const property of map.properties) {
+            if (property.type === 'Property' && isStringLiteral(property.value)) {
+              add(property.value.value, property.value.start);
+            }
+          }
+        }
+      }
+    } else if (
+      node.type === 'LabeledStatement' &&
+      node.body.type === 'ExpressionStatement' &&
+      isStringLiteral(node.body.expression) &&
+      GETTER_URL.test(node.body.expression.value)
+    ) {
+      // `Name: "resource://…"` is a getter-map line when the lines around it are not there.
+      add(node.body.expression.value, node.body.expression.start);
+    }
+    return undefined;
+  });
+}
 
 /**
  * The module specifiers a source names: static, side-effect and dynamic
  * imports, `ChromeUtils.importESModule`, the values of a
- * `defineESModuleGetters` map, and bare getter-property lines. Text-level
- * on comment-blanked source, so it works on fragments such as the lines a
- * change adds.
+ * `defineESModuleGetters` map, and bare getter-property lines. A source
+ * that parses as a program is read from its syntax tree, so import-looking
+ * text in a string, template or comment is not a specifier and a quoted key
+ * of a getter map is not a value. A fragment that does not parse (the lines
+ * a change adds) is read as text with comments and string contents masked.
  *
  * @param source - Source text or a fragment of it
  */
 export function importSpecifiers(source: string): Specifier[] {
-  const blanked = blankJsComments(source);
   const found = new Map<string, Specifier>();
   const add = (specifier: string | undefined, offset: number): void => {
     if (specifier === undefined || specifier === '') return;
-    const line = lineAt(blanked, offset);
+    const line = lineAt(source, offset);
     found.set(`${specifier}\0${line}`, { specifier, line });
   };
-  const patterns = [
-    /\bimport\s+(?:[^'"]*?\s+from\s+)?["']([^"']+)["']/g,
-    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
-    /ChromeUtils\.importESModule\s*\(\s*["']([^"']+)["']/g,
-  ];
-  for (const pattern of patterns) {
-    for (const match of blanked.matchAll(pattern)) add(match[1], match.index);
-  }
-  for (const call of blanked.matchAll(/defineESModuleGetters\s*\([^{)]*\{/g)) {
-    const open = call.index + call[0].length;
-    let depth = 1;
-    let close = open;
-    for (; close < blanked.length && depth > 0; close++) {
-      if (blanked[close] === '{') depth++;
-      else if (blanked[close] === '}') depth--;
-    }
-    for (const literal of blanked.slice(open, close).matchAll(/["']([^"']+)["']/g)) {
-      add(literal[1], open + literal.index);
-    }
-  }
-  let offset = 0;
-  for (const text of blanked.split('\n')) {
-    add(GETTER_PROPERTY_LINE.exec(text)?.[1], offset);
-    offset += text.length + 1;
-  }
+  const parsed = parseEither(source);
+  if (parsed === undefined) textSpecifiers(source, add);
+  else programSpecifiers(parsed.program, add);
   return [...found.values()];
 }
 

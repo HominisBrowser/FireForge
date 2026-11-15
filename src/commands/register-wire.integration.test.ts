@@ -81,6 +81,21 @@ describe('fireforge register', () => {
     expect(await readTree(join(dir(), 'engine'))).toEqual(before);
   });
 
+  it('keeps both additions when two registrations of one manifest run together', async () => {
+    await writeTree(join(dir(), 'engine'), {
+      'browser/base/content/one.js': '// one\n',
+      'browser/base/content/two.js': '// two\n',
+    });
+    const results = await Promise.all([
+      runCli(['register', 'browser/base/content/one.js'], { cwd: dir() }),
+      runCli(['register', 'browser/base/content/two.js'], { cwd: dir() }),
+    ]);
+    expect(results.map((result) => result.exitCode)).toEqual([0, 0]);
+    const jar = await engineFile('browser/base/jar.mn');
+    expect(jar).toContain('content/one.js');
+    expect(jar).toContain('content/two.js');
+  });
+
   it('refuses a file that does not exist', async () => {
     const result = await runCli(['register', 'browser/base/content/future.js'], { cwd: dir() });
     expect(result.exitCode).toBe(8);

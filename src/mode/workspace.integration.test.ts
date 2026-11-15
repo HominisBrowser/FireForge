@@ -143,4 +143,43 @@ describe('a pool workspace', () => {
       )
     ).toBe('none');
   });
+
+  it('takes away what an earlier checkout deployed when the next has no furnace.json', async () => {
+    const withComponent = await makeSourceProject(
+      dir(),
+      {
+        files: {
+          'furnace.json': JSON.stringify({
+            version: 1,
+            componentPrefix: 'moz-',
+            custom: {
+              'moz-test-chip': {
+                description: 'A chip',
+                targetPath: 'toolkit/content/widgets/moz-test-chip',
+                register: true,
+                localized: false,
+              },
+            },
+          }),
+          'components/custom/moz-test-chip/moz-test-chip.mjs':
+            'export default class MozTestChip extends HTMLElement {}\n' +
+            'customElements.define("moz-test-chip", MozTestChip);\n',
+        },
+      },
+      'configured'
+    );
+    const bare = await makeSourceProject(dir(), { files: {} }, 'bare');
+    const chip = 'toolkit/content/widgets/moz-test-chip/moz-test-chip.mjs';
+    const engine = await withWorkspace(withComponent, { command: 'build' }, async (workspace) => {
+      await deployComponents(workspace);
+      return workspace.engineDir;
+    });
+    expect(await exists(join(engine, chip))).toBe(true);
+    await withWorkspace(bare, { command: 'build' }, async (workspace) => {
+      expect(workspace.engineDir).toBe(engine);
+      await deployComponents(workspace);
+    });
+    expect(await exists(join(engine, chip))).toBe(false);
+    expect(await readFile(join(engine, PATHS.widgetsJar), 'utf8')).not.toContain('moz-test-chip');
+  });
 });

@@ -390,6 +390,43 @@ describe('recovery after a crash', () => {
     expect(await readTree(work())).toEqual(BEFORE);
   });
 
+  it('refuses to overwrite a file edited after a completed external change', async () => {
+    await crashedJournal((tx) =>
+      tx.change([work('a.txt'), work('gone.txt')], async () => {
+        await writeFile(work('a.txt'), 'a2');
+        await writeFile(work('gone.txt'), 'g1');
+      })
+    );
+    await writeFile(work('a.txt'), 'edited by hand since');
+    await expect(recoverJournal(journal())).rejects.toMatchObject({
+      code: 'journal-conflict',
+      message: expect.stringContaining(work('a.txt')) as string,
+    });
+    expect(await readFile(work('a.txt'), 'utf8')).toBe('edited by hand since');
+    await writeFile(work('a.txt'), 'a2');
+    expect(await recoverJournal(journal())).toBe(true);
+    expect(await readTree(work())).toEqual(BEFORE);
+  });
+
+  it('restores a path whose external change was cut short, whatever it holds', async () => {
+    await crashedJournal(async (tx) => {
+      await tx.write(work('a.txt'), 'a2');
+      await tx.change([work('a.txt'), work('sub/b.txt')], async () => {
+        await writeFile(work('a.txt'), 'a3 half-made');
+        await writeFile(work('sub/b.txt'), 'b2');
+      });
+    });
+    // The crash came before the change's outcome was recorded.
+    const lines = (await readFile(journal(), 'utf8')).split('\n');
+    const unsettled = lines.findLastIndex((line) => line.includes('"unsettled"'));
+    expect(unsettled).toBeGreaterThan(0);
+    const kept = lines.filter((line, index) => index <= unsettled || !line.includes('"expect"'));
+    await writeFile(journal(), [...kept, ''].join('\n'));
+    await writeFile(work('a.txt'), 'edited by hand since');
+    expect(await recoverJournal(journal())).toBe(true);
+    expect(await readTree(work())).toEqual(BEFORE);
+  });
+
   it('ignores a torn final record: its change was never started', async () => {
     await crashedJournal((tx) => tx.write(work('a.txt'), 'a2'));
     await writeFile(

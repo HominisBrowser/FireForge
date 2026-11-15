@@ -5,8 +5,17 @@
  * output into a verdict that a crash, a hang or a cut-off suite cannot fake,
  * and negative controls that prove the tests catch what they claim to.
  */
-export { runControl } from './control.js';
-export { envAssignments, planTests } from './plan.js';
+export {
+  type ControlOutcome,
+  type ControlResult,
+  type ControlSession,
+  controlSession,
+  proveBaselines,
+  runControl,
+  settleControls,
+} from './control.js';
+export { type ControlRun, readControlRuns, recordControlRun } from './controlRecord.js';
+export { envAssignments, planTests, type TestPlan } from './plan.js';
 export { runTests, validatorEnvironment } from './run.js';
 export {
   controlReport,

@@ -42,6 +42,7 @@ import {
   projectQueue,
   readApplied,
   recordApplied,
+  recoverInterrupted,
   regeneratePatchBody,
   sameState,
   unaccountedPaths,
@@ -476,6 +477,7 @@ export interface Resolution {
  * @throws `no-session` when no import is paused on a failed patch
  */
 export async function resolvePatchFromEngine(project: PatchProject): Promise<Resolution> {
+  await recoverInterrupted(project);
   const session = await readSession(project);
   if (session !== undefined) await requireSameBase(project, session);
   if (session?.kind !== 'import' || session.patches[session.index]?.status !== 'failed') {
@@ -583,6 +585,7 @@ export async function importQueue(
   project: PatchProject,
   options: ImportOptions = {}
 ): Promise<QueueRun> {
+  await recoverInterrupted(project);
   const force = options.force === true;
   if (options.continue === true) return continueImport(project, force);
   const existing = await readSession(project);
@@ -808,6 +811,7 @@ export async function rebaseQueue(
   project: PatchProject,
   options: RebaseOptions = {}
 ): Promise<RebaseResult> {
+  if (options.dryRun !== true) await recoverInterrupted(project);
   const engine = project.paths.engine;
   if (options.abort === true) {
     const raw = await readState(project, RAW_SESSION);

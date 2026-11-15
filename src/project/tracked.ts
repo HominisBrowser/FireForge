@@ -17,8 +17,18 @@ export interface TrackedFiles {
   read(enginePath: string): Promise<string | undefined>;
   /** Whether the engine has the file, as text or not. */
   exists(enginePath: string): Promise<boolean>;
-  /** Writes an engine file's tracked copy as part of `tx`, recording whatever the mode needs. */
-  write(tx: Transaction, enginePath: string, content: string): Promise<void>;
+  /**
+   * Writes an engine file's tracked copy as part of `tx`, recording whatever the mode needs.
+   * With `expected`, the write is refused (`tracked-file-moved`) unless the
+   * file still holds that text (null: unless it does not exist), so an edit
+   * planned over a read never erases a change made after it.
+   */
+  write(
+    tx: Transaction,
+    enginePath: string,
+    content: string,
+    options?: { expected?: string | null }
+  ): Promise<void>;
   /** Removes an engine file the project added, as part of `tx`. */
   remove(tx: Transaction, enginePath: string): Promise<void>;
   /** The absolute path of the tracked copy, for paths written relative to it. */

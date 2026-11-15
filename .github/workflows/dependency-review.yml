@@ -3,6 +3,11 @@ name: Dependency Review
 on:
   pull_request:
     branches: [main]
+  # The review compares a pull request with its base branch, and a merge queue
+  # candidate carries no pull request. The job still runs, so the required
+  # `dependency review` context reports, and passes: the pull request was
+  # reviewed before it entered the queue.
+  merge_group:
 
 permissions:
   contents: read
@@ -13,9 +18,14 @@ jobs:
     name: dependency review
     runs-on: ubuntu-latest
     steps:
+      - name: Nothing to review for a merge queue candidate
+        if: ${{ github.event_name == 'merge_group' }}
+        run: echo "The pull request was reviewed before it joined the merge queue."
       - uses: actions/checkout@v7.0.1
+        if: ${{ github.event_name == 'pull_request' }}
         with:
           persist-credentials: false
       - uses: actions/dependency-review-action@v5.0.0
+        if: ${{ github.event_name == 'pull_request' }}
         with:
           fail-on-severity: high

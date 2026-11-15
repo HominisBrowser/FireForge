@@ -35,11 +35,14 @@ import {
 } from '../project/index.js';
 import {
   importQueue,
+  pathsOf,
   queueStatus,
+  readQueue,
   rebaseQueue,
   type RebaseResult,
-  replayQueue,
+  replay,
   requirePatchMode,
+  sparseTree,
 } from '../queue/index.js';
 import { refreshPin } from '../source/index.js';
 import { pinnedPristine } from './pristine.js';
@@ -147,7 +150,33 @@ const originSection = defineStateSection(
 const reload = async (project: PatchProject): Promise<PatchProject> =>
   requirePatchMode(await loadProject(project.root, { FIREFORGE_HOME: project.host.root }));
 
-/** Puts a patch-mode project's engine and configuration on a new pin. */
+/**
+ * Refuses to go on while `engine/` holds an edit no patch has: a path the
+ * queue does not own, one it owns that was changed, or one it owns that was
+ * deleted.
+ */
+function requireNoUnexportedEdits(paths: readonly { path: string; state: string }[]): void {
+  const unexported = paths.filter(
+    (path) => path.state === 'modified' || path.state === 'unmanaged' || path.state === 'missing'
+  );
+  if (unexported.length === 0) return;
+  throw new FireForgeError(
+    'engine-unexported-edits',
+    `engine/ holds ${unexported.length} edit(s) no patch has, such as ${unexported[0]?.path ?? ''}; a rebase replaces the engine.`,
+    {
+      exitCode: ExitCode.PATCH_ERROR,
+      hint: 'Capture them with "fireforge export" or "fireforge re-export", drop them with "fireforge discard", or pass --force (a recovery snapshot keeps them).',
+    }
+  );
+}
+
+/**
+ * Puts a patch-mode project's engine and configuration on a new pin. Edits
+ * no patch has are refused unless `force` is set: once up front, before the
+ * new source is prepared, and again under the exclusive engine lock the
+ * install takes, immediately before the engine is replaced, so an edit made
+ * while the source was being prepared is seen too.
+ */
 async function movePin(
   project: PatchProject,
   pin: FirefoxConfig,
@@ -165,19 +194,7 @@ async function movePin(
         hint: `Finish it with "fireforge ${status.session.kind} --continue" or drop it with "fireforge rebase --abort".`,
       });
     }
-    const unexported = status.paths.filter(
-      (path) => path.state === 'modified' || path.state === 'unmanaged'
-    );
-    if (unexported.length > 0 && options.force !== true) {
-      throw new FireForgeError(
-        'engine-unexported-edits',
-        `engine/ holds ${unexported.length} edit(s) no patch has, such as ${unexported[0]?.path ?? ''}; a rebase replaces the engine.`,
-        {
-          exitCode: ExitCode.PATCH_ERROR,
-          hint: 'Capture them with "fireforge export" or "fireforge re-export", drop them with "fireforge discard", or pass --force (a recovery snapshot keeps them).',
-        }
-      );
-    }
+    if (options.force !== true) requireNoUnexportedEdits(status.paths);
   }
   const interrupted = await readState(project, originSection);
   if (interrupted !== undefined) {
@@ -194,7 +211,22 @@ async function movePin(
   await updateState(project, originSection, () => ({
     firefox: JSON.stringify(pinDocument(project.config.firefox)),
   }));
-  await installProjectEngine(project, pristine, { force: true, waitMs: options.waitMs });
+  await installProjectEngine(project, pristine, {
+    force: true,
+    waitMs: options.waitMs,
+    beforeReplace:
+      options.force === true
+        ? undefined
+        : async () => {
+            requireNoUnexportedEdits((await queueStatus(project)).paths);
+          },
+  }).catch(async (error: unknown) => {
+    // Nothing was replaced, so the pin was not left.
+    if (error instanceof FireForgeError && error.code === 'engine-unexported-edits') {
+      await updateState(project, originSection, () => undefined);
+    }
+    throw error;
+  });
   await setConfigValue(project.root, 'firefox', JSON.stringify(pinDocument(pin)));
   return reload(project);
 }
@@ -218,6 +250,37 @@ async function restoreOrigin(project: PatchProject, options: RebaseOptions): Pro
   return restored;
 }
 
+/**
+ * Reports how the queue would apply to a new pin, under the policy the
+ * rebase itself applies with: exact context first, then reduced context. A
+ * patch that needs the reduced context is reported as `applied-fuzz`.
+ */
+async function previewPin(
+  project: PatchProject,
+  pin: FirefoxConfig,
+  options: RebaseOptions
+): Promise<RebaseReport> {
+  const pristine = await ensurePristine(project.host, pin, progress(options));
+  const queue = await readQueue(project.paths.patches);
+  const start = await sparseTree(pristine.repo, pristine.commit, pathsOf(queue.patches));
+  const result = await replay(pristine.repo, start, queue.patches, { fuzz: true, keepGoing: true });
+  const failed = new Map(result.failures.map((failure) => [failure.index, failure]));
+  const applied = [...result.steps];
+  const entries = queue.patches.map((patch, index) => {
+    if (failed.has(index)) return { subject: patch.filename, outcome: 'failed' };
+    const fuzz = applied.shift()?.fuzz ?? 0;
+    return { subject: patch.filename, outcome: fuzz > 0 ? 'applied-fuzz' : 'applied-clean' };
+  });
+  return {
+    status: 'dry-run',
+    pin: { version: pin.version, product: pin.product },
+    entries,
+    conflicts: result.failures.map(
+      (failure) => `${failure.patch} does not apply to ${pristine.commit}: ${failure.message}`
+    ),
+  };
+}
+
 async function rebasePatches(project: PatchProject, options: RebaseOptions): Promise<RebaseReport> {
   const resuming = options.continue === true || options.abort === true;
   if (resuming && options.to !== undefined) {
@@ -225,22 +288,7 @@ async function rebasePatches(project: PatchProject, options: RebaseOptions): Pro
   }
   const pin =
     options.to === undefined ? undefined : newPin(project, { ...options, to: options.to });
-  if (pin !== undefined && options.dryRun === true) {
-    const pristine = await ensurePristine(project.host, pin, progress(options));
-    const failure = await replayQueue(pristine.repo, pristine.commit, project.paths.patches).then(
-      () => undefined,
-      (error: unknown) => {
-        if (error instanceof FireForgeError && error.code === 'queue-does-not-apply') return error;
-        throw error;
-      }
-    );
-    return {
-      status: 'dry-run',
-      pin: { version: pin.version, product: pin.product },
-      entries: [],
-      conflicts: failure === undefined ? [] : [failure.message],
-    };
-  }
+  if (pin !== undefined && options.dryRun === true) return previewPin(project, pin, options);
   const target = pin === undefined ? project : await movePin(project, pin, options);
   const result = await withEngineLock(target, { command: 'rebase', waitMs: options.waitMs }, () =>
     rebaseQueue(target, {

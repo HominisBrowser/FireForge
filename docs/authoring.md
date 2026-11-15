@@ -2,7 +2,7 @@
 
 # Authoring helpers: tokens, registration, wiring
 
-Three helpers edit Firefox's own files the way Firefox's conventions expect, so you do not hand-edit build manifests and chrome scripts. Each plans every edit before writing any, and `--dry-run` shows the plan.
+Three helpers edit Firefox's own files the way Firefox's conventions expect, so you do not hand-edit build manifests and chrome scripts. Each plans every edit before writing any, and `--dry-run` shows the plan. A real run reads and plans while it holds the lock for the edit, so two of these commands started together both land; a file changed by anything else between the read and the write is refused with "changed since it was read", and nothing is written.
 
 They write where the project keeps engine files: `engine/` in patch mode, `src/` in source mode. In source mode an upstream file needs an override record before it is edited ([source-workflow.md](source-workflow.md#declaring-an-upstream-file-override)). `register` and `wire`, whose edits are registrations by definition, declare that override themselves (classified `registration`) on their first edit of an upstream file. `token add` refuses an upstream file without one and names the `override` command.
 
@@ -70,7 +70,7 @@ npx fireforge register browser/base/content/test/sidebar/browser.toml --create-m
 | a test manifest                      | the `moz.build` above it                  |
 | a test file                          | the test manifest of its directory        |
 
-A file that is already registered is left alone.
+A file that is already registered is left alone. A `moz.build` list that holds anything but quoted strings (a variable, a call, a concatenation, a conditional expression) is not edited: the command names the first such element and asks for the entry to be added by hand. A path, name or value containing a quote character, a backslash or a line break is refused rather than written with broken syntax.
 
 - `--after <entry>` places the entry after an existing one (`jar.mn` and test manifests).
 - `--create-manifest` creates a missing `moz.build` or test manifest and wires it into its parents.
@@ -94,4 +94,4 @@ It makes these edits, all planned before any is written:
 - with `--dom <path>`, `#include`s that DOM fragment (`.inc.xhtml`) into the top-level chrome document;
 - registers the script in `browser/base/jar.mn`.
 
-The scripts live in `wire.subscriptDir` (default `browser/base/content`) and fragments are included into `wire.domTarget` (default `browser/base/content/browser.xhtml`). Every edit parses the file it changes, so a file that does not parse is refused rather than patched by guesswork. Lines FireForge writes into upstream files carry the `markerComment` comment.
+The scripts live in `wire.subscriptDir` (default `browser/base/content`) and fragments are included into `wire.domTarget` (default `browser/base/content/browser.xhtml`). Every edit parses the file it changes and parses the result again, so a file that does not parse is refused rather than patched by guesswork. Placement and the "already there" check come from the syntax tree: a script counts as loaded only when a `loadSubScript` call with a string-literal URL (either quote style) names it, never because a comment or string mentions it; the load goes after the last such loader, or, when the file has none, at the end of its one top-level function, and a file with neither is refused. The init and destroy calls go into `onLoad` and `onUnload` (`uninit` when there is no `onUnload`), the call is looked for only inside that method, and a file with several methods of that name is refused as ambiguous. An expression starting with a reserved word (`class.init`) is refused. Lines FireForge writes into upstream files carry the `markerComment` comment.

@@ -21,6 +21,7 @@ import {
   splitPatch,
   verifyQueue,
 } from './index.js';
+import type { LintIgnoreEntry } from './manifest.js';
 import { loadQueue } from './queue.js';
 
 const dir = useTempDir();
@@ -390,6 +391,34 @@ describe('setPatchMeta', () => {
     await setPatchMeta(project, 'ui-b', { lintIgnore: { remove: ['jsdoc', 'file-too-large'] } });
     const manifest = await readFile(join(fixture.patches, 'patches.json'), 'utf8');
     expect(manifest).not.toContain('lintIgnore');
+  });
+
+  it('keeps the ceiling of the other share when one scoped ceiling is added or updated', async () => {
+    const fixture = await queue();
+    const project = await fixture.project();
+    const ceiling = (share: 'product' | 'test', max: number): LintIgnoreEntry => ({
+      rule: 'large-patch-lines',
+      max,
+      reason: `${share} ${max}`,
+      share,
+    });
+    const waivers = async (): Promise<unknown> => (await loadQueue(project)).patches[1]?.lintIgnore;
+    await setPatchMeta(project, 'ui-b', { lintIgnore: { add: [ceiling('product', 300)] } });
+    await setPatchMeta(project, 'ui-b', { lintIgnore: { add: [ceiling('test', 800)] } });
+    expect(await waivers()).toEqual([ceiling('product', 300), ceiling('test', 800)]);
+    await setPatchMeta(project, 'ui-b', { lintIgnore: { add: [ceiling('product', 350)] } });
+    expect(await waivers()).toEqual([ceiling('test', 800), ceiling('product', 350)]);
+    // A rule ID waives the whole rule and replaces every ceiling of it; a removal drops them all.
+    await setPatchMeta(project, 'ui-b', { lintIgnore: { add: ['large-patch-lines'] } });
+    expect(await waivers()).toEqual(['large-patch-lines']);
+    await setPatchMeta(project, 'ui-b', {
+      lintIgnore: {
+        add: [ceiling('product', 1), ceiling('test', 2)],
+        remove: ['large-patch-lines'],
+      },
+    });
+    await setPatchMeta(project, 'ui-b', { lintIgnore: { remove: ['large-patch-lines'] } });
+    expect(await waivers()).toBeUndefined();
   });
 
   it('adds and removes staged dependencies, replacing an equal one', async () => {

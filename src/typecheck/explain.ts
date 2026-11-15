@@ -89,7 +89,7 @@ export async function explainTypecheck(
       continue;
     }
     const roots = new Set(read.parsed.fileNames.map((name) => join(name)));
-    const membership = optsOut(read.raw)
+    const membership = optsOut(read.parsed)
       ? 'skipped'
       : roots.has(join(absolute))
         ? 'root'

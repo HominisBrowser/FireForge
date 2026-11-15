@@ -60,7 +60,7 @@ function sectionOf<T>(
   document: Record<string, unknown>,
   section: StateSection<T>
 ): T | undefined {
-  const raw = document[section.key];
+  const raw = Object.hasOwn(document, section.key) ? document[section.key] : undefined;
   if (raw === undefined) return undefined;
   const result = section.schema.validate(raw);
   if (result.ok) return result.value;

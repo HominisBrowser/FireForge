@@ -9,12 +9,12 @@
 import { join, resolve } from 'node:path';
 
 import type { FireForgeConfig } from '../config/index.js';
-import { engineLockPath, listWorkspaces } from '../engine/index.js';
+import { engineLockPath, listWorkspaces, workspaceLockPath } from '../engine/index.js';
 import { loadFurnaceConfig, typingDrift } from '../furnace/index.js';
 import { FireForgeError, toError } from '../kernel/errors.js';
 import { exists, freeDiskSpace, listDir } from '../kernel/fs.js';
 import { inspectJournal, recoverJournal } from '../kernel/journal.js';
-import { readLockStatus } from '../kernel/lock.js';
+import { readLockStatus, tryAcquireLock } from '../kernel/lock.js';
 import { findExecutable, run } from '../kernel/process/index.js';
 import { diagnose, type Diagnosis, trackedFiles } from '../mode/index.js';
 import {
@@ -78,40 +78,126 @@ async function python(): Promise<Answer> {
     : { status: 'ok', detail: found };
 }
 
-/** Where transactions keep their journals: the project state and every pool workspace. */
-async function journalPaths({ host, project }: Context): Promise<string[]> {
-  const directories = [
-    ...(project === undefined ? [] : [project.paths.stateDir]),
-    ...(await listWorkspaces(host)).map((workspace) => workspace.dir),
+/** A journal on disk and the lock whose holder owns what it changes. */
+interface JournalFile {
+  path: string;
+  /** Undefined when nothing known serialises the resource, so doctor cannot undo it safely. */
+  lock: string | undefined;
+}
+
+/**
+ * The lock a project's own journal is written under, by the lock that its
+ * owner holds: the engine lock for everything that changes the engine or the
+ * queue of a patch-mode project, the module's own lock where it has one.
+ */
+function projectLock(project: Project, name: string): string | undefined {
+  const { stateDir } = project.paths;
+  if (name === 'furnace-edit.journal') return join(stateDir, 'furnace-edit.lock');
+  if (name === 'source.journal') return join(stateDir, 'source.lock');
+  if (name === 'tracked-edit.journal' && project.mode === 'source') {
+    return join(stateDir, 'tracked-edit.lock');
+  }
+  const engineWork = [
+    'engine.journal',
+    'queue.journal',
+    'tracked-edit.journal',
+    'furnace-deployment.journal',
+    'source-materialize.journal',
   ];
-  const paths: string[] = [];
-  for (const directory of directories) {
+  if (project.mode === 'patches' && (engineWork.includes(name) || name.startsWith('journals/'))) {
+    return engineLockPath(project);
+  }
+  return undefined;
+}
+
+/** Where transactions keep their journals: the project state and every pool workspace. */
+async function journalPaths({ host, project }: Context): Promise<JournalFile[]> {
+  const homes: { directory: string; lockOf: (name: string) => string | undefined }[] = [
+    ...(project === undefined
+      ? []
+      : [
+          {
+            directory: project.paths.stateDir,
+            lockOf: (name: string) => projectLock(project, name),
+          },
+        ]),
+    ...(await listWorkspaces(host)).map((workspace) => ({
+      directory: workspace.dir,
+      // The lease is held for the whole of a command in the workspace.
+      lockOf: () => workspaceLockPath(host, workspace.name),
+    })),
+  ];
+  const found: JournalFile[] = [];
+  for (const { directory, lockOf } of homes) {
     for (const entry of await listDir(directory)) {
       if (entry.kind === 'file' && entry.name.endsWith('.journal')) {
-        paths.push(join(directory, entry.name));
+        found.push({ path: join(directory, entry.name), lock: lockOf(entry.name) });
       }
     }
     for (const entry of await listDir(join(directory, 'journals'))) {
-      if (entry.kind === 'file') paths.push(join(directory, 'journals', entry.name));
+      if (entry.kind === 'file') {
+        found.push({
+          path: join(directory, 'journals', entry.name),
+          lock: lockOf(`journals/${entry.name}`),
+        });
+      }
     }
   }
-  return paths;
+  return found;
+}
+
+/**
+ * Undoes one interrupted journal while holding the lock that serialises what
+ * it changes, and reads the journal again once the lock is held: a command
+ * that held the lock first may have recovered it, or begun a new transaction.
+ *
+ * @returns Whether it was undone (false when another command already had), or why it was left alone
+ */
+async function recoverUnderLock(file: JournalFile): Promise<boolean | string> {
+  if (file.lock === undefined) {
+    return 'no known lock serialises it, so it is left for the command that wrote it';
+  }
+  const lock = await tryAcquireLock(file.lock, {
+    label: 'journal recovery',
+    info: { command: 'doctor' },
+  });
+  if (lock === undefined) {
+    const { holders } = await readLockStatus(file.lock);
+    const who = holders.map((holder) => `PID ${holder.pid}`).join(', ');
+    return `${file.lock} is held${who === '' ? '' : ` by ${who}`}`;
+  }
+  try {
+    const pending = await inspectJournal(file.path);
+    if (pending === undefined) return false;
+    if (pending.ownerAlive) return `PID ${pending.pid} is running it`;
+    return await recoverJournal(file.path);
+  } finally {
+    await lock.release();
+  }
 }
 
 async function journals(context: Context): Promise<Answer> {
   const interrupted: string[] = [];
   let recovered = 0;
-  for (const path of await journalPaths(context)) {
-    const pending = await inspectJournal(path);
+  for (const file of await journalPaths(context)) {
+    const pending = await inspectJournal(file.path);
     if (pending === undefined || pending.ownerAlive) continue;
-    if (context.recover && (await recoverJournal(path))) recovered += 1;
-    else interrupted.push(`${pending.label} (${pending.paths.length} path(s), ${path})`);
+    const named = `${pending.label} (${pending.paths.length} path(s), ${file.path})`;
+    if (!context.recover) {
+      interrupted.push(named);
+      continue;
+    }
+    const outcome = await recoverUnderLock(file);
+    if (outcome === true) recovered += 1;
+    else if (outcome !== false) interrupted.push(`${named}: ${outcome}`);
   }
   if (interrupted.length > 0) {
     return {
       status: 'fail',
       detail: `Interrupted and not undone: ${interrupted.join('; ')}`,
-      fix: 'Run "fireforge doctor --recover" to restore the files those runs were changing.',
+      fix: context.recover
+        ? 'Finish or stop the commands holding the locks named, then run "fireforge doctor --recover" again. A journal no lock covers is undone by the next run of the command that wrote it.'
+        : 'Run "fireforge doctor --recover" to restore the files those runs were changing.',
     };
   }
   return {

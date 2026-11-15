@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.61.0
+
+Negative controls and the gate cost less when several sessions share a host, and a round of fixes from two code reviews and an audit of parallel work.
+
+### Gate and negative controls
+
+- `gate --lane 'control:*'` (and `lane:*`, `stress:*`, `run:*`) runs every declared entry of a kind in one workspace with a verdict per entry. The restored engine is built once for all controls instead of after each.
+- Every negative control run (the gate, a feedback run, `test --control`) is recorded in `.fireforge/gate/controls.json`: the diff, the tests and assertions, the tree it ran against and what went red. `gate status` and every gate summary list the declared controls that are owed a run, each with its reason (`never-run`, `changed`, `tree-changed`, `missed`, `wrong-red`, `not-caught`), as `controls` and `owed` in JSON and `controls-owed=` on the verdict line. This informs and never changes an exit code.
+- A commit that changes only documents, declared control diff files and `gate.controls` keeps the proof of the product code: the gate runs `check`, the build and the changed controls, reports `basis=controls`, and moves the verified ref when they pass.
+- `gate --resume` skips the entries that passed in the last full run of the same commit, tree, version and gate declaration, a killed run included, and marks them `reused` in the report, the verdict line and JSON. `check` and the build always run again.
+- A recorded pass stands, and `--resume` reuses entries, only while every control diff and console allow file the gate names holds what it held, so a file git ignores cannot change under a proof.
+- `gate status` shows each gate running in the checkout: its PID, since when and the entry it is on (`running` in JSON). A running gate records each entry in `progress.json` beside its artifacts as it ends.
+- A second `gate` on a commit that already has a running gate waits for it and reads its recorded result, and two gates no longer delete each other's logs. A feedback run uses `feedback-1/` and so on while `feedback/` is in use.
+- A gate entry that could not run because a lock did not come free, or whose engine changed under it, is reported as `blocked`, and a gate with nothing else red exits 15 or 14 instead of 5.
+- A red, blocked or interrupted gate entry notes the host load against the CPU count and, when the load was high, the busiest process outside the command.
+- The documents-only gate fails with `gate-tree-moved` (exit 14) when the checkout moved while its `check` ran.
+- `workspace list --json` reports for each workspace, the patch-mode engine, the display lock and the build slots who holds them (PID, checkout, command, since when) and who waits, without taking a lock.
+
+### Tests
+
+- A green run of a requested `.html` or `.xhtml` test is no longer failed as "nothing ran under that path".
+- Console text that looks like a harness failure no longer turns a run red when the structured log is complete and green and the harness exited 0.
+- A run whose structured log never ended its suite no longer passes on recognised teardown noise or on a green summary beside a non-zero exit; it is a crash.
+- A red run lists each file's failing assertions and messages, up to 10 per file and 400 characters each, and the harness's message for a file that ended unexpectedly, in the results document and the printed lines.
+- A leftover holding a harness port is terminated only when it is a harness process of this workspace or carries the engine marker. One that cannot be terminated refuses the run with `port-busy` instead of waiting forever.
+- A smoke start passes only when the browser printed a line after mach logged starting it. Python warnings and tracebacks of the launcher no longer count as the browser having started.
+
+### Furnace
+
+- A source-mode `furnace apply --dry-run`, `furnace status`, `furnace diff` and `furnace override` no longer deploy the components into the workspace before answering.
+- A checkout without `furnace.json`, or with fewer components, takes away what another checkout deployed into the shared pool workspace, its `jar.mn` and `customElements.js` entries included.
+- A file that moves between components with identical bytes is no longer deleted when its old component is removed.
+- `furnace diff` shows pending removals: a dropped file, a component no longer in `furnace.json`, and an override file going back to upstream.
+- A `--dry-run` of `furnace create`, `rename` and `remove` lists the same files as the real operation, the generated tag map and jsconfig included.
+
+### Registration and editing
+
+- `register`, `wire` and `token add` read and plan under the edit lock, in both modes, so two commands started together both land in the same file. An edit planned over a file that has since changed is refused with `tracked-file-moved` and writes nothing.
+- moz.build edits refuse a list that holds anything but quoted strings (a variable, a call, a concatenation) instead of dropping it, and keep each existing literal's quotes and a trailing comment. moz.build and test-manifest edits refuse a value containing a quote, a backslash or a line break.
+- `wire` finds the subscript loader and the init and destroy methods from the syntax tree, refuses an ambiguous `onLoad` or `onUnload` and a reserved-word expression such as `class.init`, and checks that the edited script still parses.
+- Import discovery ignores import-looking text in strings and takes only the values of a `defineESModuleGetters` map.
+
+### Lint and typecheck
+
+- `typecheck` reports a relative import that names no file as an error and an unresolved package import as a warning. URL imports (`resource:`, `chrome:`, `moz-src:`) stay unreported.
+- A missing file named by a `/// <reference path>` inside a configured shim fails the run, naming the file and the shims that led to it.
+- A project that inherits `checkJs: false` through `extends` is skipped with a warning and reports zero files checked.
+- A configured `paths` mapping wins over matching a created module by file name.
+- An unreadable or unwritable lint cache is a cache miss with one warning.
+
+### Queue, recovery and storage
+
+- `doctor --recover` undoes an interrupted run only while holding the lock of what it changed, and lists the journals it left alone.
+- Queue and engine commands undo an interrupted earlier transaction before they read the queue.
+- Recovery after a crash refuses to overwrite a file edited by hand after a build or git step of the interrupted transaction had completed.
+- Applying a queue state that turns a directory into a file, or a file into a directory, works.
+- `export` refuses an output directory holding files the generated queue does not account for, keeps the previous queue until the new one is in place, and puts it back when the replacement fails.
+- A cached pristine source is used only while what was recorded at its import meets the project's pin; otherwise commands stop with `pristine-unsatisfied` and `download` verifies it again from the cached archive.
+- `rebase --to --dry-run` applies the queue with the same reduced context as the real rebase and lists each patch as `applied-clean`, `applied-fuzz` or `failed`.
+- `rebase --to` counts a deleted queue-owned file as an unexported edit and checks again under the exclusive lock just before it replaces `engine/`.
+- `watch` retries a failed refresh with growing pauses without another edit, and follows executable-bit changes.
+- A release collects every declared output before it touches the output directory, places outputs and `release.json` together, refuses an output directory inside its object directory, and records the pin's candidate.
+- A command that exits before its timeout is no longer reported as timed out because its cleanup ran long. Stream downloads write every byte when the file system accepts a write in pieces. A `__proto__` key in a JSON document is kept as data. Adding a scoped lint ceiling to a patch keeps the ceiling of the other share.
+
+### Docs
+
+- `docs/gate.md` covers a gate that outlives the session that started it, `--resume` and the control record; `docs/workspaces.md` covers landing parallel work through one integrating session.
+- The `lint` help and `docs/quality.md` state that `lint` runs FireForge's own rules and not ESLint or `mach lint`; the `furnace create` help states that registration is written at deployment.
+
+### Maintenance
+
+- CI, Security and Dependency Review run for merge queue candidates.
+- The release workflow never runs twice at once, skips the publish when the version is already on npm, skips the tag when origin has it, and pushes the version commit and the tag in one atomic push, so a failed release can be run again.
+
 ## 0.60.1
 
 A rework of the whole tool. The two ways of storing a fork stay (patch mode and source mode), and the daily commands (`status`, `lint`, `typecheck`, `check`, `build`, `test`, `run`) mean the same and take the same flags in both. Source mode no longer routes work through a host daemon: there are no jobs, slots, supervisor or proof ledger. The code base is about 49,000 lines instead of 164,000, and the command line has 66 commands and subcommands with 94 distinct flags, against 126 and 261. Upgrading needs configuration changes and one full rebuild; [`docs/migrating.md`](docs/migrating.md) lists every removed command, flag and key with its replacement, and the steps for each mode.

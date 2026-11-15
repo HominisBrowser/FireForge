@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { exists } from '../kernel/fs.js';
+import { transaction } from '../kernel/journal.js';
+import { git } from '../testing/git.js';
 import { createPatchProject, type PatchFixture } from '../testing/patch-project.js';
 import { useTempDir } from '../testing/temp.js';
-import { projectQueue } from './baseline.js';
+import { projectQueue, writeStates } from './baseline.js';
 import {
   engineChanges,
   importQueue,
@@ -212,5 +215,60 @@ describe('verifyQueue', () => {
     ]);
     await importQueue(project, { force: true });
     expect(await fixture.read(NEW)).toBe('mine\n');
+  });
+});
+
+describe('writeStates', () => {
+  async function blob(engine: string, text: string): Promise<{ oid: string; mode: string }> {
+    await writeFile(join(engine, '.blob'), text);
+    const oid = (await git(engine, ['hash-object', '-w', '.blob'])).trim();
+    await rm(join(engine, '.blob'));
+    return { oid, mode: '100644' };
+  }
+
+  it('turns a directory into a file and a file into a directory, leaving siblings alone', async () => {
+    const fixture = await createPatchProject(dir());
+    const engine = join(fixture.root, 'engine');
+    await mkdir(join(engine, 'dir'), { recursive: true });
+    await mkdir(join(engine, 'deep/sub'), { recursive: true });
+    await writeFile(join(engine, 'dir/inner.js'), 'inner\n');
+    await writeFile(join(engine, 'dir/more.js'), 'more\n');
+    await writeFile(join(engine, 'deep/sub/leaf.js'), 'leaf\n');
+    await writeFile(join(engine, 'deep/keep.js'), 'keep\n');
+    await writeFile(join(engine, 'flat'), 'was a file\n');
+    await writeFile(join(engine, 'sibling.js'), 'sibling\n');
+    const dirNow = await blob(engine, 'dir\n');
+    const innerNow = await blob(engine, 'inner\n');
+    const moreNow = await blob(engine, 'more\n');
+    const flatNow = await blob(engine, 'was a file\n');
+    const leafNow = await blob(engine, 'leaf\n');
+    const nested = await blob(engine, 'now nested\n');
+    const current = new Map([
+      ['dir/inner.js', innerNow],
+      ['dir/more.js', moreNow],
+      ['flat', flatNow],
+      ['deep/sub/leaf.js', leafNow],
+    ]);
+    const target = new Map([
+      ['dir/inner.js', null],
+      ['dir/more.js', null],
+      ['dir', dirNow],
+      ['flat', null],
+      ['flat/inside.js', nested],
+      ['deep/sub/leaf.js', null],
+    ]);
+
+    const changed = await transaction(
+      join(fixture.root, '.fireforge/engine.journal'),
+      'test',
+      (tx) => writeStates(tx, engine, target, current)
+    );
+
+    expect(changed).toHaveLength(6);
+    expect(await readFile(join(engine, 'dir'), 'utf8')).toBe('dir\n');
+    expect(await readFile(join(engine, 'flat/inside.js'), 'utf8')).toBe('now nested\n');
+    expect(await exists(join(engine, 'deep/sub'))).toBe(false);
+    expect(await readFile(join(engine, 'deep/keep.js'), 'utf8')).toBe('keep\n');
+    expect(await readFile(join(engine, 'sibling.js'), 'utf8')).toBe('sibling\n');
   });
 });

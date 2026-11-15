@@ -9,7 +9,8 @@
  * directory's created `head*.js` helpers, since mochitest scripts share
  * top-level scope only with those. Every program resolves `resource:` and
  * `chrome:` imports to the created module whose basename the specifier ends
- * with (`.mjs` also finding `.sys.mjs`), when exactly one matches; any other
+ * with (`.mjs` also finding `.sys.mjs`), when exactly one matches and no
+ * reviewed `paths` mapping names the specifier; any other
  * URL import falls to the shim's wildcard modules and types as `any`.
  *
  * Each program's result is cached by the digests of everything it read
@@ -21,7 +22,7 @@ import type { PatchLintConfig } from '../config/index.js';
 import { hash } from '../kernel/hash.js';
 import { textContent } from '../project/index.js';
 import { importSpecifiers } from '../syntax/index.js';
-import { type CachedFinding, pruneCache, readCached, writeCached } from './cache.js';
+import { type CachedFinding, cacheWarner, pruneCache, readCached, writeCached } from './cache.js';
 import type { OwnedFiles } from './input.js';
 import { basename, directoryOf, type Draft, type EngineReader, isTestFile } from './rule.js';
 import {
@@ -279,6 +280,10 @@ function runUnit(shared: Shared, unit: Unit): { findings: CachedFinding[]; read:
     ]) {
       const judged = judgeDiagnostic(ts, diagnostic, {
         undefinedIdentifiers: shared.undefinedIdentifiers,
+        // The program resolves no file path and no package itself (it holds owned files only,
+        // never node_modules or the rest of the engine), so an unresolved one says nothing here:
+        // `relative-import` flags relative imports, and `typecheck` projects resolve the rest.
+        missingModules: { path: 'off', bare: 'off' },
         isResolved: (containing, specifier) => resolved.get(containing)?.has(specifier) === true,
       });
       if (judged === undefined) continue;
@@ -365,13 +370,14 @@ export async function checkOwnedJs(input: CheckJsInput): Promise<Draft[]> {
     ts,
     options,
     files,
-    resolveModule: (specifier) => matchModule(specifier) ?? mapped.get(specifier),
+    resolveModule: (specifier) => mapped.get(specifier) ?? matchModule(specifier),
     parsed: new Map(),
     undefinedIdentifiers: input.lint.undefinedIdentifiers,
   };
   const digests = new Map([...files].map(([path, text]) => [path, hash(text)]));
   const drafts: Draft[] = [];
   const used = new Set<string>();
+  const cacheFailed = input.cacheDir === undefined ? undefined : cacheWarner(input.cacheDir);
   for (const unit of units) {
     const key = hash(
       JSON.stringify([
@@ -386,11 +392,11 @@ export async function checkOwnedJs(input: CheckJsInput): Promise<Draft[]> {
       ])
     );
     used.add(key);
-    let findings = await readCached(input.cacheDir, key, digests);
+    let findings = await readCached(input.cacheDir, key, digests, cacheFailed);
     if (findings === undefined) {
       const result = runUnit(shared, unit);
       findings = result.findings;
-      await writeCached(input.cacheDir, key, result.read, digests, findings);
+      await writeCached(input.cacheDir, key, { read: result.read, digests, findings }, cacheFailed);
     }
     drafts.push(
       ...findings.map((finding) => ({
@@ -402,7 +408,8 @@ export async function checkOwnedJs(input: CheckJsInput): Promise<Draft[]> {
       }))
     );
   }
-  if (input.complete && input.cacheDir !== undefined) await pruneCache(input.cacheDir, used);
+  if (input.complete && input.cacheDir !== undefined)
+    await pruneCache(input.cacheDir, used, cacheFailed);
   return drafts;
 }
 
@@ -461,12 +468,12 @@ export async function explainOwnedJs(input: CheckJsInput, path: string): Promise
   const imports = [...new Set(specifiersOf(text).filter((s) => /^(?:resource|chrome):/.test(s)))]
     .sort()
     .map((specifier): OwnedImport => {
-      const owned = match(specifier);
-      if (owned !== undefined) return { specifier, resolution: 'owned', target: owned };
       const target = mapped.get(specifier);
-      return target === undefined
+      if (target !== undefined) return { specifier, resolution: 'paths', target };
+      const owned = match(specifier);
+      return owned === undefined
         ? { specifier, resolution: 'any' }
-        : { specifier, resolution: 'paths', target };
+        : { specifier, resolution: 'owned', target: owned };
     });
   const reason = noneReason(input, path);
   if (reason !== undefined) return { program: 'none', reason, heads: [], imports };

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { FireForgeError } from '../kernel/errors.js';
 import type { Transaction } from '../kernel/journal.js';
 import type { TrackedFiles } from '../project/index.js';
 
@@ -23,7 +24,12 @@ export function memoryFiles(initial: Readonly<Record<string, string>> = {}): Mem
     contents,
     read: (path) => Promise.resolve(contents.get(path)),
     exists: (path) => Promise.resolve(contents.has(path)),
-    write: (_tx, path, content) => {
+    write: (_tx, path, content, options = {}) => {
+      if (options.expected !== undefined && (contents.get(path) ?? null) !== options.expected) {
+        return Promise.reject(
+          new FireForgeError('tracked-file-moved', `${path} changed since it was read.`)
+        );
+      }
       contents.set(path, content);
       return Promise.resolve();
     },

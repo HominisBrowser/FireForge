@@ -23,6 +23,7 @@ import {
   projectQueue,
   pruneEmptyParents,
   recordApplied,
+  recoverInterrupted,
   writeStates,
 } from './baseline.js';
 import { loadQueue, queueError } from './queue.js';
@@ -85,6 +86,7 @@ export async function discard(
   project: PatchProject,
   paths: readonly string[]
 ): Promise<DiscardResult> {
+  await recoverInterrupted(project);
   const engine = project.paths.engine;
   const head = await engineHead(project);
   const projection = await projectQueue(project, await loadQueue(project));
@@ -143,6 +145,7 @@ export interface ResetResult {
  * @param project - A patch-mode project
  */
 export async function resetEngine(project: PatchProject): Promise<ResetResult> {
+  await recoverInterrupted(project);
   const engine = project.paths.engine;
   await engineHead(project);
   const changed = (await status(engine)).length > 0;

@@ -86,8 +86,58 @@ describe('addSubscript', () => {
     );
   });
 
-  it('refuses a file with no closing brace to anchor on', () => {
-    expect(() => addSubscript('work();\n', 'first', MARKER)).toThrow(/no closing brace/);
+  it('refuses a file with no loader and no single top-level function to anchor on', () => {
+    for (const text of ['work();\n', 'function a() {}\nfunction b() {}\n']) {
+      expect(() => addSubscript(text, 'first', MARKER)).toThrow(
+        expect.objectContaining({ code: 'script-no-anchor' })
+      );
+    }
+  });
+
+  it('ignores braces in strings, comments and templates when it appends to the one function', () => {
+    const text = 'function f() {\n  const t = `}\n}`; // }\n  work("}");\n}\n';
+    const next = addSubscript(text, 'first', MARKER) ?? '';
+    expect(next).toContain('work("}");\n  // MYBROWSER: wire-subscript first\n  try {');
+    expect(next.endsWith('  }\n}\n')).toBe(true);
+  });
+
+  it('does not count a comment, a string or another call as the load', () => {
+    const text = BROWSER_MAIN.replace(
+      'let after = "}";',
+      '// loadSubScript("chrome://browser/content/third.js")\n    let after = "content/third.js";\n    other.loadSubScript(x, "content/third.js");'
+    );
+    expect(addSubscript(text, 'third', MARKER)).toContain('wire-subscript third');
+  });
+
+  it('knows a loader written with single quotes or a plain template', () => {
+    for (const quoted of [
+      "'chrome://browser/content/third.js'",
+      '`chrome://browser/content/third.js`',
+    ]) {
+      const text = BROWSER_MAIN.replace(
+        'let after',
+        `Services.scriptloader.loadSubScript(${quoted}, this);\n    let after`
+      );
+      expect(addSubscript(text, 'third', MARKER)).toBeUndefined();
+    }
+  });
+
+  it('anchors after a try block that loads a script, not one that merely mentions loadSubScript', () => {
+    const text = [
+      'var m = {',
+      '  load() {',
+      '    try {',
+      '      Services.scriptloader.loadSubScript("chrome://browser/content/a.js", this);',
+      '    } catch (e) {}',
+      '    try {',
+      '      log("loadSubScript is next");',
+      '    } catch (e) {}',
+      '  },',
+      '};',
+      '',
+    ].join('\n');
+    const next = addSubscript(text, 'b', MARKER) ?? '';
+    expect(next.indexOf('b.js')).toBeLessThan(next.indexOf('log('));
   });
 
   it('refuses a file that does not parse', () => {
@@ -154,6 +204,32 @@ describe('addInit and addDestroy', () => {
     expect(addDestroy(next, 'eature.destroy', MARKER)).toBeDefined();
   });
 
+  it('refuses two onLoad methods as ambiguous and edits neither', () => {
+    const text = 'var a = { onLoad() { one(); } };\nvar b = { onLoad() { two(); } };\n';
+    expect(() => addInit(text, 'Feature.init', { marker: MARKER })).toThrow(
+      expect.objectContaining({ code: 'script-ambiguous-anchor' })
+    );
+    const unload = 'var a = { onUnload() {} };\nclass B { onUnload() {} }\n';
+    expect(() => addDestroy(unload, 'Feature.destroy', MARKER)).toThrow(/2 onUnload methods/);
+  });
+
+  it('judges idempotence inside the method it would edit', () => {
+    const text = BROWSER_INIT.replace(
+      'var gBrowserInit',
+      'function setup() { Feature.init(); }\nvar gBrowserInit'
+    );
+    expect(addInit(text, 'Feature.init', { marker: MARKER })).toContain('wire-init Feature');
+    const unload = text.replace('gBrowserShutdown.go();', 'Feature.destroy();');
+    expect(addDestroy(unload, 'Feature.destroy', MARKER)).toBeUndefined();
+    expect(
+      addDestroy(
+        BROWSER_INIT.replace('var g', 'Feature.destroy();\nvar g'),
+        'Feature.destroy',
+        MARKER
+      )
+    ).toContain('wire-destroy Feature');
+  });
+
   it('refuses a file without the method', () => {
     expect(() => addInit('var x = { other() {} };', 'A.init', { marker: MARKER })).toThrow(
       /onLoad/
@@ -186,14 +262,29 @@ describe('validation', () => {
     }
   );
 
-  it.each(['a;b', 'a["x"]', 'a-b', '1a', 'a.__proto__.x', 'A.constructor()', 'a..b', 'a()()'])(
-    'refuses the expression %j',
-    (expression) => {
-      expect(() => {
-        validateWireExpression(expression, 'init');
-      }).toThrow();
-    }
-  );
+  it.each([
+    'a;b',
+    'a["x"]',
+    'a-b',
+    '1a',
+    'a.__proto__.x',
+    'A.constructor()',
+    'a..b',
+    'a()()',
+    'class.init',
+    'this.init()',
+    'typeof.x',
+  ])('refuses the expression %j', (expression) => {
+    expect(() => {
+      validateWireExpression(expression, 'init');
+    }).toThrow();
+  });
+});
+
+it('accepts a reserved word as a property, not as the root', () => {
+  expect(() => {
+    validateWireExpression('Feature.default.init', 'init');
+  }).not.toThrow();
 });
 
 describe('planWire', () => {

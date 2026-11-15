@@ -21,7 +21,7 @@ import {
 import { ExitCode, FireForgeError } from '../kernel/errors.js';
 import { listDir, readBytesIfExists, readTextIfExists, writeFile } from '../kernel/fs.js';
 import { hash } from '../kernel/hash.js';
-import { transaction } from '../kernel/journal.js';
+import { recoverJournal, transaction } from '../kernel/journal.js';
 import { parseJson } from '../kernel/json.js';
 import { warn } from '../kernel/log.js';
 import { nearest } from '../kernel/text.js';
@@ -398,11 +398,23 @@ export async function previewQueue<T>(
 }
 
 /**
+ * The queue journal: one transaction at a time changes the queue, under the
+ * engine lock.
+ *
+ * @param project - A patch-mode project
+ */
+export function queueJournal(project: PatchProject): string {
+  return join(project.paths.stateDir, 'queue.journal');
+}
+
+/**
  * Changes the project's patch queue as one transaction.
  *
  * The caller holds the engine lock exclusively (see `withEngineLock`). The
- * journal lives in the project state directory. A change that breaks the
- * ordering half of `patchPolicy` is refused (see `placement.ts`).
+ * journal lives in the project state directory. An interrupted earlier
+ * transaction is undone before the queue is read, because a queue it left
+ * half-written does not validate. A change that breaks the ordering half of
+ * `patchPolicy` is refused (see `placement.ts`).
  *
  * @param project - A patch-mode project
  * @param label - What is being done, for messages: "the patch rename"
@@ -415,12 +427,13 @@ export async function mutateQueue<T>(
   label: string,
   edit: DraftEdit<T>
 ): Promise<T> {
+  const journal = queueJournal(project);
+  await recoverJournal(journal);
   const { queue, draft, manifest, result } = await prepareChange(project, label, edit);
   const bodies = bodiesByFilename(draft);
   const before = new Map(queue.patches.map((patch) => [patch.path, patch.body]));
   const manifestPath = join(queue.dir, MANIFEST_FILE);
   const text = formatManifest(manifest);
-  const journal = join(project.paths.stateDir, 'queue.journal');
   await transaction(journal, label, async (tx) => {
     for (const [filename, body] of bodies) {
       const path = join(queue.dir, filename);

@@ -6,5 +6,5 @@
  * tests on a clean committed tree; a pass moves `refs/fireforge/verified`.
  */
 export { checkJson, renderCheck, runCheck } from './check.js';
-export { acceptGate, gateFailure, gateStatus, renderGate, runGate } from './gate.js';
+export { acceptGate, gateFailure, gateStatus, renderGate, renderOwed, runGate } from './gate.js';
 export { VERIFIED_REF } from './record.js';

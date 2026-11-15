@@ -12,6 +12,12 @@ export interface FileEdit {
   /** Engine-relative path. */
   path: string;
   content: string;
+  /**
+   * The file's text when the plan read it (null: it did not exist), which
+   * {@link applyEdits} requires the file to still hold. Absent when the plan
+   * did not read the file.
+   */
+  before?: string | null;
 }
 
 /** One thing a plan does (or finds already done). */
@@ -38,12 +44,17 @@ export interface Plan {
  */
 export class EditSession {
   private readonly pending = new Map<string, string>();
+  private readonly originals = new Map<string, string | null>();
 
   constructor(private readonly files: TrackedFiles) {}
 
   /** The file's text as the plan leaves it so far, or undefined when it does not exist. */
   async read(path: string): Promise<string | undefined> {
-    return this.pending.get(path) ?? this.files.read(path);
+    const planned = this.pending.get(path);
+    if (planned !== undefined) return planned;
+    const text = await this.files.read(path);
+    if (!this.originals.has(path)) this.originals.set(path, text ?? null);
+    return text;
   }
 
   /** Whether the file exists, counting files the plan creates. */
@@ -58,13 +69,18 @@ export class EditSession {
 
   /** The edits in the order they were first made. */
   edits(): FileEdit[] {
-    return [...this.pending].map(([path, content]) => ({ path, content }));
+    return [...this.pending].map(([path, content]) => {
+      const before = this.originals.get(path);
+      return before === undefined ? { path, content } : { path, content, before };
+    });
   }
 }
 
 /**
  * Writes the edits in order, as part of the caller's transaction: a plan
- * lands whole or not at all.
+ * lands whole or not at all. A file that no longer holds the text its edit
+ * was planned over is refused (`tracked-file-moved`) and the transaction
+ * rolls back.
  *
  * @param tx - The transaction the writes belong to
  * @param files - Where the files live
@@ -75,5 +91,12 @@ export async function applyEdits(
   files: TrackedFiles,
   edits: readonly FileEdit[]
 ): Promise<void> {
-  for (const edit of edits) await files.write(tx, edit.path, edit.content);
+  for (const edit of edits) {
+    await files.write(
+      tx,
+      edit.path,
+      edit.content,
+      edit.before === undefined ? {} : { expected: edit.before }
+    );
+  }
 }

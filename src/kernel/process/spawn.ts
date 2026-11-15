@@ -475,6 +475,13 @@ export async function run(
   const started = start(command, args, options);
   const deadline = armDeadline(options.timeoutMs, started);
   const { out, err } = started;
+  // Whether the deadline passed is decided when the child exits: draining its
+  // pipes, reaping its tree and `afterExit` take their own time.
+  const ended = { timedOut: false };
+  started.child.once('exit', () => {
+    ended.timedOut = deadline.passed();
+    if (!ended.timedOut) deadline.clear();
+  });
   try {
     const exit = await follow(started.child, started.owner, {
       graceMs: started.graceMs,
@@ -487,10 +494,10 @@ export async function run(
       stdout: out.text(),
       stderr: err.text(),
       truncated: out.truncated() || err.truncated() || exit.abandoned,
-      timedOut: deadline.passed(),
+      timedOut: ended.timedOut,
       outlived: exit.outlived,
     };
-    if (result.timedOut && options.timeoutIsResult !== true) {
+    if (ended.timedOut && options.timeoutIsResult !== true) {
       throw timeoutError(command, args, options.timeoutMs ?? 0, result);
     }
     return result;

@@ -159,31 +159,35 @@ FIREFORGE-VERDICT: FAIL reason=preflight note=build-stale
 | `shuffle=<seed>` `orphans-reaped=<n>`                                                                | The `--shuffle` seed; harness processes left over and terminated                                                 |
 | `log=<path>` `results=<path>`                                                                        | The run's complete output; the `--results` document                                                              |
 
-The document (also written by `--results`) is `{ schemaVersion, verdict, reason?, log, tree, tests, dispatches, files, summary, built?, engineMoved?, validateExit? }`: `verdict` is `pass` or `fail`; `tests` are the planned files with their suite; `dispatches` are the harness invocations with exit code, attempts and verdict; `files` is one record per test file per invocation with its failures; `summary` is `{ files, passed, failed, unfinished, neverStarted, reaped }`. A negative control's document is `{ schemaVersion, verdict, control, why?, targets, restoreBuild?, baseline?, mutated? }`, where `baseline` and `mutated` are run documents.
+The document (also written by `--results`) is `{ schemaVersion, verdict, reason?, log, tree, tests, dispatches, files, summary, built?, engineMoved?, validateExit? }`: `verdict` is `pass` or `fail`; `tests` are the planned files with their suite; `dispatches` are the harness invocations with exit code, attempts and verdict; `files` is one record per test file per invocation with its failures (at most 10 per file, each assertion and message clipped to 400 characters, `failuresOmitted` counting the rest) and, for a file that ended unexpectedly, the harness's `message`; a dispatch's `verdict` carries `failureBlocks`, the failing lines read from the output when no structured log named a failure; `summary` is `{ files, passed, failed, unfinished, neverStarted, reaped }`. A negative control's document is `{ schemaVersion, verdict, control, why?, targets, restoreBuild?, baseline?, mutated? }`, where `baseline` and `mutated` are run documents. `restoreBuild` is `done` or `failed` for the build of the restored engine, and `deferred` for a control of a run of several (`gate --lane 'control:*'`), whose restoring build is left to the next control or to the end of the run.
 
 ### `gate`
 
 ```
 FIREFORGE-VERDICT: PASS result=verified commit=<sha>
 FIREFORGE-VERDICT: PASS result=pending commit=<sha> accept=visual,wording
+FIREFORGE-VERDICT: PASS result=verified commit=<sha> reused=lane:tiles
 FIREFORGE-VERDICT: PASS result=feedback
 FIREFORGE-VERDICT: FAIL result=failed reason=gate-failed failed=check,lane:tiles commit=<sha>
 FIREFORGE-VERDICT: FAIL reason=gate-dirty-tree
 ```
 
-| Key      | Meaning                                                                                                                                                                        |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `result` | `verified` (the ref is at the commit), `pending` (passed; acceptances outstanding; the ref has not moved), `failed`, or `feedback` (a `--lane` subset)                         |
-| `reason` | `gate-failed` for a red entry; otherwise the `code` of what stopped the gate (`gate-dirty-tree`, `gate-not-fast-forward`, `gate-ref-moved`, `gate-tree-moved`, `lock-timeout`) |
-| `failed` | The red entries, comma-separated: `check`, `build`, `lane:<id>`, `stress:<id>`, `control:<id>`, `run:<id>`                                                                     |
-| `commit` | The gated commit; absent for feedback                                                                                                                                          |
-| `accept` | The acceptance IDs still to record with `fireforge gate accept <id> --note <text>`                                                                                             |
+| Key             | Meaning                                                                                                                                                                                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `result`        | `verified` (the ref is at the commit), `pending` (passed; acceptances outstanding; the ref has not moved), `failed`, or `feedback` (a `--lane` subset)                                                                                                   |
+| `reason`        | `gate-failed` for a red entry; `lock-timeout` or `gate-inconclusive` when every failed entry is blocked; otherwise the `code` of what stopped the gate (`gate-dirty-tree`, `gate-not-fast-forward`, `gate-ref-moved`, `gate-tree-moved`, `lock-timeout`) |
+| `failed`        | The failed entries, comma-separated: `check`, `build`, `lane:<id>`, `stress:<id>`, `control:<id>`, `run:<id>`                                                                                                                                            |
+| `blocked`       | The failed entries that could not judge the commit (a lock did not come free, or the engine changed under them); a subset of `failed`                                                                                                                    |
+| `commit`        | The gated commit; absent for feedback                                                                                                                                                                                                                    |
+| `accept`        | The acceptance IDs still to record with `fireforge gate accept <id> --note <text>`                                                                                                                                                                       |
+| `reused`        | The entries taken from an earlier run of the commit by `gate --resume`, comma-separated, not run again ([gate.md](gate.md#resuming))                                                                                                                     |
+| `controls-owed` | The declared controls with no standing proof, comma-separated ([gate.md](gate.md#controls-owed)); informs, changes no exit code                                                                                                                          |
 
-`PASS` means nothing was red; only `result=verified` means the commit is verified.
+`PASS` means nothing was red; only `result=verified` means the commit is verified. A gate that outlives its session leaves this line in whatever file its output went to, and `gate status` says meanwhile whether it is still running.
 
-The document is `{ outcome, basis, pass, commit, tree, entries, check, pending, artifacts }`. `outcome` is the verdict's `result`. `basis` says where the entries come from: `run` (this invocation ran them), `recorded` (the pass recorded for this commit stands), `documents` (only `gate.documents` paths changed since the verified commit, so the check alone ran), `already-verified`, or `feedback`. Each entry is `{ id, status, detail, durationMs, artifacts? }` with `status` `pass`, `fail` or `skipped` (after a red build). `check` is the check document of this invocation or `null`. `artifacts` is the run's directory, `.fireforge/gate/<commit>/`, which holds `result.json` and one directory per entry (`lane-<id>/output.log`, `lane-<id>/results.json`, `lane-<id>/upload/`, `run-<id>/console.txt`).
+The document is `{ outcome, basis, pass, commit, tree, entries, check, pending, artifacts, owed, resume }`. `outcome` is the verdict's `result`. `basis` says where the entries come from: `run` (this invocation ran them), `recorded` (the pass recorded for this commit stands), `documents` (only `gate.documents` paths changed since the verified commit, so the check alone ran), `controls` (only documents, control diffs and `gate.controls` changed, so the check ran, and the build and the controls that changed when there were any), `already-verified`, or `feedback`. Each entry is `{ id, status, detail, durationMs, ranAt?, reused?, artifacts?, blocked?, hint?, control?, load? }` with `status` `pass`, `fail` or `skipped` (after a red build or a build that could not run). `blocked` (`lock-timeout` or `inconclusive`) marks a failed entry that could not judge the commit, with the error's `hint`; `control` is a negative control's outcome (`caught`, `missed`, `wrong-red`, `baseline-red`, `inconclusive`). `ranAt` is when the entry ended; `reused` is true on an entry that `gate --resume` took from an earlier run of the commit, and `ranAt` is then when it originally ran. `load` is present on an entry that was red, blocked or interrupted when the host could be sampled: `{ cpus, start, end, busiest? }`, the one-minute load average when the entry started and ended, and, when either exceeded `cpus`, the busiest process outside the command's own process tree as `{ pid, name, cpu }`. It informs and never changes a verdict. `resume` is `null` unless `--resume` was passed; then it is `{ reused, why }`, the IDs of the entries taken and the reason none could be (`null` when a run was resumed). `owed` lists the declared controls with no standing proof as `{ id, reason, detail }`, `reason` being `never-run`, `changed`, `tree-changed`, `missed`, `wrong-red` or `not-caught`. `check` is the check document of this invocation or `null`. `artifacts` is the run's directory, `.fireforge/gate/<commit>/`, which holds `result.json` and one directory per entry (`lane-<id>/output.log`, `lane-<id>/results.json`, `lane-<id>/upload/`, `run-<id>/console.txt`).
 
-`gate status --json` is `{ head, clean, verified, relation, ahead, result, accepted, pending }`: `relation` is `verified`, `ahead` (HEAD descends from the verified commit, by `ahead` commits), `diverged` or `unverified`; `result` is `{ pass, finishedAt, entries }` for HEAD in this checkout or `null`; `accepted` maps acceptance IDs to `{ by, at, note, commit }`. `gate accept --json` is `{ id, commit, tree, acceptance, pending }`.
+`gate status --json` is `{ head, clean, verified, relation, ahead, result, accepted, pending, controls, running }`, `controls` being the declared controls owed a run, as `owed` above: `running` lists the gates running in this checkout as `{ pid, since, kind, commit, onHead, entry }`, read from the locks without taking or changing them: `kind` is `full` or `feedback`, `since` is the ISO time the process asked for its run slot, `commit` is the commit a full gate judges, `onHead` says it is HEAD, and `entry` is `{ id, position, total, since }` for the entry it is on, or `null` when it recorded none: `relation` is `verified`, `ahead` (HEAD descends from the verified commit, by `ahead` commits), `diverged` or `unverified`; `result` is `{ pass, finishedAt, entries }` for HEAD in this checkout or `null`; `accepted` maps acceptance IDs to `{ by, at, note, commit }`. `gate accept --json` is `{ id, commit, tree, acceptance, pending }`.
 
 ### `status`
 
@@ -207,6 +211,18 @@ FIREFORGE-VERDICT: FAIL errors=1 warnings=0
 ```
 
 The document is `{ pass, judged, errors, warnings, findings, excepted }`.
+
+### `workspace`
+
+`workspace list --json` is `{ engine, host, workspaces }`. It reads the locks without taking or changing them, so it is safe to poll.
+
+Each workspace is `{ name, path, pin, commit, built, clonedFrom, lessee, holders, leased, leases, unidentifiedHolders }`. `built` says a build has configured its object directory. `lessee` is `{ checkout, root, at }` for whoever leased it last, or `null`. `leased` is true while a command holds it. `leases` lists those commands, `holders` their PIDs, and `unidentifiedHolders` counts holders that left no readable record (they also make `leased` true).
+
+A lease is `{ pid, mode, since, checkout, command }`: `mode` is `exclusive` or `shared`, `since` is the ISO timestamp at which the holder asked for the lock, `checkout` is the project root of the command that leased a workspace, and `command` is the command it runs. Either is `null` when the holder did not say.
+
+`host` is `{ display, build }`, the locks shared by every project on the host. Each carries `leased`, `leases`, `unidentifiedHolders` and `waiting` (the live waiters in the queue). `build` adds `slots`, the limit of `buildSlots` in `host.json`, and `inUse`, the compiles using a slot; a free slot exists while `inUse` is below `slots`.
+
+`engine` is `null` unless the project is in patch mode and has an `engine/`; then it is `{ path, holders, leased, leases, unidentifiedHolders, waiting }` for the engine lock.
 
 ### `doctor`
 

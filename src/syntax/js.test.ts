@@ -99,6 +99,78 @@ describe('importSpecifiers', () => {
   });
 });
 
+describe('importSpecifiers on strings and getter keys', () => {
+  const specifiers = (source: string): string[] =>
+    importSpecifiers(source).map((entry) => entry.specifier);
+
+  it('ignores import-looking text in strings and templates of a program that parses', () => {
+    const source = [
+      'const a = "import { x } from \'resource://fake/A.sys.mjs\'";',
+      'const b = `',
+      '  import "resource://fake/B.sys.mjs";',
+      '  ChromeUtils.importESModule("resource://fake/C.sys.mjs");',
+      '`;',
+      'import { real } from "resource://real/R.sys.mjs"; const c = "import \'resource://fake/D.sys.mjs\'";',
+    ].join('\n');
+    expect(importSpecifiers(source)).toEqual([{ specifier: 'resource://real/R.sys.mjs', line: 6 }]);
+  });
+
+  it('takes only the values of a getter map, whatever braces its strings and comments hold', () => {
+    const source = [
+      'ChromeUtils.defineESModuleGetters(lazy, {',
+      '  "Quoted": "resource://gre/modules/Q.sys.mjs",',
+      '  "chrome://key.mjs": "resource://gre/modules/K.sys.mjs",',
+      '  Brace: "resource://gre/modules/B.sys.mjs", // }',
+      '  Text: "}{",',
+      '});',
+    ].join('\n');
+    expect(specifiers(source)).toEqual([
+      'resource://gre/modules/Q.sys.mjs',
+      'resource://gre/modules/K.sys.mjs',
+      'resource://gre/modules/B.sys.mjs',
+      '}{',
+    ]);
+  });
+
+  it('reads a fragment that does not parse as text, with string contents masked', () => {
+    const fragment = [
+      '  } // closes something above',
+      '  const s = "import \'resource://fake/F.sys.mjs\'";',
+      '  const t = `ChromeUtils.importESModule("resource://fake/G.sys.mjs")`;',
+      '  import { x } from "resource://real/X.sys.mjs";',
+      '  const p = await import("resource://real/P.sys.mjs");',
+    ].join('\n');
+    expect(importSpecifiers(fragment)).toEqual([
+      { specifier: 'resource://real/X.sys.mjs', line: 4 },
+      { specifier: 'resource://real/P.sys.mjs', line: 5 },
+    ]);
+  });
+
+  it('reads a getter map that never closes, past an escaped quote and brace in a value', () => {
+    const fragment = [
+      'ChromeUtils.defineESModuleGetters(lazy, {',
+      '  "Quoted": "resource://gre/modules/Q.sys.mjs",',
+      '  Escaped: "}{\\"",',
+      '  Last: "resource://gre/modules/L.sys.mjs",',
+      '  trailing: ',
+    ].join('\n');
+    expect(specifiers(fragment)).toEqual([
+      'resource://gre/modules/Q.sys.mjs',
+      '}{\\"',
+      'resource://gre/modules/L.sys.mjs',
+    ]);
+  });
+
+  it('keeps reading a bare getter line without a trailing comma', () => {
+    expect(specifiers('  D: "resource:///modules/D.sys.mjs"')).toEqual([
+      'resource:///modules/D.sys.mjs',
+    ]);
+    expect(specifiers('  "Quoted": "resource:///modules/D.sys.mjs",')).toEqual([
+      'resource:///modules/D.sys.mjs',
+    ]);
+  });
+});
+
 describe('relativeImportLines', () => {
   it.each([
     ['import { a } from "./a.sys.mjs";', [1]],

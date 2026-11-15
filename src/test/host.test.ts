@@ -10,7 +10,9 @@ import { promisify } from 'node:util';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { isProcessAlive } from '../kernel/process/index.js';
+import { FireForgeError } from '../kernel/errors.js';
+import { isProcessAlive, terminateByIdentity } from '../kernel/process/index.js';
+import { sleep } from '../kernel/time.js';
 import { useMachSandbox } from '../testing/engine.js';
 import { useTempDir, writeTree } from '../testing/temp.js';
 import {
@@ -20,10 +22,16 @@ import {
   harnessFallsBack,
   isHarnessCommand,
   parseLsofPids,
+  preparePorts,
   reapLeftovers,
   RUN_MARKER,
   sweepRun,
 } from './host.js';
+
+vi.mock('../kernel/process/index.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../kernel/process/index.js')>();
+  return { ...original, terminateByIdentity: vi.fn(original.terminateByIdentity) };
+});
 
 const dir = useTempDir();
 const logged = useMachSandbox();
@@ -208,4 +216,108 @@ describe.skipIf(process.platform === 'win32')('the sweep after a run', () => {
     expect(isProcessAlive(otherRun)).toBe(true);
     expect(survivors.map((entry) => entry.pid)).toEqual([unanchored]);
   });
+});
+
+/** A process listening on a loopback port; its command line names `script`. */
+async function startListener(
+  script: string,
+  port: number,
+  env: Record<string, string> = {},
+  orphan = false
+): Promise<number> {
+  const listenEnv = { ...env, LISTEN_PORT: String(port) };
+  const pid = orphan ? await startOrphan(script, listenEnv) : startDetached(script, listenEnv);
+  await visible(pid);
+  await vi.waitFor(
+    async () => {
+      const { stdout } = await run('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fp']);
+      if (!stdout.includes(`p${pid}`)) throw new Error('not listening yet');
+    },
+    { timeout: 10_000, interval: 100 }
+  );
+  return pid;
+}
+
+const LISTENER =
+  "require('node:net').createServer().listen(Number(process.env.LISTEN_PORT), '127.0.0.1');\n" +
+  'setInterval(() => {}, 1000);\n';
+
+async function lsofAvailable(): Promise<boolean> {
+  try {
+    await run('lsof', ['-v']);
+    return true;
+  } catch (error: unknown) {
+    // lsof -v exits non-zero on some systems; only a missing binary rules it out.
+    return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+}
+
+const hasLsof = await lsofAvailable();
+
+describe.skipIf(process.platform === 'win32' || !hasLsof)('ports held by a process', () => {
+  const options = (port: number, waitMs: number): Parameters<typeof preparePorts>[1] => ({
+    ports: 'fixed',
+    fallback: { servers: false, marionette: false },
+    waitMs,
+    checkPorts: [port],
+  });
+  const workspaceOf = (root: string): { engineDir: string; objDir: string } => ({
+    engineDir: root,
+    objDir: join(root, 'obj-fireforge'),
+  });
+
+  async function listenerScript(root: string, relative: string): Promise<string> {
+    await writeTree(root, { [relative]: LISTENER });
+    return join(root, relative);
+  }
+
+  it('terminates a leftover that carries the engine marker and frees the port', async () => {
+    const engine = join(dir(), 'engine');
+    const port = await freePort();
+    const pid = await startListener(await listenerScript(engine, 'tools/held.js'), port, {
+      [ENGINE_MARKER]: engine,
+    });
+
+    await expect(preparePorts(workspaceOf(engine), options(port, 0))).resolves.toEqual([]);
+
+    await vi.waitFor(() => {
+      expect(isProcessAlive(pid)).toBe(false);
+    });
+  });
+
+  it('does not take a bystander that merely names the workspace for a leftover', async () => {
+    const engine = join(dir(), 'engine');
+    const port = await freePort();
+    // An orphan on a host without a subreaper, whose command line names the workspace: still not a harness.
+    const pid = await startListener(await listenerScript(engine, 'tools/notes.js'), port, {}, true);
+    await expect(preparePorts(workspaceOf(engine), options(port, 0))).rejects.toMatchObject({
+      code: 'port-busy',
+    });
+
+    expect(isProcessAlive(pid)).toBe(true);
+  });
+
+  it('refuses at once when a leftover cannot be terminated, whatever the budget', async () => {
+    const engine = join(dir(), 'engine');
+    const port = await freePort();
+    const pid = await startListener(await listenerScript(engine, 'tools/held.js'), port, {
+      [ENGINE_MARKER]: engine,
+    });
+    vi.mocked(terminateByIdentity).mockImplementationOnce((targets) =>
+      Promise.resolve({ signalled: [...targets], survivors: [...targets] })
+    );
+
+    const settled = async (): Promise<string | undefined> => {
+      try {
+        await preparePorts(workspaceOf(engine), options(port, 60_000));
+        return 'resolved';
+      } catch (error: unknown) {
+        return error instanceof FireForgeError ? error.code : 'other';
+      }
+    };
+    const outcome = await Promise.race([settled(), sleep(15_000).then(() => 'still waiting')]);
+
+    expect(outcome).toBe('port-busy');
+    expect(isProcessAlive(pid)).toBe(true);
+  }, 30_000);
 });

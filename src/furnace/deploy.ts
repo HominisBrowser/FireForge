@@ -126,6 +126,8 @@ interface Plan {
   writes: Map<string, Buffer>;
   /** Engine path to the upstream bytes to put back, or null to delete. */
   removals: Map<string, Buffer | null>;
+  /** The component each removed path belonged to. */
+  owners: Map<string, string>;
   jar: string | undefined;
   elements: string | undefined;
   record: DeploymentRecord;
@@ -243,6 +245,16 @@ async function readRecord(workspace: FurnaceWorkspace): Promise<DeploymentRecord
   return record ?? { version: 1, components: {} };
 }
 
+/**
+ * Whether a deployment record exists in the workspace: something was deployed
+ * there that a project without components would have to take away.
+ *
+ * @param workspace - The engine's workspace
+ */
+export async function hasDeployment(workspace: FurnaceWorkspace): Promise<boolean> {
+  return Object.keys((await readRecord(workspace)).components).length > 0;
+}
+
 /** Compares one component's files with the engine, filling the plan. */
 async function planFiles(
   workspace: FurnaceWorkspace,
@@ -270,29 +282,37 @@ async function planFiles(
   return { reasons, hashes };
 }
 
-/** Records the engine paths of a deployed component that are no longer wanted, with their owner's kind. */
+/** A deployed engine path no component wants any more: its owner's kind and name. */
+interface Gone {
+  kind: ComponentKind;
+  owner: string;
+}
+
+/** Records the engine paths of a deployed component that are no longer wanted, with their owner. */
 function planRemovals(
+  name: string,
   previous: DeployedComponent,
   keep: ReadonlyMap<string, Buffer> | undefined,
-  gone: Map<string, ComponentKind>
+  gone: Map<string, Gone>
 ): string[] {
   const paths = Object.keys(previous.files).filter((path) => keep?.has(path) !== true);
-  for (const path of paths) gone.set(path, previous.kind);
+  for (const path of paths) gone.set(path, { kind: previous.kind, owner: name });
   return paths;
 }
 
 /**
  * What to do with each path taken away: a custom component's file is
  * deleted, an override's is put back to upstream (deleted where upstream
- * has none). A path another component now writes is left to that write.
+ * has none). A path any component still wants is left alone: it is written
+ * if the engine's bytes differ and kept if they already match.
  */
 async function resolveRemovals(
   workspace: FurnaceWorkspace,
-  gone: ReadonlyMap<string, ComponentKind>,
-  writes: ReadonlyMap<string, Buffer>
+  gone: ReadonlyMap<string, Gone>,
+  desired: ReadonlySet<string>
 ): Promise<Map<string, Buffer | null>> {
-  const paths = [...gone.keys()].filter((path) => !writes.has(path));
-  const restore = paths.filter((path) => gone.get(path) === 'override');
+  const paths = [...gone.keys()].filter((path) => !desired.has(path));
+  const restore = paths.filter((path) => gone.get(path)?.kind === 'override');
   const upstream =
     restore.length === 0 ? new Map<string, Buffer>() : await upstreamFiles(workspace, restore);
   return new Map(paths.map((path) => [path, upstream.get(path) ?? null]));
@@ -385,6 +405,7 @@ async function makePlan(
   const plan: Plan = {
     writes: new Map(),
     removals: new Map(),
+    owners: new Map(),
     jar: undefined,
     elements: undefined,
     record: { version: 1, components: {} },
@@ -392,13 +413,13 @@ async function makePlan(
     components: [],
   };
   const reasons = new Map<string, string[]>();
-  const gone = new Map<string, ComponentKind>();
+  const gone = new Map<string, Gone>();
   for (const component of wanted) {
     const before = previous.components[component.name];
     const files = await planFiles(workspace, component, before, plan);
     if (before !== undefined) {
       const keep = before.kind === component.kind ? component.files : undefined;
-      const dropped = planRemovals(before, keep, gone);
+      const dropped = planRemovals(component.name, before, keep, gone);
       files.reasons.push(...dropped.map((path) => `${path} is no longer part of it`));
     }
     reasons.set(component.name, files.reasons);
@@ -411,8 +432,10 @@ async function makePlan(
   }
   const configured = new Set(wanted.map((component) => component.name));
   const removed = Object.entries(previous.components).filter(([name]) => !configured.has(name));
-  for (const [, before] of removed) planRemovals(before, undefined, gone);
-  plan.removals = await resolveRemovals(workspace, gone, plan.writes);
+  for (const [name, before] of removed) planRemovals(name, before, undefined, gone);
+  const desired = new Set(wanted.flatMap((component) => [...component.files.keys()]));
+  plan.removals = await resolveRemovals(workspace, gone, desired);
+  for (const path of plan.removals.keys()) plan.owners.set(path, gone.get(path)?.owner ?? '');
 
   const ownedDirs = [
     ...new Set(
@@ -555,6 +578,35 @@ export async function deploymentStatus(
 ): Promise<DeploymentStatus> {
   const plan = await makePlan(project, workspace, await loadFurnaceConfig(project));
   return { current: !engineChanges(plan), components: plan.components };
+}
+
+/** An engine path a deployment would take away or put back to upstream. */
+export type PendingRemoval = {
+  /** The component the path was deployed for. */
+  component: string;
+  path: string;
+  /** What the path holds afterwards: the upstream bytes, or null when it is deleted. */
+  after: Buffer | null;
+};
+
+/**
+ * The engine paths a deployment would remove or restore, without changing
+ * anything.
+ *
+ * @param project - The project
+ * @param workspace - The engine to compare
+ * @throws what planning a deployment throws
+ */
+export async function pendingRemovals(
+  project: FurnaceProject,
+  workspace: FurnaceWorkspace
+): Promise<PendingRemoval[]> {
+  const plan = await makePlan(project, workspace, await loadFurnaceConfig(project));
+  return [...plan.removals].map(([path, after]) => ({
+    component: plan.owners.get(path) ?? '',
+    path,
+    after,
+  }));
 }
 
 /**

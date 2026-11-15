@@ -221,7 +221,7 @@ export function parseProject(
   ts: TypeScript,
   configFile: string
 ):
-  | { parsed: import('typescript').ParsedCommandLine; raw: unknown }
+  | { parsed: import('typescript').ParsedCommandLine }
   | { problem: import('typescript').Diagnostic } {
   const read = ts.readConfigFile(configFile, (path) => ts.sys.readFile(path));
   if (read.error !== undefined) return { problem: read.error };
@@ -232,19 +232,18 @@ export function parseProject(
     undefined,
     configFile
   );
-  return { parsed, raw: read.config };
+  return { parsed };
 }
 
-/** Whether a jsconfig turns checkJs off explicitly, which skips the project. */
-export function optsOut(raw: unknown): boolean {
-  if (typeof raw !== 'object' || raw === null || !('compilerOptions' in raw)) return false;
-  const options = raw.compilerOptions;
-  return (
-    typeof options === 'object' &&
-    options !== null &&
-    'checkJs' in options &&
-    options.checkJs === false
-  );
+/**
+ * Whether a project's effective options turn checkJs off, which skips the
+ * project. The options are the compiler's own: those of the file and of
+ * every configuration it extends.
+ *
+ * @param parsed - The parsed project
+ */
+export function optsOut(parsed: import('typescript').ParsedCommandLine): boolean {
+  return parsed.options.checkJs === false;
 }
 
 function checkProject(run: ProjectRun, configFile: string): ProjectResult {
@@ -261,7 +260,7 @@ function checkProject(run: ProjectRun, configFile: string): ProjectResult {
       issues: [diagnosticIssue(run, read.problem, judged, configFile)],
     };
   }
-  const { parsed, raw } = read;
+  const { parsed } = read;
   const issues: TypecheckIssue[] = [];
   const shimPath = join(dirname(configFile), `.fireforge-${run.shim.fileName}`).replaceAll(
     '\\',
@@ -275,16 +274,21 @@ function checkProject(run: ProjectRun, configFile: string): ProjectResult {
     if (diagnostic.file?.fileName === shimPath) return;
     const judged = judgeDiagnostic(ts, diagnostic, {
       undefinedIdentifiers: run.undefinedIdentifiers,
+      missingModules: { path: 'error', bare: 'warning' },
       isResolved,
     });
     if (judged !== undefined) issues.push(diagnosticIssue(run, diagnostic, judged, configFile));
   };
   for (const diagnostic of parsed.errors) keep(diagnostic, () => false);
-  if (optsOut(raw)) {
+  if (optsOut(parsed)) {
     issues.push(
-      fileIssue(project, 'The project sets "checkJs": false, so it was skipped.', 'warning')
+      fileIssue(
+        project,
+        'The project sets "checkJs": false, in its own options or through "extends", so it was skipped.',
+        'warning'
+      )
     );
-    return { project, filesChecked: parsed.fileNames.length, issues };
+    return { project, filesChecked: 0, issues };
   }
   const options: import('typescript').CompilerOptions = {
     ...parsed.options,

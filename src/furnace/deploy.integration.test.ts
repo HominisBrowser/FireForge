@@ -191,6 +191,42 @@ describe('applyComponents', () => {
     ).toBe(false);
   });
 
+  it('keeps a path another component now wants with the same bytes when its old owner goes', async () => {
+    const entry = (description: string): object => ({
+      description,
+      targetPath: 'toolkit/content/widgets/moz-shared',
+      register: false,
+      localized: false,
+    });
+    const f = await fixture(
+      { version: 1, componentPrefix: 'moz-', custom: { 'moz-first': entry('first') } },
+      {
+        'components/custom/moz-first/moz-first.mjs': 'export const shared = 1;\n',
+        'components/custom/moz-second/moz-second.mjs': 'export const shared = 2;\n',
+      }
+    );
+    await writeTree(f.root, {
+      'components/custom/moz-first/moz-second.mjs': 'export const shared = 2;\n',
+    });
+    await rm(join(f.root, 'components/custom/moz-first/moz-first.mjs'));
+    const shared = 'toolkit/content/widgets/moz-shared/moz-second.mjs';
+    await applyComponents(f.project, f.workspace);
+    expect(await engine(f, shared)).toBe('export const shared = 2;\n');
+    await writeFile(
+      f.project.paths.furnace,
+      JSON.stringify({
+        version: 1,
+        componentPrefix: 'moz-',
+        custom: { 'moz-second': entry('second') },
+      })
+    );
+    await rm(join(f.root, 'components/custom/moz-first'), { recursive: true });
+    const result = await applyComponents(f.project, f.workspace);
+    expect(result.removed).toEqual([]);
+    expect(await engine(f, shared)).toBe('export const shared = 2;\n');
+    expect((await applyComponents(f.project, f.workspace)).changed).toBe(false);
+  });
+
   it('plans without writing on a dry run', async () => {
     const f = await fixture();
     const plan = await applyComponents(f.project, f.workspace, { dryRun: true });

@@ -5,6 +5,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # A merge queue candidate needs the required `codeql` and `npm audit`
+  # contexts (scripts/setup-rulesets.sh) like its pull request did.
+  merge_group:
   schedule:
     - cron: '17 4 * * 1'
   workflow_dispatch:

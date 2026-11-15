@@ -36,6 +36,7 @@ import {
   tempPathFor,
   toPosixPath,
   walkFiles,
+  writeAll,
   writeFile,
   writeFileFromStream,
   writeFileIfChanged,
@@ -130,6 +131,30 @@ describe('writeFile', () => {
       'connection reset'
     );
     expect(await readdir(dir())).toEqual(['archive.bin']);
+  });
+
+  it('writes every byte of a chunk the file system takes in pieces', async () => {
+    const taken: number[] = [];
+    const out: number[] = [];
+    const handle = {
+      write: (chunk: Uint8Array, offset: number, length: number) => {
+        const part = Math.min(2, length);
+        taken.push(part);
+        out.push(...chunk.subarray(offset, offset + part));
+        return Promise.resolve({ bytesWritten: part, buffer: chunk });
+      },
+    };
+    expect(await writeAll(handle as never, Buffer.from('abcde'))).toBe(5);
+    expect(taken).toEqual([2, 2, 1]);
+    expect(Buffer.from(out).toString()).toBe('abcde');
+    await expect(
+      writeAll(
+        {
+          write: (chunk: Uint8Array) => Promise.resolve({ bytesWritten: 0, buffer: chunk }),
+        } as never,
+        Buffer.from('x')
+      )
+    ).rejects.toMatchObject({ code: 'write-stalled' });
   });
 
   it('appends, creating the file and its directory', async () => {

@@ -2,7 +2,7 @@
 import { arg, defineCommand, lockOptions, lockWaitMs, opt } from '../cli/command.js';
 import { editTracked, enginePathOf, trackedFiles } from '../mode/index.js';
 import { loadProject } from '../project/index.js';
-import { applyEdits, planRegister } from '../register/index.js';
+import { applyEdits, planRegister, type RegisterPlan } from '../register/index.js';
 
 export const register = defineCommand({
   name: 'register',
@@ -29,26 +29,32 @@ export const register = defineCommand({
     const project = await loadProject(ctx.cwd, ctx.env);
     const files = await trackedFiles(project, { declare: true });
     const enginePath = enginePathOf(project, path);
-    const plan = await planRegister(files, {
-      path: enginePath,
-      moduleDir: `browser/modules/${project.config.binaryName}`,
-      license: project.config.license,
-      mustExist: !opts.dryRun,
-      ...(opts.after === undefined ? {} : { after: opts.after }),
-      ...(opts.createManifest ? { createManifest: true } : {}),
-    });
+    const planned = (): Promise<RegisterPlan> =>
+      planRegister(files, {
+        path: enginePath,
+        moduleDir: `browser/modules/${project.config.binaryName}`,
+        license: project.config.license,
+        mustExist: !opts.dryRun,
+        ...(opts.after === undefined ? {} : { after: opts.after }),
+        ...(opts.createManifest ? { createManifest: true } : {}),
+      });
+    // A real run reads and plans under the lock, so it overwrites what it read.
+    const plan = opts.dryRun
+      ? await planned()
+      : await editTracked(
+          project,
+          {
+            label: `registering ${enginePath}`,
+            command: 'register',
+            waitMs: lockWaitMs(opts.waitLock),
+          },
+          async (tx) => {
+            const made = await planned();
+            await applyEdits(tx, files, made.edits);
+            return made;
+          }
+        );
     const changes = plan.edits.length > 0;
-    if (changes && !opts.dryRun) {
-      await editTracked(
-        project,
-        {
-          label: `registering ${enginePath}`,
-          command: 'register',
-          waitMs: lockWaitMs(opts.waitLock),
-        },
-        (tx) => applyEdits(tx, files, plan.edits)
-      );
-    }
 
     const verb = !changes ? 'Already registered' : opts.dryRun ? 'Would register' : 'Registered';
     ctx.out.line(`${verb} ${enginePath} in ${plan.manifest}`);

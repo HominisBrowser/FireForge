@@ -41,7 +41,9 @@ apply_ruleset() {
 # The required contexts must match the job `name:` values exactly:
 # `quality (ubuntu)` and `smoke (<os>)` in .github/workflows/ci.yml, `codeql`
 # and `npm audit` in security.yml, `dependency review` in
-# dependency-review.yml. None of them may embed a Node version.
+# dependency-review.yml. None of them may embed a Node version. The merge
+# queue below waits for these same contexts on its candidates, so each of those
+# three workflows declares the `merge_group` trigger.
 echo "Applying main branch protection ruleset..."
 apply_ruleset "Protect main" <<'EOF'
 {

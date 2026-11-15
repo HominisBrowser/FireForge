@@ -89,6 +89,8 @@ export interface PoolWorkspace extends WorkspaceRecord {
   built: boolean;
   /** The commands holding it right now; empty when it is free. */
   holders: LockHolder[];
+  /** Holders that left no readable record; they also keep the workspace leased. */
+  unidentified: number;
 }
 
 interface Place {
@@ -98,13 +100,24 @@ interface Place {
   lock: string;
 }
 
+/**
+ * Where the lease of a pool workspace lives: the lock every command holds
+ * while it works in that workspace.
+ *
+ * @param host - The host locations
+ * @param name - The workspace
+ */
+export function workspaceLockPath(host: Pick<HostPaths, 'locks'>, name: string): string {
+  return join(host.locks, `workspace-${name}`);
+}
+
 function place(host: HostPaths, name: string): Place {
   const dir = join(host.workspaces, name);
   return {
     dir,
     engineDir: join(dir, 'engine'),
     paths: { state: join(dir, 'workspace.json'), stateDir: dir },
-    lock: join(host.locks, `workspace-${name}`),
+    lock: workspaceLockPath(host, name),
   };
 }
 
@@ -128,13 +141,15 @@ async function readWorkspace(host: HostPaths, name: string): Promise<PoolWorkspa
   const at = place(host, name);
   const record = await readState(at, recordSection);
   if (record === undefined) return undefined;
+  const lease = await readLockStatus(at.lock);
   return {
     ...record,
     name,
     dir: at.dir,
     engineDir: at.engineDir,
     built: await exists(join(at.engineDir, OBJDIR_NAME, 'config.status')),
-    holders: (await readLockStatus(at.lock)).holders,
+    holders: lease.holders,
+    unidentified: lease.unidentified,
   };
 }
 

@@ -219,6 +219,14 @@ describe('run: deadline', () => {
     }
   );
 
+  it('does not report a timeout for a child that exited in time but whose teardown ran past the deadline', async () => {
+    const result = await run(node, ['-e', '0'], {
+      timeoutMs: 2_000,
+      afterExit: () => new Promise((resolve) => setTimeout(resolve, 2_400)),
+    });
+    expect(result).toMatchObject({ timedOut: false, exitCode: 0 });
+  });
+
   it('does not report a timeout for a child that finished in time', async () => {
     const result = await run(node, ['-e', '0'], { timeoutMs: 30_000 });
     expect(result).toMatchObject({ timedOut: false, exitCode: 0 });

@@ -32,7 +32,7 @@ import {
 } from '../git/index.js';
 import { ExitCode, FireForgeError } from '../kernel/errors.js';
 import { listDir, resolveContained, writeLink } from '../kernel/fs.js';
-import type { Transaction } from '../kernel/journal.js';
+import { recoverJournal, type Transaction } from '../kernel/journal.js';
 import { readJsonIfExists, writeJson } from '../kernel/json.js';
 import { verbose } from '../kernel/log.js';
 import { type Infer, s } from '../kernel/schema.js';
@@ -46,7 +46,7 @@ import {
   statesIn,
   type TreeState,
 } from './apply.js';
-import { pathsOf, type Queue, queueError } from './queue.js';
+import { pathsOf, type Queue, queueError, queueJournal } from './queue.js';
 
 /**
  * The engine's HEAD commit, the pristine Firefox the queue applies to.
@@ -116,6 +116,19 @@ const APPLIED = defineStateSection('queueApplied', appliedSchema, 'fireforge res
  */
 export function engineJournal(project: PatchProject): string {
   return join(project.paths.stateDir, 'engine.journal');
+}
+
+/**
+ * Undoes what an interrupted run left in the engine or the queue, before
+ * anything is read. A changing operation calls it first: what it would read
+ * otherwise is the half-made state, which may not validate or may be about to
+ * change. The caller holds the engine lock exclusively.
+ *
+ * @param project - A patch-mode project
+ */
+export async function recoverInterrupted(project: PatchProject): Promise<void> {
+  await recoverJournal(engineJournal(project));
+  await recoverJournal(queueJournal(project));
 }
 
 /**
@@ -467,10 +480,13 @@ export async function pruneEmptyParents(
   }
 }
 
+const depth = (path: string): number => path.split('/').length;
+
 /**
  * Writes target states into the engine inside a transaction: the blob's
  * bytes and mode, a symlink, or removal (pruning directories that empties).
- * Only paths whose current state differs are touched. Every mode, location
+ * Removals are made before any write, so a path may turn from a directory
+ * into a file or the reverse. Only paths whose current state differs are touched. Every mode, location
  * and blob is checked before the first write, so a refusal changes nothing.
  *
  * @param tx - The engine transaction
@@ -517,11 +533,18 @@ export async function writeStates(
     }
     plan.push({ path, absolute, write: { mode, bytes } });
   }
-  for (const { path, absolute, write } of plan) {
-    if (write === undefined) {
-      await tx.remove(absolute);
-      await pruneEmptyParents(tx, engine, path);
-    } else if (write.mode === 'symlink') {
+  // Removals come first, deepest first, and the directories they empty go before
+  // anything is written, so a path can change between file and directory.
+  const removals = plan
+    .filter(({ write }) => write === undefined)
+    .sort((a, b) => depth(b.path) - depth(a.path) || (a.path < b.path ? -1 : 1));
+  for (const { path, absolute } of removals) {
+    await tx.remove(absolute);
+    await pruneEmptyParents(tx, engine, path);
+  }
+  for (const { absolute, write } of plan) {
+    if (write === undefined) continue;
+    if (write.mode === 'symlink') {
       await tx.change([absolute], () => writeLink(absolute, write.bytes.toString('utf8')));
     } else {
       await tx.write(absolute, write.bytes, { mode: write.mode });

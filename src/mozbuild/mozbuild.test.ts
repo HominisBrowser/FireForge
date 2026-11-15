@@ -280,6 +280,62 @@ describe('addToMozBuildList', () => {
     ]);
   });
 
+  it('refuses a list holding anything but quoted strings, one-line or multi-line', () => {
+    const foreign: [string, string][] = [
+      ['EXTRA_JS_MODULES += [generated_module, "existing.sys.mjs"]\n', 'generated_module'],
+      ['EXTRA_JS_MODULES += [f("nested.sys.mjs"), "b.sys.mjs"]\n', 'f("nested.sys.mjs")'],
+      ['EXTRA_JS_MODULES += ["a.sys.mjs" "b.sys.mjs"]\n', '"b.sys.mjs"'],
+      ['EXTRA_JS_MODULES += ["a.sys.mjs", *more]\n', '*more'],
+      ['EXTRA_JS_MODULES += ["a.sys.mjs", "b.sys.mjs" if X else "c.sys.mjs"]\n', 'if'],
+      ['EXTRA_JS_MODULES += [\n    "a.sys.mjs",\n    generated,\n]\n', 'generated'],
+      ['EXTRA_JS_MODULES += [\n    "a.sys.mjs",\n    ["nested"],\n]\n', '["nested"'],
+    ];
+    for (const [text, shown] of foreign) {
+      expect(() => addToMozBuildList(text, 'EXTRA_JS_MODULES', 'new.sys.mjs')).toThrow(
+        /not a plain quoted string/
+      );
+      expect(() => addToMozBuildList(text, 'EXTRA_JS_MODULES', 'new.sys.mjs')).toThrow(
+        expect.objectContaining({
+          message: expect.stringContaining(JSON.stringify(shown)) as unknown,
+        })
+      );
+    }
+  });
+
+  it('still adds to a list of quoted strings with comments, and keeps each literal as written', () => {
+    expect(
+      addToMozBuildList(
+        `EXTRA_JS_MODULES += ['b.sys.mjs', "a\\\\.sys.mjs"]  # keep, [x]\n`,
+        'EXTRA_JS_MODULES',
+        'c.sys.mjs'
+      ).text
+    ).toBe(
+      lines(
+        'EXTRA_JS_MODULES += [',
+        `    'b.sys.mjs',`,
+        '    "a\\\\.sys.mjs",',
+        `    'c.sys.mjs',`,
+        ']  # keep, [x]'
+      )
+    );
+  });
+
+  it('does not take an item already present from a list it cannot otherwise edit', () => {
+    const text = 'EXTRA_JS_MODULES += [generated, "a.sys.mjs"]\n';
+    expect(addToMozBuildList(text, 'EXTRA_JS_MODULES', 'a.sys.mjs').changed).toBe(false);
+  });
+
+  it('refuses a value with a quote, a backslash or a line break', () => {
+    for (const value of ['a"b.sys.mjs', 'a\\b.sys.mjs', 'a\nb.sys.mjs']) {
+      expect(() =>
+        addToMozBuildList('EXTRA_JS_MODULES += [\n    "a.sys.mjs",\n]\n', 'EXTRA_JS_MODULES', value)
+      ).toThrow(/does not write into a manifest/);
+      expect(() => addToMozBuildList('', 'EXTRA_JS_MODULES', value, { create: true })).toThrow(
+        /does not write into a manifest/
+      );
+    }
+  });
+
   it('keeps CRLF line endings', () => {
     const text = 'X += [\r\n    "a",\r\n]\r\n';
     expect(addToMozBuildList(text, 'X', 'b').text).toBe('X += [\r\n    "a",\r\n    "b",\r\n]\r\n');

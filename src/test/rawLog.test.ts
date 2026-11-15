@@ -177,3 +177,22 @@ describe('readRawTestLog', () => {
     await expect(readRawTestLog(join(dir(), 'run.raw.jsonl'))).rejects.toThrow();
   });
 });
+
+describe('a file that ends unexpectedly', () => {
+  it('keeps the harness message of the file, and none from an expected end', () => {
+    const log = parseRawTestLog(
+      [
+        { action: 'suite_start', tests: {} },
+        { action: 'test_start', test: 'a' },
+        { action: 'test_end', test: 'a', status: 'TIMEOUT', expected: 'OK', message: 'timed out' },
+        { action: 'test_start', test: 'b' },
+        { action: 'test_end', test: 'b', status: 'OK', message: 'fine' },
+        { action: 'suite_end' },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join('\n')
+    );
+    expect(log.results[0]).toMatchObject({ test: 'a', unexpected: true, message: 'timed out' });
+    expect(log.results[1]?.message).toBeUndefined();
+  });
+});

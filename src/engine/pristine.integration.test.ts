@@ -104,7 +104,8 @@ describe('ensurePristine', () => {
     'leaves a bare repository with main at the commit and a record of the pin',
     async () => {
       const host = hostAt('host');
-      const pristine = await ensurePristine(host, pin, { fetch: await mozilla() });
+      const network = await mozilla();
+      const pristine = await ensurePristine(host, pin, { fetch: network });
       expect((await git(pristine.repo, ['rev-parse', '--is-bare-repository'])).trim()).toBe('true');
       expect((await git(pristine.repo, ['rev-parse', 'refs/heads/main'])).trim()).toBe(
         pristine.commit
@@ -113,7 +114,11 @@ describe('ensurePristine', () => {
       const record = JSON.parse(
         await readFile(join(pristine.repo, 'fireforge-pin.json'), 'utf8')
       ) as unknown;
-      expect(record).toEqual({ firefox: pin, commit: pristine.commit });
+      expect(record).toEqual({
+        firefox: pin,
+        commit: pristine.commit,
+        archive: { sha256: await hashFile(network.file) },
+      });
       expect(await findPristine(host, pin)).toEqual(pristine);
       // Nothing of the import is left beside it.
       expect(await readdir(host.pristine)).toEqual(['firefox-esr-140.9.0esr']);
@@ -187,6 +192,87 @@ describe('ensurePristine', () => {
       'fireforge-pin.json': JSON.stringify({ firefox: { ...pin, candidate: 'build1' }, commit }),
     });
     expect(await findPristine(host, { ...pin, candidate: 'build1' })).toBeUndefined();
+  });
+
+  describe.skipIf(process.platform === 'win32')('a repository already imported', () => {
+    const recordOf = async (repo: string): Promise<Record<string, unknown>> =>
+      JSON.parse(await readFile(join(repo, 'fireforge-pin.json'), 'utf8')) as Record<
+        string,
+        unknown
+      >;
+
+    it('is used again offline for an unchanged pin, and for a digest it recorded', async () => {
+      const host = hostAt('host');
+      const network = await mozilla();
+      const imported = await ensurePristine(host, pin, { fetch: network });
+      const offline: typeof fetch = () => Promise.reject(new Error('offline'));
+      expect(await ensurePristine(host, pin, { fetch: offline })).toEqual(imported);
+      const digest = await hashFile(network.file);
+      expect(await recordOf(imported.repo)).toMatchObject({ archive: { sha256: digest } });
+      expect(await findPristine(host, { ...pin, sha256: digest })).toEqual(imported);
+      expect(await ensurePristine(host, { ...pin, sha256: digest }, { fetch: offline })).toEqual(
+        imported
+      );
+    });
+
+    it('is not used for a digest other than the one it was imported from', async () => {
+      const host = hostAt('host');
+      const network = await mozilla();
+      const imported = await ensurePristine(host, pin, { fetch: network });
+      const other = { ...pin, sha256: 'cd'.repeat(32) };
+      await expect(findPristine(host, other)).rejects.toMatchObject({
+        code: 'pristine-unsatisfied',
+        message: expect.stringContaining('cdcdcd') as unknown,
+      });
+      await expect(ensurePristine(host, other, { fetch: network })).rejects.toMatchObject({
+        code: 'checksum-mismatch',
+      });
+      expect(await findPristine(host, pin)).toEqual(imported);
+    });
+
+    it('imported before digests were recorded is verified again when the pin asks for one', async () => {
+      const host = hostAt('host');
+      const network = await mozilla();
+      const imported = await ensurePristine(host, pin, { fetch: network });
+      await writeTree(imported.repo, {
+        'fireforge-pin.json': JSON.stringify({ firefox: pin, commit: imported.commit }),
+      });
+      const digest = await hashFile(network.file);
+      const pinned = { ...pin, sha256: digest };
+      await expect(findPristine(host, pinned)).rejects.toMatchObject({
+        code: 'pristine-unsatisfied',
+        exitCode: 3,
+        hint: expect.stringContaining('fireforge download') as unknown,
+      });
+      const progress: string[] = [];
+      const again = await ensurePristine(host, pinned, {
+        fetch: network,
+        onProgress: (message) => progress.push(message),
+      });
+      expect(again).toEqual(imported);
+      expect(progress.join('\n')).toContain('does not meet');
+      expect(network.calls.filter((url) => url.endsWith('.tar.xz'))).toHaveLength(1);
+      expect(await recordOf(imported.repo)).toMatchObject({
+        firefox: pinned,
+        archive: { sha256: digest },
+      });
+      expect(await findPristine(host, pinned)).toEqual(imported);
+    });
+
+    it('imported on trust alone is verified again once the project stops allowing that', async () => {
+      const host = hostAt('host');
+      const network = await mozilla();
+      const lenient = { ...pin, allowUnverifiedDownload: true };
+      const imported = await ensurePristine(host, lenient, { fetch: network });
+      expect(await findPristine(host, lenient)).toEqual(imported);
+      await expect(findPristine(host, pin)).rejects.toMatchObject({
+        code: 'pristine-unsatisfied',
+      });
+      expect(await ensurePristine(host, pin, { fetch: network })).toEqual(imported);
+      expect(await recordOf(imported.repo)).toMatchObject({ firefox: pin });
+      expect(await findPristine(host, pin)).toEqual(imported);
+      expect(network.calls.filter((url) => url.endsWith('.tar.xz'))).toHaveLength(1);
+    });
   });
 
   it('reports a malformed record instead of importing over it', async () => {

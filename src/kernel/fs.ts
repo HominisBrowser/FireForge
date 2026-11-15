@@ -334,6 +334,30 @@ export async function writeFileIfChanged(
 }
 
 /**
+ * Writes every byte of `chunk` at the handle's current position. A single
+ * `write` may take fewer bytes than it is given, so this repeats for the
+ * remainder.
+ *
+ * @param handle - The open file
+ * @param chunk - The bytes
+ * @returns The number of bytes written, which is the chunk's length
+ */
+export async function writeAll(
+  handle: Pick<FileHandle, 'write'>,
+  chunk: Uint8Array
+): Promise<number> {
+  let written = 0;
+  while (written < chunk.byteLength) {
+    const { bytesWritten } = await handle.write(chunk, written, chunk.byteLength - written);
+    if (bytesWritten <= 0) {
+      throw new FireForgeError('write-stalled', 'The file system accepted no more bytes.');
+    }
+    written += bytesWritten;
+  }
+  return written;
+}
+
+/**
  * Writes a stream of chunks to a file atomically: the target appears only
  * once the stream has ended without error.
  *
@@ -352,8 +376,7 @@ export async function writeFileFromStream(
       const handle = await open(temp, 'wx');
       try {
         for await (const chunk of chunks) {
-          await handle.write(chunk);
-          bytes += chunk.byteLength;
+          bytes += await writeAll(handle, chunk);
         }
         await handle.sync();
       } finally {

@@ -7,7 +7,7 @@ import { ExitCode, FireForgeError, toError } from '../kernel/errors.js';
 import { type JsonObject, writeJson } from '../kernel/json.js';
 import type { GreenSummaryRejection, HarnessVerdict, IncompleteRun } from './classify.js';
 import type { ControlResult } from './control.js';
-import { dispatchReason, type DispatchResult, type TestRunResult } from './run.js';
+import { dispatchReason, type DispatchResult, type FileResult, type TestRunResult } from './run.js';
 
 /** `key=value` pairs for `ctx.out.verdict`. */
 export type VerdictFields = Record<string, string | number | undefined>;
@@ -133,6 +133,30 @@ export function refusalLines(error: unknown): string[] {
   return ['Preflight refused:', toError(error).message];
 }
 
+/** Most reds one file lists in the results document and the lines a person reads. */
+const MAX_FAILURES_PER_FILE = 10;
+/** Longest assertion or message kept in either, in characters. */
+const MAX_FAILURE_TEXT = 400;
+
+function clip(text: string): string {
+  return text.length <= MAX_FAILURE_TEXT ? text : `${text.slice(0, MAX_FAILURE_TEXT)}…`;
+}
+
+/** One file's reds, each clipped, and how many were left out. */
+function boundedFailures(file: FileResult): {
+  failures: Array<{ assertion: string; status: string; expected: string; message?: string }>;
+  omitted: number;
+} {
+  return {
+    failures: file.failures.slice(0, MAX_FAILURES_PER_FILE).map((failure) => ({
+      ...failure,
+      assertion: clip(failure.assertion),
+      ...(failure.message === undefined ? {} : { message: clip(failure.message) }),
+    })),
+    omitted: Math.max(0, file.failures.length - MAX_FAILURES_PER_FILE),
+  };
+}
+
 function verdictJson(verdict: HarnessVerdict): JsonObject {
   return {
     kind: verdict.kind,
@@ -140,6 +164,9 @@ function verdictJson(verdict: HarnessVerdict): JsonObject {
     ...(verdict.unexpected === undefined ? {} : { unexpected: verdict.unexpected }),
     ...(verdict.signature === undefined ? {} : { signature: { ...verdict.signature } }),
     ...(verdict.failureLine === undefined ? {} : { failureLine: verdict.failureLine }),
+    ...(verdict.failureBlocks === undefined
+      ? {}
+      : { failureBlocks: verdict.failureBlocks.map(clip) }),
     ...(verdict.note === undefined ? {} : { note: verdict.note }),
     ...(verdict.greenSummaryRejected === undefined
       ? {}
@@ -170,10 +197,15 @@ function resultsDocument(result: TestRunResult): JsonObject {
       attempts: dispatch.attempts,
       verdict: verdictJson(dispatch.verdict),
     })),
-    files: files.map((file) => ({
-      ...file,
-      failures: file.failures.map((failure) => ({ ...failure })),
-    })),
+    files: files.map((file) => {
+      const { failures, omitted } = boundedFailures(file);
+      return {
+        ...file,
+        ...(file.message === undefined ? {} : { message: clip(file.message) }),
+        failures,
+        ...(omitted > 0 ? { failuresOmitted: omitted } : {}),
+      };
+    }),
     summary: {
       files: files.filter((file) => file.planned).length,
       passed: files.filter((file) => file.planned && file.finished && !file.unexpected).length,
@@ -319,9 +351,20 @@ function dispatchLines(dispatch: DispatchResult, label: string): string[] {
   ].join('');
   const lines = [`${reason === undefined ? 'PASS' : `FAIL ${reason}`}${counts}  ${label}`];
   for (const file of dispatch.files) {
-    for (const failure of file.failures) {
+    const { failures, omitted } = boundedFailures(file);
+    for (const failure of failures) {
       lines.push(
         `  ${file.test}: ${failure.status} (expected ${failure.expected}) ${failure.assertion}${failure.message === undefined ? '' : ` - ${failure.message}`}`
+      );
+    }
+    if (omitted > 0) {
+      lines.push(
+        `  ${file.test}: ${omitted} more failure(s) not shown; the complete output has them`
+      );
+    }
+    if (failures.length === 0 && file.unexpected && file.message !== undefined) {
+      lines.push(
+        `  ${file.test}: ${file.status ?? 'ended'} (expected ${file.expected ?? 'OK'}) - ${clip(file.message)}`
       );
     }
   }
@@ -333,9 +376,14 @@ function dispatchLines(dispatch: DispatchResult, label: string): string[] {
   }
   if (verdict.incomplete !== undefined && reason !== undefined)
     lines.push(incompleteRunMessage(verdict.incomplete));
-  if (reason === 'test-failures' && dispatch.files.every((file) => file.failures.length === 0)) {
+  if (
+    reason === 'test-failures' &&
+    dispatch.files.every((file) => file.failures.length === 0 && file.message === undefined)
+  ) {
     lines.push(
-      ...(verdict.failureBlocks ?? (verdict.failureLine === undefined ? [] : [verdict.failureLine]))
+      ...(
+        verdict.failureBlocks ?? (verdict.failureLine === undefined ? [] : [verdict.failureLine])
+      ).map(clip)
     );
   }
   if (verdict.note !== undefined && reason !== undefined) lines.push(`(${verdict.note})`);

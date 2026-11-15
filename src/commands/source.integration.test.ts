@@ -105,6 +105,21 @@ describe('the authoring helpers in a source-mode project', () => {
     expect((await cli(project.root, 'register', PANEL)).stdout).toContain('Already registered');
   });
 
+  it('keeps both additions when two registrations of one upstream manifest run together', async () => {
+    const other = 'browser/base/content/other.js';
+    const project = await makeSourceProject(dir(), {
+      files: { [`src/${PANEL}`]: '// panel\n', [`src/${other}`]: '// other\n' },
+    });
+    const results = await Promise.all([
+      cli(project.root, 'register', `src/${PANEL}`),
+      cli(project.root, 'register', `src/${other}`),
+    ]);
+    expect(results.map((result) => result.exitCode)).toEqual([0, 0]);
+    const jar = await readFile(join(project.root, 'src', JAR), 'utf8');
+    expect(jar).toContain('(content/panel.js)');
+    expect(jar).toContain('(content/other.js)');
+  });
+
   it('token add edits the owned token file, and token lint reads the owned stylesheets', async () => {
     const project = await makeSourceProject(dir(), {
       files: {

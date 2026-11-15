@@ -19,6 +19,13 @@ on:
 permissions:
   contents: read
 
+# Two releases never overlap: the publish and the tag push of one finish
+# before another starts, and a running release is never cancelled, since it
+# may be between the publish and the tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   # The release gate: CI's static checks and the test suite with coverage on
   # this commit, in parallel, before anything is published.
@@ -70,7 +77,13 @@ jobs:
         if: inputs.version != ''
         env:
           INPUT_VERSION: ${{ inputs.version }}
-        run: npm version "$INPUT_VERSION" --no-git-tag-version
+        # `npm version` refuses to set the version package.json already has,
+        # which is the case when the input repeats the committed version.
+        run: |
+          CURRENT="$(node -p 'require("./package.json").version')"
+          if [ "$CURRENT" != "$INPUT_VERSION" ]; then
+            npm version "$INPUT_VERSION" --no-git-tag-version
+          fi
 
       # The bump is committed BEFORE anything builds. `npm version
       # --no-git-tag-version` leaves package.json/package-lock.json modified
@@ -99,12 +112,41 @@ jobs:
         id: version
         run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
 
+      # A run that failed after the publish is rerun as it is: the registry
+      # answers whether this exact version is already there, and the publish
+      # below is skipped when it is and was published from this very commit.
+      # A version published from another commit fails the run, since a tag on
+      # this commit would name source the package was not built from. Any
+      # answer but 200 and 404 fails the run rather than guessing.
+      - name: Check whether this version is on the registry
+        id: registry
+        if: inputs.dry-run != true
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          NAME="$(node -p 'require("./package.json").name')"
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+          STATUS="$(curl --silent --show-error --location --retry 3 --output "$RUNNER_TEMP/published.json" \
+            --write-out '%{http_code}' "https://registry.npmjs.org/${NAME/\//%2F}/${VERSION}")"
+          case "$STATUS" in
+            200) PUBLISHED_FROM="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).gitHead || ""' "$RUNNER_TEMP/published.json")"
+                 if [ "$PUBLISHED_FROM" != "$HEAD_COMMIT" ]; then
+                   echo "${NAME}@${VERSION} is on the registry, published from commit ${PUBLISHED_FROM:-unknown}; this run is at ${HEAD_COMMIT}. A version is published once: release a new version." >&2
+                   exit 1
+                 fi
+                 echo "published=true" >> "$GITHUB_OUTPUT"
+                 echo "${NAME}@${VERSION} is already on the registry from this commit; it is not published again." ;;
+            404) echo "published=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "The registry answered ${STATUS} for ${NAME}@${VERSION}." >&2
+               exit 1 ;;
+          esac
+
       # FIREFORGE_PACK_STRICT turns prepack's dirty-tree banner into a hard
       # refusal, so the ordering above is self-enforcing: if anything dirties
       # the worktree before publish, the release fails loudly instead of
       # shipping an artifact no commit can reproduce.
       - name: Publish to npm
-        if: inputs.dry-run != true
+        if: inputs.dry-run != true && steps.registry.outputs.published != 'true'
         env:
           FIREFORGE_PACK_STRICT: '1'
           FIREFORGE_RELEASE_VERIFIED: ${{ github.sha }}
@@ -117,10 +159,29 @@ jobs:
           FIREFORGE_RELEASE_VERIFIED: ${{ github.sha }}
         run: npm publish --dry-run
 
+      # Tag last, and only when origin does not have it yet, so a run that
+      # failed here is rerun as it is. A tag origin has on another commit
+      # fails the run. The version commit and the tag go in one atomic push:
+      # both reach origin or neither does.
       - name: Tag and push
         if: inputs.dry-run != true
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          git tag "v$VERSION"
-          git push origin HEAD --tags
+          STATUS=0
+          FOUND="$(git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}")" || STATUS=$?
+          if [ "$STATUS" -eq 0 ]; then
+            HEAD_COMMIT="$(git rev-parse HEAD)"
+            if [ "${FOUND%%[[:space:]]*}" != "$HEAD_COMMIT" ]; then
+              echo "Tag v${VERSION} is on origin at ${FOUND%%[[:space:]]*}; this run is at ${HEAD_COMMIT}." >&2
+              exit 1
+            fi
+            echo "Tag v${VERSION} is already on origin at this commit; nothing to push."
+            exit 0
+          fi
+          if [ "$STATUS" -ne 2 ]; then
+            echo "Could not look up tag v${VERSION} on origin (git exit ${STATUS})." >&2
+            exit "$STATUS"
+          fi
+          git tag "v${VERSION}"
+          git push --atomic origin HEAD "refs/tags/v${VERSION}"

@@ -6,6 +6,7 @@ import {
   controlReport,
   envAssignments,
   planTests,
+  recordControlRun,
   refusalLines,
   refusalVerdict,
   runControl,
@@ -98,21 +99,22 @@ export const test = defineCommand({
             env: envAssignments(opts.env),
             ...(opts.coverage === undefined ? {} : { coverageDir: opts.coverage }),
           });
-          return opts.control === undefined
-            ? runReport(await runTests(workspace, plan, run), extra)
-            : controlReport(
-                await runControl(
-                  workspace,
-                  plan,
-                  {
-                    diff: opts.control,
-                    expect: opts.expect,
-                    roots: await mutationRoots(project),
-                  },
-                  run
-                ),
-                extra
-              );
+          if (opts.control === undefined)
+            return runReport(await runTests(workspace, plan, run), extra);
+          const result = await runControl(
+            workspace,
+            plan,
+            { diff: opts.control, expect: opts.expect, roots: await mutationRoots(project) },
+            run
+          );
+          await recordControlRun(project, {
+            source: 'test',
+            diff: opts.control,
+            tests: paths,
+            expect: opts.expect,
+            result,
+          });
+          return controlReport(result, extra);
         }
       );
     } catch (error: unknown) {

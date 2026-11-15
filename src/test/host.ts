@@ -285,6 +285,25 @@ export interface PortOptions {
   fallback: { servers: boolean; marionette: boolean };
   /** How long to wait for a foreign holder to let go, in milliseconds. */
   waitMs: number;
+  /** The ports to check, in order; the harness's own by default. */
+  checkPorts?: readonly number[];
+}
+
+/** Terminates a leftover that holds a port; the processes that survived. */
+async function terminateLeftover(holder: HostProcess, port: number): Promise<HostProcess[]> {
+  info(
+    `Port ${port} is held by PID ${holder.pid}, left behind by an earlier run of this workspace; terminating it.`
+  );
+  const { survivors } = await terminateByIdentity([holder], GRACE_MS);
+  return survivors.length === 0 ? [] : [holder];
+}
+
+/** Whether a port holder is a leftover of this workspace, by the same test that reaps leftovers. */
+async function isOwnedLeftover(holder: HostProcess, workspace: HostWorkspace): Promise<boolean> {
+  const leftovers = await selectProcesses((entry) => isLeftover(entry, workspace));
+  return (
+    leftovers?.some((entry) => entry.pid === holder.pid && entry.start === holder.start) ?? false
+  );
 }
 
 /**
@@ -296,7 +315,8 @@ export interface PortOptions {
  * @param workspace - The engine and object directory
  * @param options - See {@link PortOptions}
  * @returns The mach arguments that move Marionette, if it moved
- * @throws `port-busy` naming the holder when the wait expires
+ * @throws `port-busy` naming the holder when the wait expires, or when a leftover
+ *   of this workspace holding a port could not be terminated
  */
 export async function preparePorts(
   workspace: HostWorkspace,
@@ -306,16 +326,24 @@ export async function preparePorts(
   const deadline = startedAt + options.waitMs;
   let lastProgress = startedAt;
   const args: string[] = [];
-  for (const port of [MARIONETTE_PORT, ...SERVER_PORTS]) {
+  for (const port of options.checkPorts ?? [MARIONETTE_PORT, ...SERVER_PORTS]) {
+    let terminations = 0;
     for (;;) {
       const holder = await portHolder(port);
       if (holder === undefined) break;
-      if (holder.parent === 1 && namesWorkspace(holder.command, workspace)) {
-        info(
-          `Port ${port} is held by PID ${holder.pid}, left behind by an earlier run of this workspace; terminating it.`
+      if (await isOwnedLeftover(holder, workspace)) {
+        // One termination is always attempted; another only while the wait budget lasts.
+        const survivors =
+          terminations > 0 && Date.now() >= deadline
+            ? [holder]
+            : await terminateLeftover(holder, port);
+        terminations += 1;
+        if (survivors.length === 0) continue;
+        throw refusal(
+          'port-busy',
+          `Port ${port} is held by PID ${holder.pid}, a leftover of this workspace that could not be cleared: ${holder.command.slice(0, 200)}`,
+          'Stop it by hand, or set test.mochitestPorts to "auto".'
         );
-        await terminateByIdentity([holder], GRACE_MS);
-        continue;
       }
       if (options.ports === 'auto' && port === MARIONETTE_PORT) {
         const moved = await freePort();

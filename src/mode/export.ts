@@ -5,10 +5,13 @@
  * builds. A patch-mode project captures engine edits no patch holds into a
  * new patch of its queue.
  */
+import { basename } from 'node:path';
+
 import { type Pristine, withEngineLock } from '../engine/index.js';
 import { changedPaths, writeTree } from '../git/index.js';
 import { ExitCode, FireForgeError } from '../kernel/errors.js';
-import { listDir, move, remove, tempPathFor } from '../kernel/fs.js';
+import { listDir, move, pathInfo, remove, tempPathFor } from '../kernel/fs.js';
+import { warn } from '../kernel/log.js';
 import type { ChangeSet, SourceProject } from '../project/index.js';
 import type { Project } from '../project/index.js';
 import {
@@ -49,14 +52,22 @@ export async function ownedTree(pristine: Pristine, changes: ChangeSet): Promise
   return writeTree(pristine.repo, edits, pristine.commit);
 }
 
-/** Refuses to replace a directory that holds anything but a generated queue. */
-async function assertReplaceable(out: string): Promise<void> {
-  if ((await listDir(out)).length === 0) return;
-  const generated = await readQueue(out).then(
-    (queue) => queue.source !== undefined,
-    () => false
+/**
+ * Refuses to replace a directory that holds anything but a generated queue,
+ * or that holds entries of its own beside one (notes, assets): replacing it
+ * would delete them.
+ *
+ * @param out - The directory an export replaces
+ * @param staging - The new queue; what it holds beside its patches are the files every generated queue has
+ */
+async function assertReplaceable(out: string, staging: string): Promise<void> {
+  const entries = await listDir(out);
+  if (entries.length === 0) return;
+  const earlier = await readQueue(out).then(
+    (queue) => (queue.source === undefined ? undefined : queue),
+    () => undefined
   );
-  if (!generated) {
+  if (earlier === undefined) {
     throw new FireForgeError(
       'export-target-not-generated',
       `${out} holds something other than a generated patch queue.`,
@@ -66,6 +77,54 @@ async function assertReplaceable(out: string): Promise<void> {
       }
     );
   }
+  // A file is the earlier export's own when its manifest lists it as a patch,
+  // or when it is one of the files a queue has beside its patches. The names
+  // of the patches being written say nothing about what is there now.
+  const written = new Set((await readQueue(staging)).patches.map((patch) => basename(patch.path)));
+  const accounted = new Set([
+    ...(await listDir(staging)).map((entry) => entry.name).filter((name) => !written.has(name)),
+    ...earlier.patches.map((patch) => basename(patch.path)),
+  ]);
+  const foreign = entries.filter((entry) => !accounted.has(entry.name));
+  if (foreign.length > 0) {
+    throw new FireForgeError(
+      'export-target-has-other-files',
+      `${out} holds ${foreign.length} entr${foreign.length === 1 ? 'y' : 'ies'} that are not part of the generated queue and would be deleted: ` +
+        foreign.map((entry) => entry.name).join(', '),
+      {
+        exitCode: ExitCode.INVALID_ARGUMENT,
+        hint: 'Move them elsewhere, or export into an empty directory with --out.',
+      }
+    );
+  }
+}
+
+/**
+ * Puts a staged directory in place of `target`. The previous one is moved
+ * aside next to it first and removed only after the new one is in place; if
+ * the new one cannot be moved in, the previous one is put back.
+ *
+ * @param staging - The finished replacement, on the same filesystem as `target`
+ * @param target - The directory to replace
+ */
+export async function replaceDirectory(staging: string, target: string): Promise<void> {
+  if ((await pathInfo(target)) === undefined) {
+    await move(staging, target);
+    return;
+  }
+  const aside = tempPathFor(target);
+  await move(target, aside);
+  try {
+    await move(staging, target);
+  } catch (error) {
+    await move(aside, target).catch(() => {
+      warn(`The previous export was left at ${aside}.`);
+    });
+    throw error;
+  }
+  await remove(aside).catch(() => {
+    warn(`The previous export could not be removed from ${aside}.`);
+  });
 }
 
 async function writeVerified(project: SourceProject, out: string): Promise<QueueExport> {
@@ -106,9 +165,8 @@ async function writeVerified(project: SourceProject, out: string): Promise<Queue
         }
       );
     }
-    await assertReplaceable(out);
-    await remove(out);
-    await move(staging, out);
+    await assertReplaceable(out, staging);
+    await replaceDirectory(staging, out);
     return {
       out,
       patches: queue.patches.map((patch) => ({
@@ -201,12 +259,13 @@ export async function exportChanges(
  * waivers. The queue is first replayed onto the pristine commit and compared
  * with the tree of pristine plus the owned files; a queue that would not
  * reproduce them is refused and nothing is written. An earlier generated
- * queue at `out` is replaced.
+ * queue at `out` is replaced, and kept until the new one is in place.
  *
  * @param project - A source-mode project
  * @param options - `out`: the queue directory (default the project's `patches/`)
  * @throws `source-mode-required`, `source-invalid` while `verify` reports a
  *   problem, `export-queue-mismatch` (exit code 6), `export-target-not-generated`
+ *   or `export-target-has-other-files` (exit code 2)
  */
 function exportQueue(
   project: Project,

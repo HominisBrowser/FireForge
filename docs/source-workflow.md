@@ -156,7 +156,7 @@ npx fireforge export
 npx fireforge export --out ../mybrowser-patches
 ```
 
-`export` writes the owned changes as a patch queue that `fireforge import` in a patch-mode project replays byte for byte, for a public mirror, for CI that consumes patches, or to go back to patch mode. It writes into `patches/` by default or into `--out`, which must be empty or hold a queue FireForge generated. Before anything is written, the queue is replayed onto the pristine commit and must produce exactly the tree this checkout builds.
+`export` writes the owned changes as a patch queue that `fireforge import` in a patch-mode project replays byte for byte, for a public mirror, for CI that consumes patches, or to go back to patch mode. It writes into `patches/` by default or into `--out`, which must be empty or hold nothing but a queue FireForge generated: a directory with other files in it (notes, assets) is refused, naming them. Before anything is written, the queue is replayed onto the pristine commit and must produce exactly the tree this checkout builds. The previous queue is kept until the new one is in place and is put back if the replacement fails.
 
 The patches are the [groups](#groups) of the owned paths under `src/`, one patch each:
 

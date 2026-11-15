@@ -18,6 +18,7 @@ import { listPristineTree, type Pristine, withEngineLock } from '../engine/index
 import { ExitCode, FireForgeError } from '../kernel/errors.js';
 import { exists, isInside, readTextIfExists, resolveContained, toPosixPath } from '../kernel/fs.js';
 import { type Transaction, transaction } from '../kernel/journal.js';
+import { withLock } from '../kernel/lock.js';
 import type { Project, SourceProject, TrackedFiles } from '../project/index.js';
 import { override, readSourceFile, writeSourceFile } from '../source/index.js';
 import { pinnedPristine } from './pristine.js';
@@ -27,22 +28,42 @@ function trackedDir(project: Project): string {
   return project.mode === 'patches' ? project.paths.engine : project.paths.source;
 }
 
+/** The refusal of a write over a file that changed after the edit was planned. */
+function movedSinceRead(what: string): FireForgeError {
+  return new FireForgeError('tracked-file-moved', what, {
+    hint: 'Another command or an editor changed it while this command ran; run the command again.',
+  });
+}
+
 function sourceFiles(project: SourceProject, pristine: Pristine, declare: boolean): TrackedFiles {
   const read = (path: string): Promise<Buffer | undefined> =>
     readSourceFile(project, pristine, path);
   return {
     read: async (path) => (await read(path))?.toString('utf8'),
     exists: async (path) => (await read(path)) !== undefined,
-    async write(tx, path, content) {
+    async write(tx, path, content, options = {}) {
       const bytes = Buffer.from(content, 'utf8');
+      const { expected } = options;
+      const preImage =
+        expected === undefined
+          ? {}
+          : { expected: expected === null ? null : Buffer.from(expected) };
+      const write = (): Promise<void> =>
+        writeSourceFile(project, pristine, path, bytes, { tx, ...preImage }).catch(
+          (error: unknown) => {
+            throw error instanceof FireForgeError && error.code === 'source-file-moved'
+              ? movedSinceRead(error.message)
+              : error;
+          }
+        );
       try {
-        await writeSourceFile(project, pristine, path, bytes, { tx });
+        await write();
       } catch (error: unknown) {
         const undeclared =
           error instanceof FireForgeError && error.code === 'source-override-required';
         if (!undeclared || !declare) throw error;
         await override(project, pristine, path, { tx });
-        await writeSourceFile(project, pristine, path, bytes, { tx });
+        await write();
       }
     },
     async remove(tx, path) {
@@ -81,7 +102,16 @@ export async function trackedFiles(
   return {
     read: (path) => readTextIfExists(join(engine, path)),
     exists: (path) => exists(join(engine, path)),
-    write: async (tx, path, content) => tx.write(await resolveContained(engine, path), content),
+    write: async (tx, path, content, options = {}) => {
+      const file = await resolveContained(engine, path);
+      if (options.expected !== undefined) {
+        const current = (await readTextIfExists(file)) ?? null;
+        if (current !== options.expected) {
+          throw movedSinceRead(`${path} changed since it was read.`);
+        }
+      }
+      await tx.write(file, content);
+    },
     remove: async (tx, path) => tx.remove(await resolveContained(engine, path)),
     locate: (path) => join(engine, path),
   };
@@ -116,7 +146,10 @@ export function enginePathOf(project: Project, input: string): string {
 
 /**
  * Runs an edit of tracked files as one transaction: every write lands, or
- * none. Patch mode holds the engine lock exclusively for it.
+ * none. Patch mode holds the engine lock exclusively for it; source mode
+ * holds the lock of tracked edits, so two edits never run their journals at
+ * once. A caller reads and plans inside `body`, so what it plans over is
+ * what it overwrites.
  *
  * @param project - The project
  * @param options - `label` names the edit in messages; `command` and `waitMs` are for the lock
@@ -131,5 +164,12 @@ export function editTracked<T>(
     transaction(join(project.paths.stateDir, 'tracked-edit.journal'), options.label, body);
   return project.mode === 'patches'
     ? withEngineLock(project, { command: options.command, waitMs: options.waitMs }, run)
-    : run();
+    : withLock(
+        join(project.paths.stateDir, 'tracked-edit.lock'),
+        {
+          label: 'tracked edit',
+          ...(options.waitMs === undefined ? {} : { waitMs: options.waitMs }),
+        },
+        run
+      );
 }

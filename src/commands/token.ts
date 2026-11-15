@@ -14,6 +14,7 @@ import {
 import { loadProject, type Project, type TrackedFiles } from '../project/index.js';
 import {
   addToken,
+  type AddTokenResult,
   lintTokens,
   listTokens,
   measureCoverage,
@@ -88,25 +89,39 @@ const add = defineCommand({
   json: true,
   run: async (ctx, { name, value }, opts) => {
     const { project, files, path, settings } = await target(ctx);
-    const text = await readTokenFile(files, path);
     const full = tokenName(name, settings.prefix);
-    const result = addToken(text, {
-      name: full,
-      value,
-      mode: opts.mode,
-      category: opts.category,
-      description: opts.description,
-      darkValue: opts.darkValue,
-      variant: opts.variant,
-      createCategory: opts.createCategory,
-    });
-    if (result.changed && !opts.dryRun) {
-      await editTracked(
-        project,
-        { label: `adding token ${full}`, command: 'token add', waitMs: lockWaitMs(opts.waitLock) },
-        (tx) => files.write(tx, path, result.text)
-      );
-    }
+    const planned = async (): Promise<{ text: string; result: AddTokenResult }> => {
+      const text = await readTokenFile(files, path);
+      const result = addToken(text, {
+        name: full,
+        value,
+        mode: opts.mode,
+        category: opts.category,
+        description: opts.description,
+        darkValue: opts.darkValue,
+        variant: opts.variant,
+        createCategory: opts.createCategory,
+      });
+      return { text, result };
+    };
+    // A real run reads and plans under the lock, so it overwrites what it read.
+    const { result } = opts.dryRun
+      ? await planned()
+      : await editTracked(
+          project,
+          {
+            label: `adding token ${full}`,
+            command: 'token add',
+            waitMs: lockWaitMs(opts.waitLock),
+          },
+          async (tx) => {
+            const made = await planned();
+            if (made.result.changed) {
+              await files.write(tx, path, made.result.text, { expected: made.text });
+            }
+            return made;
+          }
+        );
     const where =
       result.existing === undefined
         ? ''

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 /** `doctor` through the CLI: a healthy project in each mode, and broken ones with their fixes. */
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { engineLockPath } from '../engine/index.js';
 import { ExitCode } from '../kernel/errors.js';
 import { exists } from '../kernel/fs.js';
+import { acquireLock } from '../kernel/lock.js';
 import { type HostPaths, hostPaths } from '../project/index.js';
 import { type CliResult, runCli } from '../testing/cli.js';
 import { TEST_PIN_KEY } from '../testing/config.js';
@@ -81,6 +83,32 @@ describe('fireforge doctor', () => {
     expect(recovered.exitCode).toBe(ExitCode.SUCCESS);
     expect(checks(recovered)['journals']).toMatchObject({ detail: 'Undid 1 interrupted run(s)' });
     expect(await exists(journal)).toBe(false);
+
+    // Recovery waits for the lock its owner would hold: a held engine lock, or no known lock, leaves the journal.
+    const dead = `${JSON.stringify({ journal: 1, label: 'the patch queue update', pid: 999_999_99, startedAt: '2026-01-01T00:00:00.000Z' })}\n`;
+    await writeFile(journal, dead);
+    const held = await acquireLock(engineLockPath(project));
+    try {
+      const blocked = await cli(project, 'doctor', '--recover', '--json');
+      expect(blocked.exitCode).toBe(ExitCode.GENERAL_ERROR);
+      expect(checks(blocked)['journals']).toMatchObject({
+        status: 'fail',
+        detail: expect.stringContaining('is held by PID') as unknown,
+      });
+      expect(await exists(journal)).toBe(true);
+    } finally {
+      await held.release();
+    }
+    const unguarded = join(project.root, '.fireforge', 'migrate.journal');
+    await writeFile(unguarded, dead);
+    const partly = await cli(project, 'doctor', '--recover', '--json');
+    expect(checks(partly)['journals']).toMatchObject({
+      status: 'fail',
+      detail: expect.stringContaining('no known lock') as unknown,
+    });
+    expect(await exists(journal)).toBe(false);
+    expect(await exists(unguarded)).toBe(true);
+    await rm(unguarded);
 
     await git(join(project.root, 'engine'), ['commit', '--quiet', '--allow-empty', '-m', 'moved']);
     const moved = await cli(project, 'doctor', '--json');

@@ -19,7 +19,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 
 import type * as estree from 'estree';
 
-import { isInside, listDir, readTextIfExists, toPosixPath } from '../kernel/fs.js';
+import { isInside, toPosixPath } from '../kernel/fs.js';
 import type { Transaction } from '../kernel/journal.js';
 import { isRecord, type JsonObject, parseJson } from '../kernel/json.js';
 import { editJsonText } from '../kernel/json-edit.js';
@@ -33,6 +33,7 @@ import {
   type FurnaceProject,
   jsconfigPaths,
 } from './config.js';
+import { diskView, type ProjectView } from './edit.js';
 
 /** One generated typing file whose content is not what the components want. */
 export type TypingDrift = {
@@ -53,6 +54,7 @@ interface TypingFile {
 async function locate(
   project: FurnaceProject,
   tracked: TrackedFiles,
+  view: ProjectView,
   file: string
 ): Promise<{ absolute: string; current: string | undefined }> {
   const named = configuredPath(file);
@@ -60,21 +62,20 @@ async function locate(
     return { absolute: tracked.locate(named.path), current: await tracked.read(named.path) };
   }
   const absolute = join(project.paths.root, named.path);
-  return { absolute, current: await readTextIfExists(absolute) };
+  return { absolute, current: await view.readText(absolute) };
 }
 
 /** The `.mjs` files of each custom component, by component. */
 async function componentModules(
   project: FurnaceProject,
   config: FurnaceConfig,
+  view: ProjectView,
   include: (name: string) => boolean
 ): Promise<{ name: string; dir: string; files: string[] }[]> {
   const modules = [];
   for (const name of Object.keys(config.custom).filter(include)) {
     const dir = componentDir(project, 'custom', name);
-    const files = (await listDir(dir))
-      .filter((entry) => entry.kind === 'file' && entry.name.endsWith('.mjs'))
-      .map((entry) => entry.name);
+    const files = (await view.listFiles(dir)).filter((file) => file.endsWith('.mjs'));
     modules.push({ name, dir, files });
   }
   return modules;
@@ -84,9 +85,10 @@ async function jsconfigFile(
   project: FurnaceProject,
   config: FurnaceConfig,
   tracked: TrackedFiles,
+  view: ProjectView,
   file: string
 ): Promise<TypingFile> {
-  const { absolute, current } = await locate(project, tracked, file);
+  const { absolute, current } = await locate(project, tracked, view, file);
   const document = current === undefined ? undefined : parseJson(current, { source: file });
   if (current === undefined || !isRecord(document)) {
     throw furnaceError(
@@ -100,7 +102,7 @@ async function jsconfigFile(
   const base = dirname(absolute);
   const customRoot = join(project.paths.components, 'custom');
   const wanted = new Map<string, string>();
-  for (const { dir, files } of await componentModules(project, config, () => true)) {
+  for (const { dir, files } of await componentModules(project, config, view, () => true)) {
     for (const name of files) {
       const path = toPosixPath(relative(base, join(dir, name)));
       wanted.set(`${ELEMENTS_URL}${name}`, path.startsWith('.') ? path : `./${path}`);
@@ -215,15 +217,19 @@ interface TagEntry {
   exportName: string;
 }
 
-async function tagMapEntries(project: FurnaceProject, config: FurnaceConfig): Promise<TagEntry[]> {
+async function tagMapEntries(
+  project: FurnaceProject,
+  config: FurnaceConfig,
+  view: ProjectView
+): Promise<TagEntry[]> {
   const entries: TagEntry[] = [];
   const registered = (name: string): boolean => {
     const entry = config.custom[name];
     return entry !== undefined && entry.register && entry.kind !== 'library';
   };
-  for (const { dir, files } of await componentModules(project, config, registered)) {
+  for (const { dir, files } of await componentModules(project, config, view, registered)) {
     for (const file of files) {
-      const source = await readTextIfExists(join(dir, file));
+      const source = await view.readText(join(dir, file));
       let program: estree.Program;
       try {
         program = parseJs(source ?? '', 'module').program;
@@ -261,15 +267,16 @@ function renderTagMap(entries: readonly TagEntry[]): string {
 async function typingFiles(
   project: FurnaceProject,
   config: FurnaceConfig,
-  tracked: TrackedFiles
+  tracked: TrackedFiles,
+  view: ProjectView
 ): Promise<TypingFile[]> {
   const files: TypingFile[] = [];
   for (const file of jsconfigPaths(config))
-    files.push(await jsconfigFile(project, config, tracked, file));
+    files.push(await jsconfigFile(project, config, tracked, view, file));
   if (config.typecheckTagMap !== undefined) {
     const file = config.typecheckTagMap;
-    const { absolute, current } = await locate(project, tracked, file);
-    const next = renderTagMap(await tagMapEntries(project, config));
+    const { absolute, current } = await locate(project, tracked, view, file);
+    const next = renderTagMap(await tagMapEntries(project, config, view));
     const detail =
       current === undefined ? 'the file does not exist' : 'custom element definitions changed';
     files.push({ file, absolute, current, next, detail });
@@ -290,7 +297,7 @@ export async function typingDrift(
   config: FurnaceConfig,
   tracked: TrackedFiles
 ): Promise<TypingDrift[]> {
-  return (await typingFiles(project, config, tracked))
+  return (await typingFiles(project, config, tracked, diskView))
     .filter((file) => file.next !== file.current)
     .map(({ file, detail }) => ({ file, detail }));
 }
@@ -302,16 +309,18 @@ export async function typingDrift(
  * @param config - The configuration as it will be once the transaction commits
  * @param tracked - The project's tracked engine files
  * @param tx - The transaction the writes join
+ * @param view - How the project's files are read, by default from disk; a dry run passes its own edits
  * @returns The files written
  */
 export async function writeTypingFiles(
   project: FurnaceProject,
   config: FurnaceConfig,
   tracked: TrackedFiles,
-  tx: Transaction
+  tx: Transaction,
+  view: ProjectView = diskView
 ): Promise<string[]> {
   const written: string[] = [];
-  for (const file of await typingFiles(project, config, tracked)) {
+  for (const file of await typingFiles(project, config, tracked, view)) {
     if (file.next === file.current) continue;
     const named = configuredPath(file.file);
     if (named.tree === 'engine') {

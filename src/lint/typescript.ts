@@ -5,10 +5,10 @@
  * the whole-project typecheck share all of it, so a file cannot pass one and
  * fail the other for a reason the operator could not see.
  */
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 
 import { ExitCode, FireForgeError } from '../kernel/errors.js';
-import { readTextIfExists } from '../kernel/fs.js';
+import { readTextIfExists, toPosixPath } from '../kernel/fs.js';
 import { hash } from '../kernel/hash.js';
 import { FIREFOX_GLOBALS_SHIM, LIT_TYPES_SHIM, LOOSE_LIT_SHIM, TEST_HARNESS_SHIM } from './shim.js';
 
@@ -67,15 +67,25 @@ export async function loadTypeScript(): Promise<TypeScript> {
 
 const REFERENCE = /^\s*\/\/\/\s*<reference\s+path\s*=\s*["']([^"']+)["']\s*\/?>\s*$/;
 
+/** The shim files being inlined: where paths in errors are shown from, and the chain of references. */
+interface InlineScope {
+  readonly projectRoot: string;
+  /** Each shim file on the way down, as reports name it; the last one holds the reference. */
+  readonly chain: readonly string[];
+}
+
 /**
  * Inlines `/// <reference path>` directives, recursively and once each: the
  * shim is served at a synthetic path, against which a relative reference
  * would resolve to nothing.
+ *
+ * @throws FireForgeError `typescript-shim-missing` when a reference names no file
  */
 async function inlineReferences(
   source: string,
   directory: string,
-  seen: Set<string>
+  seen: Set<string>,
+  scope: InlineScope
 ): Promise<string> {
   const out: string[] = [];
   for (const line of source.split('\n')) {
@@ -88,10 +98,22 @@ async function inlineReferences(
     if (seen.has(absolute)) continue;
     seen.add(absolute);
     const text = await readTextIfExists(absolute);
+    const shown = toPosixPath(relative(scope.projectRoot, absolute));
+    if (text === undefined) {
+      throw new FireForgeError(
+        'typescript-shim-missing',
+        `The TypeScript shim file ${shown} does not exist (referenced as "${target}" by ${scope.chain.join(' -> ')}).`,
+        {
+          exitCode: ExitCode.CONFIG_ERROR,
+          hint: 'Create the file or correct the /// <reference path> that names it.',
+        }
+      );
+    }
     out.push(
-      text === undefined
-        ? `// (fireforge: unresolved /// <reference path="${target}">)`
-        : await inlineReferences(text, dirname(absolute), seen)
+      await inlineReferences(text, dirname(absolute), seen, {
+        projectRoot: scope.projectRoot,
+        chain: [...scope.chain, shown],
+      })
     );
   }
   return out.join('\n');
@@ -120,7 +142,8 @@ export interface Shim {
  * @param projectRoot - Absolute project root
  * @param projectShim - Project-relative `.d.ts`, if configured
  * @param options - See {@link ShimOptions}
- * @throws FireForgeError `typescript-shim-missing` when the project shim does not exist
+ * @throws FireForgeError `typescript-shim-missing` when the project shim, or a file it
+ *   references, does not exist
  */
 export async function composeShim(
   projectRoot: string,
@@ -143,7 +166,10 @@ export async function composeShim(
     }
     parts.push(
       `// project shim: ${projectShim}`,
-      await inlineReferences(text, dirname(absolute), new Set([absolute]))
+      await inlineReferences(text, dirname(absolute), new Set([absolute]), {
+        projectRoot,
+        chain: [projectShim],
+      })
     );
   }
   if (options.testHarness === true) parts.push(TEST_HARNESS_SHIM);
@@ -153,10 +179,14 @@ export async function composeShim(
 
 /**
  * Codes that are noise when Firefox JavaScript is checked outside its build:
- * `resource://` and `chrome://` URLs do not resolve, and the shim is narrow.
+ * the shim is narrow (`require`, `process`), a resolved package can lack
+ * declarations, and a resolved module can lack a member the build supplies.
  * TS2305 and TS2306 still count on a specifier that resolved to a real file.
  */
-const SUPPRESSED_CODES: ReadonlySet<number> = new Set([2307, 2306, 2305, 2792, 2580, 7016]);
+const SUPPRESSED_CODES: ReadonlySet<number> = new Set([2306, 2305, 2580, 7016]);
+
+/** Codes that say a module specifier resolved to nothing. */
+const MISSING_MODULE_CODES: ReadonlySet<number> = new Set([2307, 2792]);
 
 /** Undefined free identifiers, reported at the configured severity. */
 const UNDEFINED_IDENTIFIER_CODES: ReadonlySet<number> = new Set([2304, 2552]);
@@ -193,24 +223,90 @@ function importSpecifierAt(
 }
 
 /**
+ * What a module specifier names. `url`: a scheme other than `node:`
+ * (`resource:`, `chrome:`, `moz-src:` and the like), which only the Firefox
+ * build resolves. `path`: a relative or absolute file path. `bare`: a
+ * package name.
+ */
+export type SpecifierKind = 'url' | 'path' | 'bare';
+
+/**
+ * Classifies a module specifier.
+ *
+ * @param specifier - The text of an import's module specifier
+ */
+function specifierKind(specifier: string): SpecifierKind {
+  if (/^\.{1,2}(?:\/|$)|^\//.test(specifier)) return 'path';
+  if (/^[a-z][a-z0-9+.-]+:/i.test(specifier) && !specifier.startsWith('node:')) return 'url';
+  return 'bare';
+}
+
+/** The specifier a "cannot find module" diagnostic is about. */
+function missingSpecifier(
+  ts: TypeScript,
+  diagnostic: import('typescript').Diagnostic
+): string | undefined {
+  const { file, start, length } = diagnostic;
+  if (file !== undefined && start !== undefined && length !== undefined) {
+    const text = file.text.slice(start, start + length);
+    const quoted = /^(["'`])(.*)\1$/s.exec(text);
+    if (quoted?.[2] !== undefined) return quoted[2];
+  }
+  return /module '([^']+)'/.exec(
+    ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')
+  )?.[1];
+}
+
+/** How a specifier that resolved to no file is reported, by what it names: `off` drops it. */
+export interface MissingModulePolicy {
+  readonly path: 'off' | 'warning' | 'error';
+  readonly bare: 'off' | 'warning' | 'error';
+}
+
+const MISSING_MODULE_HINTS: Record<'path' | 'bare', string> = {
+  path:
+    '(relative import resolves to no file: correct the path, or create the file; an import of an ' +
+    'upstream file belongs behind its resource:// or chrome:// URL)',
+  bare:
+    "(package resolves to no installed module: install it, map it in the project's " +
+    '"compilerOptions.paths", or declare the module in the project shim)',
+};
+
+/**
  * Judges one diagnostic: dropped when it is resolution or shim noise (a
  * missing export of a module that did resolve still counts) or an undefined
  * identifier under `off`; otherwise its severity and flattened message.
  *
+ * A specifier that resolved to no file is dropped when it is a URL, which
+ * only the Firefox build resolves, and judged by `missingModules` when it
+ * names a file path or a package. A "cannot find module" whose specifier
+ * cannot be read from the diagnostic is dropped.
+ *
  * @param ts - The compiler API
  * @param diagnostic - The diagnostic
- * @param policy - Undefined-identifier severity, and whether a specifier
- *   imported from a file resolved to a real file
+ * @param policy - Undefined-identifier severity, how a missing path or
+ *   package is reported, and whether a specifier imported from a file
+ *   resolved to a real file
  */
 export function judgeDiagnostic(
   ts: TypeScript,
   diagnostic: import('typescript').Diagnostic,
   policy: {
     readonly undefinedIdentifiers: UndefinedIdentifiers;
+    readonly missingModules: MissingModulePolicy;
     isResolved(containingFile: string, specifier: string): boolean;
   }
 ): JudgedDiagnostic | undefined {
   const { code, file, start } = diagnostic;
+  const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
+  if (MISSING_MODULE_CODES.has(code)) {
+    const specifier = missingSpecifier(ts, diagnostic);
+    const kind = specifier === undefined ? 'url' : specifierKind(specifier);
+    if (kind === 'url') return undefined;
+    const severity = policy.missingModules[kind];
+    if (severity === 'off') return undefined;
+    return { severity, message: `${message} ${MISSING_MODULE_HINTS[kind]}`, code };
+  }
   if (SUPPRESSED_CODES.has(code)) {
     const specifier =
       RESOLVED_MEMBER_CODES.has(code) && file !== undefined && start !== undefined
@@ -224,7 +320,6 @@ export function judgeDiagnostic(
       return undefined;
     }
   }
-  const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
   if (UNDEFINED_IDENTIFIER_CODES.has(code)) {
     if (policy.undefinedIdentifiers === 'off') return undefined;
     return {

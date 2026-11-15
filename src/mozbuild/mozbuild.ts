@@ -15,6 +15,7 @@ import {
   compareInsensitive,
   joinSource,
   type ListItem,
+  literalText,
   type ManifestEdit,
   manifestError,
   type Placement,
@@ -36,11 +37,20 @@ export interface MozBuildList {
   startLine: number;
   /** The line of the closing bracket. */
   endLine: number;
+  /** The column of the closing bracket on `endLine`. */
+  endColumn: number;
   /** The statement's indentation. */
   indent: string;
   /** Inside an `if`, `elif` or `else` block. */
   conditional: boolean;
   items: ListItem[];
+  /**
+   * The first element that is not a plain quoted string (a variable, a call,
+   * a concatenation, a nested list); undefined when the whole list is
+   * understood. An edit that rewrites or reorders the list refuses one that
+   * has this, since it could not keep that element.
+   */
+  unrecognised?: { line: number; text: string };
 }
 
 /** A parsed moz.build. `lines` covers the whole file, so the parse is lossless. */
@@ -104,9 +114,11 @@ export function parseMozBuild(text: string): MozBuildFile {
           operator: start[4] === '=' ? '=' : '+=',
           startLine: index,
           endLine: scan.endLine,
+          endColumn: scan.endColumn,
           indent: start[1] ?? '',
           conditional: indent > 0 || blocks.some((block) => block.conditional),
           items: scan.items,
+          ...(scan.unrecognised === undefined ? {} : { unrecognised: scan.unrecognised }),
         });
         index = scan.endLine;
       }
@@ -181,8 +193,18 @@ function single(
   return matches[0];
 }
 
-function quoted(value: string, quote: string): string {
-  return `${quote}${value}${quote}`;
+function quoted(value: string, quote: '"' | "'"): string {
+  return `${quote}${literalText(value, 'The list entry', quote)}${quote}`;
+}
+
+/** Refuses to edit a list holding anything but quoted strings, which an edit could not preserve. */
+function requireUnderstood(list: MozBuildList): void {
+  if (list.unrecognised === undefined) return;
+  const { line, text } = list.unrecognised;
+  throw manifestError(
+    `${list.variable} at line ${line + 1} holds ${JSON.stringify(text)}, which is not a plain quoted string, so FireForge cannot add to it without risking that element.`,
+    'Add the entry to the list by hand.'
+  );
 }
 
 /** Comment lines directly above `line` belong to the item on it. */
@@ -197,15 +219,16 @@ function expandList(file: MozBuildFile, list: MozBuildList, extra: string): Sour
   const text = file.lines[list.startLine]?.text ?? '';
   const quote = list.items[0]?.quote ?? '"';
   const open = text.slice(0, LIST_START.exec(text)?.[0].length ?? 0);
-  const close = text.slice(text.lastIndexOf(']'));
+  const close = text.slice(list.endColumn);
   const itemIndent = `${list.indent}    `;
   const values = list.items.map((item) => item.value);
   const sorted = values.every(
     (value, i) => i === 0 || compareInsensitive(values[i - 1] ?? '', value) <= 0
   );
-  const all = [...values];
-  all.splice(sorted ? sortedInsertIndex(values, extra) : values.length, 0, extra);
-  const body = all.map((value) => `${itemIndent}${quoted(value, quote)},`);
+  // Existing literals keep their bytes; only the new one is written.
+  const all = list.items.map((item) => text.slice(item.start, item.end));
+  all.splice(sorted ? sortedInsertIndex(values, extra) : values.length, 0, quoted(extra, quote));
+  const body = all.map((literal) => `${itemIndent}${literal},`);
   return spliceLines(file.lines, list.startLine, 1, [open, ...body, `${list.indent}${close}`]);
 }
 
@@ -234,6 +257,7 @@ export function addToMozBuildList(
   }
   const present = list.items.find((item) => item.value === value);
   if (present !== undefined) return { text, changed: false, line: present.line };
+  requireUnderstood(list);
   if (list.startLine === list.endLine) {
     return {
       text: joinSource(expandList(file, list, value)),
@@ -248,7 +272,12 @@ export function addToMozBuildList(
 function appendList(file: MozBuildFile, variable: string, value: string): Placement {
   const kept = [...file.lines];
   while (kept.length > 0 && (kept.at(-1)?.text ?? '').trim() === '') kept.pop();
-  const block = [...(kept.length > 0 ? [''] : []), `${variable} += [`, `    "${value}",`, ']'];
+  const block = [
+    ...(kept.length > 0 ? [''] : []),
+    `${variable} += [`,
+    `    ${quoted(value, '"')},`,
+    ']',
+  ];
   return {
     text: joinSource(spliceLines(kept, kept.length, 0, block)),
     changed: true,

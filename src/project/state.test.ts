@@ -49,6 +49,20 @@ describe('project state', () => {
     });
   });
 
+  it('keeps a __proto__ key of the document and reads only own sections', async () => {
+    await writeTree(dir(), {
+      '.fireforge/state.json': '{"__proto__":{"kept":true},"other":1}',
+    });
+    const inherited = defineStateSection('constructor', s.unknown(), 'fireforge doctor');
+    expect(await readState(project(), inherited)).toBeUndefined();
+    await updateState(project(), download, () => ({ version: '153.0' }));
+    const text = await readFile(join(dir(), '.fireforge', 'state.json'), 'utf8');
+    expect(JSON.parse(text)).toEqual(
+      JSON.parse('{"__proto__":{"kept":true},"other":1,"download":{"version":"153.0"}}')
+    );
+    expect(Object.keys(JSON.parse(text) as object)).toContain('__proto__');
+  });
+
   it('removes a section when the update returns undefined', async () => {
     await updateState(project(), build, () => ({ mode: 'dev', count: 0 }));
     await updateState(project(), download, () => ({ version: '153.0' }));

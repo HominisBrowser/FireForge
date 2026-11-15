@@ -184,6 +184,22 @@ describe('combinators', () => {
     });
   });
 
+  it('keeps a __proto__ key as an own property of a record or an object that keeps unknown keys', () => {
+    const input = JSON.parse('{"__proto__":{"x":1},"a":{"y":2}}') as unknown;
+    const record = s.record(s.unknown()).parse(input);
+    expect(Object.keys(record)).toEqual(['__proto__', 'a']);
+    expect(Object.getPrototypeOf(record)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(record, '__proto__')?.value).toEqual({ x: 1 });
+    const kept = s.object({ a: s.unknown() }, { unknownKeys: 'keep' }).parse(input);
+    expect(Object.getPrototypeOf(kept)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(kept, '__proto__')?.value).toEqual({ x: 1 });
+  });
+
+  it('does not read a declared key from the prototype', () => {
+    const schema = s.object({ toString: s.string().optional() });
+    expect(schema.parse({})).toEqual({});
+  });
+
   it('validates record keys when given a key schema', () => {
     const schema = s.record(s.int(), {
       key: s.string({ pattern: /^[a-z]+$/, format: 'a lowercase name' }),

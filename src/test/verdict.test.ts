@@ -296,3 +296,65 @@ describe('refusals and the results document', () => {
     });
   });
 });
+
+describe('what a red run shows of its failures', () => {
+  const red = (overrides: Partial<DispatchResult['files'][number]>): TestRunResult => {
+    const base = dispatch([A], { kind: 'test-failures' });
+    const [file] = base.files;
+    return result([{ ...base, files: [{ ...(file as object), ...overrides } as never] }]);
+  };
+  const failure = (
+    index: number,
+    extra = ''
+  ): DispatchResult['files'][number]['failures'][number] => ({
+    assertion: `subtest ${index}${extra}`,
+    status: 'FAIL',
+    expected: 'PASS',
+    message: `message ${index}${extra}`,
+  });
+
+  it('carries the failing assertions and their messages in the document and the lines', () => {
+    const report = runReport(red({ failures: [failure(1), failure(2)] }));
+    expect(report.lines).toContain(`  ${A}: FAIL (expected PASS) subtest 1 - message 1`);
+    expect(report.document['files']).toMatchObject([
+      {
+        test: A,
+        failures: [
+          { assertion: 'subtest 1', message: 'message 1' },
+          { assertion: 'subtest 2', message: 'message 2' },
+        ],
+      },
+    ]);
+  });
+
+  it('bounds how many failures of a file, and how long each is, and says how many it left out', () => {
+    const many = Array.from({ length: 25 }, (_, index) => failure(index, 'x'.repeat(2_000)));
+    const report = runReport(red({ failures: many }));
+    const [file] = report.document['files'] as Array<{
+      failures: Array<{ assertion: string; message: string }>;
+      failuresOmitted: number;
+    }>;
+    expect(file?.failures).toHaveLength(10);
+    expect(file?.failuresOmitted).toBe(15);
+    expect(file?.failures[0]?.message.length).toBeLessThan(500);
+    expect(report.lines.filter((line) => line.startsWith(`  ${A}: FAIL`))).toHaveLength(10);
+    expect(report.lines.join('\n')).toContain('15 more failure(s) not shown');
+    expect(Math.max(...report.lines.map((line) => line.length))).toBeLessThan(1_000);
+  });
+
+  it('shows what the harness said when a file ended unexpectedly with no failing subtest', () => {
+    const report = runReport(
+      red({ status: 'TIMEOUT', expected: 'OK', message: 'Test timed out after 45000 ms' })
+    );
+    expect(report.lines).toContain(`  ${A}: TIMEOUT (expected OK) - Test timed out after 45000 ms`);
+    expect(report.document['files']).toMatchObject([{ message: 'Test timed out after 45000 ms' }]);
+  });
+
+  it('carries the failure blocks read from the text when no raw log named a failure', () => {
+    const blocks = ['TEST-UNEXPECTED-FAIL | b | boom\n  Got false, expected true'];
+    const report = runReport(
+      result([dispatch([A], { kind: 'test-failures', failureBlocks: blocks })])
+    );
+    expect(report.document['dispatches']).toMatchObject([{ verdict: { failureBlocks: blocks } }]);
+  });
+});

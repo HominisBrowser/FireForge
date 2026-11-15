@@ -44,6 +44,13 @@ describe('parseJson and stringifyJson', () => {
     expect(stringifyJson({ a: undefined, b: 1 }, { indent: 0 })).toBe('{"b":1}\n');
   });
 
+  it('keeps a __proto__ key when sorting keys', () => {
+    const value = JSON.parse('{"b":1,"__proto__":{"z":1,"y":2}}') as unknown;
+    expect(stringifyJson(value, { sortKeys: true, indent: 0 })).toBe(
+      '{"__proto__":{"y":2,"z":1},"b":1}\n'
+    );
+  });
+
   it('narrows plain objects only', () => {
     expect(isRecord({})).toBe(true);
     expect(isRecord([])).toBe(false);

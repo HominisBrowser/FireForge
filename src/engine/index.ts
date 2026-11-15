@@ -27,6 +27,7 @@ export {
   type PoolWorkspace,
   removeWorkspace,
   repairWorkspace,
+  workspaceLockPath,
 } from './pool.js';
 export {
   engineLockPath,
@@ -36,7 +37,7 @@ export {
 } from './workspace.js';
 
 // Host configuration and locks
-export { withDisplay } from './hostLocks.js';
+export { readHostLocks, withDisplay } from './hostLocks.js';
 
 // mach
 export { runMach } from './mach.js';

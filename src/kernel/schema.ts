@@ -186,6 +186,21 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Sets `key` as an own data property, so a key such as `__proto__` stays data. */
+function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
+/** The value of an own property of `source`, never one inherited from its prototype. */
+function ownValue(source: Record<string, unknown>, key: string): unknown {
+  return Object.hasOwn(source, key) ? source[key] : undefined;
+}
+
 type Shape = Readonly<Record<string, Schema<unknown, boolean>>>;
 type Simplify<T> = { [K in keyof T]: T[K] } & {};
 type OptionalKeys<S extends Shape> = {
@@ -210,7 +225,7 @@ function object<S extends Shape>(
     for (const key of Object.keys(value)) {
       if (Object.hasOwn(shape, key)) continue;
       if (options.unknownKeys === 'keep') {
-        result[key] = value[key];
+        setOwn(result, key, value[key]);
         continue;
       }
       const suggestion = nearest(key, known);
@@ -219,7 +234,7 @@ function object<S extends Shape>(
       valid = false;
     }
     for (const [key, schema] of Object.entries(shape)) {
-      const raw = value[key];
+      const raw = ownValue(value, key);
       if (raw === undefined && !schema.isOptional && schema.fallback === undefined) {
         refuse(issues, childPath(path, key), 'is required');
         valid = false;
@@ -227,7 +242,7 @@ function object<S extends Shape>(
       }
       const checked = schema.check(raw, childPath(path, key), issues);
       if (checked === INVALID) valid = false;
-      else if (checked !== undefined) result[key] = checked;
+      else if (checked !== undefined) setOwn(result, key, checked);
     }
     return valid ? (result as ObjectOf<S>) : INVALID;
   };
@@ -264,7 +279,7 @@ function record<T>(
       const keyOk = options.key === undefined || options.key.check(key, at, issues) !== INVALID;
       const checked = value.check(raw, at, issues);
       if (!keyOk || checked === INVALID) valid = false;
-      else result[key] = checked;
+      else setOwn(result, key, checked);
     }
     return valid ? result : INVALID;
   };

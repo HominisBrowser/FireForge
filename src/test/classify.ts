@@ -147,6 +147,10 @@ const SKIP_MARKER = harnessLine(String.raw`TEST[-_]SKIP(?:PED)?\b[:| \t]*(\S+)?`
 
 /** Basename shape of a test file a manifest lists. */
 const TEST_FILE_BASENAME = /^(?:browser|test)_.*\.m?js$/;
+/** A basename with an extension: the shape of a file, where a directory has none. */
+const FILE_BASENAME = /^[^/]*[^/.]\.[A-Za-z0-9]+$/;
+/** A requested test manifest or reftest list. */
+const MANIFEST_REQUEST = /\.(?:toml|ini|list)$/;
 
 const lines = (text: string): string[] => text.split(/\r?\n/);
 
@@ -423,12 +427,40 @@ export function findCrashMarkerLine(output: string): string | undefined {
   return findLine(output, CRASH_MARKERS);
 }
 
-function realFailureLines(output: string): string[] {
-  const matches = [
-    ...(output.match(UNEXPECTED_LINES) ?? []),
-    ...(output.match(FAIL_LINES) ?? []),
-    ...(output.match(ASSERTION_LINES) ?? []),
-  ];
+/** A failure line the harness wrote itself, not a test's console output. */
+const HARNESS_FAILURE_LINE = harnessLine(
+  String.raw`TEST-(?:UNEXPECTED-[A-Z-]+|(?!KNOWN-FAIL\b)[A-Z-]*FAIL)\b`
+);
+
+/**
+ * Whether a complete structured log reports every test passed: a suite
+ * closed, at least one test recorded, none unfinished and none unexpected.
+ *
+ * @param raw - The dispatch's raw log
+ */
+function rawLogIsGreen(raw: RawTestLog | undefined): boolean {
+  return (
+    raw !== undefined &&
+    raw.suiteCompleted &&
+    raw.results.length > 0 &&
+    raw.unfinished.length === 0 &&
+    !raw.results.some((result) => result.unexpected)
+  );
+}
+
+/**
+ * The lines of the output that read as a failure. With `harnessOnly`, only
+ * lines the harness wrote at a line start count, so what a passing test
+ * printed to the console does not.
+ */
+function realFailureLines(output: string, harnessOnly = false): string[] {
+  const matches = harnessOnly
+    ? lines(output).filter((line) => HARNESS_FAILURE_LINE.test(line))
+    : [
+        ...(output.match(UNEXPECTED_LINES) ?? []),
+        ...(output.match(FAIL_LINES) ?? []),
+        ...(output.match(ASSERTION_LINES) ?? []),
+      ];
   const summary = lines(output).find((line) => NONZERO_UNEXPECTED.test(line));
   if (summary !== undefined) matches.push(summary);
   return [...new Set(matches.map((line) => line.trim()))].filter(
@@ -759,7 +791,9 @@ export function classifyHarnessRun(
 ): HarnessVerdict {
   const { raw, started } = evidence;
   const counts = extractSummaryCounts(output);
-  const realFailures = realFailureLines(output);
+  // A complete structured log that reports every test passed, beside a clean exit,
+  // has the final word on test status: console text cannot add a failure to it.
+  const realFailures = realFailureLines(output, exitCode === 0 && rawLogIsGreen(raw));
   const firstFailure =
     realFailures[0] ??
     findCrashMarkerLine(output) ??
@@ -892,8 +926,10 @@ const normalized = (path: string): string => path.replace(/\\/g, '/');
 const basenameOf = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
 const namesSameFile = (name: string, request: string): boolean =>
   name === request || name.endsWith(`/${request}`) || request.endsWith(`/${name}`);
-const namesNoTestFile = (path: string): boolean =>
-  !TEST_FILE_BASENAME.test(basenameOf(normalized(path)));
+/** Whether a request names one test file, whatever its extension: a manifest or a directory is not one. */
+const namesTestFile = (path: string): boolean =>
+  FILE_BASENAME.test(basenameOf(normalized(path))) && !MANIFEST_REQUEST.test(normalized(path));
+const namesNoTestFile = (path: string): boolean => !namesTestFile(path);
 
 /** The requested indexes some name names unambiguously; a name matching two requests counts for neither. */
 function namedIndexes(names: readonly string[], requested: readonly string[]): Set<number> {
@@ -930,7 +966,8 @@ function countStartedFiles(
         ...named,
         ...roster.filter(
           (id) =>
-            !namesNoTestFile(id) && !named.some((request) => namesSameFile(normalized(id), request))
+            TEST_FILE_BASENAME.test(basenameOf(normalized(id))) &&
+            !named.some((request) => namesSameFile(normalized(id), request))
         ),
       ]
     : named;
@@ -963,8 +1000,8 @@ function directoriesWithoutResults(
 ): string[] {
   return requested.filter((path) => {
     const request = normalized(path);
-    if (!request.includes('/') || TEST_FILE_BASENAME.test(basenameOf(request))) return false;
-    const dir = /\.(?:toml|ini|list)$/.test(request)
+    if (!request.includes('/') || namesTestFile(request)) return false;
+    const dir = MANIFEST_REQUEST.test(request)
       ? request.slice(0, request.lastIndexOf('/'))
       : request.replace(/\/+$/, '');
     return !tests.some((test) => {
@@ -1033,9 +1070,9 @@ function gatherCompleteness(
  * Re-examines a passing verdict against what the run recorded, and fails it
  * when a requested file never started, a test never finished, the browser
  * shut down mid-test or died on a signal, or an unexpected result was
- * reported. A raw log decides when there is one: every requested file and
- * directory must have run. A failing verdict keeps its kind and gains the
- * evidence.
+ * reported. A raw log decides when there is one: its last suite must have
+ * ended, or the pass becomes a crash, and every requested file and directory
+ * must have run. A failing verdict keeps its kind and gains the evidence.
  *
  * @param verdict - The classifier's verdict
  * @param output - Captured harness output
@@ -1051,6 +1088,20 @@ export function vetoIncompletePass(
   raw?: RawTestLog
 ): HarnessVerdict {
   const passed = verdict.kind === 'pass';
+  // Whatever let the run pass (a clean exit, recognised teardown noise, a
+  // green summary beside a non-zero exit), a structured log whose last suite
+  // never ended says the harness did not finish.
+  if (passed && raw !== undefined && !raw.suiteCompleted) {
+    return {
+      kind: 'crash',
+      signature: {
+        reason: 'the raw log has no completed suite',
+        line: 'no suite_end for the last suite_start',
+      },
+      ...(verdict.checks === undefined ? {} : { checks: verdict.checks }),
+      ...(verdict.unexpected === undefined ? {} : { unexpected: verdict.unexpected }),
+    };
+  }
   const evidence = gatherCompleteness(verdict, output, requested, streamed, raw);
   const stopped =
     evidence.firstUnstarted !== undefined ||

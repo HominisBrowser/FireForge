@@ -63,6 +63,8 @@ FIREFORGE-VERDICT: FAIL reason=crash started=2/8 first-unstarted=browser/base/co
 A test result is not the harness's exit code or its summary line. The verdict keys on what the harness itself writes: start and end markers for each file, the suite summary, crash markers, and the structured log each invocation writes. So:
 
 - A crash, a hang, or a browser that quit mid-suite is a failure, even when mach exits 0 or the summary reads `Failed: 0`.
+- A structured log whose last suite never ended is a crash, whatever else let the run look green: a clean exit, a green summary, or teardown noise FireForge otherwise ignores.
+- When the structured log is complete, reports every test passed and the harness exited 0, text a test printed to the console cannot make the run red, whatever it looks like. Only lines the harness wrote, a crash and a harness failure still do.
 - Every planned file must start and finish. A file that never started or never finished is a failure.
 - An engine that changed while the harness ran makes the result `inconclusive` (exit 14): run again.
 - A harness failure FireForge recognizes before any test ran (mach's resource monitor failing at startup, for instance) is retried up to twice, because it says nothing about the tests. `test.harnessFailurePatterns` adds output lines that mean the browser failed before any test ran.
@@ -78,14 +80,14 @@ npx fireforge test browser/base/content/test/sidebar/ --keep-log sidebar.log --r
 ```
 
 - `--keep-log <path>` also writes the complete output there.
-- `--results <path>` writes the per-file results document (the same document `--json` prints): the planned tests, each invocation with its exit code, attempts and verdict, one record per file with its failures, and a summary.
+- `--results <path>` writes the per-file results document (the same document `--json` prints): the planned tests, each invocation with its exit code, attempts and verdict, one record per file with its failures, and a summary. A red run lists, for each file, its failing assertions with their messages (the first 10, each clipped to 400 characters) in this document and in the lines `test` prints; the complete output has the rest.
 
 ## The host around a run
 
 While a command holds the workspace, no other FireForge run uses its engine. `test` uses that to keep the host clean without touching anything else:
 
 - **Before**: harness processes an earlier, killed run of this workspace left behind (their parent died, or they carry this engine's marker) are terminated by exact process identity. The verdict reports `orphans-reaped=<n>`.
-- **Ports**: a browser harness binds the Marionette port and mochitest server ports. A leftover of this workspace holding one is terminated. A process of anyone else is never signalled: the run waits for it up to `--wait-lock`, then refuses with `port-busy` naming it. With `test.mochitestPorts: "auto"`, a run proceeds while another workspace holds the Marionette port (FireForge moves this run's to a free one) or a server port the harness can move away from by itself.
+- **Ports**: a browser harness binds the Marionette port and mochitest server ports. A leftover of this workspace holding one is terminated. A leftover is a process that carries the engine's marker, or a harness process naming this workspace whose parent has died; one that cannot be terminated refuses the run with `port-busy`. A process of anyone else is never signalled: the run waits for it up to `--wait-lock`, then refuses with `port-busy` naming it. With `test.mochitestPorts: "auto"`, a run proceeds while another workspace holds the Marionette port (FireForge moves this run's to a free one) or a server port the harness can move away from by itself.
 - **After**: helpers this run started that escaped its process group (xpcshell's HTTP/2 server, for instance) are found by the run marker in their environment and terminated.
 
 Nothing about this is configurable; it is what a correct run needs.
@@ -116,3 +118,7 @@ The verdict reports how the control came out:
 | `inconclusive` | The engine changed while one of the two runs was under way: run again                                                                                                                                                        |   14 | `control-inconclusive` |
 
 A `wrong-red` control is a failed control, not a result to retry: correct `--expect`, or narrow the mutation or the tests until only the expected assertions fail. [gate.md](gate.md) declares controls under `gate.controls` so every gate run repeats them.
+
+A control needs only that its diff applies to the engine the workspace holds. It is judged the same whatever the project otherwise changes, and whether or not the file it mutates is one the project changed.
+
+Each run is also written to the checkout's control record, `.fireforge/gate/controls.json`: the diff by path and content hash, the tests and `--expect` labels, the commit and tree it ran against when the working tree was clean, the engine state, the outcome, and the assertions that went red including unexpected ones. `fireforge gate status` lists the declared controls that are owed a run ([gate.md](gate.md#controls-owed)); a `test --control` run counts for the declared control whose diff, test and assertions it repeats. To run every declared control at once, in one workspace with a verdict each, use `fireforge gate --lane 'control:*'`.

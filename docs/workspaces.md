@@ -98,6 +98,8 @@ export FIREFORGE_WAIT_LOCK=0
 
 `--wait-lock 0` fails at once instead of waiting. A wait that expires exits 15 (`lock-timeout`) and the work never started. Ctrl+C stops a wait.
 
+A script that coordinates sessions reads the same state from `fireforge workspace list --json` ([machine-output.md](machine-output.md#workspace)) instead of the text: for each workspace whether it is leased and by which PID, checkout and command since when, and who holds the display and the build slots. Reading takes no lock and changes none.
+
 ## Host locks
 
 Two locks are shared by every project and checkout on the host, in both modes:
@@ -131,6 +133,7 @@ A built workspace takes tens of gigabytes; the pool is usually the largest thing
 
 - `fireforge workspace remove <name>` for workspaces you do not need, including those on a pin no project uses after a rebase (`workspace list` shows each workspace's pin).
 - A pin's pristine repository and its cached archive are needed only while a project builds on that pin; `fireforge download` recreates them.
+- A pristine repository is used only while what was recorded at its import meets the project's pin: the archive's digest equal to `firefox.sha256` when one is set, and a verified digest unless `firefox.allowUnverifiedDownload` is set. Commands that read it otherwise stop with `pristine-unsatisfied`; `fireforge download` verifies the source again (from the cached archive when this host still has it) and updates the record. A record that holds no digest of the archive does not meet a pin that sets `firefox.sha256`.
 - `fireforge doctor` reports free disk space.
 
 ## When a workspace reports drift
@@ -150,6 +153,16 @@ npx fireforge workspace repair w1
 ```
 
 The build stays, so the next build is incremental. The same repair answers `journal-conflict` and `materialize-pin-mismatch`.
+
+## Landing parallel work
+
+`refs/fireforge/verified` and the acceptance refs are shared by every worktree of the repository, and `refs/fireforge/verified` moves by compare-and-swap, fast-forward only: whichever gate finishes first moves it, and a gate that finds it moved meanwhile leaves it there (`gate-ref-moved`). So parallel sessions divide the work instead of each gating its own branch to the end:
+
+- Builders work in their own worktrees and take feedback from `check`, `test` and `gate --lane <id>`, which run on the working tree, record nothing and never move the ref ([gate.md](gate.md#feedback-runs)).
+- One integrating session merges the branches into the commit that is to land and runs the full `fireforge gate` on the merged result. A pass moves `refs/fireforge/verified` to that commit.
+- A gate that is running anywhere in the checkout shows in `fireforge gate status`; a second `gate` on the same commit waits for it instead of repeating it ([gate.md](gate.md#a-gate-that-outlives-its-session)).
+
+A session that must know who holds what reads `fireforge workspace list --json` instead of parsing text: each workspace's lease (PID, checkout, command, since when) and the holders of the display and the build slots ([machine-output.md](machine-output.md#workspace)).
 
 ## Worked example: two sessions
 

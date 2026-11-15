@@ -48,6 +48,9 @@ async function builtWorkspace(): Promise<Workspace> {
   });
 }
 
+/** The line mach logs as it starts the browser. */
+const LAUNCH = ' 0:00.10 /obj/dist/bin/testbrowser -no-remote -profile /tmp/p';
+
 const lastRun = async (workspace: Workspace): Promise<string[]> =>
   (await readMachLog(workspace.engineDir)).filter((call) => call.args[0] === 'run').at(-1)?.args ??
   [];
@@ -115,7 +118,7 @@ describe.skipIf(process.platform === 'win32')('a smoke start', () => {
     const workspace = await builtWorkspace();
     const before = await runProfiles();
     await scriptMach(workspace.engineDir, 'run', {
-      stdout: ['console.log: started', 'console.warn: harmless'],
+      stdout: [LAUNCH, 'console.log: started', 'console.warn: harmless'],
       sleep: 60,
     });
     const result = await runBrowser(workspace, { smokeExit: 1, headless: true });
@@ -126,10 +129,22 @@ describe.skipIf(process.platform === 'win32')('a smoke start', () => {
     expect(await runProfiles()).toEqual(before);
   });
 
+  it('does not take a launcher warning for the browser having started', async () => {
+    const workspace = await builtWorkspace();
+    await scriptMach(workspace.engineDir, 'run', {
+      stdout: ['/opt/mach/x.py:3: DeprecationWarning: imp is deprecated', 'preparing'],
+      sleep: 60,
+    });
+    await expect(runBrowser(workspace, { smokeExit: 1, headless: true })).rejects.toMatchObject({
+      code: 'smoke-launch-failed',
+      exitCode: ExitCode.SMOKE_LAUNCH_FAILURE,
+    });
+  });
+
   it('exits 12 on a console error unless a pattern allows it', async () => {
     const workspace = await builtWorkspace();
     await scriptMach(workspace.engineDir, 'run', {
-      stdout: ['console.log: started'],
+      stdout: [LAUNCH, 'console.log: started'],
       stderr: ['JavaScript error: chrome://browser/content/x.js, line 3: TypeError: boom'],
     });
     await expect(runBrowser(workspace, { smokeExit: 20, headless: true })).rejects.toMatchObject({
@@ -151,12 +166,12 @@ describe.skipIf(process.platform === 'win32')('a smoke start', () => {
 
   it('exits 13 when the browser leaves early, crashed or silent', async () => {
     const workspace = await builtWorkspace();
-    await scriptMach(workspace.engineDir, 'run', { stdout: ['console.log: up'], exit: 1 });
+    await scriptMach(workspace.engineDir, 'run', { stdout: [LAUNCH, 'console.log: up'], exit: 1 });
     await expect(runBrowser(workspace, { smokeExit: 20, headless: true })).rejects.toMatchObject({
       code: 'smoke-launch-failed',
       exitCode: ExitCode.SMOKE_LAUNCH_FAILURE,
     });
-    await scriptMach(workspace.engineDir, 'run', { stdout: [' 0:00.10 firefox -profile x'] });
+    await scriptMach(workspace.engineDir, 'run', { stdout: [LAUNCH] });
     await expect(runBrowser(workspace, { smokeExit: 20, headless: true })).rejects.toMatchObject({
       exitCode: ExitCode.SMOKE_LAUNCH_FAILURE,
     });

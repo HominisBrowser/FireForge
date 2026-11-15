@@ -36,12 +36,40 @@ export function isSmokeError(line: string): boolean {
 const MACH_LOG_LINE = /^\s*\d+:\d{2}\.\d{2} /;
 
 /**
- * Whether a line is output of the browser rather than of mach.
+ * The line mach logs when it starts the browser: the command line, which for
+ * a smoke start always carries `-profile`. Output before it is the launcher's.
+ */
+const LAUNCH_LINE = /^\s*\d+:\d{2}\.\d{2} (?:[A-Za-z]:)?\S*[\\/]\S*(?:\s.*)?\s-profile(?:\s|=)/;
+
+/** Python's own diagnostics, which the launcher prints and the browser does not. */
+const LAUNCHER_LINES: readonly RegExp[] = [
+  /^\s*Traceback \(most recent call last\)/,
+  /^\s+File "[^"]+", line \d+/,
+  /^(?:\S+\.py:\d+: )?[A-Za-z]*Warning: /,
+];
+
+/**
+ * Whether a line is the launch line mach logs as it starts the browser.
+ *
+ * @param line - One output line
+ */
+export function isLaunchLine(line: string): boolean {
+  return LAUNCH_LINE.test(line);
+}
+
+/**
+ * Whether a line is output of the browser rather than of mach or Python,
+ * judged by the line alone. Whether the browser had started is
+ * {@link isLaunchLine}'s to say.
  *
  * @param line - One output line
  */
 export function isBrowserLine(line: string): boolean {
-  return line.trim() !== '' && !MACH_LOG_LINE.test(line);
+  return (
+    line.trim() !== '' &&
+    !MACH_LOG_LINE.test(line) &&
+    !LAUNCHER_LINES.some((pattern) => pattern.test(line))
+  );
 }
 
 /** One pattern of lines that do not count against a smoke start. */
@@ -133,7 +161,10 @@ export interface SmokeReport {
   errors: string[];
   /** Error lines an entry allowed. */
   allowedErrors: number;
-  /** Lines of the browser itself; none at all means it never reached a window. */
+  /**
+   * Lines of the browser itself, counted from the launch line mach logs when
+   * it starts the browser; none at all means it never reached a window.
+   */
   browserLines: number;
   /** Per entry, how many lines it was the first to match. An entry at zero has gone stale. */
   entries: Array<{ source: string; origin: string; hits: number; maxHits?: number }>;
@@ -155,9 +186,11 @@ export function createSmokeScan(allowlist: readonly AllowEntry[]): {
   const errors: string[] = [];
   let allowedErrors = 0;
   let browserLines = 0;
+  let launched = false;
   return {
     line(line) {
-      if (isBrowserLine(line)) browserLines += 1;
+      if (isLaunchLine(line)) launched = true;
+      else if (launched && isBrowserLine(line)) browserLines += 1;
       // The first matching entry is credited, whether or not the line is an
       // error: the count is what an operator tunes a cap against.
       const index = allowlist.findIndex((entry) => entry.pattern.test(line));

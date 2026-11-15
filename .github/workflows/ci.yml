@@ -5,6 +5,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # A merge queue candidate runs the same gate its pull request did: the
+  # ruleset's merge queue waits for these exact check contexts.
+  merge_group:
   workflow_dispatch:
   # The release workflow runs the same gate before it publishes.
   workflow_call:
@@ -58,7 +61,7 @@ jobs:
       - run: npm run format:check
       - run: npm run whitespace:check
         env:
-          WHITESPACE_CHECK_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+          WHITESPACE_CHECK_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
       - run: npm run lint:ci
       - run: npm run typecheck
       - run: npm run deadcode:check

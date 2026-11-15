@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: EUPL-1.2
 /** The furnace commands through the CLI, in a patch-mode project whose engine is `engine/`. */
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { runCli } from '../testing/cli.js';
+import { makeSourceProject, useMachSandbox } from '../testing/engine.js';
 import { makeFurnaceFixture } from '../testing/furnace.js';
 import { useTempDir } from '../testing/temp.js';
 
 const dir = useTempDir();
+useMachSandbox();
 
 describe('fireforge furnace', () => {
   it('creates, applies, validates and keeps the typing files current', async () => {
@@ -76,5 +78,50 @@ describe('fireforge furnace', () => {
     const result = await runCli(['furnace', 'types', '--check'], { cwd: f.root });
     expect(result.exitCode).toBe(9);
     expect(result.stdout).toBe('types/widgets.d.ts: the file does not exist\n');
+  });
+
+  it('leaves a source-mode workspace undeployed under --dry-run and status, and reports what is pending', async () => {
+    const project = await makeSourceProject(dir(), {
+      files: {
+        'furnace.json': JSON.stringify({
+          version: 1,
+          componentPrefix: 'moz-',
+          custom: {
+            'moz-test-chip': {
+              description: 'A chip',
+              targetPath: 'toolkit/content/widgets/moz-test-chip',
+              register: true,
+              localized: false,
+            },
+          },
+        }),
+        'components/custom/moz-test-chip/moz-test-chip.mjs':
+          'export default class MozTestChip extends HTMLElement {}\n' +
+          'customElements.define("moz-test-chip", MozTestChip);\n',
+      },
+    });
+    const env = { FIREFORGE_HOME: project.host.root };
+    const run = (args: string[]): ReturnType<typeof runCli> =>
+      runCli(['furnace', ...args], { cwd: project.root, env });
+    const chip = join(
+      project.host.workspaces,
+      'w1/engine/toolkit/content/widgets/moz-test-chip/moz-test-chip.mjs'
+    );
+    const held = (): Promise<boolean> =>
+      stat(chip).then(
+        () => true,
+        () => false
+      );
+
+    const dry = await run(['apply', '--dry-run', '--json']);
+    expect(JSON.parse(dry.stdout)).toMatchObject({ changed: true, dryRun: true });
+    expect(await held()).toBe(false);
+    const status = await run(['status']);
+    expect(status.stdout).toContain('moz-test-chip (custom) outdated');
+    expect(await held()).toBe(false);
+
+    expect((await run(['apply'])).stdout).toContain('deployed moz-test-chip');
+    expect(await held()).toBe(true);
+    expect((await run(['status'])).stdout).toBe('moz-test-chip (custom) current\n');
   });
 });

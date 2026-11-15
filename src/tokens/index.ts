@@ -5,7 +5,7 @@
  * how the project's stylesheets use it. Functions take text or file
  * interfaces; none reads the project on its own.
  */
-export { addToken, TOKEN_MODES, tokenName } from './add.js';
+export { addToken, type AddTokenResult, TOKEN_MODES, tokenName } from './add.js';
 export { measureCoverage } from './coverage.js';
 export { lintTokens } from './lint.js';
 export { listTokens, tokenValues } from './model.js';

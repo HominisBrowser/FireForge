@@ -196,7 +196,7 @@ and any pristine donor you created with `authored pristine fetch --out <dir>`.
 2. Install 0.60:
 
    ```sh
-   npm install --save-dev @hominis/fireforge@0.60.1
+   npm install --save-dev @hominis/fireforge@0.61.0
    ```
 
 3. Upgrade:

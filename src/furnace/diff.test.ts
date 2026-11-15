@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
+import { rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { makeFurnaceFixture } from '../testing/furnace.js';
@@ -71,5 +74,34 @@ describe('componentDiff', () => {
     await expect(componentDiff(f.project, f.workspace, 'moz-nope')).rejects.toMatchObject({
       code: 'furnace-unknown-component',
     });
+  });
+
+  it('shows a file a component dropped as removed from the engine', async () => {
+    const f = await fixture();
+    await writeTree(f.root, {
+      'components/custom/moz-acme-chip/moz-acme-chip-extra.css': ':host { gap: 2px; }\n',
+    });
+    await applyComponents(f.project, f.workspace);
+    await rm(join(f.root, 'components/custom/moz-acme-chip/moz-acme-chip-extra.css'));
+    const text = await componentDiff(f.project, f.workspace, 'moz-acme-chip');
+    expect(text).toContain('deleted file mode');
+    expect(text).toContain('-:host { gap: 2px; }');
+    expect(await componentDiff(f.project, f.workspace, 'moz-card')).not.toContain('gap: 2px');
+  });
+
+  it('shows a component no longer configured, and an override going back to upstream', async () => {
+    const f = await fixture();
+    await applyComponents(f.project, f.workspace);
+    await writeFile(
+      f.project.paths.furnace,
+      JSON.stringify({ version: 1, componentPrefix: 'moz-' })
+    );
+    const chip = await componentDiff(f.project, f.workspace, 'moz-acme-chip');
+    expect(chip).toContain('deleted file mode');
+    expect(chip).toContain('-:host { gap: 0; }');
+    const card = await componentDiff(f.project, f.workspace, 'moz-card');
+    expect(card).toContain('-:host { display: grid; }');
+    expect(card).toContain('--- engine/toolkit/content/widgets/moz-card/moz-card.css');
+    expect(await componentDiff(f.project, f.workspace)).toContain('moz-acme-chip.css');
   });
 });

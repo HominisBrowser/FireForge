@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { listDir } from '../kernel/fs.js';
+import { configureLog } from '../kernel/log.js';
 import type { ChangeSet } from '../project/index.js';
 import type { TextStep } from '../testing/changes.js';
 import { engineFiles, textChangeSet } from '../testing/changes.js';
@@ -156,6 +157,22 @@ describe('checkJs over created modules', () => {
     ).rejects.toThrow('The TypeScript shim types/gone.d.ts does not exist.');
   });
 
+  it('refuses a shim whose nested reference names no file, naming the chain', async () => {
+    await writeTree(dir(), {
+      'types/extra.d.ts': '/// <reference path="./mid.d.ts" />\n',
+      'types/mid.d.ts': '/// <reference path="./deep/gone.d.ts" />\n',
+    });
+    const steps = [{ path: 'browser/A.sys.mjs', after: 'export const a = 1;\n' }];
+    await expect(
+      typeFindings(steps, strict({ checkJsExtraShim: 'types/extra.d.ts' }))
+    ).rejects.toMatchObject({
+      code: 'typescript-shim-missing',
+      message:
+        'The TypeScript shim file types/deep/gone.d.ts does not exist (referenced as "./deep/gone.d.ts" ' +
+        'by types/extra.d.ts -> types/mid.d.ts).',
+    });
+  });
+
   it('types Lit only under litTypes', async () => {
     const source = [
       'import { MozLitElement } from "chrome://global/content/lit-utils.mjs";',
@@ -186,6 +203,29 @@ describe('checkJs over created modules', () => {
     };
     const findings = await typeFindings(steps, strict({ checkJsCompilerOptions: options }), engine);
     expect(findings.map((f) => f[3].slice(0, 6))).toEqual(['TS2322']);
+  });
+});
+
+describe('module resolution precedence', () => {
+  it('lets an explicit paths mapping win over a basename match of a created module', async () => {
+    const options = { paths: { 'resource://gre/modules/*': ['toolkit/modules/*'] } };
+    const steps = [
+      { path: 'browser/Up.sys.mjs', after: '/** @type {number} */\nexport const up = 1;\n' },
+      {
+        path: 'browser/B.sys.mjs',
+        after:
+          'import { up } from "resource://gre/modules/Up.sys.mjs";\n/** @type {number} */\nexport const n = up;\n',
+      },
+    ];
+    const engine = {
+      'toolkit/modules/Up.sys.mjs': '/** @type {string} */\nexport const up = "x";\n',
+    };
+    const findings = await typeFindings(steps, strict({ checkJsCompilerOptions: options }), engine);
+    expect(findings.map((f) => [f[0], f[3].slice(0, 6)])).toEqual([
+      ['browser/B.sys.mjs', 'TS2322'],
+    ]);
+    const noMapping = await typeFindings(steps, strict(), engine);
+    expect(noMapping).toEqual([]);
   });
 });
 
@@ -228,6 +268,35 @@ describe('the result cache', () => {
     expect(await run('"a"')).toHaveLength(1);
     expect(await run('1')).toEqual([]);
     expect((await listDir(cacheDir)).length).toBe(1);
+  });
+});
+
+describe('a cache that cannot be used', () => {
+  it('is a miss with one warning, and the check still reports', async () => {
+    const cacheDir = join(dir(), 'cache');
+    // The cache directory is a file, so every read, write and prune of it fails.
+    await writeTree(dir(), { cache: 'not a directory' });
+    const config = testConfig(checkJs());
+    const changes = textChangeSet([
+      { path: 'browser/A.sys.mjs', after: '/** @type {number} */\nexport const n = "a";\n' },
+      { path: 'browser/B.sys.mjs', after: '/** @type {number} */\nexport const m = "b";\n' },
+    ]);
+    const lines: string[] = [];
+    const previous = configureLog({ write: (text) => lines.push(text) });
+    try {
+      const findings = await checkOwnedTypes(changes, engineFiles(), config, {
+        projectRoot: dir(),
+        cacheDir,
+      });
+      expect(findings.map((finding) => finding.path)).toEqual([
+        'browser/A.sys.mjs',
+        'browser/B.sys.mjs',
+      ]);
+    } finally {
+      configureLog(previous);
+    }
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('could not be used');
   });
 });
 

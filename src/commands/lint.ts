@@ -11,7 +11,9 @@ export const lint = defineCommand({
   summary: 'Check the owned changes against the quality rules',
   description:
     'Runs every rule over the owned changes (patchLint, patchPolicy, checkJs) and applies the ' +
-    "groups' waivers. Errors fail the run; warnings fail it past --max-warnings.",
+    "groups' waivers. Errors fail the run; warnings fail it past --max-warnings. These are " +
+    "FireForge's own rules: ESLint, Firefox's mach lint and any other tool a project runs " +
+    'as a check.extraSteps entry are not run by lint, only by "fireforge check" and the gate.',
   group: 'Daily',
   args: { paths: arg.list('Engine-relative files or directories to report on') },
   options: {

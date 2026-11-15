@@ -3,6 +3,9 @@
  * `furnace diff`: how the project's components differ from what they are
  * compared with. A custom component is compared with its deployed copy in
  * the engine, an override with the stock files at the engine's `HEAD`.
+ * What a deployment would take away (a file a component dropped, a whole
+ * component no longer configured, an override file going back to upstream)
+ * is shown as the engine's copy against what the engine will hold.
  */
 import { join } from 'node:path';
 
@@ -15,7 +18,12 @@ import {
   type FurnaceProject,
   loadFurnaceConfig,
 } from './config.js';
-import { deployedContent, type FurnaceWorkspace, upstreamFiles } from './deploy.js';
+import {
+  deployedContent,
+  type FurnaceWorkspace,
+  pendingRemovals,
+  upstreamFiles,
+} from './deploy.js';
 
 /**
  * A unified diff of one component, or of every component: `engine/<path>`
@@ -24,7 +32,7 @@ import { deployedContent, type FurnaceWorkspace, upstreamFiles } from './deploy.
  *
  * @param project - The project
  * @param workspace - The engine
- * @param name - One component; all when omitted
+ * @param name - One component (including one removed from `furnace.json` whose deployed files are still pending removal); all when omitted
  * @returns The diff text; empty when nothing differs
  */
 export async function componentDiff(
@@ -33,7 +41,14 @@ export async function componentDiff(
   name?: string
 ): Promise<string> {
   const config = await loadFurnaceConfig(project);
-  const selected = name === undefined ? components(config) : [findComponent(config, name)];
+  const removals = await pendingRemovals(project, workspace);
+  const known = name !== undefined && removals.some((removal) => removal.component === name);
+  const selected =
+    name === undefined
+      ? components(config)
+      : known && !components(config).some((component) => component.name === name)
+        ? []
+        : [findComponent(config, name)];
   const scratch = await makeTempDir('fireforge-furnace-diff-');
   try {
     let text = '';
@@ -64,7 +79,32 @@ export async function componentDiff(
       }
       text += result.stdout.toString('utf8');
     }
-    return text;
+    const dir = join(scratch, 'removal');
+    await ensureDir(join(dir, 'engine'));
+    await ensureDir(join(dir, 'project'));
+    for (const removal of removals.filter(
+      (candidate) => name === undefined || candidate.component === name
+    )) {
+      const held = await readBytesIfExists(join(workspace.engineDir, removal.path));
+      // A file the engine lost that upstream has comes back: an addition.
+      if (held === undefined ? removal.after === null : removal.after?.equals(held) === true) {
+        continue;
+      }
+      if (held !== undefined) {
+        await writeFile(join(dir, 'engine', removal.path), held, { durable: false });
+      }
+      if (removal.after !== null) {
+        await writeFile(join(dir, 'project', removal.path), removal.after, { durable: false });
+      }
+    }
+    const result = await gitResult(
+      ['diff', '--no-index', '--no-color', '--no-prefix', '--', 'engine', 'project'],
+      { cwd: dir }
+    );
+    if (result.exitCode > 1) {
+      throw furnaceError('furnace-diff-failed', `git diff failed: ${result.stderr.trim()}`);
+    }
+    return text + result.stdout.toString('utf8');
   } finally {
     await remove(scratch);
   }

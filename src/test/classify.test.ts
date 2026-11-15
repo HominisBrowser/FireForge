@@ -611,6 +611,26 @@ describe('known teardown noise on a clean suite', () => {
     );
   });
 
+  it('does not pass on teardown noise when the structured log never ended its suite', () => {
+    const records = [
+      { action: 'suite_start', tests: { default: [A] } },
+      { action: 'test_start', test: A },
+      { action: 'test_end', test: A, status: 'OK' },
+    ];
+    const log = (all: readonly object[]): string =>
+      all.map((record) => JSON.stringify(record)).join('\n');
+    const output = `${SUITE}\n${TEARDOWN}`;
+    expect(judgeDispatch(1, output, [A], { raw: parseRawTestLog(log(records)) })).toMatchObject({
+      kind: 'crash',
+      signature: { reason: 'the raw log has no completed suite' },
+    });
+    const ended = parseRawTestLog(log([...records, { action: 'suite_end' }]));
+    expect(judgeDispatch(1, output, [A], { raw: ended })).toMatchObject({
+      kind: 'pass',
+      note: 'teardown-noise-ignored',
+    });
+  });
+
   it.each([
     [
       'a real unexpected line',
@@ -1166,5 +1186,105 @@ describe('an exit-0 run must show a complete run', () => {
     expect(withRaw(`TEST_START: ${A}\nTEST_END: Test OK\n${SUMMARY}`, [], [OPEN, CLOSE])).toContain(
       'FAIL reason=no-tests'
     );
+  });
+});
+
+describe('a requested file is matched as a file whatever its extension', () => {
+  const OPEN = { action: 'suite_start', tests: {} };
+  const CLOSE = { action: 'suite_end' };
+  const records = (test: string): object[] => [
+    OPEN,
+    { action: 'test_start', test },
+    { action: 'test_end', test, status: 'OK' },
+    CLOSE,
+  ];
+  const judgedRaw = (output: string, paths: readonly string[], test: string): HarnessVerdict =>
+    judgeDispatch(0, output, paths, {
+      raw: parseRawTestLog(
+        records(test)
+          .map((record) => JSON.stringify(record))
+          .join('\n')
+      ),
+    });
+  const SUMMARY = 'Ran 1 checks\nUnexpected results: 0\nSUITE_END';
+
+  it.each([
+    'toolkit/content/tests/widgets/test_widget.html',
+    'toolkit/content/tests/widgets/test_widget.xhtml',
+    'browser/base/content/test/browser_page.mjs',
+  ])('passes a complete green raw log for %s', (path) => {
+    expect(judgedRaw(SUMMARY, [path], path)).toMatchObject({ kind: 'pass' });
+  });
+
+  it('still names a file that a raw log never ran', () => {
+    const path = 'toolkit/content/tests/widgets/test_widget.html';
+    expect(
+      judgedRaw(SUMMARY, [path], 'toolkit/content/tests/widgets/test_other.html')
+    ).toMatchObject({ kind: 'test-failures', incomplete: { firstUnstarted: path } });
+  });
+
+  it('still treats an extensionless request as a directory and a manifest by its directory', () => {
+    const test = 'browser/x/test/test_a.html';
+    expect(judgedRaw(SUMMARY, ['browser/x/test'], test)).toMatchObject({ kind: 'pass' });
+    expect(judgedRaw(SUMMARY, ['browser/x/test/browser.toml'], test)).toMatchObject({
+      kind: 'pass',
+    });
+    expect(judgedRaw(SUMMARY, ['browser/y/test'], test)).toMatchObject({
+      kind: 'test-failures',
+    });
+  });
+});
+
+describe('failure-shaped console output of a passing test', () => {
+  const A = 'browser/x/test/browser_a.js';
+  const OPEN = { action: 'suite_start', tests: {} };
+  const CLOSE = { action: 'suite_end' };
+  const raw = parseRawTestLog(
+    [OPEN, { action: 'test_start', test: A }, { action: 'test_end', test: A, status: 'OK' }, CLOSE]
+      .map((record) => JSON.stringify(record))
+      .join('\n')
+  );
+  const harness = (...console: string[]): string =>
+    [
+      `TEST_START: ${A}`,
+      ...console,
+      'TEST_END: Test OK',
+      'Ran 2 checks',
+      'Unexpected results: 0',
+      'SUITE_END',
+    ].join('\n');
+
+  it.each([
+    'console.log: TEST-UNEXPECTED-FAIL is the string under test',
+    'console.log: TEST-UNEXPECTED-TIMEOUT | not a result',
+    'console.log: TEST-FAIL is also text',
+    'console.log: Assertion failure: this is a string a test logs',
+    'GECKO(123) | ###!!! ASSERTION: fake',
+  ])('passes a complete green raw log when a test printed %s', (text) => {
+    expect(judgeDispatch(0, harness(text), [A], { raw })).toMatchObject({ kind: 'pass' });
+  });
+
+  it('fails when the harness itself wrote the failure line', () => {
+    const output = harness(' 0:05.00 INFO TEST-UNEXPECTED-FAIL | browser_a.js | broke');
+    expect(judgeDispatch(0, output, [A], { raw })).toMatchObject({ kind: 'test-failures' });
+  });
+
+  it('still fails on a crash marker after green tests', () => {
+    const output = `${harness()}\nPROCESS-CRASH | browser_a.js | application crashed`;
+    expect(judgeDispatch(0, output, [A], { raw }).kind).not.toBe('pass');
+  });
+
+  it('still fails when the raw log records an unexpected result', () => {
+    const red = parseRawTestLog(
+      [
+        OPEN,
+        { action: 'test_start', test: A },
+        { action: 'test_end', test: A, status: 'FAIL', expected: 'OK' },
+        CLOSE,
+      ]
+        .map((record) => JSON.stringify(record))
+        .join('\n')
+    );
+    expect(judgeDispatch(0, harness(), [A], { raw: red }).kind).toBe('test-failures');
   });
 });

@@ -88,6 +88,27 @@ export function manifestError(message: string, hint?: string): FireForgeError {
   return new FireForgeError('manifest-edit', message, hint === undefined ? {} : { hint });
 }
 
+/**
+ * Refuses a value that cannot be written inside a quoted literal as it is: a
+ * quote character, a backslash (an escape) or a line break would produce
+ * different or broken syntax.
+ *
+ * @param value - The text to put between quotes
+ * @param what - What the value is, for the message
+ * @param quote - The quote that will surround it (default `"`)
+ * @returns The value, unchanged
+ * @throws `manifest-edit` for a value with a quote, a backslash or a line break
+ */
+export function literalText(value: string, what: string, quote: '"' | "'" = '"'): string {
+  if (/[\\\r\n]/.test(value) || value.includes(quote)) {
+    throw manifestError(
+      `${what} ${JSON.stringify(value)} contains a quote character, a backslash or a line break, which FireForge does not write into a manifest.`,
+      'Add the entry by hand.'
+    );
+  }
+  return value;
+}
+
 /** Mozbuild's list order: case-insensitive, ties broken by bytes. */
 export function compareInsensitive(a: string, b: string): number {
   const x = a.toLowerCase();
@@ -148,6 +169,34 @@ export interface ListItem {
 export interface StringListScan {
   items: ListItem[];
   endLine: number;
+  /** The column of the closing bracket on `endLine`. */
+  endColumn: number;
+  /**
+   * The first thing in the list that is not a plain string item (a name, a
+   * call, a nested list, a concatenation, adjacent strings): where it starts
+   * and its text. Undefined when every element is a quoted string.
+   */
+  unrecognised?: { line: number; text: string };
+}
+
+/** The column of the quote closing the literal that opens at `start`, or undefined when the line ends first. */
+function literalEnd(text: string, start: number): number | undefined {
+  const quote = text.charAt(start);
+  let end = start + 1;
+  while (end < text.length && text.charAt(end) !== quote) end += text.charAt(end) === '\\' ? 2 : 1;
+  return end >= text.length ? undefined : end;
+}
+
+/** The list item for the literal on line `line` between columns `start` and `end` (its quotes). */
+function listItem(text: string, line: number, start: number, end: number): ListItem {
+  return {
+    value: text.slice(start + 1, end),
+    line,
+    start,
+    end: end + 1,
+    quote: text.charAt(start) === "'" ? "'" : '"',
+    ownLine: text.slice(0, start).trim() === '' && /^\s*,?\s*(?:#.*)?$/.test(text.slice(end + 1)),
+  };
 }
 
 /**
@@ -165,33 +214,50 @@ export function scanStringList(
   column: number
 ): StringListScan | undefined {
   const items: ListItem[] = [];
+  let unrecognised: StringListScan['unrecognised'];
+  // Open brackets of any kind: the list itself is the first.
   let depth = 1;
+  // A string was the last token at the list's own level, so only `,` or `]` may follow.
+  let afterString = false;
   for (let at = line; at < lines.length; at++) {
     const text = lines[at]?.text ?? '';
+    const refuse = (c: number, char = text.charAt(c)): void => {
+      unrecognised ??= {
+        line: at,
+        text: /^[^\s,\]]+/.exec(text.slice(c))?.[0].slice(0, 40) ?? char,
+      };
+    };
     for (let c = at === line ? column : 0; c < text.length; c++) {
       const char = text.charAt(c);
       if (char === '#') break;
       if (char === '"' || char === "'") {
-        let end = c + 1;
-        while (end < text.length && text.charAt(end) !== char)
-          end += text.charAt(end) === '\\' ? 2 : 1;
-        if (end >= text.length) return undefined;
+        const end = literalEnd(text, c);
+        if (end === undefined) return undefined;
         if (depth === 1) {
-          items.push({
-            value: text.slice(c + 1, end),
-            line: at,
-            start: c,
-            end: end + 1,
-            quote: char,
-            ownLine:
-              text.slice(0, c).trim() === '' && /^\s*,?\s*(?:#.*)?$/.test(text.slice(end + 1)),
-          });
+          if (afterString) refuse(c);
+          afterString = true;
+          items.push(listItem(text, at, c, end));
         }
         c = end;
-      } else if (char === '[') {
+      } else if ('([{'.includes(char)) {
+        if (depth === 1) refuse(c);
         depth++;
-      } else if (char === ']' && --depth === 0) {
-        return { items, endLine: at };
+      } else if (depth === 1 && ')}'.includes(char)) {
+        refuse(c);
+      } else if (')]}'.includes(char)) {
+        if (--depth === 0) {
+          return {
+            items,
+            endLine: at,
+            endColumn: c,
+            ...(unrecognised === undefined ? {} : { unrecognised }),
+          };
+        }
+        if (depth === 1) afterString = false;
+      } else if (char === ',') {
+        if (depth === 1) afterString = false;
+      } else if (depth === 1 && !/\s/.test(char)) {
+        refuse(c);
       }
     }
   }

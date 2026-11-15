@@ -33,7 +33,10 @@ useMachSandbox();
 const HEADER = `${licenseHeader(DEFAULT_LICENSE, 'js')}\n`;
 const PANEL = 'browser/base/content/panel.mjs';
 /** A browser that prints one line and stays up, so a smoke start reaches its deadline. */
-const RUNNING = JSON.stringify({ stdout: ['console.log: started'], sleep: 60 });
+const RUNNING = JSON.stringify({
+  stdout: [' 0:00.10 /obj/dist/bin/testbrowser -profile /tmp/p', 'console.log: started'],
+  sleep: 60,
+});
 
 const host = (): HostPaths => hostPaths({ FIREFORGE_HOME: join(dir(), 'home') });
 

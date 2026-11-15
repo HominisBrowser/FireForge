@@ -17,6 +17,7 @@ import {
   applyComponents,
   type ApplyOptions,
   type DeploymentResult,
+  hasDeployment,
   loadFurnaceConfig,
   typingDrift,
 } from '../furnace/index.js';
@@ -42,6 +43,12 @@ export interface WorkspaceOptions {
    * shares the engine with other readers. A pool lease is always exclusive.
    */
   write?: boolean | undefined;
+  /**
+   * Source mode: false leases and materializes the owned files without
+   * deploying the components, for a command that inspects or plans the
+   * deployment and must find the workspace as it stands (default true).
+   */
+  deploy?: boolean | undefined;
 }
 
 /**
@@ -78,7 +85,11 @@ export async function withWorkspace<T>(
   }
   return leaseWorkspace(
     project,
-    { ...wait, name: options.workspace, prepare: bringToCheckout },
+    {
+      ...wait,
+      name: options.workspace,
+      prepare: options.deploy === false ? materializeIn : bringToCheckout,
+    },
     body
   );
 }
@@ -217,14 +228,16 @@ export function withOwnedRead<T>(
  *
  * @param workspace - The workspace
  * @param options - `dryRun` plans without writing; `waitMs` is for another deployment into the workspace
- * @returns What was deployed or removed; nothing for a project without components
+ * @returns What was deployed or removed; nothing for a project without components and a workspace that holds none
  */
 export async function deployComponents(
   workspace: Workspace,
   options: ApplyOptions = {}
 ): Promise<DeploymentResult> {
   const { project } = workspace;
-  if (!(await exists(project.paths.furnace))) {
+  // Without furnace.json the desired set is empty; what an earlier lessee
+  // deployed into the workspace is still taken away.
+  if (!(await exists(project.paths.furnace)) && !(await hasDeployment(workspace))) {
     return { changed: false, components: [], written: [], removed: [] };
   }
   const result = await applyComponents(project, workspace, options);

@@ -3,7 +3,7 @@ import { arg, defineCommand, lockOptions, lockWaitMs, opt } from '../cli/command
 import { markerComment } from '../config/index.js';
 import { editTracked, enginePathOf, trackedFiles } from '../mode/index.js';
 import { loadProject } from '../project/index.js';
-import { applyEdits, planWire } from '../register/index.js';
+import { applyEdits, type Plan, planWire } from '../register/index.js';
 
 export const wire = defineCommand({
   name: 'wire',
@@ -37,26 +37,32 @@ export const wire = defineCommand({
     const project = await loadProject(ctx.cwd, ctx.env);
     const { config } = project;
     const files = await trackedFiles(project, { declare: true });
-    const plan = await planWire(files, {
-      name,
-      subscriptDir: config.wire.subscriptDir,
-      marker: `${markerComment(config)}:`,
-      requireSubscript: !opts.dryRun,
-      init: opts.init,
-      destroy: opts.destroy,
-      after: opts.after,
-      dom:
-        opts.dom === undefined
-          ? undefined
-          : { file: enginePathOf(project, opts.dom), target: config.wire.domTarget },
-    });
-    if (!opts.dryRun) {
-      await editTracked(
-        project,
-        { label: `wiring ${name}`, command: 'wire', waitMs: lockWaitMs(opts.waitLock) },
-        (tx) => applyEdits(tx, files, plan.edits)
-      );
-    }
+    const planned = (): Promise<Plan> =>
+      planWire(files, {
+        name,
+        subscriptDir: config.wire.subscriptDir,
+        marker: `${markerComment(config)}:`,
+        requireSubscript: !opts.dryRun,
+        init: opts.init,
+        destroy: opts.destroy,
+        after: opts.after,
+        dom:
+          opts.dom === undefined
+            ? undefined
+            : { file: enginePathOf(project, opts.dom), target: config.wire.domTarget },
+      });
+    // A real run reads and plans under the lock, so it overwrites what it read.
+    const plan = opts.dryRun
+      ? await planned()
+      : await editTracked(
+          project,
+          { label: `wiring ${name}`, command: 'wire', waitMs: lockWaitMs(opts.waitLock) },
+          async (tx) => {
+            const made = await planned();
+            await applyEdits(tx, files, made.edits);
+            return made;
+          }
+        );
 
     const verb = opts.dryRun ? 'Would change' : 'Changed';
     for (const step of plan.steps) {

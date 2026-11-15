@@ -6,6 +6,7 @@ import {
   gateStatus,
   renderCheck,
   renderGate,
+  renderOwed,
   runGate,
   VERIFIED_REF,
 } from '../check/index.js';
@@ -58,6 +59,21 @@ const status = defineCommand({
       unverified: `No commit is verified yet; HEAD is ${short(report.head)}.`,
     };
     ctx.out.line(where[report.relation]);
+    for (const running of report.running) {
+      const position =
+        running.entry === undefined
+          ? ''
+          : `, on ${running.entry.id} (entry ${running.entry.position} of ${running.entry.total}, since ${running.entry.since})`;
+      const what =
+        running.kind === 'feedback'
+          ? 'A feedback run of "gate --lane"'
+          : running.onHead
+            ? `A gate of HEAD (${short(report.head)})`
+            : `A gate of ${running.commit === undefined ? 'another commit' : short(running.commit)}`;
+      ctx.out.line(
+        `${what} is running in this checkout: PID ${running.pid}, since ${running.since}${position}.`
+      );
+    }
     if (!report.clean) ctx.out.line('The working tree has uncommitted changes.');
     if (report.result === undefined) {
       ctx.out.line('No gate result is recorded for HEAD in this checkout.');
@@ -74,11 +90,21 @@ const status = defineCommand({
       ctx.out.line(`accepted  ${id}  by ${acceptance.by} at ${acceptance.at}: ${acceptance.note}`);
     }
     for (const id of report.pending) ctx.out.line(`pending   ${id}`);
+    for (const line of renderOwed(report.controls)) ctx.out.line(line);
     ctx.out.json({
       ...report,
+      controls: report.controls.map((entry) => ({ ...entry })),
       verified: report.verified ?? null,
       ahead: report.ahead ?? null,
       result: report.result ?? null,
+      running: report.running.map((entry) => ({
+        pid: entry.pid,
+        since: entry.since,
+        kind: entry.kind,
+        commit: entry.commit ?? null,
+        onHead: entry.onHead,
+        entry: entry.entry === undefined ? null : { ...entry.entry },
+      })),
     });
   },
 });
@@ -91,21 +117,35 @@ export const gate = defineCommand({
     'declared lane, stress run, negative control and smoke start. One run reports every entry. ' +
     `When all pass and every gate.acceptance is recorded, ${VERIFIED_REF} moves to the commit, ` +
     'fast-forward only. Outstanding acceptances leave the result pending, and the next gate ' +
-    'reuses the recorded pass. A commit changing only gate.documents paths needs check alone. ' +
-    '--lane is feedback only: it runs the named entries plus the build on the working tree ' +
-    'as it is, committed or not, runs no check, records nothing and never moves ' +
-    `${VERIFIED_REF}.`,
+    'reuses the recorded pass. A commit changing only gate.documents paths needs check alone; ' +
+    'one that also changes control diffs or gate.controls needs check, the build and the changed ' +
+    'controls. --lane is feedback only: it runs the named entries plus the build on the working ' +
+    'tree as it is, committed or not, runs no check, records nothing and never moves ' +
+    `${VERIFIED_REF}. Several controls run in one workspace, one verdict each. --resume takes ` +
+    'the passes of the last full run of this commit, tree, FireForge version and gate ' +
+    'declaration instead of running those entries again.',
   group: 'Daily',
   options: {
     lane: opt.list(
       'Feedback only: run this declared entry (an ID, or kind:id) and the build on the working ' +
-        'tree as it is, with no check, no record and no move of the verified ref; repeat for several',
+        'tree as it is, with no check, no record and no move of the verified ref; repeat for ' +
+        'several, or give kind:* (lane:*, stress:*, control:*, run:*) for every entry of a kind',
       { valueName: 'id' }
     ),
     allowRewrite: opt.flag('Move the verified ref to a commit that does not descend from it'),
+    resume: opt.flag(
+      'Take the passes of the last full run of this commit (same tree, FireForge version and ' +
+        'gate declaration) instead of running those entries again; check and the build always ' +
+        'run, and every entry that was red, blocked or never reached runs'
+    ),
     ...workspaceOptions,
   },
-  constraints: { exclusive: [['lane', 'allowRewrite']] },
+  constraints: {
+    exclusive: [
+      ['lane', 'allowRewrite'],
+      ['lane', 'resume'],
+    ],
+  },
   json: true,
   verdict: true,
   subcommands: [accept, status],
@@ -114,6 +154,7 @@ export const gate = defineCommand({
     const report = await runGate(project, {
       only: opts.lane,
       allowRewrite: opts.allowRewrite,
+      resume: opts.resume,
       workspace: opts.workspace,
       waitMs: lockWaitMs(opts.waitLock),
     });
@@ -130,15 +171,43 @@ export const gate = defineCommand({
       check: report.check === undefined ? null : checkJson(report.check),
       pending: report.pending,
       artifacts: report.artifacts ?? null,
-    });
-    const red = report.entries.filter((entry) => entry.status === 'fail').map((entry) => entry.id);
-    ctx.out.verdict(report.pass, {
-      result: report.outcome,
-      ...(report.pass ? {} : { reason: 'gate-failed', failed: red.join(',') }),
-      ...(report.commit === undefined ? {} : { commit: report.commit }),
-      ...(report.pending.length === 0 ? {} : { accept: report.pending.join(',') }),
+      owed: report.owed.map((entry) => ({ ...entry })),
+      resume:
+        report.resume === undefined
+          ? null
+          : { reused: report.resume.reused, why: report.resume.why ?? null },
     });
     const failure = gateFailure(report);
+    const red = report.entries.filter((entry) => entry.status === 'fail');
+    const blocked = red.filter((entry) => entry.blocked !== undefined);
+    // A report that only could not run says why it stopped; a red entry is the gate failing.
+    const reason =
+      failure !== undefined && blocked.length === red.length ? failure.code : 'gate-failed';
+    ctx.out.verdict(report.pass, {
+      result: report.outcome,
+      ...(report.pass
+        ? {}
+        : {
+            reason,
+            failed: red.map((entry) => entry.id).join(','),
+            ...(blocked.length === 0
+              ? {}
+              : { blocked: blocked.map((entry) => entry.id).join(',') }),
+          }),
+      ...(report.commit === undefined ? {} : { commit: report.commit }),
+      ...(report.entries.some((entry) => entry.reused === true)
+        ? {
+            reused: report.entries
+              .filter((entry) => entry.reused === true)
+              .map((entry) => entry.id)
+              .join(','),
+          }
+        : {}),
+      ...(report.pending.length === 0 ? {} : { accept: report.pending.join(',') }),
+      ...(report.owed.length === 0
+        ? {}
+        : { 'controls-owed': report.owed.map((entry) => entry.id).join(',') }),
+    });
     if (failure !== undefined) throw failure;
   },
 });

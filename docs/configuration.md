@@ -71,6 +71,8 @@ Change the pin with `fireforge rebase --to <version>`, which also moves the proj
 
 `fireforge package --release` builds with `build.release` in an object directory of its own, emptied first, and leaves the development build alone. The secrets directory is set per host as `releaseSecrets` in `~/.fireforge/host.json`; the release build gets it in the environment variable `secrets.variable` names, and a release whose secrets are declared is refused while that directory is unset or lacks one of `secrets.files`.
 
+A release collects `build.release.outputs` and a `release.json` (the pin including its candidate, the overlay's digest, the build date, the secret file names, the collected paths) into `.fireforge/release-output` or the directory `--out` names. Every declared output must exist before anything in that directory is touched, the outputs and `release.json` are put in place together (the previous ones come back if that fails), and a directory that overlaps the release object directory is refused.
+
 ## `buildAudit`
 
 After a build, FireForge warns about front-end files that changed since the previous build and that nothing packages: such a file builds without complaint and is simply absent from the browser.

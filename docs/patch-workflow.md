@@ -201,9 +201,9 @@ npx fireforge lint --per-patch
 npx fireforge rebase --to 140.10.0esr
 ```
 
-`rebase` downloads the version (`--product`, `--sha256` and `--candidate` pin it further), writes it to `fireforge.json`, replaces `engine/` with a checkout of the new source, and applies the queue again with reduced context, rewriting every patch against the new source and stamping it with the new version. Edits no patch holds are refused; capture them first, or pass `--force` to save them in a recovery snapshot and go ahead.
+`rebase` downloads the version (`--product`, `--sha256` and `--candidate` pin it further), writes it to `fireforge.json`, replaces `engine/` with a checkout of the new source, and applies the queue again with reduced context, rewriting every patch against the new source and stamping it with the new version. Edits no patch holds, including a deleted file a patch owns, are refused; capture them first, or pass `--force` to save them in a recovery snapshot and go ahead. The check is repeated under the exclusive engine lock immediately before `engine/` is replaced, so an edit made while the new source was being prepared is refused too and the engine and the pin stay as they were.
 
-`--dry-run` reports whether the queue applies to the target version and changes nothing.
+`--dry-run` reports whether the queue applies to the target version and changes nothing. It applies the queue the way the rebase does, exact context first and then reduced context, and lists each patch as `applied-clean`, `applied-fuzz` (it applies only with reduced context) or `failed`.
 
 When a patch does not apply, the rebase pauses exactly as `import` does: fitting hunks applied, `.rej` files for the rest. Fix the files in `engine/`, then:
 

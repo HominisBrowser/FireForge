@@ -19,6 +19,18 @@
  *    transaction on the same journal path (or {@link recoverJournal}, which
  *    `fireforge doctor --recover` runs) puts the before-images back first.
  *
+ * Recovery refuses to overwrite a file somebody edited after the crash. That
+ * needs the content the file was left with. `write` and `remove` know it
+ * before they act, and record it first. `change` runs code that decides the
+ * result, so it records the content each listed file ends with once `mutate`
+ * has returned; a listed directory is not hashed (the files under it carry
+ * their before-images, and an edit to one of them is not noticed). Between
+ * the start of a `change` and that record the result of the path is unknown:
+ * the journal marks the path unsettled, and a crash in that window is
+ * recovered by restoring the before-image, because there is no content to
+ * compare against and refusing would block recovery for good. An edit made to
+ * such a path between the crash and the recovery is overwritten.
+ *
  * One journal path serves one transaction at a time; the caller holds
  * whatever lock makes that true. Paths are absolute.
  */
@@ -84,7 +96,8 @@ const Image = s.union(
  * One journal line. `save` is a before-image. `mkdir` is a directory the
  * transaction created on the way to a path, removed on undo if empty.
  * `expect` is the content hash a path has once its change is complete (null
- * for removed), which lets recovery notice a later edit.
+ * for removed), which lets recovery notice a later edit. `unsettled` voids
+ * the `expect` of a path while an external mutation is changing it.
  */
 const Entry = s.union(
   s.object({ op: s.literal('save'), path: s.string(), before: Image }),
@@ -93,7 +106,8 @@ const Entry = s.union(
     op: s.literal('expect'),
     path: s.string(),
     hash: s.union(s.string(), s.literal(null)),
-  })
+  }),
+  s.object({ op: s.literal('unsettled'), path: s.string() })
 );
 type Entry = Infer<typeof Entry>;
 
@@ -188,7 +202,7 @@ async function restore(
   entry: Entry,
   context: { copies: string; recorded: ReadonlySet<string>; touched: Touched }
 ): Promise<void> {
-  if (entry.op === 'expect') return;
+  if (entry.op === 'expect' || entry.op === 'unsettled') return;
   if (entry.op === 'mkdir') {
     await rmdir(entry.path).catch((error: unknown) => {
       if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(errnoCode(error) ?? '')) throw error;
@@ -265,6 +279,8 @@ class Journal implements Transaction {
   private readonly saved = new Set<string>();
   /** Directories recorded as created, which therefore did not exist before. */
   private readonly created = new Set<string>();
+  /** Paths with a recorded expected content. */
+  private readonly expected = new Set<string>();
   private readonly touched = new Touched();
   private copies = 0;
   private tail: Promise<unknown> = Promise.resolve();
@@ -299,6 +315,8 @@ class Journal implements Transaction {
     return this.step(paths, undefined, async () => {
       await mutate();
       for (const path of paths) await this.touched.addTree(path);
+      const outcomes = await this.outcomes(paths);
+      if (outcomes.length > 0) await this.record(outcomes);
     });
   }
 
@@ -395,6 +413,7 @@ class Journal implements Transaction {
           await capture(path, fresh, (file) => this.copy(file));
         }
         if (result !== undefined) fresh.push({ op: 'expect', path, hash: result });
+        else if (this.expected.has(path)) fresh.push({ op: 'unsettled', path });
       }
       if (fresh.length > 0) await this.record(fresh);
       for (const path of reclaimed) this.created.delete(path);
@@ -414,8 +433,21 @@ class Journal implements Transaction {
     for (const entry of fresh) {
       if (entry.op === 'mkdir') this.created.add(entry.path);
       else if (entry.op === 'save') this.saved.add(entry.path);
+      else if (entry.op === 'expect') this.expected.add(entry.path);
+      else this.expected.delete(entry.path);
     }
     this.entries.push(...fresh);
+  }
+
+  /** What each listed file holds (null for an absent path) after an external mutation; links and directories are left out. */
+  private async outcomes(paths: readonly string[]): Promise<Entry[]> {
+    const found: Entry[] = [];
+    for (const path of new Set(paths)) {
+      const kind = (await pathInfo(path))?.kind;
+      if (kind === undefined) found.push({ op: 'expect', path, hash: null });
+      else if (kind === 'file') found.push({ op: 'expect', path, hash: await hashFile(path) });
+    }
+    return found;
   }
 
   /** Records the directories that do not exist yet above `path`, outermost first. */
@@ -523,6 +555,7 @@ async function driftedPaths(entries: readonly Entry[]): Promise<string[]> {
   const after = new Map<string, string | null>();
   for (const entry of entries) {
     if (entry.op === 'expect') after.set(entry.path, entry.hash);
+    else if (entry.op === 'unsettled') after.delete(entry.path);
     else if (entry.op === 'save' && !before.has(entry.path)) {
       before.set(
         entry.path,

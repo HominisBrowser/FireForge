@@ -18,6 +18,7 @@ npx fireforge lint --per-patch
 - Paths limit which files' findings are reported. Findings about a whole group (size, policy) are always reported.
 - `--per-patch` (patch mode) judges the stored queue patch by patch instead of what `engine/` holds. CI should use it: it sees exactly what is committed.
 - `lint` takes no workspace. In source mode it reads `src/` and the pristine repository.
+- `lint` runs FireForge's own rules, the same set as the `lint` step of `check` and so of the gate. It does not run ESLint or Firefox's `mach lint`: neither FireForge nor `check` runs them unless the project declares them as `check.extraSteps` ([below](#extra-steps)), and a step declared there runs under `check` and the gate only. A clean `lint` therefore predicts the `lint` step, and none of the extra ones; `npx fireforge check --only <step>` runs one of them alone.
 
 ### Rules
 
@@ -155,9 +156,23 @@ npx fireforge typecheck --explain browser/base/content/mybrowser/panel.mjs
 1. Each `typecheck.projects` file (a `jsconfig.json` or `tsconfig.json`, project-relative) is checked whole, with its own compiler options plus the Firefox-globals shim: Firefox's privileged globals, Lit, and the test harness. A path under `engine/` names the file in the workspace's engine, so one configuration serves patch mode and source mode. `extraShim` adds a `.d.ts` to every project's shim, and `projectOverrides` gives one project another `.d.ts` or `null` for none.
 2. The owned files get lint's strict `checkJs` pass (when `patchLint.checkJs` is on).
 
+A shim, a configured `.d.ts` or a file it names with `/// <reference path>`, must exist: a missing one stops the run (`typescript-shim-missing`), naming the file and the chain of shims that referenced it.
+
+A project whose effective `checkJs` is `false`, set in its own options or inherited through `extends`, is skipped with a warning and counts no files checked.
+
+Both passes drop the diagnostics that only the missing Firefox build causes: unresolved imports of URLs with a scheme other than `node:` (`resource:`, `chrome:`, `moz-src:` and the like), a missing member or non-module status of a module that did not resolve, `require`/`process` names the shim does not declare (TS2580), and missing declaration files (TS7016). A module specifier that resolves to no file is judged by what it names:
+
+| Specifier                   | Project pass                                                                                     | Owned pass                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| URL (`resource:` and so on) | not reported                                                                                     | not reported; types as `any` unless a created module or a `paths` mapping resolves it                |
+| relative or absolute path   | error, with a hint to correct the path or create the file                                        | not reported: the pass holds owned files only, and the `relative-import` rule flags relative imports |
+| package name                | warning, with a hint to install it, map it in `compilerOptions.paths`, or declare it in the shim | not reported: the pass sees neither `node_modules` nor the rest of the engine                        |
+
+A `paths` mapping of `patchLint.checkJsCompilerOptions` resolves a specifier before a created module with the same file name is considered.
+
 `--project <path>` checks other projects instead of `typecheck.projects`; repeat it for several. `--explain <file>` checks nothing and prints how both passes see the file: which programs include it, with which options and shim.
 
-The typing files Furnace generates must be current; `typecheck` refuses until `fireforge furnace types` has written them. Results are cached by the digest of every file a program read, so an unchanged program is not checked again.
+The typing files Furnace generates must be current; `typecheck` refuses until `fireforge furnace types` has written them. Results are cached by the digest of every file a program read, so an unchanged program is not checked again. The cache is disposable: one that cannot be read, written or pruned is a miss, with one warning, and the check goes on.
 
 ## `check`
 

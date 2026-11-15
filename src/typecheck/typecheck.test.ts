@@ -134,13 +134,65 @@ describe('runTypecheck', () => {
         'off/jsconfig.json',
         '1',
         'warning',
-        'The project sets "checkJs": false, so it was skipped.',
+        'The project sets "checkJs": false, in its own options or through "extends", so it was skipped.',
       ],
     ]);
     const shimless = await runTypecheck(
       request({ typecheck: { projects: ['off/jsconfig.json'], extraShim: 'types/gone.d.ts' } })
     );
     expect(issues(shimless)[0]?.[4]).toBe('The TypeScript shim types/gone.d.ts does not exist.');
+  });
+
+  it('reports a relative import that names no file and a missing package, not Gecko URLs', async () => {
+    await writeTree(dir(), {
+      'project/m/jsconfig.json': JSCONFIG,
+      'project/m/ok.mjs': 'export const ok = 1;\n',
+      'project/m/a.mjs': [
+        'import { ok } from "./ok.mjs";',
+        'import { gone } from "./gone.js";',
+        'import { pkg } from "not-installed-package";',
+        'import { r } from "resource://gre/modules/X.sys.mjs";',
+        'import { c } from "chrome://x/content/y.mjs";',
+        'import { m } from "moz-src:///browser/x.sys.mjs";',
+        'export const all = [ok, gone, pkg, r, c, m];',
+        '',
+      ].join('\n'),
+    });
+    const report = await runTypecheck(request({ typecheck: { projects: ['m/jsconfig.json'] } }));
+    expect(
+      report.projects[0]?.issues.map((issue) => [
+        issue.line,
+        issue.severity,
+        issue.code,
+        issue.message.split(' or its')[0],
+      ])
+    ).toEqual([
+      [2, 'error', 2307, "Cannot find module './gone.js'"],
+      [3, 'warning', 2307, "Cannot find module 'not-installed-package'"],
+    ]);
+    expect(report.projects[0]?.issues[0]?.message).toContain('correct the path');
+    expect(report.projects[0]?.issues[1]?.message).toContain('install it');
+  });
+
+  it('skips a project that inherits checkJs false, reporting no files checked', async () => {
+    await writeTree(dir(), {
+      'project/base.json': JSON.stringify({ compilerOptions: { checkJs: false } }),
+      'project/inherit/jsconfig.json': JSON.stringify({
+        extends: '../base.json',
+        compilerOptions: { target: 'es2022', module: 'esnext', moduleResolution: 'bundler' },
+        include: ['*.js'],
+      }),
+      'project/inherit/a.js': '/** @type {number} */\nconst n = "x";\n',
+    });
+    const report = await runTypecheck(
+      request({ typecheck: { projects: ['inherit/jsconfig.json'] } })
+    );
+    expect(report.projects.map((result) => [result.filesChecked, result.issues.length])).toEqual([
+      [0, 1],
+    ]);
+    expect(report.projects[0]?.issues[0]?.severity).toBe('warning');
+    expect(report.projects[0]?.issues[0]?.message).toContain('so it was skipped');
+    expect(typecheckVerdict(report).pass).toBe(true);
   });
 
   it('includes the strict pass over the owned files, and refuses to check nothing', async () => {
